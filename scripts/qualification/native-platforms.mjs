@@ -10,16 +10,16 @@ import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw] [--local-macos-fallback]';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]';
 class Unverified extends Error {}
 
-export function parseArgs(args, host = process.platform) {
+export function parseArgs(args) {
   const options = {};
   const names = new Set(['candidate', 'client', 'report', 'executable', 'write-candidate', 'source-sha']);
   for (let index = 0; index < args.length; index++) {
     const key = args[index].replace(/^--/u, '');
     if (!args[index].startsWith('--') || Object.hasOwn(options, key)) throw new Error('invalid-arguments');
-    if (['install', 'public-aw', 'mixed-native-aw', 'local-macos-fallback'].includes(key)) { options[key] = true; continue; }
+    if (['install', 'public-aw', 'mixed-native-aw'].includes(key)) { options[key] = true; continue; }
     if (!names.has(key) || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error('invalid-arguments');
     options[key] = args[++index];
   }
@@ -31,9 +31,6 @@ export function parseArgs(args, host = process.platform) {
     || Boolean(options.install) === Boolean(options.executable)
     || options.executable && (options.client === 'all' || !path.isAbsolute(options.executable))
     || Object.keys(options).some((key) => ['write-candidate', 'source-sha'].includes(key))) throw new Error('invalid-arguments');
-  if (options['local-macos-fallback'] && (host !== 'darwin' || options.client !== 'gemini' || !options['public-aw'])) {
-    throw new Error('invalid-arguments');
-  }
   if (options['mixed-native-aw'] && (options.client !== 'all' || !options.install || !options['public-aw'])) throw new Error('invalid-arguments');
   return options;
 }
@@ -65,6 +62,10 @@ export function aggregateQualificationStatus(statuses) {
   if (!required.length) return statuses.length ? 'excluded' : 'unverified';
   if (required.some(status => status === 'failed')) return 'failed';
   return required.every(status => status === 'passed') ? 'passed' : 'unverified';
+}
+
+export function requiredUserPublicChecks(platform) {
+  return [`public-${platform}-manual-skill`, ...(platform === 'grok' ? [] : ['public-shipped-git-toolkit-install'])];
 }
 
 // Discovery observations do not grade management, consumer content or scope.
@@ -219,7 +220,6 @@ export async function runScope(platform, scope, launcher, options = {}) {
       ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
     await fs.mkdir(neutral);
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
-      localMacosFallback: Boolean(options.localMacosFallback),
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       recordCommand(command) { report.commands.push(redactScope(command)); },
@@ -305,7 +305,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const auditOpenCodeStatus = platform === 'opencode' && args[0] === 'plugin' && args[1] === 'status';
         const mixedInstall = mixedClients && args[0] === 'plugin' && args[1] === 'install';
         const trace = auditOpenCodeStatus || ['linux', 'darwin', 'win32'].includes(process.platform)
-          && ['codex', 'pi', 'claude', 'gemini', 'copilot'].includes(platform)
+          && ['codex', 'pi', 'claude', 'copilot'].includes(platform)
           && (!mixedClients || args[0] === 'plugin')
           && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
         const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
@@ -418,7 +418,14 @@ export async function runScope(platform, scope, launcher, options = {}) {
         if (actual !== fixedClientVersion(platform)) throw new Error('client-version-mismatch');
         return { version: actual };
       });
-      if (options.publicAw) await qualifyPublicAw(ctx);
+      if (options.publicAw) {
+        await qualifyPublicAw(ctx);
+        if (scope === 'user') {
+          for (const id of requiredUserPublicChecks(platform)) {
+            if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
+          }
+        }
+      }
       else {
         const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
         if (platform === 'opencode') ctx.initialProjection = initialProjection;
@@ -451,21 +458,23 @@ async function cleanupClientAcquisition(installRoot, result) {
 export async function run(options) {
   const codexBehaviorRequested = options['public-aw'] && ['all', 'codex'].includes(options.client);
   const grokPublicRequested = options['public-aw'] && ['all', 'grok'].includes(options.client);
+  const loopbackRequested = options['public-aw'] && ['all', 'codex', 'grok', 'copilot'].includes(options.client);
   const mixedPublicAwRequested = Boolean(options['mixed-native-aw']);
   const mixedClients = new Map();
   const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
     acceptancePolicy: { id: options['public-aw'] ? 'public-status-and-native-scope-v2' : 'management-content-scope-v1',
       required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup',
         ...(options['public-aw'] ? ['public-status', 'public-negative-scope-and-permission-cases'] : []),
+        ...(options['public-aw'] ? ['public-user-manual-skill-policy'] : []),
         ...(codexBehaviorRequested ? ['codex-manual-skill-and-native-role-resolution'] : []),
         ...(mixedPublicAwRequested ? ['mixed-native-aw-install-and-readback'] : [])],
       nonBlocking: ['skill-loading', 'model-adoption'],
       excluded: 'official-client-distribution-unavailable' },
     createdAt: new Date().toISOString(), environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
-    boundary: { fixtureTrust: options['local-macos-fallback'] ? 'authorized-local-macos-fallback' : 'hosted-only',
+    boundary: { fixtureTrust: 'hosted-only',
       host: process.platform, hosted: process.env.GITHUB_ACTIONS === 'true',
-      credentials: 'not-provided', modelRequests: codexBehaviorRequested ? 'Codex local fixture only' : 'none', clients: 'real',
+      credentials: 'not-provided', modelRequests: loopbackRequested ? 'loopback qualification fixtures only' : 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
       publicAwRequested: Boolean(options['public-aw']),
       ...(mixedPublicAwRequested ? { mixedPublicAwRequested: true } : {}),
@@ -485,12 +494,12 @@ export async function run(options) {
         ? 'client-windows-job-download-bounded-child'
         : 'client-verified-observed-download-bounded-child-not-os-containment' },
     uncovered: [...(options['public-aw'] ? [] : ['public-aw-install-end-to-end']),
-      ...(codexBehaviorRequested ? ['skill-invocation-controls-outside-codex-user', 'agents-execution-outside-three-codex-user-roles']
-        : ['skill-invocation-controls', 'agents-execution']),
+      ...(options['public-aw'] ? ['invocation-controls-outside-tested-user-scenarios'] : ['skill-invocation-controls']),
+      ...(codexBehaviorRequested ? ['agents-execution-outside-three-codex-user-roles'] : ['agents-execution']),
       ...(grokPublicRequested ? ['grok-user-same-source-refresh-with-host-authorization-denied'] : []),
       'external-model-invocation', 'mcp-execution', 'hook-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor'], clients: [],
-    uncoveredReasons: { cursor: 'tested-workspace-hook-requires-authentication',
+    uncoveredReasons: { cursor: 'separate-fixed-interface-probe',
       antigravity: 'public-user-scope-runs-through-dedicated-qualification',
       ...(grokPublicRequested ? { 'grok-user-same-source-refresh-with-host-authorization-denied':
         'Grok 1.0.77 on macOS arm64 kept projectTrusted=true in credential-free User neutral directories with exact denied-folder entries. A separate Project plugin produced denial only in its own directory.' } : {}) },
@@ -525,7 +534,7 @@ export async function run(options) {
         for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
         if (options['public-aw']) {
           result.publicAw = [];
-          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin, localMacosFallback: options['local-macos-fallback'] }));
+          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
         }
         const scopes = [...result.scopes, ...(result.publicAw ?? [])];
         result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));

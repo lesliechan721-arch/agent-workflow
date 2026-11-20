@@ -62,6 +62,7 @@ export function installNativeTestQualification(options: {
     if (!platforms.has(platform as PlatformName)) return result;
     delete result.qualifiedConsumers;
     delete result.qualificationEvidence;
+    delete result.skillInvocation;
     result.id = `test-qualified:${result.id}`;
     const handlers = getPlatformHookHandlerRegistry()[platform];
     for (const kind of Object.values(result.kinds)) { kind.status = 'supported'; kind.reasonCodes = []; }
@@ -82,7 +83,7 @@ export function installNativeTestQualification(options: {
     return { ...adapter,
       async discover(ctx: ReadContext) {
         const versions: Record<PlatformName, string> = { codex: '0.167.0', claude: '2.1.292', cursor: '2026.11.05-86047df',
-          antigravity: '1.3.4', opencode: '2.2.6', pi: '1.5.0', gemini: '0.63.0', copilot: '1.0.95', grok: '1.0.77' };
+          antigravity: '1.3.4', opencode: '2.2.6', pi: '1.5.0', copilot: '1.0.95', grok: '1.0.77' };
         return { platform, availability: 'available' as const, diagnostics: [], installations: [{
           id: `controlled:${platform}`, product: 'cli' as const, version: versions[platform as PlatformName],
           availability: 'available' as const, reasonCodes: [], entry: { kind: 'cli' as const,

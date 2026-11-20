@@ -926,6 +926,15 @@ export async function executeRebuildOperation(options: {
           try { await deployment.postcheck(receipts); }
           catch (error) { result = failed(options.command, options.target, accumulator, 'postcheck.inspect', errorMessage(error), rebuildFailureDiagnostic(error)); }
         }
+      } else if (result.status !== 'succeeded' && options.command !== 'cleanup' && options.command !== 'uninstall') {
+        // A hard gap can coexist with a freshly published package of independent Skills.
+        const published = receipts.filter((receipt) => receipt.after.package === 'present'
+          && receipt.effects.every((effect) => effect.status === 'applied' || effect.status === 'unchanged')
+          && !receipt.diagnostics.some((issue) => issue.severity === 'error'));
+        if (published.length) {
+          try { await options.target.platformDeployment.postcheck(published, { deliveredSkillsOnly: true }); }
+          catch { /* Keep the original failure when delivery cannot be confirmed. */ }
+        }
       }
       result.deploymentReceipts = receipts;
       return result;

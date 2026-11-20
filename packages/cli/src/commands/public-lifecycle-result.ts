@@ -6,12 +6,12 @@ import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
+import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
 import { identityDigest } from '../platforms/identity.js';
 import type { ComponentUnmet, ComponentOmission, PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
-import { geminiConsentMessages, geminiProjectOnlyRecoveryReason } from '../platforms/gemini-consent.js';
-import { geminiReplacementMessages } from '../platforms/gemini-activation.js';
 
 export interface PublicDeploymentPlan {
   bindingId: string;
@@ -62,7 +62,7 @@ export interface PublicTargetResult {
 
 export interface LifecycleData {
   request: { plugins: string[]; scope: Scope | null; context: Scope; targets: string[];
-    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only'; nativeConsent?: boolean };
+    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only' };
   confirmation: Confirmation | null;
   changes: Record<'requirements' | 'preferences' | 'config' | 'sources' | 'outputs', 'none' | 'changed' | 'unknown'>;
   requirements: RecoveryReceipt['intent'];
@@ -77,8 +77,6 @@ export interface LifecycleData {
 
 const messages: Record<string, string> = {
   dependencyExcluded: 'A required plugin is excluded from this target by the local deployment policy.',
-  ...geminiConsentMessages,
-  ...geminiReplacementMessages,
   confirmationRequired: 'Repeat this request with --yes to confirm the listed effects.',
   noTargetsEnabled: 'No effective deployment targets are enabled. Set targets or choose --only requirements.',
   projectRootUnavailable: 'A valid project root is required for this request.',
@@ -143,74 +141,41 @@ function matchesRecoveryPosition(subject: Diagnostic['subject'], target: Pick<Re
   return subject?.pluginId === target.pluginId && subject.target === target.agent && subject.scope === target.scope;
 }
 
-export function geminiPermission(code: string): 'manual' | 'consent' | undefined {
-  if (code === 'nativeConsentPromptUnsupported' || code === 'nativeConsentProtocolUnconfirmed') return 'manual';
-  if (code === 'nativeConsentRequired' || Object.hasOwn(geminiReplacementMessages, code)) return 'consent';
-}
-
-function retryCommand(root: RecoveryRetryDisposition, consent: boolean): string[] {
-  return ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent, ...(consent ? ['--native-consent'] : [])];
+function retryCommand(root: RecoveryRetryDisposition): string[] {
+  return ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent];
 }
 
 function exactProjectRetry(root: RecoveryRetryDisposition): string {
   return `In the TUI, review only the Project location for ${root.pluginId} on ${root.agent}.`;
 }
 
-export function recoverySyncAction(root: RecoveryRetryDisposition, reason: string, consent = false): NextAction {
+export function recoverySyncAction(root: RecoveryRetryDisposition, reason: string): NextAction {
   return root.kind === 'exact-project' ? { kind: 'manual', message: exactProjectRetry(root) }
-    : { kind: 'command', argv: retryCommand(root, consent), reason, requiresConfirmation: true };
-}
-
-function geminiManualRecovery(source: string | undefined, workspace: string | undefined,
-  activation: Diagnostic['detail']): string {
-  if (!source || !workspace || !activation?.path || !activation.configKey) {
-    return `Open a fresh AW Review to identify the Gemini source${source ? ` ${JSON.stringify(source)}` : ''}, workspace${workspace ? ` ${JSON.stringify(workspace)}` : ''} and activation file before making any native changes. Check the extension and its activation in Gemini if those locations cannot be confirmed.`;
-  }
-  const name = JSON.stringify(activation.configKey);
-  const file = JSON.stringify(activation.path);
-  const absentRules = activation.reasonCode === geminiProjectOnlyRecoveryReason
-    ? `The reviewed first install for ${name} requires User activation disabled. If its User rule was absent, verify Gemini's rule format and put "!*" first in its overrides, keeping its existing Project rules in order. A missing file needs only this entry plus any independent changes. If an original User rule conflicts, recheck it before proceeding.`
-    : 'If the file or entry was absent, remove it only if you can verify that Gemini alone created it and it contains no unrelated changes.';
-  return [
-    `Use the same Gemini client and configuration in workspace ${JSON.stringify(workspace)}. Pause other writers of ${file} and save a backup outside the Gemini extension directory before any native changes, or record that the file was absent.`,
-    `If an earlier attempt may already have changed the rules, check them against a known-good copy first. Verify the retained source still matches the package you reviewed. If Gemini has no installed copy of ${name}, use Gemini with arguments ${JSON.stringify(['extensions', 'install', source])}. Review each host permission yourself before approving it. Gemini may save source-folder and workspace trust.`,
-    `If ${name} is already installed, verify its AW ownership and exact source using the retained package and Gemini install metadata. Back up the installed copy and its local settings before considering an interactive update. Keep any foreign or unverified copy and any extra files or settings, including .env. Continue only if Gemini offers a path that preserves this data.`,
-    `Before a fresh AW Review, compare ${file} with the verified baseline. Restore the original User rule and every Project rule for ${name} in their original order, and restore any fields or entries that Gemini changed or dropped, including those of other extensions. Merge only verified Gemini changes and keep concurrent edits.`,
-    absentRules,
-    'If you cannot verify the baseline or merge safely, keep the current file and your backup. Check the affected extension in Gemini and run aw plugin status in the original context before making further changes.',
-  ].join(' ');
+    : { kind: 'command', argv: retryCommand(root), reason, requiresConfirmation: true };
 }
 
 /** Native permissions belong to the physical provider. Only pending declared roots can authorize an AW retry. */
 function nativeSourceRecovery(diagnostic: Diagnostic, diagnostics: readonly Diagnostic[], context?: DeploymentRecoveryContext) {
   const { subject, detail } = diagnostic;
   if (subject?.field !== 'nativeSource' || !detail) return;
-  const grok = subject.target === 'grok' && diagnostic.code === 'grokNativeInstallRecovery';
-  const gemini = subject.target === 'gemini' ? geminiPermission(diagnostic.code) : undefined;
-  if (!grok && !gemini) return;
+  if (subject.target !== 'grok' || diagnostic.code !== 'grokNativeInstallRecovery') return;
   if (context && (context.receipt.unconfirmedSavedState || isRecoveryReviewStaleBeforeExecution(context.receipt)
     || !matchesRecoveryPosition(subject, context.target)
     || !context.receipt.remainingTargets.some((target) => matchesRecoveryPosition(subject, target)))) return;
   const roots = context ? recoveryRetryDispositions(context.receipt, [context.target]) : [];
-  const manual = grok || gemini === 'manual' || !roots.length || roots.some((root) => root.kind === 'exact-project');
   const location = (field: string): Diagnostic['detail'] => diagnostics.find((entry) => entry.subject?.field === field
     && entry.subject.target === subject.target && entry.subject.pluginId === subject.pluginId && entry.subject.scope === subject.scope)?.detail;
   const workspace = location('workspace')?.path;
-  const activation = location('activationConfig');
   const configRoot = location('nativeConfigRoot')?.path;
   const source = detail.path;
-  const nativeStep = grok
-    ? `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}, ${source
+  const nativeStep = `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}, ${source
       ? `check the current registration. If it is absent and you approve this source, run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}. This grants Grok trust for the source. Keep any existing foreign or unverified registration and inspect it in Grok before retrying.`
-      : 'identify the exact retained AW source and check its registration in a fresh Review before making changes.'}`
-    : manual ? geminiManualRecovery(source, workspace, activation)
-      : `With the same Gemini client and configuration root, review trust for ${source ? JSON.stringify(source) : 'the frozen AW source'} and the workspace ${workspace ? JSON.stringify(workspace) : 'identified in the operation review'}.`;
+      : 'identify the exact retained AW source and check its registration in a fresh Review before making changes.'}`;
   const retries = roots.map((root) => root.kind === 'exact-project' ? exactProjectRetry(root)
-    : `Then run ${retryCommand(root, gemini === 'consent').join(' ')}.`);
-  const message = [nativeStep, ...(manual ? [grok ? 'Continue after verifying the native registration.'
-    : 'Continue after verifying the native installation and the restored activation rules.'] : []),
+    : `Then run ${retryCommand(root).join(' ')}.`);
+  const message = [nativeStep, 'Continue after verifying the native registration.',
     ...(retries.length ? retries : ['Recheck the original location in AW before retrying.'])].join(' ');
-  return { manual, message, roots };
+  return { message, roots };
 }
 
 /** Recovery locations are diagnostic facts, never permission to delete their contents. */
@@ -232,10 +197,9 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
     const target = receipt?.targetResults.find((item) => matchesRecoveryPosition(subject, item));
     const native = nativeSourceRecovery(diagnostic, diagnostics, receipt && target ? { receipt, target } : undefined);
     if (native) {
-      if (!native.manual) continue;
       for (const root of native.roots) if (root.kind === 'exact-project') exactProjects.add(JSON.stringify([root.pluginId, root.agent]));
       message = `${identity}: ${native.message}`;
-    } else if (['workspace', 'activationConfig', 'nativeConfigRoot'].includes(subject?.field ?? '')) continue;
+    } else if (['workspace', 'nativeConfigRoot'].includes(subject?.field ?? '')) continue;
     else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
     }
@@ -421,13 +385,18 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
     diagnostics.push(...target.blockers.map((entry) => publicDiagnostic(entry, subject)));
-    diagnostics.push(...(target.reasons ?? []).map((entry) => publicDiagnostic(entry, subject, 'warning')));
+    diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
+      .map((entry) => publicDiagnostic(entry, subject, 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
       excludedProviders.set(`${blocker.pluginId}\0${target.agent}`, { kind: 'command',
         argv: ['aw', 'target', 'include', blocker.pluginId, '--target', target.agent],
         reason: 'If you want this dependency on this target, remove its local exclusion before retrying.',
         requiresConfirmation: true });
     }
+  }
+  for (const { skill, platform, pluginId, scope, reasonCode, message } of skillInvocationNotices(receipt.targetResults)) {
+    diagnostics.push(publicDiagnostic({ code: SKILL_INVOCATION_NOTICE, message, detail: { reasonCode } },
+      { pluginId, target: platform, scope, field: `skill.${skill}` }, 'warning'));
   }
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
@@ -456,32 +425,28 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
     } else if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else {
-      const retries = new Map<string, { root: RecoveryRetryDisposition; consent: boolean; nativeManual: boolean }>();
+      const retries = new Map<string, { root: RecoveryRetryDisposition; nativeManual: boolean }>();
       let checkRoot = false;
       for (const target of receipt.targetResults) {
         if (!receipt.remainingTargets.some((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent && entry.scope === target.scope)) continue;
         const local = result.diagnostics.filter((entry) => matchesRecoveryPosition(entry.subject, target));
         if (local.some((entry) => entry.code === 'stateInventoryFailed' && entry.detail)) continue;
-        const consent = target.agent === 'gemini' && local.some((entry) => geminiPermission(entry.code) === 'consent')
-          && !local.some((entry) => geminiPermission(entry.code) === 'manual');
-        const nativeManual = local.some((entry) => target.agent === 'gemini' && geminiPermission(entry.code) === 'manual'
-          || target.agent === 'grok' && entry.code === 'grokNativeInstallRecovery');
+        const nativeManual = target.agent === 'grok' && local.some((entry) => entry.code === 'grokNativeInstallRecovery');
         const roots = recoveryRetryDispositions(receipt, [target]);
         if (!roots.length) checkRoot = true;
         for (const root of roots) {
           const key = JSON.stringify([root.pluginId, root.agent, root.scope]);
           const previous = retries.get(key);
-          retries.set(key, { root, consent: consent || previous?.consent === true, nativeManual: nativeManual || previous?.nativeManual === true });
+          retries.set(key, { root, nativeManual: nativeManual || previous?.nativeManual === true });
         }
       }
       if (checkRoot) result.nextActions.push({ kind: 'command',
         argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false });
-      for (const { root, consent, nativeManual } of retries.values()) {
+      for (const { root, nativeManual } of retries.values()) {
         if (root.kind === 'exact-project' && inventory.exactProjects.has(JSON.stringify([root.pluginId, root.agent]))) continue;
-        result.nextActions.push(recoverySyncAction(root, nativeManual ? 'Complete the host recovery and verify its effects before reviewing this retry.' : consent
-          ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
-          : 'Retry the selected incomplete target after resolving its diagnostics.', consent));
+        result.nextActions.push(recoverySyncAction(root, nativeManual ? 'Complete the host recovery and verify its effects before reviewing this retry.'
+          : 'Retry the selected incomplete target after resolving its diagnostics.'));
       }
     }
   }

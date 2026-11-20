@@ -107,6 +107,21 @@ describe('platform component contract', () => {
     expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual(requirements.filter((entry) => !entry.feature.startsWith('component.kind.')));
     assertPlan(plan([restricted]));
   });
+  it('delivers static and rendered Skills when only invocation preferences are unavailable', () => {
+    const profile = capabilities();
+    profile.features = {};
+    const controlled: PluginComponent = { ...skill, requires: [{ feature: 'skill.invocation.model', values: ['false'] }],
+      content: { files: { 'SKILL.md': { text: skillText.replace('description:', 'user-invocable: false\ndescription:') } } } };
+    expect(getUnmetFeatureRequirements(getComponentFeatureRequirements(controlled), profile)).toEqual([
+      { feature: 'skill.invocation.model', values: ['false'] }, { feature: 'skill.invocation.manual', values: ['false'] },
+      { feature: 'skill.visibility', values: ['hidden'] },
+    ]);
+    assertPlan(plan([controlled]), profile);
+    expect(partitionStaticPluginComponents([controlled], profile)).toMatchObject({ components: [controlled], unmet: [] });
+    const restricted: PluginComponent = { ...controlled, requires: [...controlled.requires!, { feature: 'skill.tools', values: ['none'] }] };
+    expect(() => assertPlan(plan([restricted]), profile)).toThrow(/skill.tools/u);
+    expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual([{ feature: 'skill.tools', values: ['none'] }]);
+  });
   it('normalizes five static kinds, preserves overridden IDs, records gaps and rejects links', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-components-')); roots.push(root);
     await fs.ensureDir(path.join(root, 'skills/check')); await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), skillText);

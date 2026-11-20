@@ -11,7 +11,7 @@
 - **用户级意图（User Intent）**：保存在用户个人配置目录（`<AW_HOME>/plugin-intents.json`），记录用户全局期望启用的插件集合。
 - **项目级意图（Project Intent）**：保存在当前项目根目录的声明文件中（`<projectRoot>/.agent-workflows/plugin-intents.json`），记录当前仓库共享的插件需求。
 - **本机部署偏好（DeploymentPreferences schema 2）**：记录用户在本机上选择的目标客户端平台（`codex`、`claude` 等），由 `aw target set` 维护。
-- **选择与可用性分离**：十个 target 的选择仅由用户保存；发现结果不自动删除已选项。可用性为 available/missing/unsupported/unknown/notApplicable，generic 为 notApplicable。CLI 新增不可用目标需要显式 force；TUI 的本机草稿与保存时确认规则见 [TUI](tui.md)。
+- **选择与可用性分离**：九个 target 的选择仅由用户保存；发现结果不自动删除已选项。可用性为 available/missing/unsupported/unknown/notApplicable，generic 为 notApplicable。CLI 新增不可用目标需要显式 force；TUI 的本机草稿与保存时确认规则见 [TUI](tui.md)。
 - **意图与清理边界**：
   取消项目需求（Intent）仅代表逻辑诉求的移除，**绝对不授予删除共享产物或未证实归属输出的权限**。具体清理门禁参见[插件生命周期](lifecycle.md#ownership-与删除权限)。
 
@@ -64,7 +64,7 @@ flowchart TD
 
 ### 2.2 平台、产品面与组件事实
 
-recovery/status 复用固定 adapter 的 discover/resolve/inspect；generic 复用受管 Skills writer 的现场证据。既有浅检查 helper 可以提供归属和配置事实，但不代替十个平台的部署观测。
+recovery/status 复用固定 adapter 的 discover/resolve/inspect；generic 复用受管 Skills writer 的现场证据。既有浅检查 helper 可以提供归属和配置事实，但不代替九个平台的部署观测。
 
 DeploymentObservation 分开保存包、登记、归属、组件和各产品面的有效启用及加载。目录路由的登记为 `not-applicable`。需要核对消费副本的路由另报告 `nativePackage`，Cursor 报告当前范围的 `workspaceOpen`。启用事实来自对应范围的原生清单或 API。加载需要独立运行证据。已观察到的包、登记和启用事实在待同步、部分失败及安全拒绝时仍可见。
 
@@ -76,7 +76,7 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 安装就绪只要求该路由需要的包、登记、启用和组件产物。已确认的输入或内容漂移作为 warning 且目标待同步，附精确插件、目标和范围的同步操作。明确禁用或缺少必要输出也待处理。必要事实无法观察时保持未知，实际归属冲突和安全门禁继续阻断。加载诊断可见，OpenCode 的可选加载及其诊断对目录交付和汇总无影响。
 
-包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity、Gemini 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
+包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
 Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。status 核对 AW 归属和实际文件字节。摘要过期且已确认旧产物时显示待同步。记录缺失、损坏或文件无法核对时保留 unknown。重新 sync 可重建记录。Codex 只在 Project 生成角色时，核对参与渲染的范围。若同一轮也生成过有意为空的包，则另核对现有空结果记录的包单元和实际缺席。
 
@@ -94,7 +94,7 @@ TUI 安装在准备 Review 和取得写锁后各自校验当前 Active Catalog�
 
 安装准备和状态查询可以并行读取多个平台。每个平台使用自己的发现与观测上下文，同一只读阶段内，相同入口、参数、环境和工作目录的调用共用在途结果。Codex 的 User 中立目录和 Project 精确目录分别查询，各自保留启用事实。Pi 在锁内重审时重新读取清单，位置核对可以复用本轮同作用域的结果。写入、`preApply` 和后续独立校验会结束前一轮的复用。最终状态对需要覆盖的客户端重新取证，具体平台的单目标条件见下文。
 
-状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 使用经结构校验的 extensions list --output-format json 的 stderr JSON 清单和当前 workspace isActive，stdout 必须为空白；无效结构或两流冲突保持 unknown；Grok 使用 list/inspect 的各自字段。Pi list 仅提供可见包与 scope，activation 保持 unknown。缺少 Project 段时，该范围的登记保持未确认。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
+状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Grok 使用 list/inspect 的各自字段。Pi list 仅提供可见包与 scope，activation 保持 unknown。缺少 Project 段时，该范围的登记保持未确认。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
 
 Pi 首次 ensure 只有在源位置、归属和物理 slot 均确认为不存在时，才可把新独占源交给原生 install。宿主命令自行执行信任门禁，AW 不授信；unknown 不允许替换或删除既有内容。成功后按原生 list 可报告的精确登记核验。普通包用登记及内容确认即可就绪。Agents 组件另核对实际消费者配置、访问、授权和能力。
 
@@ -106,15 +106,15 @@ Grok inspect.projectTrusted 仅表示当前目录与运行时信任，不是新�
 
 同一次只读 status 可复用相同 Active snapshot 校验、manifest 与入口发现；复用部分 Catalog 上下文时，必须补读现场残留候选所需的缺失来源，不能因该插件已无 Intent 而漏掉已安装目标。补读只限缺失的已配置来源，结果及失败仅在本次读取内共享；原生清单按真实入口、配置根、scope、cwd 和来源区分，neutral 与 Project 不能混为一次。TUI 重新检查及下一命令使用新会话。Review、锁内执行及写后观察不能共用过期 snapshot。
 
-Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi/Gemini ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。
+Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。
 
-已按平台核对的非 Codex 联合安装组，以及单独的 Gemini、Copilot、Pi 原生路由，可以在紧邻执行时完成一次完整入口核验。它适用于一个已冻结的非空 ensure 部署，组件齐全、现有包和归属可确定，动作只涉及发布、登记、刷新或启用。带脚本、托管命令写入、阻断或补足删除的目标分别检查。Codex 使用自己的登记和启用复核。Pi 有效清单仅缺 Project 段时，还要求包及归属均为 absent、无共享引用、全部 owner 槽位为空，动作仅为发布与登记。此时 registration 保持 unknown，原生客户端仍可拒绝未信任项目。入口核验失败沿用 preflight 错误路径。成功结果仅供这次调用的首个生命周期检查使用，写后观察、rebase 和最终状态都重新取证。
+已按平台核对的非 Codex 联合安装组，以及单独的 Copilot、Pi 原生路由，可以在紧邻执行时完成一次完整入口核验。它适用于一个已冻结的非空 ensure 部署，组件齐全、现有包和归属可确定，动作只涉及发布、登记、刷新或启用。带脚本、托管命令写入、阻断或补足删除的目标分别检查。Codex 使用自己的登记和启用复核。Pi 有效清单仅缺 Project 段时，还要求包及归属均为 absent、无共享引用、全部 owner 槽位为空，动作仅为发布与登记。此时 registration 保持 unknown，原生客户端仍可拒绝未信任项目。入口核验失败沿用 preflight 错误路径。成功结果仅供这次调用的首个生命周期检查使用，写后观察、rebase 和最终状态都重新取证。
 
 联合安装按平台判断是否需要在返回 Review 前刷新预览。同一平台只有一个完整的 ensure 组、该组的目标均通过准备时，首轮预览已经封存全部候选。其它平台或独立的 Portable 组可以在同一批次中存在。一个平台有多个 scope 或共享来源候选时，在各组准备完成后再刷新并冻结。来源激活后的重准备、锁内复核与写后的真实读取继续各自执行。产品面与 scope 必须明确，unknown 保留覆盖缺口。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 
-逻辑需求和物理输出分别判断。Codex、Claude、Gemini、Copilot 共享包按 canonical user scope 渲染，需求 scope 与原生查询上下文分别保留；独立 scope 路由不因存在用户需求就省略项目部署。同 physicalKey 只算一个物理实例，但保留所有实际产品面与需求引用。
+逻辑需求和物理输出分别判断。Codex、Claude、Copilot 共享包按 canonical user scope 渲染，需求 scope 与原生查询上下文分别保留；独立 scope 路由不因存在用户需求就省略项目部署。同 physicalKey 只算一个物理实例，但保留所有实际产品面与需求引用。
 
 原生命令在项目中报告 enabled 时，即使没有显式项目条目，也保留 enabled。neutral 与项目查询的差异说明上下文结果，不还原安装由哪个 scope 发起。显式条目和 AW Intent 用于共享引用与精确写入保护，继承启用本身不是独立项目引用。
 
@@ -123,8 +123,6 @@ User neutral 查询已排除调用项目覆盖，其原生 enabled 必须保留�
 Codex 显式 project false 覆盖 user true。撤销项目需求时移除 AW 自身项目 activation entry，让有效用户激活继续继承；不能写 false 代替删除。用户操作不读取或修改未授权项目，也不能把共享 payload 当作项目已启用。
 
 共享引用在本次内存中按 JointDemandSnapshot、实际 owner 和路由可证明的原生注册/activation 记录确定：明确仍有引用为 present，完整覆盖且无引用才为 none，其余为 unknown。两份 Intent 可读不证明全部历史项目无引用。unknown 时可撤本次精确 activation，但保留共享包与恢复说明。无 Intent 不自动新增依赖需求。
-
-Gemini 同版本动态 refresh 不是最终移除共享包：在精确 AW 所有权与来源、旧原生副本完整摘要及本次原生许可均成立时，可受限替换该物理副本，并保留全部已核验 activation。用户数据或弱证据阻止替换；新副本必须与冻结投影字节一致，不能从 AW source、版本或登记推断已应用配置。普通 sync 按新读取的原生摘要规划剩余动作，即使前次失败已经发布新 AW 源也会重试必要 refresh。只读 status 同样比较实际副本摘要：已确认旧副本为 drifted，缺失或无法核验的副本摘要为 unknown，不运行 renderer 或另启原生查询会话。完整边界与恢复见[Gemini 原生刷新](platforms.md#2-原生包正文与-lifecycle-路由)。
 
 依赖按完整身份和实际布局选择；提供者失败只阻断其真实消费者，独立平台和无依赖命令包继续。共享包损坏不改用另一条安装路由。foreign、不可读现场、配置损坏与能力缺口保持可见，不能由无需求豁免吞掉。
 
@@ -156,7 +154,7 @@ Core compile/select profile 借用对象修改前复制，不跨命令缓存；�
   - `common: Record<string, PluginConfigValue>`
   - `platforms: Partial<Record<PlatformTarget, Record<string, PluginConfigValue>>>`
 - **强制 Source Binding**：`binding` 必须且仅包含 `kind: 'source'` 与 `sourceIdentity`，且 `sourceIdentity` 必须严格匹配 `^sha256:[0-9a-f]{64}$` 哈希格式。
-- **受支持平台目标白名单**：`platforms` 的键必须严格属于受支持的平台目标（`PLATFORM_TARGETS`：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`），未知平台键直接拒绝。
+- **受支持平台目标白名单**：`platforms` 的键必须严格属于受支持的平台目标（`PLATFORM_TARGETS`：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic`），未知平台键直接拒绝。
 - **配置内容纯粹性**：`common` 与 `platforms[P]` 仅保存用户值，**绝不包含 UI 装饰、摘要或状态字段**。
 - **覆盖解析顺序**：
   ```text
@@ -200,7 +198,6 @@ sequenceDiagram
   - 普通保存先通过 schema 和引用预检，再提交用户文档；按请求另行准备既有输出刷新。
   - `configWrite` 精确报告 `notStarted`、`failed`、`succeeded`，独立 apply 不重复保存。
   - **已保存配置绝不回滚**：一旦原子提交完成，无论后续的平台发现、依赖解析、renderer 或 preApply 抛出何种异常，**已提交的配置文档绝不被撤销**。回执以 `partial` 或 `unavailable` 报告，并附带安全恢复指引（如 `aw plugin sync`）。
-  - Gemini 宿主许可阻断时，回执保留独立目标的结果，并按[公开宿主许可合同](../../reference/cli.md#1-入口请求与确认)显示精确来源、工作区和共享激活文件。恢复动作沿用实际声明根与目标位置。仅保留安装的输出在可限定到原位置时使用配置 apply 恢复。未验证的许可协议需先在宿主中人工处理。
   - 状态检查与预览不运行 preApply。
   - JSON stdout 仅输出一个安全回执，敏感值不进入 argv、诊断或 Review。
 - **Config Review 证据绑定**：

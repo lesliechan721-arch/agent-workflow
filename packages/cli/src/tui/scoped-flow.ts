@@ -39,7 +39,7 @@ export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan
   | { kind: 'retire'; scope: Scope; plan: RetirePlan } | TargetsPlan | IntentPlan;
 
 function nativePermissionCodes(target: RecoveryTarget): string[] {
-  if (target.agent !== 'gemini' && target.agent !== 'grok') return [];
+  if (target.agent !== 'grok') return [];
   const diagnostics = [...target.blockers, ...target.reasons ?? [], ...(target.deploymentReceipts ?? []).flatMap((item) =>
     [...item.diagnostics, ...item.effects.flatMap((effect) => effect.diagnostics)])];
   return diagnostics.filter(({ subject }) => subject?.field === 'nativeSource' && subject.pluginId === target.pluginId
@@ -84,9 +84,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         const permission = permissionCodes.includes(code);
         if (permission || code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
           details.push(checkStatus);
-          if (permission) details.push(entry.agent === 'gemini'
-            ? '从插件详情重新审阅安装位置。打开结果详情，按当前来源、工作区和启用规则的提示完成 Gemini 许可。'
-            : '从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
+          if (permission) details.push('从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
           // Store reviewable commands from structured positions only. Backend prose may contain private data.
           for (const position of recoveryRetryDispositions(receipt, [entry])) {
             try {

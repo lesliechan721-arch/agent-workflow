@@ -15,7 +15,6 @@ export const clients = {
   codex: { version: '0.167.0', package: '@openai/codex', bin: 'codex', source: 'https://github.com/openai/codex' },
   pi: { version: '1.5.0', package: '@earendil-works/pi-coding-agent', bin: 'pi', source: 'https://github.com/earendil-works/pi' },
   claude: { version: '2.1.317', package: '@anthropic-ai/claude-code', bin: 'claude', source: 'https://code.claude.com/docs/en/setup' },
-  gemini: { version: '0.67.0', package: '@google/gemini-cli', bin: 'gemini', source: 'https://github.com/google-gemini/gemini-cli' },
   copilot: { version: '1.0.95', package: '@github/copilot', bin: 'copilot', source: 'https://docs.github.com/en/copilot/get-started/cli-quickstart' },
   grok: { version: '1.0.77', package: '@xai-official/grok', bin: 'grok', source: 'https://github.com/xai-org/grok-build' },
   opencode: { version: '2.0.0', package: '@opencode/cli', bin: 'opencode', source: 'https://github.com/anomalyco/opencode/tree/v2.0.0' },
@@ -30,7 +29,7 @@ export function isolatedEnvironment(root, network = false) {
     HOME: home, USERPROFILE: home,
     AW_HOME: path.join(root, 'aw'), CODEX_HOME: path.join(root, 'codex'),
     CLAUDE_CONFIG_DIR: path.join(root, 'claude'), PI_CODING_AGENT_DIR: path.join(root, 'pi'),
-    GEMINI_CLI_HOME: path.join(root, 'gemini'), GROK_HOME: path.join(root, 'grok'),
+    GROK_HOME: path.join(root, 'grok'),
     COPILOT_HOME: path.join(root, 'copilot'),
     COPILOT_OFFLINE: 'true', COPILOT_AUTO_UPDATE: 'false',
     XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
@@ -90,7 +89,7 @@ export async function execute(launcher, args, options) {
   const names = options.captureProcessNames && process.platform === 'darwin'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
     ? createProcessNameDiagnostic(queryTimings?.execFile) : undefined;
-  const nativeLinux = ['gemini', 'grok'].includes(options.nativeClient) && process.platform === 'linux'
+  const nativeLinux = options.nativeClient === 'grok' && process.platform === 'linux'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
   const markerRows = nativeLinux ? createProcessMarkerRowDiagnostic(undefined, {
     learnMarkerEnvironmentVariable: 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
@@ -313,13 +312,13 @@ export async function renderPackage(ctx, revision) {
   const { projectPlatform } = await import('../../packages/cli/dist/src/platforms/projection.js');
   const { projectPlatformMarketplace } = await import('../../packages/cli/dist/src/platforms/projection-marketplace.js');
   const platform = ctx.platform;
-  const renderScope = ['codex', 'claude', 'gemini', 'copilot'].includes(platform) ? 'user' : ctx.scope;
+  const renderScope = ['codex', 'claude', 'copilot'].includes(platform) ? 'user' : ctx.scope;
   const scope = renderScope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: ctx.project };
   const packageVersion = platform === 'opencode' ? revision === 1 ? '0.1.0' : '0.1.1'
     : platform === 'antigravity' ? revision === 1 ? '1.0.1' : '1.0.2' : `1.0.${revision}`;
   const binding = { id: 'qualification', platform,
     plugin: { sourceId: 'qualification', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: `qualification/${ctx.pluginName}`, version: packageVersion },
-    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', opencode: 'opencode-directory', antigravity: ctx.scope === 'user' ? 'antigravity-cli' : 'antigravity-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
+    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', copilot: 'copilot-marketplace', opencode: 'opencode-directory', antigravity: ctx.scope === 'user' ? 'antigravity-cli' : 'antigravity-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
     consumers: [], physicalKey: 'qualification', activationKey: 'qualification', renderUnitIds: ['qualification'],
   };
   if (platform === 'antigravity') {

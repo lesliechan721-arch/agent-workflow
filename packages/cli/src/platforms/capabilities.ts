@@ -5,7 +5,7 @@ import { platformVersionSupported } from './discovery.js';
 
 const PROFILE_BASELINES: Record<PlatformId, string> = {
   codex: '0.155.0', claude: '2.1.292', cursor: 'desktop-3.29_cli-2026.11.05-86047df',
-  antigravity: 'cli-1.3.4', opencode: '2.0.0', pi: '1.0.0', gemini: '0.63.0',
+  antigravity: 'cli-1.3.4', opencode: '2.0.0', pi: '1.0.0',
   copilot: '1.0.95', grok: 'native-plugin-interface', generic: 'skills-v1',
 };
 
@@ -17,6 +17,30 @@ const CODEX_CLI_FEATURES = {
   'skill.visibility': ['visible'],
   'skill.runtime-config': ['aw.installed-runtime-config.v2'],
 };
+
+const MANUAL_SKILL_EVIDENCE = 'scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json';
+interface SkillCliProfile {
+  version: string;
+  evidence: string;
+  invocation?: { scopes: Scope[]; model: Array<'true' | 'false'> };
+}
+const SKILL_CLI_PROFILES: Partial<Record<PlatformId, SkillCliProfile>> = {
+  codex: { version: '0.167.0', evidence: 'scripts/qualification/evidence/native-skills-2026-11-12.json' },
+  claude: { version: '2.1.317', evidence: 'scripts/qualification/evidence/native-claude-skills-2026-11-12.json',
+    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+  antigravity: { version: '1.3.4', evidence: 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json',
+    invocation: { scopes: ['user'], model: ['false'] } },
+  cursor: { version: '2026.11.05-86047df', evidence: MANUAL_SKILL_EVIDENCE,
+    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+  copilot: { version: '1.0.95', evidence: 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json',
+    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+  pi: { version: '1.5.0', evidence: 'scripts/qualification/evidence/native-skills-2026-11-12.json',
+    invocation: { scopes: ['user', 'project'], model: ['false', 'true'] } },
+  opencode: { version: '2.0.0', evidence: 'scripts/qualification/evidence/native-opencode-skills-2026-11-13.json',
+    invocation: { scopes: ['user', 'project'], model: ['false', 'true'] } },
+  grok: { version: '1.0.77', evidence: 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json',
+    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+};
 /** Fixed qualification evidence, not a promise inferred from the installed version. */
 export function getQualifiedPlatformProfile(platform: PlatformId, host: { platform?: NodeJS.Platform; arch?: NodeJS.Architecture } = {}): QualifiedPlatformProfile {
   const kinds = Object.fromEntries(COMPONENT_KINDS.map((kind) => {
@@ -26,7 +50,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     return [kind, { status: supported ? 'supported' : generic ? 'unsupported' : 'unverified',
       reasonCodes: supported ? [] : [generic ? 'interface-unsupported' : 'capability-unverified'],
       delivery: generic ? supported ? ['generic-files'] : [] : [supplement ? 'managed-host-resource'
-        : platform === 'pi' || platform === 'opencode' || platform === 'gemini' ? 'native-extension' : 'native-package'] }];
+        : platform === 'pi' || platform === 'opencode' ? 'native-extension' : 'native-package'] }];
   })) as PlatformCapabilitiesV2['kinds'];
   const features: PlatformCapabilitiesV2['features'] = Object.fromEntries(Object.entries(getPlatformFeatureRegistry()).filter(([, definition]) => !definition.derivedFromKind).map(([id, definition]) => [id, {
     status: platform === 'generic' ? 'unsupported' : 'unverified', reasonCodes: [platform === 'generic' ? 'interface-unsupported' : 'capability-unverified'],
@@ -37,27 +61,22 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   // Qualification records retain the exact tested CLI versions and host cells.
   // Ordinary management uses the discovery interface minimum for these products.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
-  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'copilot' ? '1.0.95' : platform === 'claude' ? '2.1.317'
-    : platform === 'gemini' ? '0.67.0' : platform === 'grok' ? '1.0.77' : platform === 'opencode' ? '2.0.0' : platform === 'antigravity' ? '1.3.4' : null;
+  const skillCli = SKILL_CLI_PROFILES[platform];
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
-  const qualifiedSkillHosts = platform === 'grok'
+  const qualifiedSkillHosts = platform === 'cursor' ? ['darwin-arm64'] : platform === 'grok'
     ? ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64']
     : ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
   const qualifiedSkillHost = qualifiedSkillHosts.includes(`${hostPlatform}-${hostArch}`);
-  if (skillVersion && qualifiedSkillHost) {
+  if (skillCli && qualifiedSkillHost) {
+    const skillVersion = skillCli.version;
     profile.id += `:${hostPlatform}-${hostArch}-cli-${skillVersion}-skills`;
     kinds.skill = { ...kinds.skill, status: 'supported', reasonCodes: [] };
     profile.qualifiedConsumers = { skill: [{ product: 'cli', version: skillVersion }] };
-    profile.qualificationEvidence = [{ reference: platform === 'antigravity' ? 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json'
-      : platform === 'grok' ? 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json'
-      : platform === 'copilot' ? 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json'
-      : platform === 'gemini' ? 'scripts/qualification/evidence/native-gemini-skills-2026-11-12.json'
-      : platform === 'claude' ? 'scripts/qualification/evidence/native-claude-skills-2026-11-12.json'
-      : platform === 'opencode' ? 'scripts/qualification/evidence/native-opencode-skills-2026-11-13.json'
-      : 'scripts/qualification/evidence/native-skills-2026-11-12.json',
-      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' || platform === 'gemini' || platform === 'antigravity' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
-      limitations: [...(platform === 'claude' ? ['native-management-and-effective-activation-only', 'skill-discovery-unverified', 'skill-loading-unverified']
+    profile.qualificationEvidence = [{ reference: skillCli.evidence,
+      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' || platform === 'antigravity' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
+      limitations: platform === 'cursor' ? ['cli-workspace-open-and-slash-discovery', 'desktop-unverified', 'remote-model-routing-unverified']
+        : [...(platform === 'claude' ? ['native-management-and-effective-activation-only', 'skill-discovery-unverified', 'skill-loading-unverified']
         : platform === 'antigravity' ? ['native-management-effective-scope-and-consumer-bytes-only', 'project-unverified', 'skill-loading-unverified']
         : platform === 'opencode' ? ['native-management-effective-scope-and-consumer-bytes-only', 'process-receipts-do-not-qualify-provider-or-os']
         : ['host-discovery-and-lifecycle-only']), 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
@@ -65,12 +84,6 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
       reference: 'scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json',
       product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['project'], kinds: ['skill'], features: [],
       limitations: ['native-management-and-effective-activation-only', 'fixture-project-trust-required', 'skill-discovery-unverified',
-        'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
-    });
-    if (platform === 'gemini') profile.qualificationEvidence.push({
-      reference: 'scripts/qualification/evidence/native-gemini-project-skills-2026-11-13.json',
-      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['project'], kinds: ['skill'], features: [],
-      limitations: ['native-management-and-effective-activation-only', 'fixture-project-default-disable-rule-required',
         'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
     });
   }
@@ -81,6 +94,13 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     for (const [feature, values] of Object.entries(CODEX_CLI_FEATURES)) {
       features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
     }
+  }
+  if (skillCli?.invocation && qualifiedSkillHost) {
+    const invocation = skillCli.invocation;
+    profile.id += `:manual-cli-${skillCli.version}`;
+    profile.skillInvocation = { reference: MANUAL_SKILL_EVIDENCE, minimumVersion: skillCli.version, scopes: invocation.scopes,
+      features: [{ feature: 'skill.invocation.manual', values: ['true'] }, { feature: 'skill.visibility', values: ['visible'] },
+        { feature: 'skill.invocation.model', values: invocation.model }] };
   }
   return profile;
 }
@@ -94,6 +114,25 @@ export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, sco
     }
   }
   return kinds;
+}
+
+/** A local invocation policy must cover every available reader of the same Skill bytes. */
+export function getQualifiedFeaturesForScope(profile: QualifiedPlatformProfile, scope: Scope,
+  consumers?: CapabilityInput['renderUnit']['consumers']): PlatformCapabilitiesV2['features'] {
+  const features = structuredClone(profile.features);
+  const invocation = profile.skillInvocation;
+  if (!invocation?.scopes.includes(scope)) return features;
+  if (consumers) {
+    const readers = consumers.filter((consumer) => consumer.availability === 'available');
+    if (!readers.length || !readers.every((reader) => reader.product === 'cli' && reader.entry?.kind === 'cli'
+      && reader.version && platformVersionSupported(profile.platform, reader.version)
+      && (profile.platform === 'cursor' ? reader.version >= invocation.minimumVersion
+        : compareStrictSemVer(reader.version, invocation.minimumVersion) >= 0))) return features;
+  }
+  for (const { feature, values } of invocation.features) {
+    features[feature] = { status: 'supported', reasonCodes: [], ...(values ? { values: [...values] } : {}) };
+  }
+  return features;
 }
 /** The renderer and persistent input evidence consume the same capability facts. */
 export function toPlatformCapabilitiesView(input: PlatformCapabilitiesV2): PlatformCapabilitiesV2 {
@@ -115,11 +154,11 @@ export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabil
   if (profile.platform !== binding.platform) throw new Error('platformProfileMismatch');
   // A shared user package does not extend a user-only record to project activation.
   const kinds = getQualifiedKindsForScope(profile, binding.scope.kind);
-  const features = structuredClone(profile.features);
   const consumers = renderUnit.consumers;
+  const features = getQualifiedFeaturesForScope(profile, binding.scope.kind, consumers);
   for (const kind of COMPONENT_KINDS) {
     const qualified = profile.qualifiedConsumers?.[kind];
-    if (qualified && !consumers.some((consumer) => consumer.availability === 'available'
+    if (qualified && !consumers.some((consumer) => consumer.availability === 'available' && consumer.entry?.kind === 'cli'
       && qualified.some((entry) => entry.product === consumer.product) && platformVersionSupported(binding.platform, consumer.version))) {
       kinds[kind] = { ...kinds[kind], status: 'unverified', reasonCodes: ['capability-unverified'] };
     }

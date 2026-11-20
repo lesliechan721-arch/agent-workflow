@@ -63,7 +63,7 @@ function validateBinding(binding) {
   for (const key of ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'pluginVersion', 'artifactId', 'skillKey']) {
     if (typeof identity[key] !== 'string' || !identity[key]) fail('runtimeConfigIdentityMismatch');
   }
-  if (!['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'].includes(identity.platform) || !['user', 'project'].includes(identity.scope)
+  if (!['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'].includes(identity.platform) || !['user', 'project'].includes(identity.scope)
     || !['user', 'project'].includes(identity.configScope)
     || identity.pluginId !== `${identity.sourceId}/${identity.pluginName}`
     || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(identity.skillKey)

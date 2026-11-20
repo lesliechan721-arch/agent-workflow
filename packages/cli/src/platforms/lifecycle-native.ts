@@ -1,17 +1,13 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
-import { NativeCliError, runNativeCliChecked, type NativeCliInput, type NativeCliResult } from '../utils/native-cli.js';
+import { NativeCliError, runNativeCliChecked, type NativeCliResult } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment, selectedNativeConsumer } from './inspection.js';
-import { assertGeminiNativeOwner, assertGeminiProjectRules, assertGeminiRefreshSource, assertGeminiReplacementContent,
-  finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules, geminiRefreshNeedsReplacement,
-  readGeminiActivationSnapshot, restoreGeminiReplacementActivation } from './gemini-activation.js';
-import { geminiConsentInput } from './gemini-consent.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
   return ['codex-marketplace', 'claude-marketplace', 'antigravity-cli', 'pi-package',
-    'gemini-extension', 'copilot-marketplace', 'grok-cli'].includes(route);
+    'copilot-marketplace', 'grok-cli'].includes(route);
 }
 export function routeReload(route: InstallRoute): DeploymentReceipt['reload'] {
   if (route === 'generic-skills') return 'none';
@@ -80,18 +76,14 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
   const cwd = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
   const id = identity.registrationId ?? identity.packageId;
   let confirmed = false;
-  const run = async (args: string[], input?: NativeCliInput): Promise<NativeCliResult> => {
+  const run = async (args: string[]): Promise<NativeCliResult> => {
     if (!product) blocked('clientInstallEntryUnavailable');
     const invocation = await installationInvocation(product, { ...ctx, cwd }, args);
     try {
-      const result = await runNativeCliChecked({ ...invocation, ...(input ? { input } : {}), timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
+      const result = await runNativeCliChecked({ ...invocation, timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
       confirmed = true;
       return result;
     } catch (error) {
-      if (input && error instanceof NativeCliError
-        && (error.cause as { code?: string } | undefined)?.code === 'nativeConsentPromptUnsupported') {
-        throw Object.assign(error, { code: 'nativeConsentPromptUnsupported', mutation: 'possible' });
-      }
       // A non-zero exit does not prove that a third-party CLI made no changes.
       if (error instanceof NativeCliError && (error.cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
         throw Object.assign(error, { mutation: confirmed ? 'confirmed' : 'none' });
@@ -107,9 +99,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
     if (enabled && binding.route === 'grok-cli' && before.grokScopeAuthorization === 'denied') {
       blocked('nativeTrustRequired');
     }
-    if (binding.route === 'gemini-extension') {
-      return ctx.services.setActivation(binding, identity, enabled);
-    } else if (binding.route === 'claude-marketplace') {
+    if (binding.route === 'claude-marketplace') {
       // Install already enables this scope. Claude rejects a repeated enable,
       // so confirm the current owned registration before invoking the verb.
       const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
@@ -168,66 +158,6 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
         && !result.stderr.trim() && result.stdout.replace(/\u001b\[[0-9;]*m/gu, '').replace(/\r\n/gu, '\n').trimEnd()
           === `Removing ${identity.sourceLocation}...\nRemoved ${identity.sourceLocation}`) {
         return { mutation: 'confirmed', changed: true, unregisterConfirmed: true };
-      }
-      break;
-    }
-    case 'gemini-extension': {
-      const fixedConsentContract = product?.version === '0.67.0';
-      if (effect.kind === 'register' || effect.kind === 'refresh') {
-        // Separate stdout/stderr pipes do not frame the complete authorization
-        // text. Only the recorded client contract is safe for automatic answers.
-        if (!fixedConsentContract) blocked('nativeConsentProtocolUnconfirmed');
-        if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
-      }
-      if (!ctx.geminiActivationSnapshot) blocked('nativeActivationEvidenceUnknown');
-      const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
-      await assertGeminiProjectRules(ctx, binding, geminiActivationRules(snapshot, identity.packageId));
-      if (effect.kind !== 'register' && effect.kind !== 'refresh' && effect.kind !== 'unregister') blocked('nativeRouteUnsupported');
-      const replace = effect.kind === 'refresh'
-        ? await geminiRefreshNeedsReplacement(ctx, binding, identity, evidence, before) : false;
-      if (effect.kind === 'unregister') await assertGeminiNativeOwner(ctx, binding, identity, evidence);
-      await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
-      if (effect.kind === 'unregister') await run(['extensions', 'uninstall', identity.packageId]);
-      else if (replace) {
-        await assertGeminiRefreshSource(prepared.plan);
-        const step = async (kind: 'register' | 'unregister', args: string[], input?: NativeCliInput): Promise<void> => {
-          let nativeError: unknown;
-          try { await run(args, input); } catch (error) { nativeError = error; }
-          // Keep all reviewed activations even if a fixed native step changed
-          // its config before failing. Unexpected changes remain stale.
-          try { await restoreGeminiReplacementActivation(ctx, identity, kind, snapshot, nativeError !== undefined); }
-          catch (error) {
-            throw Object.assign(error instanceof Error ? error : new Error('nativeActivationRestoreFailed'),
-              { mutation: confirmed ? 'confirmed' : (nativeError as { mutation?: string } | undefined)?.mutation === 'none' ? 'none' : 'possible' });
-          }
-          Object.assign(ctx.geminiActivationSnapshot!, geminiActivationEvidence(snapshot));
-          if (nativeError !== undefined) throw nativeError;
-        };
-        try {
-          await step('unregister', ['extensions', 'uninstall', identity.packageId]);
-          await assertGeminiRefreshSource(prepared.plan);
-          await step('register', ['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'],
-            geminiConsentInput('register', evidence.layout.packageRoot, cwd, identity.packageId));
-          await assertGeminiReplacementContent(ctx, prepared.plan, identity);
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error('nativeMutationFailed');
-          if (!('code' in failure)) Object.assign(failure, { code: 'nativeInstallContentPostcheckFailed' });
-          throw Object.assign(failure,
-            { mutation: confirmed ? 'confirmed' : (error as { mutation?: string })?.mutation === 'none' ? 'none' : 'possible' });
-        }
-      } else {
-        const operation = effect.kind === 'refresh' ? 'refresh' : 'register';
-        const consent = geminiConsentInput(operation, evidence.layout.packageRoot, cwd, identity.packageId);
-        await run(operation === 'refresh' ? ['extensions', 'update', identity.packageId]
-          : ['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'], consent);
-      }
-      try {
-        await finishGeminiNativeMutation(ctx, evidence, binding, identity, effect.kind, snapshot);
-        Object.assign(ctx.geminiActivationSnapshot, geminiActivationEvidence(snapshot));
-      } catch (error) {
-        // The host already changed its package. Keep extra configuration changes
-        // and report the partial action rather than overwriting a stale snapshot.
-        throw Object.assign(error instanceof Error ? error : new Error('nativeActivationRestoreFailed'), { mutation: 'confirmed' });
       }
       break;
     }

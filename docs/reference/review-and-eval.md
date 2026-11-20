@@ -86,7 +86,7 @@ aw dev review inspect <target> [--materialization <receipt>]... [--skill <name>]
 aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]
 ```
 
-- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
+- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
 - **Skill 与配置选项**：支持可重复的 `--skill <name>` 筛选具体 Skill；配置覆盖使用 `--config <file>`（传入普通 JSON 文件的非敏感覆盖，**严禁使用 `--config-file`**）；支持 `--workspace-root <root>` 显式指定工作区根。
 - **配置来源隔离**：配置仅来自对应平台 manifest 默认值与 `--config <file>` 显式非敏感覆盖，**绝不读取真实用户的持久配置 Store**。
 - **安全新目录门禁（`--out`）**：
@@ -274,7 +274,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 由 `aw dev eval prepare` 生成，定义评测输入闭包：
 - **平台与执行器分离及内置 Backend 资格**：
-  - Manifest 的每个 profile 必须显式声明十平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的 `platform`，与 backend/executor 分离；
+  - Manifest 的每个 profile 必须显式声明九平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic`）的 `platform`，与 backend/executor 分离；
   - **内置 Eval suite backend 仅支持 `codex` 平台**（`profile.platform === 'codex'`）；非 Codex 平台只有在使用显式 `custom-process` provider 时才被支持，否则 prepare 阶段直接拒绝（抛出不支持 backend 错误）。
 - **工作区与内容**：包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及**移除被测 Skill 后的完整 subject workspace**。
 - **配置覆盖规则与继承**：

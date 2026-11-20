@@ -76,7 +76,7 @@ function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjecti
   const physical = identity as Record<string, unknown>;
   const routes: Record<string, string[]> = { codex: ['codex-marketplace'], claude: ['claude-marketplace'], cursor: ['cursor-workspace-hook'],
     antigravity: ['antigravity-cli', 'antigravity-directory'], opencode: ['opencode-directory'], pi: ['pi-package'],
-    gemini: ['gemini-extension'], copilot: ['copilot-marketplace'], grok: ['grok-cli', 'grok-directory'], generic: ['generic-skills'] };
+    copilot: ['copilot-marketplace'], grok: ['grok-cli', 'grok-directory'], generic: ['generic-skills'] };
   if (Object.keys(physical).length !== 6 || Object.keys(physical).some((key) => !['sourceIdentity', 'pluginId', 'platform', 'route', 'namespaceRoot', 'resourceKey'].includes(key))
     || typeof physical.sourceIdentity !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(physical.sourceIdentity)
     || typeof physical.pluginId !== 'string' || !physical.pluginId

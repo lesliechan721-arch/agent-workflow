@@ -2,6 +2,7 @@ import {
   getPluginCoreVersion,
   getPluginAuthoringCapabilities,
   PLUGIN_AUTHORING_CAPABILITY_SURFACES,
+  PLATFORM_TARGETS,
   type PluginAuthoringCapabilityEntry,
   type PluginAuthoringCapabilitySurfaceName,
 } from '@lesliechan721/aw-plugin-core/manifest'
@@ -26,8 +27,8 @@ const adapterFacts: Readonly<Partial<Record<
       conflicts: 'The plugin itself, missing providers, and dependency cycles.',
     },
     platforms: {
-      profiles: 'codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic',
-      requires: 'Omitted or empty platforms support all ten canonical targets; each selected projection must be valid.',
+      profiles: PLATFORM_TARGETS.join(', '),
+      requires: 'Omitted or empty platforms support all canonical targets; each selected projection must be valid.',
       conflicts: 'Unknown or duplicate target IDs, distributions.agentSkills, and marketplace.policy.products.',
       provenance: ['CLI source and bundle validators'],
     },

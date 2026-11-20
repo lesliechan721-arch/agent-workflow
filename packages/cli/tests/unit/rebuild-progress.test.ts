@@ -9,9 +9,9 @@ describe('rebuild progress feed', () => {
   // Test Value Gate: a failed platform event cannot suppress progress from a later independent Native platform.
   it('retains product labels and continues after a new platform failure', () => {
     const feed = createRebuildProgressFeed();
-    feed.addEvent({ type: 'rebuild:action', source: { plugin: 'demo', platform: 'gemini', scope: 'project', action: 'sync' },
+    feed.addEvent({ type: 'rebuild:action', source: { plugin: 'demo', platform: 'codex', scope: 'project', action: 'sync' },
       data: { name: 'native.write', phase: 'failure', durationMs: 1, message: 'private failure detail' } });
-    expect(feed.get().current?.target).toContain('Gemini CLI/当前项目');
+    expect(feed.get().current?.target).toContain('Codex/当前项目');
     feed.addEvent({ type: 'rebuild:action', source: { plugin: 'demo', platform: 'copilot', scope: 'user', action: 'sync' },
       data: { name: 'postcheck.inspect', phase: 'success', durationMs: 2 } });
     expect(feed.get().current?.target).toContain('GitHub Copilot CLI/当前用户');

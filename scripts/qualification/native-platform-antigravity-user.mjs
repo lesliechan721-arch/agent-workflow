@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertCommand, execute, hostInfo, prepareEnvironment, processManagementInfo, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
-import { redact, runScope } from './native-platforms.mjs';
+import { redact, requiredUserPublicChecks, runScope } from './native-platforms.mjs';
 import { acquireAntigravityDistribution, getAntigravityDistribution } from './native-platform-antigravity-distributions.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
 
@@ -137,13 +137,15 @@ export async function runAntigravityUserQualification(options) {
   const publicAwRequested = options['public-aw'] === true;
   const client = { platform: 'antigravity', requiredVersion: '1.3.4', status: 'failed', scopes: [], cleanup: 'not-started' };
   const report = { schemaVersion: 2, kind: 'antigravity-user-native-qualification', status: 'failed', createdAt: new Date().toISOString(),
-    acceptancePolicy: { id: publicAwRequested ? 'public-status-and-native-scope-v2' : 'management-content-scope-v1' }, environment: hostInfo(),
+    acceptancePolicy: { id: publicAwRequested ? 'public-status-and-native-scope-v2' : 'management-content-scope-v1',
+      ...(publicAwRequested && { requiredPublicChecks: requiredUserPublicChecks('antigravity') }) }, environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null, sha: process.env.GITHUB_SHA ?? null },
     boundary: { hostedOnly: true, credentials: 'empty temporary HOME/AW/Agent/XDG roots', modelRequests: 'none', sessions: 'none',
       scopes: ['user'], stdin: 'EOF', nativeCommandTimeoutMs: 30_000, productionQualificationChanged: false, publicAwRequested,
       runtimeNetwork: 'blocked proxies; not an OS firewall', acquisition: 'fixed official GitHub release asset; no npm or install scripts',
       processContract: 'direct Native uses existing strict execute; requested public AW uses its existing ordinary observation; actual command metadata and Windows helper evidence are recorded separately',
-      uncovered: ['project', 'agents', 'other-kinds', 'model-adoption', 'invocation-controls', 'desktop', ...(publicAwRequested ? [] : ['public-aw'])] }, clients: [client] };
+      uncovered: ['project', 'agents', 'other-kinds', 'model-adoption', 'desktop',
+        ...(publicAwRequested ? ['manual-command-visibility-in-session', 'automatic-candidate-in-session'] : ['invocation-controls', 'public-aw'])] }, clients: [client] };
   let root;
   try {
     if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('hosted-runner-required');

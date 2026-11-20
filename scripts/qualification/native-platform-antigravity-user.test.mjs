@@ -203,7 +203,7 @@ test('retains Hosted User and actual production profile gates before public writ
       return { data: { availability: [{ id: 'antigravity', availability: 'available', installations: [{ product: 'cli', version: '1.3.5',
         entry: { kind: 'cli', executable } }] }] } };
     } };
-  await assert.rejects(qualifyPublicAw(ctx), qualified ? /must discover the acquired fixed-version client/u : /public-aw-production-skill-profile-unverified/u);
+  await assert.rejects(qualifyPublicAw(ctx), qualified ? /must discover the acquired fixed-version antigravity client/u : /public-aw-production-skill-profile-unverified/u);
   assert.equal(calls.length, qualified ? 1 : 0);
   if (!qualified) await assert.rejects(fs.stat(ctx.clientBin), { code: 'ENOENT' });
 });

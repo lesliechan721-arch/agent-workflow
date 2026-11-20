@@ -273,7 +273,7 @@ export function deriveSharedReferenceView(snapshot: JointDemandSnapshot, demand:
     for (const deployment of target.deploymentObservations) {
       const { after } = deployment;
       const actual = { ...reference, physicalKey: after.physicalKey };
-      const sharedActivation = target.scope === 'project' && ['codex', 'gemini', 'copilot'].includes(target.agent);
+      const sharedActivation = target.scope === 'project' && ['codex', 'copilot'].includes(target.agent);
       const scopedRegistration = target.agent === 'claude';
       // Project activation can be inherited. User neutral activation is already
       // independent and must not be denied by a supplemental declaration.

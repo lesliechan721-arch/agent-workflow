@@ -109,7 +109,7 @@ process.stdout.write(result.stdout);process.stderr.write(result.stderr);process.
         cursor: { fields: { agent: { type: 'string', default: 'Cursor' } } },
       } },
     })
-    expect(PLATFORM_TARGETS).toEqual(['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'])
+    expect(PLATFORM_TARGETS).toEqual(['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'])
     expect([...resolveSupportedPlatforms(manifest)]).toEqual(['cursor', 'pi'])
     expect(compilePluginConfigDefinition(manifest.config, 'cursor').fields.agent?.default).toBe('Cursor')
     expect(compilePluginConfigDefinition(manifest.config, 'pi').fields.agent?.default).toBe('common')

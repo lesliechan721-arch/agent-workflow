@@ -26,7 +26,7 @@ describe('Portable fixed target directories', () => {
       const layout = portableRecoveryLayout(context, options);
       const root = scope === 'user' ? home : cwd;
       expect(layout.targetPath('generic', 'test-skill')).toBe(paths.join(root, '.agents', 'skills', 'test-skill'));
-      for (const invalid of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini',
+      for (const invalid of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi',
         'copilot', 'grok', 'claude-code', 'agent-skills']) {
         expect(() => layout.targetPath(invalid as never, 'test-skill')).toThrow('portableInvalidAgentSelection');
       }

@@ -228,7 +228,7 @@ export async function verifyPlatformComponentResources(options: {
       }
       const skillText = componentFiles['SKILL.md']?.toString('utf8');
       if (!skillText || !componentFiles['SKILL.md']!.equals(Buffer.from(skillText, 'utf8'))) throw new Error('componentResourceInvalid: SKILL.md must be valid UTF-8 text.');
-      const missing = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { skillText }), options.capabilities);
+      const missing = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { skillText, deliveryOnly: true }), options.capabilities);
       if (missing.length) throw new Error(`componentCapabilityExceeded: Skill "${component.id}" requires ${JSON.stringify(missing)}.`);
       await validateSkillClosure(component, componentFiles, modes, staging);
     }

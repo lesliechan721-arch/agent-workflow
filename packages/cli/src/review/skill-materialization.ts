@@ -14,7 +14,7 @@ import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../generators
 import type { PlatformTarget, PluginMeta, Scope } from '../types.js';
 import { resolveDeployments } from '../platforms/layout.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { projectPlatform } from '../platforms/projection.js';
+import { projectPlatform, projectSkillDocument } from '../platforms/projection.js';
 import { artifactValueDigest } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
@@ -99,6 +99,7 @@ export async function materializeProfilePluginComponents(options: {
   env: NodeJS.ProcessEnv;
   outputRoot: string;
   selectedSkills?: readonly string[];
+  portable?: boolean;
   kinds?: readonly ComponentKind[];
   config?: ResolvedArtifactRenderConfig;
   packagePreparationCache?: Parameters<typeof finalizePlatformSkillProducers>[0]['packagePreparationCache'];
@@ -138,7 +139,9 @@ export async function materializeProfilePluginComponents(options: {
   for (const unit of resolution.renderUnits) {
     const kinds = unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
     if (!kinds.length) continue;
-    const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind);
+    const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind, {
+      activationScope: options.scope, portable: options.portable,
+    });
     const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
       pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
       referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
@@ -166,25 +169,34 @@ export async function materializeProfilePluginComponents(options: {
       const current = finalized.prepared;
       const relativeNativeRoot = `native/${unit.id.replace(/[^a-z0-9]/gu, '')}`;
       const nativeRoot = path.join(options.outputRoot, relativeNativeRoot);
-      // Preserve a computed capability gap without resolving policy against unavailable producers.
-      if (current.empty !== 'unmet') {
-        await projectPlatform({
-          cwd: options.cwd, env: options.env, commandResolver: finalized.commandResolver ?? packageCommandResolver,
-          stagingRoot: nativeRoot,
-        }, {
-          binding, renderUnit: unit, capabilities,
-          components: current.expected.components,
-          resources: current.resources,
-          policy: resolveInvocationPolicy(options.plugin.manifest, options.platform),
-        });
-      }
-      const outputs = current.empty !== 'unmet' && await fs.pathExists(nativeRoot)
+      // Portable generic uses the original Skill name. A namespaced native supplement
+      // would validate a different name, which can exceed the portable length limit.
+      const portableGeneric = options.portable && options.platform === 'generic';
+      const projection = current.empty === 'unmet' || portableGeneric ? null : await projectPlatform({
+        cwd: options.cwd, env: options.env, commandResolver: finalized.commandResolver ?? packageCommandResolver,
+        stagingRoot: nativeRoot,
+      }, {
+        binding, renderUnit: unit, capabilities,
+        components: current.expected.components,
+        resources: current.resources,
+        policy: resolveInvocationPolicy(options.plugin.manifest, options.platform),
+      });
+      const outputs = projection && await fs.pathExists(nativeRoot)
         ? [{ path: relativeNativeRoot, digest: await computeCanonicalDirectoryDigest(nativeRoot) }] : [];
       for (const skill of finalized.skills) {
         const component = current.expected.components.find((entry) => entry.id === skill.componentId)!;
         if (options.selectedSkills?.length && !options.selectedSkills.includes(component.name)) continue;
         const destination = path.join(options.outputRoot, 'skills', component.name);
-        await fs.copy(skill.resourceRoot, destination, { overwrite: false, errorOnExist: true, dereference: false });
+        // Codex sidecars and OpenCode metadata already fit the standard Skill directory.
+        const portableDocument = options.platform === 'generic' || options.portable && options.platform !== 'codex' && options.platform !== 'opencode';
+        const source = !portableDocument && projection?.bundle
+          ? path.join(projection.bundle.stagingRoot, 'skills', component.name) : skill.resourceRoot;
+        await fs.copy(source, destination, { overwrite: false, errorOnExist: true, dereference: false });
+        if (portableDocument) {
+          const original = skill.tree.files['SKILL.md']!;
+          const portable = projectSkillDocument('generic', component, component.name, original);
+          if (portable !== original) await fs.writeFile(path.join(destination, 'SKILL.md'), portable);
+        }
         skills.push({ id: component.id, name: component.name, path: destination,
           dynamic: current.expected.sources[component.id] === 'dynamic' });
       }

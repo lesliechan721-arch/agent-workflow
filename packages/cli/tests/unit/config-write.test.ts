@@ -146,7 +146,7 @@ describe('configuration saves and explicit apply', () => {
   });
 
   // Test Value Gate: an empty previous dynamic set must still refresh when an authorized renderer or Skill set input changes.
-  it.each(['codex', 'gemini', 'copilot'] as const)('tracks complete %s render units and real command producers without guessing component names', async (platform) => {
+  it.each(['codex', 'copilot'] as const)('tracks complete %s render units and real command producers without guessing component names', async (platform) => {
     const f = fixture();
     f.plugin.manifest.platforms = [platform];
     f.plugin.manifest.artifacts = { configKeys: ['mode'] };

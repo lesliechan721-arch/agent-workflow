@@ -289,49 +289,4 @@ describe('TUI config save batch result', () => {
     await input(instance, '\r'); await nextTurn(5);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'user', platform: 'claude', retryApply: true, updates: {}, removeKeys: [] });
   });
-
-  it('shows Gemini recovery only in the current result and records no host paths', async () => {
-    const workspace = '/fictional/project-workspace';
-    const rules = '/fictional/gemini-host/extension-enablement.json';
-    const code = 'nativeConsentProtocolUnconfirmed';
-    const value = new TuiController({
-      loadStatus: vi.fn().mockResolvedValue(status()),
-      captureEvidence: vi.fn(async (intent) => evidence(intent)),
-      executeIntent: vi.fn().mockResolvedValue({ status: 'partial', groups: [{
-        scope: 'user', status: 'failed', configSaved: true, applyRequested: true, applyStatus: 'failed', errorCode: code,
-        execution: { apply: { state: 'partial', targetResults: [{
-          target: { pluginId, platform: 'gemini', scope: 'project' }, state: 'failed', errorCode: code,
-          geminiRecovery: {
-            diagnostics: [{ code, subject: { pluginId, target: 'gemini', scope: 'project', field: 'nativeSource' } }],
-            nextActions: [{ kind: 'manual', message: `In ${workspace}, back up ${rules}. Restore the User and Project rules before retrying.` },
-              { kind: 'command', argv: ['aw', 'plugin', 'sync', pluginId, '--native-consent'] }],
-          },
-        }] } },
-      }] }),
-    });
-    await value.load();
-    const review = await value.buildOperationReview({ kind: 'configSaveBatch', pluginId, context: 'project', apply: true,
-      groups: [{ scope: 'user', updates: { mode: 'updated' } }] });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 110, rows: 30 }} />);
-    const result = await value.executeOperation(review.reviewToken);
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('查看 Gemini 恢复详情'));
-    expect(instance.lastFrame()).not.toContain(workspace);
-    await input(instance, '\r');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain(workspace));
-    expect(instance.lastFrame()).toContain(rules);
-    expect(instance.lastFrame()).toMatch(/User\s+and Project rules/u);
-    expect(instance.lastFrame()).not.toContain('--native-consent');
-    const recordId = value.snapshot.operationHistorySummaries[0]!.recordId;
-    const report = value.previewOperationReport(recordId)?.content;
-    expect(report).toContain('Gemini 恢复详情');
-    expect(report).not.toContain('/fictional/');
-    expect(report).not.toContain('--native-consent');
-    expect(JSON.stringify(value.snapshot)).not.toContain('/fictional/');
-    await escape(instance);
-    expect(instance.lastFrame()).toContain('查看 Gemini 恢复详情');
-    await input(instance, 'o');
-    expect(value.snapshot.router.current.route.name).toBe('operationHistory');
-    expect(value.currentConfigRecoveryDetails(result.operationId)).toEqual([]);
-    expect(instance.lastFrame()).not.toContain('/fictional/');
-  });
 });

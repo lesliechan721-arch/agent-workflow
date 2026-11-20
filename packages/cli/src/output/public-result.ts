@@ -2,6 +2,7 @@ import { describeNativeToolClosure, type NativeToolChange } from '../utils/nativ
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
 
@@ -180,6 +181,11 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   if (confirmation?.required) for (const effect of confirmation.effects) lines.push(`Effect: ${effect.message}`);
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
   for (const diagnostic of result.diagnostics.filter((entry) => entry.detail)) {
+    if (diagnostic.code === SKILL_INVOCATION_NOTICE) {
+      const position = [diagnostic.subject?.pluginId, diagnostic.subject?.target, diagnostic.subject?.scope].filter(Boolean).join(' / ');
+      lines.push(`Warning · ${position} · ${diagnostic.message}`);
+      continue;
+    }
     const detail = diagnostic.detail!;
     lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
     if (detail.path) lines.push(`  Location: ${detail.path}`);

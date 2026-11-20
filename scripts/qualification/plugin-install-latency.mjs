@@ -29,7 +29,7 @@ const userRootPool = [
   'official/human-content',
 ];
 const projectRoots = ['official/aw-development-toolkit', 'official/aw-skill-eval-runner'];
-const targets = ['antigravity', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'generic', 'grok', 'opencode', 'pi'];
+const targets = ['antigravity', 'claude', 'codex', 'copilot', 'cursor', 'generic', 'grok', 'opencode', 'pi'];
 const namePattern = /^[a-z0-9][a-z0-9-]*$/u;
 const usage = `Usage: node scripts/qualification/plugin-install-latency.mjs --build-root <built checkout>
   --catalog <local snapshot directory> --target <target>... --plugin <plugin>... [--output <JSON file>]

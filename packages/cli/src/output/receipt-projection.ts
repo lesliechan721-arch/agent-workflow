@@ -13,9 +13,8 @@ import type { CommandManagementResult } from '../commands/managed-commands.js';
 import type { PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import type { PortableMaterializeReceipt } from '../portable/commands.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
-import { geminiPermission, projectTarget } from '../commands/public-lifecycle-result.js';
+import { projectTarget } from '../commands/public-lifecycle-result.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
-import { geminiNativeConsentDiagnostic } from './native-consent.js';
 
 type RecordValue = Record<string, unknown>;
 /** Pick only the declared domain DTO members. Never spread a service result. */
@@ -108,8 +107,7 @@ function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): Recor
   const data: RecordValue = pick(value as ConfigApplyResult & { reason?: string }, ['state', 'reason']);
   data.targetResults = value.targetResults.map((entry) => {
     const subject = { pluginId: entry.target.pluginId ?? entry.target.pluginName, target: entry.target.platform, scope: entry.target.scope };
-    if (entry.geminiRecovery) diagnostics.push(...entry.geminiRecovery.diagnostics);
-    if (entry.errorCode && !entry.geminiRecovery?.diagnostics.some((item) => item.code === entry.errorCode)) {
+    if (entry.errorCode) {
       diagnostics.push(diagnostic({ code: entry.errorCode, message: entry.message }, 'error', subject));
     }
     return { ...pick(entry, ['action', 'state', 'relation', 'requiredBy', 'errorCode']), ...(entry.message ? { message: message(entry.message, entry.errorCode ?? 'configApplyFailed') } : {}), target: pick(entry.target, ['pluginName', 'pluginId', 'platform', 'scope']),
@@ -243,8 +241,6 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
     }
     case 'plugin.config.schema': case 'plugin.config.get': case 'plugin.config.set': case 'plugin.config.unset': case 'plugin.config.reset': case 'plugin.config.apply': {
       const data: RecordValue = pick(r, ['configSchemaVersion', 'plugin', 'pluginName', 'pluginId', 'sourceId', 'sourceIdentity', 'scope', 'platform', 'schema', 'fields', 'key', 'configWrite', 'affectedFields', 'removedKey', 'existed', 'deleted', 'resetDisposition', 'quarantineBasename', 'updatedKeys', 'removedKeys', 'effective', 'otherProjectsMayRequireSync', 'staleRemovedKeys']);
-      if (typeof r.nativeConsent === 'boolean') data.nativeConsent = r.nativeConsent;
-      if (r.nativeConsent === true) diagnostics.push(geminiNativeConsentDiagnostic());
       if (typeof r.context === 'string') data.context = r.context;
       else if (r.context) data.context = pick(record(r.context), ['context', 'projectRoot']);
       if (r.apply) data.apply = applyResult(r.apply as ConfigApplyResult, diagnostics);
@@ -491,29 +487,12 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
           result.nextActions.push({ kind: 'command', argv: ['aw', 'command', 'package', 'sync', `${identity.sourceId}/${identity.pluginName}`, identity.key, '--scope', identity.scope], reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
         }
       }
-      const nativeActions = new Map<string, NextAction>();
-      for (const { target, geminiRecovery, state, errorCode } of (r.apply as ConfigApplyResult | undefined)?.targetResults ?? []) {
-        if (geminiRecovery) {
-          for (const action of geminiRecovery.nextActions) {
-            if (action.kind === 'manual') nativeActions.set(action.message, action);
-            else {
-              const key = JSON.stringify(action.argv.filter((arg) => arg !== '--native-consent'));
-              // A manual permission failure must be resolved before retrying the shared root.
-              if (!nativeActions.has(key) || !action.argv.includes('--native-consent')) nativeActions.set(key, action);
-            }
-          }
-          continue;
-        }
+      for (const { target, state, errorCode } of (r.apply as ConfigApplyResult | undefined)?.targetResults ?? []) {
         if (state !== 'completed' && (state !== 'skipped' || errorCode) && target.pluginId) {
-          if (target.platform === 'gemini' && errorCode && geminiPermission(errorCode)) {
-            result.nextActions.push({ kind: 'manual', message: 'Open a fresh AW Review for the affected Gemini extension to confirm its source, workspace and activation rules.' });
-            continue;
-          }
           result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform],
             reason: 'Repair the affected deployment target after reviewing its diagnostics.', requiresConfirmation: true });
         }
       }
-      result.nextActions.push(...nativeActions.values());
     }
     if (command === 'source.status' || command === 'source.sync') for (const entry of diagnostics) if (entry.subject?.sourceId) result.nextActions.push({ kind: 'command', argv: ['aw', 'source', 'status', entry.subject.sourceId], reason: 'Inspect the selected source before retrying a source change.', requiresConfirmation: false });
     if (!result.nextActions.length) result.nextActions.push({ kind: 'manual', message: status === 'partial' ? 'Review completed and incomplete results before retrying the operation.' : 'Resolve the reported diagnostics before retrying the operation.' });

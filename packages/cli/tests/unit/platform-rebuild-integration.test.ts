@@ -19,7 +19,6 @@ import { NativeCliError } from '../../src/utils/native-cli.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
-import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { resolveAbsoluteAwHome } from '../../src/utils/state-paths.js';
@@ -104,7 +103,7 @@ function evidenceReadGate() {
   return gate;
 }
 
-async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravity' | 'pi', options: { state?: 'foreign' | 'unknown'; multiple?: boolean; scope?: 'user' | 'project' } = {}) {
+async function nativeEvidenceFixture(platform: 'copilot' | 'antigravity' | 'pi', options: { state?: 'foreign' | 'unknown'; multiple?: boolean; scope?: 'user' | 'project' } = {}) {
   if (platform === 'antigravity') installNativeTestQualification({ platforms: ['antigravity'] });
   const isolated = getCurrentSourceTestIsolation();
   const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
@@ -120,13 +119,13 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
   const plugin = await readPluginManifest(root, { mode: 'bundle' });
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
   const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
-    geminiInstallSource?: () => string; antigravityInstallSource?: () => string; copilotActivation?: () => boolean } = {};
-  const inventories = platform === 'pi' ? ['list'] : platform === 'gemini' ? ['extensions list --output-format json'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
+    antigravityInstallSource?: () => string; copilotActivation?: () => boolean } = {};
+  const inventories = platform === 'pi' ? ['list'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
   let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
   let marketplaceAdded = false;
   let installed = false;
   let enabled = false;
-  let clientVersion = platform === 'pi' ? '1.5.0' : platform === 'gemini' ? '0.67.0' : platform === 'antigravity' ? '1.3.4' : '1.0.95';
+  let clientVersion = platform === 'pi' ? '1.5.0' : platform === 'antigravity' ? '1.3.4' : '1.0.95';
   const runner = vi.fn(async (invocation: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => {
     const args = invocation.args;
     if (inventories.includes(args.join(' '))) {
@@ -136,21 +135,6 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
         name: layout!.nativeIdentity.packageId, source: 'antigravity', enabled,
         path: path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId), version: '1.0.0',
       }] : []) };
-      if (platform === 'gemini') {
-        if (!installed) return { exitCode: 0, stdout: '', stderr: '[]' };
-        const { root, file } = geminiExtensionPaths({ cwd: invocation.cwd, env: isolated.env });
-        const config = await fs.readJson(file).catch(() => ({}));
-        let isActive = true;
-        for (const rule of config[layout!.nativeIdentity.packageId]?.overrides ?? []) {
-          const pattern = rule.startsWith('!') ? rule.slice(1) : rule;
-          const location = pattern.slice(0, -2);
-          if (pattern === '*' || invocation.cwd === location || invocation.cwd.startsWith(`${location}${path.sep}`)) isActive = !rule.startsWith('!');
-        }
-        return { exitCode: 0, stdout: '', stderr: JSON.stringify([{
-          name: layout!.nativeIdentity.packageId, path: path.join(root, layout!.nativeIdentity.packageId), isActive,
-          installMetadata: { type: 'local', source: layout!.packageRoot },
-        }]) };
-      }
       if (options.state === 'unknown' && args[1] === 'marketplace') return { exitCode: 0, stdout: '{}', stderr: '' };
       const user = await fs.readJson(path.join(layout?.activationPath ?? resolvePlatformConfigRoot(platform,
         { cwd: invocation.cwd, env: isolated.env }), 'settings.json')).catch(() => ({}));
@@ -177,28 +161,11 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
       else throw new Error('Unexpected fixture native mutation.');
     } else if (platform === 'copilot' && args[1] === 'marketplace' && args[2] === 'add') marketplaceAdded = true;
     else if (platform === 'copilot' && args[1] === 'install') installed = true;
-    else if (platform === 'gemini' && args[0] === 'extensions' && ['install', 'uninstall'].includes(args[1]!)) {
-      const { home, root, file } = geminiExtensionPaths({ cwd: isolated.layout.fixtureCwd, env: isolated.env });
-      const installedRoot = path.join(root, layout!.nativeIdentity.packageId);
-      const config: Record<string, { overrides: string[] }> = await fs.pathExists(file) ? await fs.readJson(file) : {};
-      if (args[1] === 'uninstall') {
-        await fs.remove(installedRoot);
-        delete config[layout!.nativeIdentity.packageId];
-        installed = false;
-      } else {
-        await fs.copy(reads.geminiInstallSource?.() ?? args[2]!, installedRoot);
-        await fs.outputJson(path.join(installedRoot, '.gemini-extension-install.json'), { type: 'local', source: args[2] });
-        // This fixture has only the global rule. Fixed 0.67.0 appends HOME
-        // and writes the enablement map without a trailing newline.
-        config[layout!.nativeIdentity.packageId] = { overrides: [...(config[layout!.nativeIdentity.packageId]?.overrides ?? []), geminiScopePattern(home)] };
-        installed = true;
-      }
-      await fs.outputFile(file, JSON.stringify(config, null, 2));
-    } else throw new Error('Unexpected fixture native mutation.');
+    else throw new Error('Unexpected fixture native mutation.');
     return { exitCode: 0, stdout: '', stderr: '' };
   });
   const context: RebuildExecutionContext = { env: isolated.env, nativeCliRunner: runner,
-    nativeConsent: true, reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
+    reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
   const original = getAgentPluginAdapter(platform);
   const adapter: typeof original = { ...original,
     discover: vi.fn<typeof original.discover>(async (ctx) => {
@@ -232,6 +199,43 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
 }
 
 describe('native evidence checks', () => {
+  it.each([false, true])('refreshes static and rendered Pi Skills when invocation is unverified=%s', async (unverified) => {
+    const item = await nativeEvidenceFixture('pi');
+    try {
+      const installed = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(installed.status, JSON.stringify(installed)).toBe('succeeded');
+      const skills = path.join(item.layout.packageRoot, 'skills');
+      expect(await fs.readdir(skills)).toEqual(['check']);
+      if (unverified) item.changeClient();
+
+      const frontmatter = (name: string) => `---\nname: ${name}\ndescription: Manual only.\nuser-invocable: true\ndisable-model-invocation: true\n---\nExplicit use.\n`;
+      await fs.outputFile(path.join(item.root, 'skills/manual/SKILL.md'), frontmatter('manual'));
+      const manifest = await fs.readJson(item.input.plugin.manifestPath);
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      await fs.writeJson(item.input.plugin.manifestPath, manifest);
+      const rendered = { id: 'dynamic', name: 'dynamic', kind: 'skill', content: { files: { 'SKILL.md': { text: frontmatter('dynamic') } } } };
+      await fs.outputFile(path.join(item.root, 'render.mjs'),
+        `import fs from 'node:fs';
+const { allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('skill') ? [${JSON.stringify(rendered)}] : [],omitted:[],unmet:[]}));\n`);
+      const plugin = { ...item.input.plugin, manifest: (await readPluginManifest(item.root, { mode: 'bundle' })).manifest };
+      await item.context.platformRebuildSession!.dispose();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync', plugin });
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(result.status, JSON.stringify(result)).toBe('succeeded');
+      expect(result.deploymentReceipts!.flatMap((receipt) => receipt.unmet)).toEqual([]);
+      expect((await fs.readdir(skills)).sort()).toEqual(['check', 'dynamic', 'manual']);
+      for (const name of ['manual', 'dynamic']) {
+        const text = await fs.readFile(path.join(skills, name, 'SKILL.md'), 'utf8');
+        expect(text).toContain('disable-model-invocation: true');
+        expect(text).not.toContain('user-invocable');
+      }
+    } finally { await item.context.platformRebuildSession?.dispose(); }
+  });
+
   // Test Value Gate: a new lock-held batch can serve placement for a cached
   // target. Its independent final native check must still catch registration drift.
   it('rereads Pi registration before returning a target in a new observation batch', async () => {
@@ -297,53 +301,6 @@ describe('native evidence checks', () => {
     });
     expect(await Promise.all(inventoryCwds().map((cwd) => fs.pathExists(cwd)))).toEqual([false, false, false, false, false]);
     expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
-  });
-
-  // Test Value Gate: code-cache writes must not stale package evidence or survive
-  // the session that owns the existing private staging root.
-  it('shares a private Gemini code-cache directory and removes it with staging', async () => {
-    const item = await nativeEvidenceFixture('gemini');
-    try {
-      const contexts = vi.mocked(item.adapter.discover).mock.calls.map(([ctx]) => ctx);
-      const first = contexts[0]!.nativeNodeCompileCacheDir;
-      const second = contexts[1]!.nativeNodeCompileCacheDir;
-      if (!first || !second) throw new Error('Expected private lazy cache providers.');
-      const [one, two] = await Promise.all([first(), second()]);
-      expect(one === two).toBe(true);
-      await fs.outputFile(path.join(one, 'compiled-code'), 'Temporary compiled code.');
-      const inspections = vi.mocked(item.adapter.inspect).mock.calls.length;
-      await item.target.platformDeployment!.verify();
-      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(inspections + 1);
-      await item.context.platformRebuildSession!.dispose();
-      expect(await fs.pathExists(one)).toBe(false);
-    } finally { await item.context.platformRebuildSession!.dispose(); }
-  });
-
-  // Test Value Gate: an optional optimization cannot retain a rejected promise
-  // that prevents the later mandatory staging allocation from recovering.
-  it('recovers staging after an optional Gemini cache allocation fails', async () => {
-    const item = await nativeEvidenceFixture('gemini');
-    let first = true;
-    const adapter: typeof item.adapter = { ...item.adapter, async discover(ctx) {
-      if (first) {
-        first = false;
-        const failure = new Error('Controlled optional cache allocation failure.');
-        const allocate = vi.spyOn(fs, 'mkdtemp').mockRejectedValueOnce(failure);
-        try {
-          if (!ctx.nativeNodeCompileCacheDir) throw new Error('Expected a cache provider.');
-          await expect(ctx.nativeNodeCompileCacheDir()).rejects.toBe(failure);
-        } finally { allocate.mockRestore(); }
-      }
-      return item.adapter.discover(ctx);
-    } };
-    try {
-      await item.context.platformRebuildSession!.dispose();
-      item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => adapter);
-      const integration = createRebuildIntegration({ context: item.context });
-      const target = await integration.buildTarget(item.input);
-      expect(target.platformDeployment?.plans.length).toBe(1);
-    } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
   // Test Value Gate: accepting a newer mutable baseline must not preserve an
@@ -419,83 +376,10 @@ describe('native evidence checks', () => {
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
-  // Test Value Gate: an already-published AW package cannot hide an old or
-  // unconfirmed native copy on the next ordinary prepare/execute cycle.
-  it.each(['legacy copy', 'data guard', 'native postcheck'] as const)('retries Gemini sync from %s using fresh installed bytes', async (scenario) => {
-    const item = await nativeEvidenceFixture('gemini');
-    const installed = path.join(geminiExtensionPaths({ cwd: item.input.cwd, env: item.context.env }).root, item.layout.nativeIdentity.packageId);
-    const previousCopy = path.join(item.input.cwd, 'previous-gemini-copy');
-    const run = async (integration: typeof item.integration, target: typeof item.target, command: 'install' | 'sync') => {
-      const preparation = await prepareRebuildOperation({ command, target, driver: integration.driver });
-      expect(preparation.status, JSON.stringify(preparation)).toBe('ready');
-      if (preparation.status !== 'ready') throw new Error('Expected a ready native deployment.');
-      return executeRebuildOperation({ command, target, driver: integration.driver, preparation: preparation.preparation });
-    };
-    const prepareSync = async () => {
-      await item.context.platformRebuildSession!.dispose();
-      item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
-      const integration = createRebuildIntegration({ context: item.context });
-      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
-      await integration.sealMarketplaceGenerations([target]);
-      return { integration, target };
-    };
-    try {
-      const initial = await run(item.integration, item.target, 'install');
-      expect(initial.status, JSON.stringify(initial)).toBe('succeeded');
-      await fs.copy(installed, previousCopy);
-      await fs.outputFile(path.join(item.root, 'skills/check/SKILL.md'), '---\nname: check\ndescription: Check evidence.\n---\nRevision 3.\n');
-      if (scenario === 'data guard') await fs.outputFile(path.join(installed, '.env'), 'PRIVATE_SETTING=retain\n');
-      if (scenario === 'native postcheck') item.reads.geminiInstallSource = () => previousCopy;
-      const changed = await prepareSync();
-      const changedResult = await run(changed.integration, changed.target, 'sync');
-      if (scenario === 'legacy copy') {
-        expect(changedResult.status, JSON.stringify(changedResult)).toBe('succeeded');
-        await fs.remove(installed);
-        await fs.copy(previousCopy, installed);
-      } else {
-        expect(changedResult.status, JSON.stringify(changedResult)).toBe('failed');
-        expect(changedResult.deploymentReceipts?.flatMap((receipt) => receipt.diagnostics)).toContainEqual(expect.objectContaining({
-          code: scenario === 'data guard' ? 'nativeRefreshDataUnconfirmed' : 'nativeInstallContentPostcheckFailed',
-        }));
-        if (scenario === 'data guard') {
-          const unchangedSource = await prepareSync();
-          expect(unchangedSource.target.platformDeployment!.plans[0]!.evidence.contentMatches).toBe(true);
-          expect(unchangedSource.target.platformDeployment!.deployments[0]!.driverState.before.nativePackageContentDigest).toBeUndefined();
-          expect(unchangedSource.target.platformDeployment!.plans[0]!.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
-          item.runner.mockClear();
-          const blocked = await run(unchangedSource.integration, unchangedSource.target, 'sync');
-          expect(blocked.status, JSON.stringify(blocked)).toBe('failed');
-          expect(blocked.deploymentReceipts?.flatMap((receipt) => receipt.diagnostics)).toContainEqual(expect.objectContaining({ code: 'nativeRefreshDataUnconfirmed' }));
-          expect(item.runner.mock.calls.filter(([invocation]) => !item.inventories.includes(invocation.args.join(' ')))).toEqual([]);
-          expect(await fs.readFile(path.join(installed, '.env'), 'utf8')).toBe('PRIVATE_SETTING=retain\n');
-          await fs.remove(path.join(installed, '.env'));
-        }
-        item.reads.geminiInstallSource = undefined;
-      }
-      const retry = await prepareSync();
-      const plan = retry.target.platformDeployment!.plans[0]!;
-      expect(plan.evidence.contentMatches).toBe(true);
-      expect(plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
-      item.runner.mockClear();
-      const recovered = await run(retry.integration, retry.target, 'sync');
-      expect(recovered.status, JSON.stringify(recovered)).toBe('succeeded');
-      expect(item.runner.mock.calls.filter(([invocation]) => !item.inventories.includes(invocation.args.join(' '))).map(([invocation]) => invocation.args)).toEqual([
-        ['extensions', 'uninstall', item.layout.nativeIdentity.packageId],
-        ['extensions', 'install', item.layout.packageRoot, '--consent', '--skip-settings'],
-      ]);
-      const bundle = plan.projections.find((projection) => projection.bundle)!.bundle!;
-      expect(recovered.deploymentReceipts?.[0]?.after.nativePackageContentDigest).toBe(bundle.contentDigest);
-      const relativeOutput = plan.projections.flatMap((projection) => projection.components)[0]!.relativeOutputs[0]!;
-      expect(await fs.readFile(path.join(installed, relativeOutput), 'utf8')).toContain('Revision 3.');
-      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!, { refresh: true });
-    } finally { await item.context.platformRebuildSession!.dispose(); }
-  });
-
   // Test Value Gate: only the creator may reuse its just-read client discovery.
   // Every local/native observation and every cached call stays fresh.
-  it.each(['gemini', 'pi'] as const)('keeps first-build %s observations fresh while reusing only discovery', async (platform) => {
-    const item = await nativeEvidenceFixture(platform);
+  it('keeps first-build Pi observations fresh while reusing only discovery', async () => {
+    const item = await nativeEvidenceFixture('pi');
     try {
       expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(2);
       expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(3);
@@ -549,35 +433,6 @@ describe('native evidence checks', () => {
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
-  // Test Value Gate: actual native-copy bytes are outside the AW source paths.
-  it('rereads Gemini native-copy bytes in the initial return check', async () => {
-    const item = await nativeEvidenceFixture('gemini');
-    try {
-      const installed = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
-      expect(installed.status).toBe('succeeded');
-      const relative = item.target.platformDeployment!.plans[0]!.projections.flatMap((projection) => projection.components)[0]!.relativeOutputs[0]!;
-      const copy = path.join(geminiExtensionPaths({ cwd: item.input.cwd, env: item.context.env }).root,
-        item.layout.nativeIdentity.packageId, relative);
-      const original = await fs.readFile(copy, 'utf8');
-      let prepared = 0;
-      const adapter: typeof item.adapter = { ...item.adapter, lifecycle: { ...item.adapter.lifecycle,
-        prepare(input) {
-          const result = item.adapter.lifecycle.prepare(input);
-          if (++prepared === 1) fs.writeFileSync(copy, `${original}\nChanged native copy.`);
-          return result;
-        },
-      } };
-      await item.context.platformRebuildSession!.dispose();
-      item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => adapter);
-      item.runner.mockClear();
-      const integration = createRebuildIntegration({ context: item.context });
-      await expect(integration.buildTarget({ ...item.input, command: 'sync' })).rejects.toThrow('operationPlanStale');
-      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
-      expect(await fs.readFile(copy, 'utf8')).toContain('Changed native copy.');
-    } finally { await item.context.platformRebuildSession!.dispose(); }
-  });
-
   // Test Value Gate: waiting on the creator does not consume its private checker.
   it('keeps a concurrent cache hit independently fresh', async () => {
     const item = await nativeEvidenceFixture('pi');
@@ -611,7 +466,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: first installs and installed syncs need one fresh execution
   // check, while receipt observation, mutation rebase and postcheck stay fresh.
-  it.each(['gemini', 'copilot', 'pi'] as const)('checks fresh %s evidence once before first install and installed sync', async (platform) => {
+  it.each(['copilot', 'pi'] as const)('checks fresh %s evidence once before first install and installed sync', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     let discovery = 0;
     let inspection = 0;
@@ -899,7 +754,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: slow CLI identity and inventory reads may overlap only
   // within one check. Each verification must finish both fresh reads.
-  it.each(['gemini', 'copilot', 'pi'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
+  it.each(['copilot', 'pi'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     const gates: ReturnType<typeof evidenceReadGate>[] = [];
     let pending: Promise<void> | undefined;
@@ -929,7 +784,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: concurrent failures must not hide immutable staleness or
   // return before the other native read has completed.
-  it.each(['gemini', 'copilot', 'pi'] as const)('waits for both %s reads and preserves stale and immutable error priority', async (platform) => {
+  it.each(['copilot', 'pi'] as const)('waits for both %s reads and preserves stale and immutable error priority', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     const discovery = evidenceReadGate();
     const inspection = evidenceReadGate();

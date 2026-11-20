@@ -44,28 +44,6 @@ describe('public domain result projection', () => {
       .toEqual({ reasonCode: 'ownerHeaderPathValidation' });
   });
 
-  it('binds a manual Gemini permission check to the frozen source and workspace', () => {
-    const subject = { pluginId: 'team/demo', target: 'gemini', scope: 'project' as const };
-    const actions = inventoryRecoveryActions([
-      { code: 'nativeConsentProtocolUnconfirmed', subject: { ...subject, field: 'nativeSource' },
-        detail: { reasonCode: 'geminiNativeConsentSource', path: '/home/example/frozen-source' } },
-      { code: 'nativeConsentWorkspace', subject: { ...subject, field: 'workspace' },
-        detail: { reasonCode: 'geminiNativeConsentWorkspace', path: '/home/example/project' } },
-      { code: 'nativeConsentActivationConfig', subject: { ...subject, scope: 'user', field: 'activationConfig' },
-        detail: { reasonCode: 'geminiNativeConsentActivationConfig', path: '/other-home/.gemini/extensions/extension-enablement.json', configKey: 'demo' } },
-      { code: 'nativeConsentActivationConfig', subject: { ...subject, field: 'activationConfig' },
-        detail: { reasonCode: 'geminiNativeConsentActivationConfig', path: '/home/example/.gemini/extensions/extension-enablement.json', configKey: 'demo' } },
-    ]);
-    expect(actions).toHaveLength(1);
-    const output = JSON.stringify(actions);
-    expect(output).toContain('/home/example/frozen-source');
-    expect(output).toContain('/home/example/project');
-    expect(output).toContain('/home/example/.gemini/extensions/extension-enablement.json');
-    expect(output).not.toContain('/other-home');
-    expect(output).toContain('Review each host permission yourself');
-    expect(output).not.toContain('--consent');
-  });
-
   it('retains self-check observations and requirement derivation facts', () => {
     const observations = [{ code: 'aw-command-detected', blocking: false, path: 'SKILL.md', provenance: 'shell-fence', command: 'aw dev review inspect', capability: 'aw.review-inspection.v3', message: 'Detected an AW command.', backend: { secret: 'hidden' } }];
     const result = projectReceipt('self.check', { ok: false, awVersion: '1', coreVersion: '1', source: { kind: 'manifest', path: '/workspace/plugin.json' }, plugin: { name: 'demo', version: '1.0.0' }, requiredCapabilities: ['future'], missingCapabilities: ['future'], capabilitySetDigest: 'digest', observations });

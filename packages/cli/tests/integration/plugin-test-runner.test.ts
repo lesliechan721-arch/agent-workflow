@@ -819,7 +819,7 @@ describe('plugin script test runner', () => {
 
     expect(exitCode).toBe(1);
     expect(output.readStdout()).toBe('');
-    expect(output.readStderr()).toContain('--platform must be one of: codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic, both.');
+    expect(output.readStderr()).toContain('--platform must be one of: codex, claude, antigravity, cursor, opencode, pi, copilot, grok, generic, both.');
     expect(output.readStderr()).not.toContain('auto');
   });
 

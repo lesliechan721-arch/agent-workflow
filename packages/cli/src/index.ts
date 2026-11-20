@@ -5,7 +5,7 @@ import { preparePublicConfigConfirmation } from './commands/public-config-confir
 import { createPublicCommandInterruption } from './commands/public-interruption.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
 import { projectReceipt } from './output/receipt-projection.js';
-import { geminiNativeConsentDiagnostic } from './output/native-consent.js';
+import { SKILL_INVOCATION_NOTICE } from './utils/skill-invocation-warning.js';
 import { runPublicLifecycle } from './commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from './commands/public-plugin-query.js';
 import fs from 'node:fs';
@@ -280,7 +280,6 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueStdin?: boolean;
   preset?: string;
   yes?: boolean;
-  nativeConsent?: boolean;
   apply?: boolean;
   scriptTimeout?: string;
 }
@@ -780,10 +779,8 @@ function writeConfigApplyNotice(
     apply: import('./types.js').ConfigApplyResult;
     otherProjectsMayRequireSync: boolean;
     warnings: string[];
-    nativeConsent?: boolean;
   },
 ): void {
-  if (receipt.nativeConsent) writeLine(write, geminiNativeConsentDiagnostic().message);
   const sanitizeMessage = (message: string): string => redactString(message)
     .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
     .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
@@ -2405,11 +2402,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file');
   const configMutation = (command: Command): Command => configCommand(command)
     .option('--apply', 'refresh existing affected outputs after saving', false)
-    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .option('-y, --yes', 'confirm reviewed output changes', false);
   const configContext = async (context: CliExecutionContext, rawOptions: RawConfigOptions, apply = rawOptions.apply === true) => {
-    if (rawOptions.nativeConsent && !apply) throw new WriteCommandRequestError('--native-consent requires --apply or config apply.');
     const requested = rawOptions.context === undefined ? apply ? undefined : 'user'
       : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
     const work = await resolveWorkContext({ cwd: context.cwd, context: requested });
@@ -2549,20 +2544,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const confirmation = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
               context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
               nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest } })
               : { required: false, provided: rawOptions.yes === true, effects: [] };
             const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
               scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
               cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
                 ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) },
               awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
               apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
-              ...writeReceipt, confirmation, nativeConsent: rawOptions.nativeConsent === true, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
               pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
               context: work, platform: platform ?? 'common',
               ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
@@ -2605,7 +2600,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
               context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
               nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+              rebuildRuntime: { ...context, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
               sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
             return { ...receipt, confirmation };
           } });
@@ -2618,7 +2613,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             return resetStore(null, error instanceof Error ? error : new Error(String(error)));
           }
         });
-        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt, nativeConsent: rawOptions.nativeConsent === true,
+        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
           ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
           context: work, platform: platform ?? 'common' });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
@@ -2632,7 +2627,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   contextualCommand(config.command('apply').argument('<plugin>'))
     .option('--target <target>', 'limit existing-output refresh to this platform target', collectUniqueOption)
-    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .action(async (selector: string, rawOptions: RawConfigOptions) => {
@@ -2645,11 +2639,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           return { confirmation, ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
-            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
           command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
           context: work,
         }; }, true));
-      const result = buildConfigMutationReceipt('config:apply', { ...receipt, nativeConsent: rawOptions.nativeConsent === true,
+      const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
       else {
@@ -2789,8 +2783,7 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
       .option('--delete-config', 'Delete all local plugin configuration')
       .option('--keep-dependencies', 'Keep orphan dependency output during normal removal')
       .option('--force', 'Bypass the dependency guard; with --only outputs, recover provably owned damaged output');
-    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout')
-      .option('--native-consent', 'Authorize this Gemini operation; may persist source-folder and current-workspace trust');
+    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout');
     if (name === 'sync') cmd.option('--rebuild', 'Rebuild selected owned output').option('--refresh', 'Refresh required Catalog sources');
     cmd.action(async (plugins: string[], raw: Record<string, unknown>) => {
       io.result?.(await runPublicLifecycle(name, plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context(`plugin.${name}`, raw)));
@@ -2969,7 +2962,7 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
       }
     }
     io.stdout(json ? `${JSON.stringify(result)}\n` : renderPublicResult(result, awArgs.includes('--verbose') || awArgs.includes('-v')));
-    for (const diagnostic of result.diagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
+    for (const diagnostic of result.diagnostics) if (json || diagnostic.code !== SKILL_INVOCATION_NOTICE) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
     if (options.diagnostics?.verbose || awArgs.includes('--verbose')) for (const line of stderr) io.stderr(`${safePublicMessage(line.trim())}\n`);
     return interruption.cleanupFailed ? 1 : interruption.exitCode ?? publicExitCode(result, invalid);
   };

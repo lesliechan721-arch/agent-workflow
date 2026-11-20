@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { isPortablePlatformTarget, PORTABLE_PLATFORM_TARGETS, type ComponentUnmet } from '@lesliechan721/aw-plugin-core';
+import { getPlatformFeatureRegistry, isSkillInvocationFeature, type FeatureRequirement } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
@@ -8,7 +9,8 @@ import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import { mapInstallReads, type InstallAdmission } from '../recovery/install-concurrency.js';
 import type { ScopeContext } from '../intent/scope-context.js';
-import { validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
+import { parsePortableSkillFrontmatter, validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
+import { skillInvocationWarning } from '../utils/skill-invocation-warning.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { materializePortableSkillsToDirectory } from './commands.js';
 import { resolvePortableCatalogBindingInput } from './materializer.js';
@@ -50,6 +52,7 @@ export interface PortableTarget {
   blocker?: string;
   ownerIdentity?: PortableOwnerIdentity;
   observationEvidence?: PortableSkillObservation;
+  invocationWarning?: RecoveryDiagnostic;
 }
 export function normalizePortableSkillName(name: string): string {
   validatePortableSkillName(name);
@@ -125,6 +128,7 @@ export class PortableInterruptedError extends Error {
 }
 
 export interface CompletedPortableFootprint {
+  disposition: 'write' | 'remove';
   configDigest?: string;
   evidenceDigest: string;
   physicalPath: string;
@@ -212,7 +216,8 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       const { providerConfigs = [], ...bindingInput } = await resolvePortableCatalogBindingInput({
         ...options, platform: agent, cwd: layout.cwd, catalogReadScope });
       const generation = path.join(layout.generationRoot, portableJsonDigest(options.selector).slice(7),
-        portableJsonDigest({ platform: agent, bindingInput }).slice(7));
+        // Earlier generations could omit Skills whose invocation preferences had no executor.
+        portableJsonDigest({ platform: agent, bindingInput, skillInvocation: 'advisory' }).slice(7));
       base.generations![agent] = generation;
       if (!base.generation) base.generation = generation;
       stage = 'generation-path';
@@ -261,9 +266,22 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       if (new Set(candidates.map((candidate) => normalizePortableSkillName(candidate.name))).size !== candidates.length) {
         base.globalBlockers.push('portableOutputConflict'); continue;
       }
+      const invocationWarnings = new Map<string, RecoveryDiagnostic>();
       for (const candidate of candidates) {
         const source = path.join(generation, 'skills', candidate.name);
-        await validatePortableSkillDirectory(source);
+        const tree = await validatePortableSkillDirectory(source);
+        const { metadata } = parsePortableSkillFrontmatter(tree.files['SKILL.md']!.toString('utf8'));
+        if (metadata && typeof metadata === 'object') {
+          const requested = Object.entries(metadata).flatMap(([feature, value]): FeatureRequirement[] => {
+            if (!isSkillInvocationFeature(feature) || typeof value !== 'string') return [];
+            const values = value ? value.split(',') : [];
+            if (values.some((entry) => !getPlatformFeatureRegistry()[feature]?.values?.includes(entry))) return [];
+            return [{ feature, ...(values.length ? { values } : {}) }];
+          });
+          const warning = skillInvocationWarning(candidate.name, requested,
+            { pluginId: candidate.providerPluginId, target: agent, scope: options.scope });
+          if (warning) invocationWarnings.set(candidate.name, warning);
+        }
         await validateRuntimeSkillClosure(source);
       }
       stage = 'output-observation';
@@ -275,6 +293,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         const observed = await observePortableSkill({ destinationRoot: layout.targetRoot(agent),
           skill: candidate.name, identity, expectedDigest: candidate.filesDigest, configDigest });
         base.targets.push({ ...fromObservation(observed, agent, candidate.providerPluginId, candidate.filesDigest),
+          ...(invocationWarnings.has(candidate.name) ? { invocationWarning: invocationWarnings.get(candidate.name) } : {}),
           configDigest, sourcePath: path.join(generation, 'skills', candidate.name), ownerIdentity: identity, disposition: 'write',
           // A complete matching identity is sufficient to repair damaged weak metadata.
           ...(observed.blocker === 'portableOwnerDamaged' ? { blocker: undefined } : {}) });
@@ -282,7 +301,9 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       const providers = new Set([materialized.marker.plugin.id, ...materialized.marker.dependencies]
         .filter((pluginId) => !options.excludedPluginIds?.includes(pluginId)));
       const installed = await scanPortableSkills({ destinationRoot: layout.targetRoot(agent), platform: agent,
-        scope: options.scope, signal: options.signal });
+        scope: options.scope, signal: options.signal, checkContent: (owner) => owner.logicalIdentity === base.logicalIdentity
+          && providers.has(owner.pluginId) && !candidates.some((candidate) => candidate.name === owner.skill
+            && candidate.providerPluginId === owner.pluginId) });
       for (const observed of installed.targets) {
         const owner = observed.owner ?? observed.recoverableIdentity;
         if (!owner || !providers.has(owner.pluginId) || owner.logicalIdentity !== base.logicalIdentity
@@ -366,20 +387,31 @@ export async function preparePortableCleanup(options: PortableCleanupOptions): P
 }
 
 function matchesCompleted(footprint: CompletedPortableFootprint, logicalIdentity: string, target: PortableTarget): boolean {
-  return footprint.logicalIdentity === logicalIdentity && footprint.physicalPath === target.physicalPath
+  return footprint.disposition === target.disposition && footprint.logicalIdentity === logicalIdentity && footprint.physicalPath === target.physicalPath
     && footprint.providerPluginId === target.providerPluginId && footprint.expectedDigest === target.expectedDigest
     && footprint.configDigest === target.configDigest;
 }
 
-export function portableReviewMatches(prepared: PortablePreparation, current: PortablePreparation,
-  completed: readonly CompletedPortableFootprint[] = []): boolean {
+export async function portableReviewMatches(prepared: PortablePreparation, current: PortablePreparation,
+  completed: readonly CompletedPortableFootprint[] = []): Promise<boolean> {
   if (prepared.evidenceDigest === current.evidenceDigest) return true;
-  const acceptedPaths = new Set(current.targets.filter((target) => target.disposition !== 'remove'
+  const acceptedPaths = new Set(current.targets.filter((target) => target.disposition === 'write'
     && target.observation === 'satisfied' && target.ownership === 'aw' && completed.some((footprint) =>
       matchesCompleted(footprint, current.logicalIdentity, target) && footprint.evidenceDigest === target.observationEvidence?.evidenceDigest
-      && prepared.targets.some((expected) => expected.disposition === target.disposition
-        && matchesCompleted(footprint, prepared.logicalIdentity, expected))))
+      && prepared.targets.some((expected) => matchesCompleted(footprint, prepared.logicalIdentity, expected))))
     .map((target) => target.physicalPath));
+  const retired = prepared.targets.filter((target) => target.disposition === 'remove'
+    && !current.targets.some((live) => live.physicalPath === target.physicalPath));
+  for (const target of retired) {
+    const footprint = completed.find((entry) => matchesCompleted(entry, prepared.logicalIdentity, target));
+    if (!footprint) continue;
+    // A scan omits foreign entries. The exact retired path must still be absent.
+    const observed = await observePortableSkill({ destinationRoot: path.dirname(target.physicalPath),
+      skill: target.skill, identity: target.ownerIdentity });
+    if (observed.observation === 'absent' && observed.evidenceDigest === footprint.evidenceDigest) {
+      acceptedPaths.add(target.physicalPath);
+    }
+  }
   if (!acceptedPaths.size) return false;
   const unchanged = (value: PortablePreparation) => portableJsonDigest({
     binding: value.bindingDigest, targets: value.targets.filter((target) => !acceptedPaths.has(target.physicalPath)),
@@ -432,7 +464,7 @@ export async function executePortableRecovery(options: {
       if (options.checkPrewrite) return options.checkPrewrite();
       const current = cleanup ? await preparePortableCleanup(prepared.cleanupOptions!)
         : await collectPreparation({ ...prepared.options, signal, catalogOperationContext: undefined }, false);
-      if (!portableReviewMatches(prepared, current, progress.completed)) {
+      if (!await portableReviewMatches(prepared, current, progress.completed)) {
         return { code: 'operationReviewStale', message: 'Portable review inputs changed.' };
       }
     };
@@ -481,19 +513,19 @@ export async function executePortableRecovery(options: {
         const outcome = { ...target, ...fromObservation(after, target.agent, target.providerPluginId, target.expectedDigest),
           execution, blockers };
         if (execution === 'failed') progress.failed.push({ logicalIdentity: prepared.logicalIdentity, outcome });
-        else if (!removal && after.observation === 'satisfied' && after.ownership === 'aw') {
+        else if (removal ? after.observation === 'absent' : after.observation === 'satisfied' && after.ownership === 'aw') {
           progress.completed.push({ physicalPath: target.physicalPath, expectedDigest: target.expectedDigest,
             configDigest: target.configDigest, providerPluginId: target.providerPluginId, logicalIdentity: prepared.logicalIdentity,
-            evidenceDigest: after.evidenceDigest });
+            evidenceDigest: after.evidenceDigest, disposition: removal ? 'remove' : 'write' });
         }
         return outcome;
       };
       try {
         const completed = progress.completed.find((footprint) => matchesCompleted(footprint, prepared.logicalIdentity, target));
-        if (!removal && (completed || target.observation === 'satisfied' && options.action !== 'reinstall')) {
+        if (completed || !removal && target.observation === 'satisfied' && options.action !== 'reinstall') {
           const after = await observe();
           if (after.evidenceDigest !== (completed?.evidenceDigest ?? target.observationEvidence.evidenceDigest)
-            || after.observation !== 'satisfied') return stale(target);
+            || after.observation !== (removal ? 'absent' : 'satisfied')) return stale(target);
           return record(after, 'no-op', []);
         }
         outputsMayHaveChanged = true;

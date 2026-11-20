@@ -13,7 +13,7 @@ aw plugin install agent-subagent --scope user
 
 Codex 支持 user 和 project 安装。共享配置在个人层维护，项目安装复用个人配置。Claude Code 的独立子代理上下文、提示词组合和安装态配置读取仍待验证。
 
-Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供通用角色。没有取得受控命令和安装态配置运行闭包资格的平台，调度 Skill 显示依赖未满足。Pi 使用用户已有且启用的兼容角色消费者；本插件只提供声明，不安装或替换执行器、不注册执行工具。`generic` 不提供原生角色。
+Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供通用角色。没有取得受控命令和安装态配置运行闭包资格的平台，调度 Skill 显示依赖未满足。Pi 使用用户已有且启用的兼容角色消费者；本插件只提供声明，不安装或替换执行器、不注册执行工具。`generic` 不提供原生角色。
 
 ## 包含的 Skill
 
@@ -33,7 +33,7 @@ Codex、Claude Code、Antigravity 可设置 permissionMode：default（默认）
 
 每个执行器的 communication 和 resume 缺省 true，分别请求通信与恢复能力，实际以本次回执为准，两者独立。关闭通信但保留恢复合法。communication 设置 false 后不建立 AW 通讯桥，不注入其工具、说明或自动父输入，仍检查所选 CLI 环境并应用权限模式，任务、wait/result/stop 及最终结果仍可用。用户已有工具和 MCP 继续由后端管理。开启只表示意图，实际能力由本次回执确定。Antigravity 在环境、桥、必要权限和原生工具准备成功后启用命令通讯；条件不满足时报告具体错误。本机消息发送证据不代表其它平台或账户均已验证。
 
-Antigravity 开启通讯且实际非完整权限时，会按需向用户的 `~/.gemini/antigravity-cli/settings.json` 追加当前 Node + 已安装通讯脚本的精确 allow。规则可跨 run 复用，重复运行去重；任务失败、停止、重装或卸载均不自动删除，旧路径规则也保留。它是用户级许可；每个 run 仍由私有 binding 隔离通道。已有配置、Ask/Deny/strict 保留，配置错误或明确拒绝时失败；不扩大为任意 Node/终端授权。用户可在 agy 权限设置中移除规则。通讯提示优先推荐单命令直接发送；组合管道或shell包装可能因额外权限要求失败，不为此扩大许可或自动切换完整权限。实际资源或沙箱访问错误仍照实报告。
+Antigravity 开启通讯且实际非完整权限时，AW 读取用户的 CLI 权限设置，把既有 Allow 和仅匹配已安装 AW 通讯命令的规则写入本次会话的私有设置文件。规则随本次 agy 进程退出而失效，已有 Ask、Deny 和 strict 策略照常生效。配置损坏、命令被拒绝或沙箱无法访问通讯资源时，AW 会报告原因。通讯使用单条命令直接发送，组合管道或 shell 包装可能需要额外权限。
 
 Oracle 可直接选择 oracleEngine=browser/api，界面推荐 browser；省略引擎时继续沿用 Oracle，但设置 reasoningEffort 后必须明确选择。浏览器将 low/medium/high/xhigh 转换为 light/standard/extended/extra-high，并支持新增的 pro 预设；max/ultra 没有浏览器映射。浏览器登录和实际档位由 Oracle 管理。专用字段与 args 中的同类参数重复时会提示修正。
 

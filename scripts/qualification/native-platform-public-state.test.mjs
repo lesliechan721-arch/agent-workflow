@@ -93,12 +93,12 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
   const entry = path.join(root, 'acquired-entry');
   await fs.writeFile(entry, 'isolated client fixture');
   const clientBin = path.join(root, 'private-bin');
-  const ctx = { root, clientBin, platform: 'gemini', env: { PATH: '/unrelated/client-bin' },
+  const ctx = { root, clientBin, platform: 'claude', env: { PATH: '/unrelated/client-bin' },
     launcher: { executable: process.execPath, prefix: [entry] } };
   assert.equal(await preparePublicClientPath(ctx), entry);
   assert.deepEqual(ctx.env.PATH.split(path.delimiter), [clientBin, path.dirname(process.execPath),
     '/usr/bin', '/bin', '/usr/sbin', '/sbin']);
-  assert.equal(await fs.realpath(path.join(clientBin, 'gemini')), entry);
+  assert.equal(await fs.realpath(path.join(clientBin, 'claude')), entry);
 });
 
 // Test Value Gate: batch discovery must preserve both acquisition prefixes,

@@ -52,8 +52,6 @@ export interface ReadContext {
   codexObservationSession?: import('../utils/codex-native-observation.js').CodexNativeObservationSession;
   /** Ordinary observations in one read-only phase. Never pass into independent checks or writes. */
   nativeQuerySession?: import('./inspection-query.js').NativeQuerySession;
-  /** Optional private session directory for native Node code compilation. */
-  nativeNodeCompileCacheDir?: () => Promise<string>;
   /** Explicit status observation may start a supported native app-server or private local server. */
   observeNative?: boolean;
   /** Isolated filesystem boundary for App discovery tests. */
@@ -69,7 +67,7 @@ export interface TargetAvailabilityView extends DiscoveryResult {
 }
 export const TARGET_DISPLAY_NAMES = {
   codex: 'Codex', claude: 'Claude Code', cursor: 'Cursor', antigravity: 'Antigravity',
-  opencode: 'OpenCode', pi: 'Pi', gemini: 'Gemini CLI', copilot: 'GitHub Copilot CLI',
+  opencode: 'OpenCode', pi: 'Pi', copilot: 'GitHub Copilot CLI',
   grok: 'Grok Build', generic: 'Generic',
 } as const satisfies Record<PlatformTarget, string>;
 const cliProfiles = {
@@ -80,7 +78,6 @@ const cliProfiles = {
   pi: { names: ['pi'], minimum: '1.0.0',
     identity: /(?:pi coding agent|pi-coding-agent)|^pi - AI coding assistant with read, bash, edit, write tools\r?$/imu,
     packageName: '@earendil-works/pi-coding-agent' },
-  gemini: { names: ['gemini'], minimum: '0.63.0', identity: /Gemini(?: CLI)?/iu, packageName: '@google/gemini-cli' },
   copilot: { names: ['copilot'], minimum: '1.0.95', identity: /(?:GitHub Copilot|Copilot CLI)/iu, packageName: '@github/copilot' },
   grok: { names: ['grok'], identity: /\bgrok\b/iu, packageName: '@xai-official/grok' },
 } as const;
@@ -96,7 +93,6 @@ export function platformVersionSupported(platform: PlatformTarget, version: stri
   return compareStrictSemVer(version, minimum) >= 0;
 }
 const MAX_PROBE_OUTPUT_BYTES = 1024 * 1024;
-const GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS = 10_000;
 
 function diagnostic(platform: PlatformTarget, code: string, message: string): Diagnostic {
   return { code, severity: 'warning', message, subject: { target: platform } };
@@ -114,11 +110,6 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
   const home = resolveUserHome(env, ctx.platform ?? process.platform);
   if (platform === 'codex') return getCodexHome(env, ctx.platform);
   if (platform === 'claude') return getClaudeHome(env, ctx.platform);
-  if (platform === 'gemini') {
-    const root = readEnvironmentValue(env, 'GEMINI_CLI_HOME', ctx.platform) ?? home;
-    if (!path.isAbsolute(root) || root.includes('\0')) throw new Error('clientConfigRootInvalid');
-    return path.join(root, '.gemini');
-  }
   if (platform === 'grok') {
     const root = readEnvironmentValue(env, 'GROK_HOME', ctx.platform) ?? path.join(home, '.grok');
     if (!path.isAbsolute(root) || root.includes('\0')) throw new Error('clientConfigRootInvalid');
@@ -153,10 +144,10 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
   }
   return path.join(home, platform === 'antigravity' ? '.gemini/config' : `.${platform}`);
 }
-async function probe(ctx: ReadContext, command: string, args: string[], timeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS): Promise<string> {
+async function probe(ctx: ReadContext, command: string, args: string[]): Promise<string> {
   ctx.signal?.throwIfAborted();
   const result = await runNativeCli({ command, args, cwd: ctx.cwd, env: ctx.env,
-    signal: ctx.signal, timeoutMs }, ctx.runner);
+    signal: ctx.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
   if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > MAX_PROBE_OUTPUT_BYTES) {
     throw new Error('probeFailed');
   }
@@ -208,16 +199,13 @@ export async function installationInvocation(product: ProductInstallation, ctx: 
 }
 
 /** Metadata binds the declared version and npm bin to this JS entry; native probes remain required. */
-export async function npmCliEntryIdentity(ctx: ReadContext, invocation: NativeCliInvocation,
-  platform: 'gemini' | 'pi', versionOutput: string, requiredBin?: string): Promise<boolean> {
+async function isPinnedPiEntry(ctx: ReadContext, invocation: NativeCliInvocation, version: string): Promise<boolean> {
   const entry = invocation.command === process.execPath ? invocation.args[0] : undefined;
-  const version = versionOutput.trim();
-  if (!entry || !path.isAbsolute(entry) || !entry.endsWith('.js')
-    || extractStrictSemVerTokenFromVersionOutput(version) !== version) return false;
+  const requiredBin = 'dist/bundle/cli.js';
+  if (version !== '1.5.0' || !entry || !path.isAbsolute(entry) || !entry.endsWith('.js')) return false;
   try {
     const actualEntry = await fs.realpath(entry);
-    // Gemini entries use at most two levels. The fixed Pi bundle uses three.
-    const levels = requiredBin?.split('/').length ?? 2;
+    const levels = requiredBin.split('/').length;
     let root = path.dirname(actualEntry);
     for (let depth = 0; depth < levels; depth += 1, root = path.dirname(root)) {
       const file = await containedFile(root, path.join(root, 'package.json'));
@@ -225,31 +213,14 @@ export async function npmCliEntryIdentity(ctx: ReadContext, invocation: NativeCl
       const metadata: unknown = JSON.parse(await smallText(file));
       if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
       const pkg = metadata as { name?: unknown; version?: unknown; bin?: unknown };
-      if (pkg.name !== cliProfiles[platform].packageName || pkg.version !== version
+      if (pkg.name !== cliProfiles.pi.packageName || pkg.version !== version
         || !pkg.bin || typeof pkg.bin !== 'object' || Array.isArray(pkg.bin)) return false;
-      const bin = (pkg.bin as Record<string, unknown>)[platform];
-      if (typeof bin !== 'string' || path.isAbsolute(bin)) return false;
-      const parts = bin.replace(/^\.\//u, '').split(/[/\\]/u);
-      if (!parts.length || parts.some((part) => !part || part === '.' || part === '..')) return false;
-      if (requiredBin && parts.join('/') !== requiredBin) return false;
-      return await containedFile(root, path.join(root, ...parts)) === actualEntry;
+      const bin = (pkg.bin as Record<string, unknown>).pi;
+      if (typeof bin !== 'string' || bin.replace(/^\.\//u, '').replaceAll('\\', '/') !== requiredBin) return false;
+      return await containedFile(root, path.join(root, requiredBin)) === actualEntry;
     }
   } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
   return false;
-}
-
-/** Used only after the fixed Gemini read-only npm entry has been confirmed. */
-export async function geminiReadOnlyProbeEnv(ctx: ReadContext, env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
-  const probeEnv: NodeJS.ProcessEnv = { ...env, GEMINI_CLI_NO_RELAUNCH: 'true' };
-  if ((ctx.platform ?? process.platform) !== 'darwin' || !ctx.nativeNodeCompileCacheDir
-    || env.NODE_COMPILE_CACHE !== undefined || env.NODE_DISABLE_COMPILE_CACHE !== undefined) return probeEnv;
-  try {
-    ctx.signal?.throwIfAborted();
-    const directory = await ctx.nativeNodeCompileCacheDir();
-    ctx.signal?.throwIfAborted();
-    probeEnv.NODE_COMPILE_CACHE = directory;
-  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
-  return probeEnv;
 }
 
 async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext): Promise<DiscoveryResult> {
@@ -263,17 +234,9 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
-      const directGeminiVersion = platform === 'gemini' && await npmCliEntryIdentity(ctx, invocation, 'gemini', '0.67.0', 'bundle/gemini.js');
-      // Fixed 0.67.0 otherwise loads the CLI twice by relaunching Node. Keep
-      // this environment override local to its actual version probe.
-      const versionContext = directGeminiVersion
-        ? { ...ctx, env: await geminiReadOnlyProbeEnv(ctx, invocation.env ?? process.env) } : ctx;
-      const versionOutput = await probe(versionContext, invocation.command, invocation.args,
-        directGeminiVersion ? GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
+      const versionOutput = await probe(ctx, invocation.command, invocation.args);
       if (!profile.identity.test(versionOutput)
-        && !(platform === 'gemini' && await npmCliEntryIdentity(ctx, invocation, 'gemini', versionOutput))
-        && !(platform === 'pi' && versionOutput.trim() === '1.5.0'
-          && await npmCliEntryIdentity(ctx, invocation, 'pi', versionOutput, 'dist/bundle/cli.js'))) {
+        && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
         const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
         if (!profile.identity.test(help)) {
           product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');

@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
@@ -80,6 +81,38 @@ afterEach(async () => {
 });
 
 describe('portable materializer', () => {
+  it.each(['codex', 'opencode', 'claude', 'generic'] as const)('keeps the %s manual policy and ordinary sibling within strict export', async (platform) => {
+    const root = await tempRoot('aw-portable-invocation-');
+    const plugin = await pluginFixture(root, { ...baseManifest('invocation'), platforms: [platform] });
+    await writeSkill(plugin.rootDir, 'manual');
+    await writeSkill(plugin.rootDir, 'ordinary');
+    await fs.outputFile(path.join(plugin.rootDir, 'skills/manual/SKILL.md'),
+      '---\nname: manual\ndescription: Explicit operation.\nuser-invocable: true\ndisable-model-invocation: true\n---\nRun explicitly.\n');
+    const result = await materializePortableSkills({
+      platform, plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home') },
+    });
+    try {
+      expect(result.candidates.map((entry) => entry.name)).toEqual(['manual', 'ordinary']);
+      expect(result.preparation.flatMap((unit) => unit.unmet)).toEqual([]);
+      if (platform === 'codex') {
+        expect(await fs.readFile(path.join(result.rootDir, 'skills/manual/agents/openai.yaml'), 'utf8'))
+          .toContain('allow_implicit_invocation: false');
+      } else if (platform === 'opencode') {
+        const text = await fs.readFile(path.join(result.rootDir, 'skills/manual/SKILL.md'), 'utf8');
+        expect(YAML.parse(text.split('---')[1]!).metadata['opencode/autoinvoke']).toBe('false');
+      } else {
+        const text = await fs.readFile(path.join(result.rootDir, 'skills/manual/SKILL.md'), 'utf8');
+        expect(YAML.parse(text.split('---')[1]!).metadata).toMatchObject({
+          'skill.invocation.manual': 'true', 'skill.invocation.model': 'false', 'skill.visibility': 'visible',
+        });
+        expect(text.slice(text.lastIndexOf('---') + 3)).toBe('\nRun explicitly.\n');
+      }
+    } finally {
+      await result.cleanup();
+    }
+  });
+
   it.skipIf(process.platform === 'win32').each(['static', 'missing-dependency', 'ready-dependency'] as const)(
     'prepares the installed Windows helper before renderer startup (%s)',
     async (kind) => {

@@ -21,9 +21,9 @@ import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { hasSharedUserPackage } from '../platforms/layout.js';
-import type { CheckedPortableProgress, PortablePreparation } from '../portable/recovery.js';
+import { preparePortableRecovery, type CheckedPortableProgress, type PortablePreparation } from '../portable/recovery.js';
 import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, indexJointDependencies, type DemandContribution, type JointDemandSnapshot, type JointDemandPlan, type JointPlacement } from './joint-demand.js';
-import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, canCheckPortableProvider, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
+import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import { recoveryRetryDispositions, recoveryStatusContext, retriesFromRequestedRoots, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
 import { limitInstallNativeRunner, mapInstallReads } from './install-concurrency.js';
@@ -87,7 +87,7 @@ function useDeclaredRetryRoots(receipt: RecoveryReceipt): void {
   const revise = (action: string): string[] => {
     if (/^aw plugin status --context (?:user|project) --json$/u.test(action)) return [status];
     // Only rewrite the known command at the end of a backend action. Paths and instructions preceding it stay display text.
-    const match = /aw plugin sync (\S+) (?:--context (user|project) --target ([\w-]+)|--target ([\w-]+) --context (user|project))((?: --(?:rebuild|yes|native-consent))*)([.。]?)$/u.exec(action);
+    const match = /aw plugin sync (\S+) (?:--context (user|project) --target ([\w-]+)|--target ([\w-]+) --context (user|project))((?: --(?:rebuild|yes))*)([.。]?)$/u.exec(action);
     if (!match) return [action];
     const prefix = action.slice(0, match.index);
     if (prefix && !/(?:^|\s)run $|然后重试 $/iu.test(prefix)) return [action];
@@ -541,7 +541,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       || error.code === 'targetsNotConfigured' && !options.retireUnselectedTargets)
       || !snapshot.preferences || snapshot.user.roots === null || snapshot.project?.roots === null, joint };
   const dispose = context.dispose;
-  context.dispose = async () => { await Promise.all(children.map((child) => child.context.dispose())); await dispose(); };
+  let portableUserContext: Awaited<ReturnType<typeof createScopeContext>> | undefined;
+  context.dispose = async () => {
+    await Promise.all([...children.map((child) => child.context.dispose()), portableUserContext?.dispose()]);
+    await dispose();
+  };
   if (plan.blockExecution) return plan;
   try {
     const currentStatus = observedStatus ?? await readRecoveryStatus({ ...options, catalogReadScope, ...initialNativeReads, targets: undefined }, savedDemand);
@@ -659,22 +663,9 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
             .filter((item) => item.target === target).map((item) => item.pluginId)])),
           roots: [...new Map(childPlacements.map((item) => [item.pluginId, { pluginId: item.pluginId, sourceId: item.plugin.sourceId!,
               sourceState: 'ready' as const, blockers: [], plugin: item.plugin }])).values()] };
-        const portableProviderChecks = new Map<string, PortablePreparation[]>();
-        if (command === 'sync' && currentScope === 'project' && groupTargets.includes('generic') && hasSelectedScripts) {
-          const userProviderPlans = new Map(children.filter((child) => child.options.scope === 'user')
-            .flatMap((child) => child.portableGroups.filter(canCheckPortableProvider))
-            .map((provider) => [provider.options.selector, provider]));
-          if (userProviderPlans.size) for (const consumer of placements) {
-            const checks = [...dependencyGraph.providers(consumer)].flatMap((item) => {
-              const provider = item.scope === 'user' ? userProviderPlans.get(item.pluginId) : undefined;
-              return provider ? [provider] : [];
-            });
-            if (checks.length) portableProviderChecks.set(consumer.pluginId, checks);
-          }
-        }
         const child = await prepareScopedRecovery(command === 'reinstall' ? 'reinstall' : 'sync',
           [...new Set(placements.map((item) => item.pluginId))], { ...options, scope: currentScope, targets: groupTargets, all: false,
-            sharedReferenceView, inheritedPortableProviderIds, portableProviderChecks,
+            sharedReferenceView, inheritedPortableProviderIds,
             cwd: snapshot.context.projectRoot ?? options.cwd, demandOverride: childDemand,
             exactTargets: placements.map((item) => ({ pluginId: item.pluginId, agent: item.target })),
             nativeActivationOnlyTargets: activationOnlyTargets.filter((item) => item.scope === currentScope
@@ -713,6 +704,32 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         children.splice(start, children.length - start, ...ordered.filter((child): child is RecoveryPlan => child !== undefined));
       } else for (const groupTargets of targetGroups) await prepareGroup(groupTargets);
     }
+    if (hasSelectedScripts && (batch || command === 'reinstall')) {
+      const projectPortable = children.find((child) => child.options.scope === 'project' && child.portableGroups.length);
+      const consumers = (projectPortable?.portableGroups ?? []).map((group) => ({ pluginId: group.options.selector,
+        providers: [...dependencyGraph.providers({ pluginId: group.options.selector, target: 'generic', scope: 'project' })]
+          .filter((item) => item.scope === 'user').map((item) => item.pluginId) }));
+      const required = [...new Set(consumers.flatMap((item) => item.providers))];
+      if (projectPortable && required.length) {
+        const userPortable = children.find((child) => child.options.scope === 'user' && child.options.targets?.includes('generic'));
+        const reviewed = new Map([...(userPortable?.portableProtectionGroups ?? []), ...(userPortable?.portableGroups ?? [])]
+          .map((group) => [group.options.selector, group]));
+        const providerContext = userPortable?.context ?? (portableUserContext = await createScopeContext({ ...options, scope: 'user' }));
+        // First Project install can reuse a healthy User provider without creating a User execution row.
+        await mapInstallReads(required.filter((id) => !reviewed.has(id)), async (selector) => {
+          const provider = await preparePortableRecovery({ scope: 'user', context: providerContext, selector, agents: ['generic'],
+            cliVersion: options.cliVersion, catalogOperationContext: snapshot.user.catalogOperationContext,
+            signal: options.signal }, catalogReadScope, portableGenerations);
+          delete provider.options.signal;
+          reviewed.set(selector, provider);
+        }, { signal: options.signal });
+        const checks = new Map<string, PortablePreparation[]>();
+        for (const consumer of consumers) if (consumer.providers.length) {
+          checks.set(consumer.pluginId, consumer.providers.map((id) => reviewed.get(id)!));
+        }
+        projectPortable.options.portableProviderChecks = checks;
+      }
+    }
     if (batch) for (const currentScope of snapshot.context.scopes) {
       const scoped = children.filter((child) => child.options.scope === currentScope);
       if (scoped.length < 2) continue;
@@ -747,7 +764,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         component.kind === 'ownership' && component.key !== 'native'
         && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')
         && ['present', 'partial'].includes(component.state));
-      if (item.scope !== 'project' || !item.agent || !['codex', 'claude', 'gemini', 'copilot'].includes(item.agent)) return false;
+      if (item.scope !== 'project' || !item.agent || !['codex', 'claude', 'copilot'].includes(item.agent)) return false;
       return demand.placements.some((placement) => {
         if (placement.pluginId !== item.pluginId || placement.target !== item.agent) return false;
         if (item.agent === 'codex' && scopedExtensions) {
@@ -859,11 +876,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       joint.targetOrder = order;
     }
     // The first preview already seals every target in its native group. A lone
-    // Gemini/Copilot ensure group has no later sibling contribution to refresh here.
+    // Copilot ensure group has no later sibling contribution to refresh here.
     const onlyChild = children.length === 1 ? children[0] : undefined;
     const onlyGroup = onlyChild?.nativeGroups.length === 1 ? onlyChild.nativeGroups[0] : undefined;
     const singleNativePreviewComplete = !plan.blockExecution && onlyChild !== undefined && !onlyChild.blockExecution
-      && onlyChild.command === 'sync' && (onlyGroup?.platform === 'gemini' || onlyGroup?.platform === 'copilot')
+      && onlyChild.command === 'sync' && onlyGroup?.platform === 'copilot'
       && onlyGroup.command === 'sync'
       && onlyGroup.preview.operationPlan !== undefined
       && (onlyGroup.preview.operationPlan.deploymentPlans?.length ?? 0) > 0
@@ -1076,7 +1093,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           }
           const result = await measureRecoveryPerformanceStage(runtime, 'recovery.child.execute', () =>
             executeScopedRecovery(fresh, { ...execution, runtime,
-              ...(plan.command === 'sync' && child.command === 'sync' ? { portableProgress } : {}) }));
+              ...(plan.command !== 'uninstall' && child.command !== 'cleanup' ? { portableProgress } : {}) }));
           if (joint.originalOptions.existingOnly) for (const target of result.targetResults) {
             if (!target.blockers.some((error) => error.code === 'dependencyInstallFailed')) continue;
             target.blockers = target.blockers.map((error) => error.code === 'dependencyInstallFailed'
@@ -1166,7 +1183,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
               node.dependencies.add(`${provider.pluginId}\0${provider.scope}`);
             }
           }
-          if (node.scope === 'project' && node.targets.some(({ agent }) => ['codex', 'claude', 'gemini', 'copilot'].includes(agent))
+          if (node.scope === 'project' && node.targets.some(({ agent }) => ['codex', 'claude', 'copilot'].includes(agent))
             && nodes.has(`${node.pluginId}\0user`)) node.dependencies.add(`${node.pluginId}\0user`);
           for (const dependency of node.packages?.flatMap((item) => item.dependencies) ?? []) {
             for (const provider of nodes.values()) if (provider.pluginId === dependency) node.dependencies.add(`${dependency}\0${provider.scope}`);

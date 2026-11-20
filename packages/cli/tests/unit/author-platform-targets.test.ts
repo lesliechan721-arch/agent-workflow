@@ -20,7 +20,7 @@ import { materializeAwSkillEvalSubject, resolveMaterializedSubjectRoot } from '.
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);
 
-const platforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'] as const;
+const platforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'] as const;
 
 async function fixture(): Promise<{ root: string; pluginRoot: string; env: NodeJS.ProcessEnv }> {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-platform-')));

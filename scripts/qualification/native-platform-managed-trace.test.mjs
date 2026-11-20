@@ -420,7 +420,7 @@ test('does not install by default and requires every hosted guard', async (t) =>
     { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([path.join(root, 'missing')]) },
     { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: 'relative-trace.jsonl' },
   ]) assert.equal(managedTraceConfiguration({ ...valid, ...change }, 'linux'), undefined);
-  for (const client of ['claude', 'gemini', 'copilot']) {
+  for (const client of ['claude', 'copilot']) {
     assert.equal(managedTraceConfiguration({ ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: client }, 'darwin').client, client);
   }
   assert.equal(managedTraceConfiguration(valid, 'freebsd'), undefined);

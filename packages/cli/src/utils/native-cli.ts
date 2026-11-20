@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 
 import {
   createWindowsJobInvocation,
@@ -34,16 +33,8 @@ export interface NativeCliInvocation {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   timeoutMs?: number;
-  /** Internal bounded exchange. The runner retains stdin and process ownership. */
-  input?: NativeCliInput;
   /** Internal diagnostics only. Callback failures cannot change process execution. */
   onSpawn?(child: { pid: number }): void;
-}
-
-export interface NativeCliInput {
-  initial: string;
-  onStdout(chunk: string): { write?: string; end?: true } | undefined;
-  onStderr?(chunk: string): { write?: string; end?: true } | undefined;
 }
 
 export interface CodexManager {
@@ -302,12 +293,6 @@ interface NativeCliChildProcess {
   once: (event: 'spawn' | 'exit', listener: () => void) => unknown;
   stdout?: NativeCliOutputStream | null;
   stderr?: NativeCliOutputStream | null;
-  stdin?: {
-    write: (value: string) => unknown;
-    end: () => unknown;
-    on: (event: 'error', listener: (error: Error) => void) => unknown;
-    removeListener?: (event: 'error', listener: (error: Error) => void) => unknown;
-  } | null;
 }
 
 /** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
@@ -621,7 +606,7 @@ export function createExecFileNativeCliRunner(
 
     return new Promise<NativeCliResult>((resolve, reject) => {
       let settled = false;
-      let terminationReason: 'aborted' | 'timeout' | 'input' | undefined;
+      let terminationReason: 'aborted' | 'timeout' | undefined;
       let terminationCause: unknown;
       let callbackError: unknown;
       let callbackOutput: { stdout: string; stderr: string } | undefined;
@@ -727,15 +712,15 @@ export function createExecFileNativeCliRunner(
             new Error(
               terminationReason === 'timeout'
                 ? `Command timed out after ${invocation.timeoutMs} ms.`
-                : terminationReason === 'input' ? 'Native CLI input exchange failed.' : 'Command was aborted.',
+                : 'Command was aborted.',
             ),
           cleanupError,
-          reason: terminationReason === 'input' ? 'exit' : terminationReason,
+          reason: terminationReason,
         }));
       };
 
       function startTermination(
-        reason: 'aborted' | 'timeout' | 'input',
+        reason: 'aborted' | 'timeout',
         cause: unknown,
       ): void {
         if (settled || terminationReason) {
@@ -937,42 +922,17 @@ export function createExecFileNativeCliRunner(
         processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
       }
 
-      const stdoutInputDecoder = new StringDecoder('utf8');
-      const stderrInputDecoder = new StringDecoder('utf8');
-      let inputEnded = false;
-      const inputErrorListener = (error: Error): void => startTermination('input', error);
-      const handleInput = (chunk: unknown, decoder: StringDecoder,
-        handler: NativeCliInput['onStdout'] | undefined): void => {
-        if (!handler || settled || terminationReason) return;
-        try {
-          const action = handler.call(invocation.input, Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk));
-          if (action?.write !== undefined) {
-            if (inputEnded || !child.stdin) throw new Error('Native CLI input is unavailable.');
-            child.stdin.write(action.write);
-          }
-          if (action?.end && !inputEnded) {
-            if (!child.stdin) throw new Error('Native CLI input is unavailable.');
-            inputEnded = true;
-            child.stdin.end();
-          }
-        } catch (error) {
-          startTermination('input', error);
-        }
-      };
       const stdoutListener = (chunk: unknown): void => {
         streamedStdout += renderNativeCliOutputChunk(chunk);
-        handleInput(chunk, stdoutInputDecoder, invocation.input?.onStdout);
       };
       const stderrListener = (chunk: unknown): void => {
         streamedStderr += renderNativeCliOutputChunk(chunk);
-        handleInput(chunk, stderrInputDecoder, invocation.input?.onStderr);
       };
       child.stdout?.on('data', stdoutListener);
       child.stderr?.on('data', stderrListener);
       detachOutputListeners = () => {
         child.stdout?.removeListener?.('data', stdoutListener);
         child.stderr?.removeListener?.('data', stderrListener);
-        child.stdin?.removeListener?.('error', inputErrorListener);
       };
       if (cleanupStrategy !== 'on-demand-tree' && cleanupStrategy !== 'windows-job') {
         child.once('exit', () => {
@@ -999,15 +959,6 @@ export function createExecFileNativeCliRunner(
       invocation.signal?.addEventListener('abort', abortListener, { once: true });
       if (invocation.signal?.aborted) {
         abortListener();
-      }
-      if (invocation.input && !settled && !terminationReason) {
-        child.stdin?.on('error', inputErrorListener);
-        try {
-          if (!child.stdin) throw new Error('Native CLI input is unavailable.');
-          child.stdin.write(invocation.input.initial);
-        } catch (error) {
-          startTermination('input', error);
-        }
       }
     });
   };

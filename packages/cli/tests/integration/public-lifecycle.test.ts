@@ -24,6 +24,7 @@ import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
+import type { CommandResult } from '../../src/output/public-result.js';
 
 // The real adapter publishes and inspects the package. The Pi command boundary
 // reports registration only; it does not report activation, trust or loading.
@@ -66,7 +67,7 @@ async function runPublicLifecycle(...args: Parameters<typeof executePublicLifecy
   });
 }
 
-async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'; targets?: string[]; sourceId?: string; name?: string; platforms?: Array<'generic' | 'pi' | 'claude'>; scriptBody?: string }={}) {
+async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'; targets?: string[]; sourceId?: string; name?: string; platforms?: Array<'generic' | 'pi' | 'claude'>; scriptBody?: string; manualSkill?: boolean }={}) {
   const isolation=getCurrentSourceTestIsolation();
   const sourceId = options.sourceId ?? 'team';
   const name = options.name ?? 'demo';
@@ -76,7 +77,8 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
   const root=path.join(source, 'plugins', name);
   const platforms = options.platforms ?? ['generic', 'pi'];
   for(const folder of ['skills', ...platforms.map((platform) => `${platform}/skills`)]) {
-    await fs.outputFile(path.join(root, folder, name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
+    const policy = options.manualSkill ? 'user-invocable: true\ndisable-model-invocation: true\n' : '';
+    await fs.outputFile(path.join(root, folder, name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n${policy}---\nUse ${name}.\n`);
     await fs.outputFile(path.join(root, folder, name, 'README.md'), 'Use demo.\n');
   }
   if(options.script) await fs.outputFile(path.join(root, 'pre-apply.mjs'), "import fs from 'node:fs'; const input = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
@@ -110,6 +112,41 @@ describe('public plugin lifecycle', () => {
     await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'controlled client entry');
     await fs.chmod(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 0o755);
     isolation.env.PATH = `${bin}${path.delimiter}${isolation.env.PATH ?? ''}`;
+  });
+  it('publishes a manual Skill and reports the invocation limit in text and the v2 receipt', async () => {
+    const { location, output } = await fixture({ targets: ['generic'], platforms: ['generic'], manualSkill: true });
+    const installed = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes'], location);
+    expect(installed.exitCode, installed.stdout + installed.stderr).toBe(0);
+    expect(installed.stdout.match(/Warning · team\/demo \/ generic \/ project/gu)).toHaveLength(1);
+    expect(installed.stdout).toContain('no bound host');
+    expect(installed.stderr).not.toContain('skillInvocationPolicyNotGuaranteed');
+    await expect(fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).resolves.toContain('Use demo.');
+
+    const synced = await runCliEntry(['plugin', 'sync', 'team/demo', '--context', 'project', '--rebuild', '--yes', '--json'], location);
+    expect(synced.exitCode, synced.stdout + synced.stderr).toBe(0);
+    const receipt = synced.parseJsonStdout<CommandResult<LifecycleData>>();
+    expect(receipt).toMatchObject({ schemaVersion: 2, status: 'success', data: { remainingTargets: [],
+      targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'generic', scope: 'project', blockerCodes: [] })] },
+      nextActions: [] });
+    expect(receipt.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed')).toEqual([
+      expect.objectContaining({ severity: 'warning', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project', field: 'skill.demo' },
+        detail: { reasonCode: 'noBoundExecutor' } }),
+    ]);
+  });
+
+  it('retains a delivered Skill warning when an independent platform fails', async () => {
+    const { location, output } = await fixture({ targets: ['generic', 'pi'], manualSkill: true, script: 'fail-pi' });
+    const installed = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes', '--json'],
+      { ...location, nativeCliRunner: piRunner });
+    expect(installed.exitCode, installed.stdout + installed.stderr).toBe(4);
+    const receipt = installed.parseJsonStdout<CommandResult<LifecycleData>>();
+    expect(receipt).toMatchObject({ status: 'partial', data: { remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }] },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
+          subject: { pluginId: 'team/demo', target: 'generic', scope: 'project', field: 'skill.demo' } }),
+        expect.objectContaining({ severity: 'error', subject: expect.objectContaining({ target: 'pi' }) }),
+      ]) });
+    await expect(fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).resolves.toContain('Use demo.');
   });
   it.each([
     { cores: 4, overlap: true }, { cores: 1, overlap: false },
@@ -313,7 +350,7 @@ describe('public plugin lifecycle', () => {
     }
     if (failureStage === 'fetch') {
       await fs.remove(second.source);
-      const args = ['plugin', 'sync', '--context', 'project', '--refresh', '--native-consent'];
+      const args = ['plugin', 'sync', '--context', 'project', '--refresh'];
       const review = await runCliEntry([...args, '--json'], { ...location, nativeCliRunner: piRunner });
       expect(review.exitCode, review.stdout).toBe(3);
       expect(review.parseJsonStdout()).toMatchObject({
@@ -446,7 +483,7 @@ describe('public plugin lifecycle', () => {
     expect(review.exitCode, review.stdout).toBe(3);
     const result = review.parseJsonStdout<Awaited<ReturnType<typeof runPublicLifecycle>>>();
     expect(result).toMatchObject({ status: 'blocked', data: {
-      requirements: { state: 'absent', roots: [] }, request: { nativeConsent: false },
+      requirements: { state: 'absent', roots: [] },
       changes: { sources: 'none', requirements: 'none', config: 'none', preferences: 'none', outputs: 'none' },
       confirmation: { required: true, provided: false, effects: [expect.objectContaining({
         code: 'runPreApply', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' },
@@ -460,7 +497,7 @@ describe('public plugin lifecycle', () => {
     if (action.kind !== 'command') throw new Error('Expected a confirmation command.');
     const confirmed = await runCliEntry([...action.argv.slice(1), '--yes', '--json'], runtime);
     expect(confirmed.exitCode, confirmed.stdout).toBe(0);
-    expect(confirmed.parseJsonStdout()).toMatchObject({ status: 'success', data: { request: { nativeConsent: false },
+    expect(confirmed.parseJsonStdout()).toMatchObject({ status: 'success', data: {
       changes: { sources: 'changed', requirements: 'changed', outputs: 'changed' },
       targetResults: [expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })] } });
     expect(await observeIntent(location)).toMatchObject({ state: 'valid', value: { roots: [{ pluginId: 'team/demo' }] } });

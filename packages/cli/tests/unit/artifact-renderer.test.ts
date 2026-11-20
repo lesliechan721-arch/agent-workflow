@@ -250,7 +250,7 @@ describe('complete platform component preparation', () => {
   });
 
   // Test Value Gate: real preparation freezes local scripts; native projection must not depend on the host cwd.
-  it.each(['cursor', 'antigravity', 'opencode', 'pi', 'gemini', 'copilot', 'grok'] as const)(
+  it.each(['cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok'] as const)(
     'freezes and locates %s Hook/MCP scripts and imports from another cwd', async (platform) => {
       const item = await plugin();
       const trace = path.join(item.rootDir, 'hook-trace.txt');
@@ -307,7 +307,7 @@ describe('complete platform component preparation', () => {
         command = Array.isArray(server!.command) ? server!.command[0]! : server!.command;
         args = Array.isArray(server!.command) ? server!.command.slice(1) : server!.args!;
       } else {
-        const configPath = platform === 'gemini' ? 'gemini-extension.json' : platform === 'antigravity' ? 'mcp_config.json'
+        const configPath = platform === 'antigravity' ? 'mcp_config.json'
           : platform === 'cursor' || platform === 'copilot' ? 'mcp.json' : '.mcp.json';
         const server = (await fs.readJson(path.join(packageRoot, configPath))).mcpServers.server;
         command = server.command; args = server.args;

@@ -266,7 +266,7 @@ export function createManagedPluginTraceRunner(base, { env = process.env, emit, 
 function traceRequested(env, platform) {
   return env.GITHUB_ACTIONS === 'true' && env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
     && ['linux', 'darwin', 'win32'].includes(platform)
-    && ['codex', 'pi', 'claude', 'gemini', 'copilot', 'opencode', 'claude-pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
+    && ['codex', 'pi', 'claude', 'copilot', 'opencode', 'claude-pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
     && typeof env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE === 'string'
     && path.isAbsolute(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE);
 }

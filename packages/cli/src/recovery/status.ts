@@ -200,7 +200,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             versions.push(live.packageVersion);
             options.signal?.throwIfAborted();
             observation.deploymentObservations!.push({ bindingId: binding.id, products: binding.consumers, after: live });
-            const shared = ['codex-marketplace', 'claude-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route);
+            const shared = ['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(binding.route);
             const scopedNativeConsumer = shared ? live.registration === 'present'
               && live.consumers.some((consumer) => consumer.activation === 'enabled')
               : live.package === 'present' && live.ownership === 'aw';
@@ -306,7 +306,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 expectedIdentity: deploymentPackageComponent(binding, layout).identity });
               const projection = marker?.nativeProjection;
               const contentDigest = projection ? await readPlatformPackageContentDigest(layout.packageRoot) : undefined;
-              if (['grok-cli', 'gemini-extension', 'antigravity-cli'].includes(binding.route) && live.registration === 'present') {
+              if (['grok-cli', 'antigravity-cli'].includes(binding.route) && live.registration === 'present') {
                 nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;
                 nativeContentDrift = Boolean(contentDigest && live.nativePackageContentDigest
                   && contentDigest !== live.nativePackageContentDigest);
@@ -676,7 +676,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       const nativeCopy = entry.platform === 'antigravity' && entry.scope === 'user'
         && entry.kind === 'namespacedMarketplace' && entry.recoveryCandidate?.evidence === 'verified'
         && entry.recoveryCandidate.binding.route === 'antigravity-cli';
-      return nativeCopy || entry.ownedComponent && !['codex', 'claude', 'gemini', 'copilot'].includes(entry.platform!)
+      return nativeCopy || entry.ownedComponent && !['codex', 'claude', 'copilot'].includes(entry.platform!)
         ? [{ pluginId: `${entry.sourceId}/${entry.pluginName}`, agent: entry.platform as PlatformName, scope: options.scope }] : [];
     });
     for (const entry of inventoryOwned) {
@@ -686,7 +686,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
     }
     for (const entry of candidates) {
       const component = entry.ownedComponent;
-      if (component?.kind !== 'owned-directory' || !['codex', 'claude', 'gemini', 'copilot'].includes(entry.platform!)
+      if (component?.kind !== 'owned-directory' || !['codex', 'claude', 'copilot'].includes(entry.platform!)
         || component.identity.scope !== options.scope || entry.recoveryCandidate?.evidence !== 'verified'
         || component.identity.sourceId !== entry.sourceId || component.identity.sourceIdentity !== entry.sourceIdentity
         || component.identity.platform !== entry.platform || component.identity.pluginId !== `${entry.sourceId}/${entry.pluginName}`
@@ -745,7 +745,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         if (!relevance.global && (relevance.platform && relevance.platform !== target.agent
           || relevance.sourceId && relevance.sourceId !== identity.sourceId
           || relevance.scope && relevance.scope !== target.scope
-            && !(relevance.scope === 'user' && target.scope === 'project' && ['codex', 'claude', 'gemini', 'copilot'].includes(target.agent))
+            && !(relevance.scope === 'user' && target.scope === 'project' && ['codex', 'claude', 'copilot'].includes(target.agent))
           || relevance.projectLocationKey && relevance.projectLocationKey !== context.projectKey
           || relevance.pluginName && relevance.pluginName !== identity.pluginName
             && !(relevance.componentName && observedPlugins.get(target.pluginId)?.manifest.extensions?.agents?.some((agent) => agent.name === relevance.componentName)))) continue;
@@ -917,7 +917,7 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
   // probes reuse it. Codex also shares a mutable manager and neutral inventory.
   for (const demand of scopes) {
     const nodes = plan.placements.filter((item) => selectedPlacement(item) && (item.scope === demand.scope
-      || demand.scope === 'project' && ['codex', 'claude', 'gemini', 'copilot'].includes(item.target)
+      || demand.scope === 'project' && ['codex', 'claude', 'copilot'].includes(item.target)
         && item.contributions.some((contribution) => contribution.scope === 'project')));
     const expanded: DemandSnapshot = { ...demand,
       plugins: [...new Map([...demand.plugins, ...nodes.map((item) => item.plugin)]
@@ -939,7 +939,7 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
   const allTargets = observed.flatMap((status) => status.inventory?.flatMap((item) => item.targetResults) ?? []).map((target) => {
     const providers = plan.placements.filter((placement) => placement.pluginId === target.pluginId && placement.target === target.agent
       && (placement.scope === target.scope || target.scope === 'project'
-        && ['codex', 'claude', 'gemini', 'copilot'].includes(target.agent) && placement.scope === 'user'
+        && ['codex', 'claude', 'copilot'].includes(target.agent) && placement.scope === 'user'
         && placement.contributions.some((entry) => entry.scope === 'project')));
     const contributions = providers.flatMap((provider) => provider.contributions
       .filter((entry) => provider.scope === target.scope || entry.scope === target.scope));

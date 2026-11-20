@@ -219,7 +219,11 @@ function parseSkillFrontmatter(text: string): Record<string, unknown> {
 function metadataBoolean(value: unknown): boolean {
   return value === true || value === 1 || (typeof value === 'string' && ['true', 'yes', 'on', '1'].includes(value.toLowerCase()));
 }
-export function getComponentFeatureRequirements(component: PluginComponent, options: { skillText?: string } = {}): FeatureRequirement[] {
+export function isSkillInvocationFeature(feature: string): boolean {
+  return feature === 'skill.invocation.manual' || feature === 'skill.invocation.model' || feature === 'skill.visibility';
+}
+
+export function getComponentFeatureRequirements(component: PluginComponent, options: { skillText?: string; deliveryOnly?: boolean } = {}): FeatureRequirement[] {
   const requirements: FeatureRequirement[] = [{ feature: `component.kind.${component.kind}` }, ...structuredClone(component.requires ?? [])];
   const require = (feature: string, values?: string[]): void => { requirements.push({ feature, ...(values ? { values } : {}) }); };
   switch (component.kind) {
@@ -270,6 +274,8 @@ export function getComponentFeatureRequirements(component: PluginComponent, opti
   const merged = new Map<string, FeatureRequirement>();
   for (const requirement of requirements) {
     assertFeatureRequirement(requirement);
+    // Invocation preferences describe how a host should expose the Skill. They never withhold its files.
+    if (options.deliveryOnly && component.kind === 'skill' && isSkillInvocationFeature(requirement.feature)) continue;
     const previous = merged.get(requirement.feature);
     if (previous?.values || requirement.values) merged.set(requirement.feature, { feature: requirement.feature, values: [...new Set([...(previous?.values ?? []), ...(requirement.values ?? [])])] });
     else merged.set(requirement.feature, { feature: requirement.feature });
@@ -343,7 +349,7 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
     if (names.has(name)) throw new Error(`Invalid component plan: duplicate component name ${component.name}.`);
     names.add(name);
     if (options.platformCapabilities.kinds[component.kind].status !== 'supported') throw new Error(`Invalid component plan: unsupported component kind ${component.kind}.`);
-    const unmet = getUnmetFeatureRequirements(getComponentFeatureRequirements(component), options.platformCapabilities);
+    const unmet = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { deliveryOnly: true }), options.platformCapabilities);
     if (unmet.length) throw new Error(`Invalid component plan: unsupported required features ${JSON.stringify(unmet)}.`);
     if (component.kind === 'instruction') {
       const max = options.platformCapabilities.features['instruction.coverage']?.maxBytes;
@@ -390,7 +396,7 @@ export function partitionStaticPluginComponents(components: readonly PluginCompo
     identities.add(original.id); names.add(`${original.kind}:${original.name}`);
     result.sources[original.id] = 'static';
     const component = structuredClone(original);
-    const missing = getUnmetFeatureRequirements(getComponentFeatureRequirements(component), capabilities);
+    const missing = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { deliveryOnly: true }), capabilities);
     const kindSupported = capabilities.kinds[component.kind].status === 'supported';
     if (kindSupported && missing.length === 0) { result.components.push(component); continue; }
     if (kindSupported && component.kind === 'instruction' && missing.length === 1 && missing[0]?.feature === 'instruction.coverage') {
@@ -407,7 +413,7 @@ export function partitionStaticPluginComponents(components: readonly PluginCompo
         continue;
       }
     }
-    result.unmet.push({ id: component.id, kind: component.kind, name: component.name, requiredFeatures: missing.length ? missing : getComponentFeatureRequirements(component), reasonCode: reasonForMissing(component, missing, capabilities) });
+    result.unmet.push({ id: component.id, kind: component.kind, name: component.name, requiredFeatures: missing.length ? missing : getComponentFeatureRequirements(component, { deliveryOnly: true }), reasonCode: reasonForMissing(component, missing, capabilities) });
   }
   return result;
 }

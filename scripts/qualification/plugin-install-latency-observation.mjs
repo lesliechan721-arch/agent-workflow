@@ -117,7 +117,7 @@ export async function readSkillOutputs(catalogs, selectors, root) {
   const outputs = [];
   // The Active store and AW package sources are not client output. Native
   // receipts carry source package ownership and registration separately.
-  for (const hostDir of ['home', 'project', 'codex', 'claude', 'pi', 'gemini', 'grok', 'copilot', 'config', 'data', 'state', 'appdata', 'localappdata']) {
+  for (const hostDir of ['home', 'project', 'codex', 'claude', 'pi', 'grok', 'copilot', 'config', 'data', 'state', 'appdata', 'localappdata']) {
     for (const entry of await readTree(path.join(root, hostDir))) {
       if (!entry.isFile() || entry.name !== 'SKILL.md' || !wanted.has(path.basename(entry.parentPath))) continue;
       const owner = await optionalJson(path.join(entry.parentPath, '.agent-workflows-owner.json'));
@@ -142,7 +142,7 @@ export async function readNativePackages(targets, root) {
       const owner = await optionalJson(path.join(resolved, '.agent-workflows-owner.json'));
       const manifests = [];
       for (const file of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.agents-plugin/plugin.json',
-        '.github/plugin/plugin.json', 'gemini-extension.json', 'package.json']) {
+        '.github/plugin/plugin.json', 'package.json']) {
         const manifest = await optionalJson(path.join(resolved, file));
         if (manifest?.version) manifests.push({ file, name: manifest.name, version: manifest.version });
       }

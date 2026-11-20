@@ -138,36 +138,11 @@ async function rpcSkills(ctx, cwd) {
   return array(result.commands.commands).filter(item => item.name === `skill:${ctx.skillName}`);
 }
 
-async function geminiExtensions(ctx, cwd) {
-  const result = await ctx.command(['extensions', 'list'], cwd);
-  const text = `${result.stdout}\n${result.stderr}`.replace(/\r\n/gu, '\n').trim();
-  if (text === 'No extensions installed.') return [];
-  const lines = text.split('\n');
-  const starts = lines.flatMap((line, index) => /^[✓✗] /u.test(line) ? [index] : []);
-  assert(starts.length && starts[0] === 0, 'native-management-state-unverified');
-  const matches = [];
-  for (let index = 0; index < starts.length; index++) {
-    const block = lines.slice(starts[index], starts[index + 1] ?? lines.length);
-    const header = /^([✓✗]) (.+) \(([^()]+)\)$/u.exec(block[0]);
-    assert(header, 'native-management-state-unverified');
-    if (header[2] !== ctx.pluginName) continue;
-    const workspace = block.filter(line => line.startsWith(' Enabled (Workspace): '));
-    assert.equal(workspace.length, 1, 'native-management-state-unverified');
-    assert(/^ Enabled \(Workspace\): (true|false)$/u.test(workspace[0]), 'native-management-state-unverified');
-    const enabled = workspace[0] === ' Enabled (Workspace): true';
-    assert.equal(header[1], enabled ? '✓' : '✗', 'native-management-state-unverified');
-    matches.push({ name: header[2], version: header[3], enabled });
-  }
-  return matches;
-}
-
 export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false }) {
   assert.equal(typeof active, 'boolean');
   if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version: publicFixtureVersion(revision) });
   let matches;
-  if (ctx.platform === 'gemini') {
-    matches = await geminiExtensions(ctx, cwd);
-  } else if (ctx.platform === 'pi') {
+  if (ctx.platform === 'pi') {
     const skills = await rpcSkills(ctx, cwd);
     const inventory = await readPiPublicInventory(ctx, cwd);
     if (absent || !active) {
@@ -274,7 +249,7 @@ export async function readPiPublicInventory(ctx, cwd) {
 
 function retainedSharedRegistration(ctx, result, pluginId) {
   const routes = { codex: 'codex-marketplace', claude: 'claude-marketplace',
-    gemini: 'gemini-extension', copilot: 'copilot-marketplace' };
+    copilot: 'copilot-marketplace' };
   if (!routes[ctx.platform] || result?.command !== 'plugin.remove' || result.status !== 'success') return false;
   const request = result.data?.request;
   if (request?.scope !== ctx.scope || request.plugins?.length !== 1 || request.plugins[0] !== pluginId
@@ -355,15 +330,6 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
       || item.name === `${ctx.pluginName}/${ctx.skillName}`), 'dynamic-consumer-path-unverified');
     assert.equal(skill.enabled, true, 'dynamic-consumer-path-unverified');
     filename = skill.path;
-  } else if (ctx.platform === 'gemini') {
-    const result = await ctx.command(['skills', 'list'], cwd);
-    const text = result.stdout.replace(/\r\n/gu, '\n').replace(/\n+$/u, '');
-    const heading = 'Discovered Agent Skills:\n\n';
-    assert(text.startsWith(heading), 'dynamic-consumer-path-unverified');
-    const blocks = text.slice(heading.length).split(/\n{2,}/u).map(block => block.split('\n'));
-    const lines = single(blocks.filter(block => block[0] === `${ctx.skillName} [Enabled]`), 'dynamic-consumer-path-unverified');
-    const locations = lines.filter(line => line.startsWith('  Location:    '));
-    filename = single(locations, 'dynamic-consumer-path-unverified').slice('  Location:    '.length);
   } else if (ctx.platform === 'grok') {
     const result = await jsonCommand(ctx, ['inspect', '--json'], cwd);
     const skills = array(result.skills).filter(item => item.name === ctx.skillName

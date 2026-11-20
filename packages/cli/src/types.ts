@@ -16,7 +16,6 @@ import type {
   SourceIdentity,
   TrackedHookGroupIdentity,
 } from '@lesliechan721/aw-plugin-core/manifest';
-import type { Diagnostic, NextAction } from './output/public-result.js';
 
 export type ArtifactSurface =
   | { kind: 'platform'; name: PlatformTarget }
@@ -357,7 +356,6 @@ export interface ConfigApplyTargetResult {
   errorCode?: string;
   relation?: 'requested' | 'dependency';
   requiredBy?: string[];
-  geminiRecovery?: { diagnostics: Diagnostic[]; nextActions: NextAction[] };
 }
 
 export interface ConfigApplyError {

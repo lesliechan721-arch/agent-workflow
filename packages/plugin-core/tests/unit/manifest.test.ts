@@ -205,12 +205,12 @@ describe('plugin manifest v4 structure', () => {
     expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 4, ...fields }))).toThrow(PluginManifestStructureError)
   })
 
-  it('rejects Manifest v3 and accepts renderer-wide permissions for all ten platforms', () => {
+  it('rejects Manifest v3 and accepts renderer-wide permissions with platform overrides', () => {
     expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3 }))).toThrow(/expected 4/u)
-    const raw = manifest({ schemaVersion: 4, platforms: ['gemini', 'copilot', 'grok'], artifacts: { configKeys: ['token'], scopes: ['project'] },
+    const raw = manifest({ schemaVersion: 4, platforms: ['copilot', 'grok'], artifacts: { configKeys: ['token'], scopes: ['project'] },
       config: { schemaVersion: 5, fields: { token: { type: 'string', sensitive: true } } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      extensions: { agents: [{ name: 'role', description: 'Role', prompt: 'Read.', model: 'chosen', tools: [], promptMode: 'replace', agentOverrides: { gemini: { model: 'other' }, copilot: null } }] },
+      extensions: { agents: [{ name: 'role', description: 'Role', prompt: 'Read.', model: 'chosen', tools: [], promptMode: 'replace', agentOverrides: { grok: { model: 'other' }, copilot: null } }] },
     })
     expect(validatePluginManifest('/tmp/plugin', raw).artifacts).toEqual({ configKeys: ['token'], scopes: ['project'] })
     expect(() => validatePluginManifest('/tmp/plugin', { ...raw, scripts: undefined })).toThrow(/render/u)

@@ -197,7 +197,7 @@ test('honors batch permissions, full sets and explicit dependency gaps', async (
   const roles = context({}, 'codex', 'user', ['agent']);
   Object.defineProperty(roles, 'config', { get() { throw new Error('role read config'); } });
   assert.deepEqual((await renderArtifactPlan(roles)).components.map((item) => item.id), ['subagent-role']);
-  for (const platform of ['antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+  for (const platform of ['antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
     const plan = await renderArtifactPlan(context({}, platform));
     assert.deepEqual(plan.components.map((item) => item.id), ['subagent-role']);
     assert.deepEqual(plan.unmet, [{ id: 'spawn-subagent-skill', kind: 'skill', name: 'spawn-subagent',

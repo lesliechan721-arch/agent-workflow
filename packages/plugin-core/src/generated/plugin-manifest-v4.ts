@@ -324,10 +324,10 @@ refreshKeys: string[]
 export type ManagedCommandProducer = ({
 kind: "artifact"
 artifactId: string
-platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok")
+platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")
 } | {
 kind: "static-skill"
-platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok")
+platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")
 skillKey: string
 } | {
 kind: "package"
@@ -458,7 +458,7 @@ schemaVersion: 4
 name: string
 version: Semver
 description: string
-platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok" | "generic")[]
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok" | "generic")[]
 dependencies?: string[]
 requires?: Requires
 skills?: "./skills"
@@ -561,14 +561,6 @@ id: string
 feedback: ("notify" | "context" | "block")
 requires?: FeatureRequirement[]
 }[]
-gemini?: {
-event: ("BeforeTool" | "AfterTool" | "SessionStart" | "SessionEnd" | "BeforeAgent" | "AfterAgent")
-matcher?: string
-command: string
-id: string
-feedback: ("notify" | "context" | "block")
-requires?: FeatureRequirement[]
-}[]
 copilot?: {
 event: ("preToolUse" | "postToolUse" | "sessionStart" | "sessionEnd" | "userPromptSubmitted" | "errorOccurred")
 matcher?: string
@@ -641,13 +633,6 @@ paths?: StringArray
 coverage?: ("main" | "plugin-agents" | "other-agents")[]
 })
 pi?: (null | {
-name?: string
-title?: string
-content?: string
-paths?: StringArray
-coverage?: ("main" | "plugin-agents" | "other-agents")[]
-})
-gemini?: (null | {
 name?: string
 title?: string
 content?: string
@@ -748,12 +733,6 @@ allow?: PermissionCommands
 ask?: PermissionCommands
 deny?: PermissionCommands
 })
-gemini?: (null | {
-name?: string
-allow?: PermissionCommands
-ask?: PermissionCommands
-deny?: PermissionCommands
-})
 copilot?: (null | {
 name?: string
 allow?: PermissionCommands
@@ -827,13 +806,6 @@ feedback?: ("notify" | "context" | "block")
 requires?: FeatureRequirement[]
 })
 pi?: (null | {
-event?: ("before_tool" | "after_tool" | "session_start")
-matcher?: string
-command?: string
-feedback?: ("notify" | "context" | "block")
-requires?: FeatureRequirement[]
-})
-gemini?: (null | {
 event?: ("before_tool" | "after_tool" | "session_start")
 matcher?: string
 command?: string
@@ -928,14 +900,6 @@ tools?: StringArray
 model?: string
 promptMode?: ("host-default" | "append" | "replace")
 })
-gemini?: (null | {
-name?: string
-description?: string
-prompt?: string
-tools?: StringArray
-model?: string
-promptMode?: ("host-default" | "append" | "replace")
-})
 copilot?: (null | {
 name?: string
 description?: string
@@ -986,7 +950,7 @@ sets?: ManagedCommandSet[]
 export interface ManagedCommandPackage {
 key: CommandName
 scope: ("user" | "project")
-platforms: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok")[]
+platforms: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")[]
 sourceDir: PluginPath
 render?: true
 refreshKeys?: string[]
@@ -1060,7 +1024,6 @@ cursor?: FileRules
 opencode?: FileRules
 pi?: FileRules
 generic?: FileRules
-gemini?: FileRules
 copilot?: FileRules
 grok?: FileRules
 }
@@ -1077,14 +1040,14 @@ env: string
 skillRuntimeFiles?: {
 skill: string
 target: string
-platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok" | "generic")[]
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok" | "generic")[]
 source?: string
 import?: ImportReference
 }[]
 generatedSkillRuntimeFiles?: {
 skill: string
 target: string
-platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "gemini" | "copilot" | "grok" | "generic")[]
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok" | "generic")[]
 }[]
 }
 /**
@@ -1099,7 +1062,6 @@ cursor?: (string | boolean)
 opencode?: (string | boolean)
 pi?: (string | boolean)
 generic?: (string | boolean)
-gemini?: (string | boolean)
 copilot?: (string | boolean)
 grok?: (string | boolean)
 }
@@ -2080,7 +2042,6 @@ cursor?: ConfigPlatformProfile
 opencode?: ConfigPlatformProfile
 pi?: ConfigPlatformProfile
 generic?: ConfigPlatformProfile
-gemini?: ConfigPlatformProfile
 copilot?: ConfigPlatformProfile
 grok?: ConfigPlatformProfile
 }

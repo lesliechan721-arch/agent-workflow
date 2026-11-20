@@ -31,21 +31,11 @@
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
 
-`plugin install`、`plugin sync`、`plugin config apply` 及带 `--apply` 的配置写命令接受独立的 `--native-consent`。该选项仅授权本次冻结插件、来源、版本与所选 scope 计划中的 Gemini 原生安装或更新。Gemini 可能持久保存源目录与当前工作区的信任，并接受扩展许可；AW 不保存全局自动批准设置。普通 `--yes`、环境变量、旧回执与 TUI Review 确认均不提供此许可。授权事实在生命周期的 `data.request.nativeConsent`、配置结果的 `data.nativeConsent` 中表示；显式授权时保留 `nativeConsentGranted` warning，说明持久信任副作用，该字段不表示原生动作已经完成。
-
-Gemini CLI `0.67.0` 缺少原生许可时，安装或更新在启动原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。许可对应实际等待安装的 Gemini 扩展，即使它只是所选插件的依赖。AW 恢复使用当初声明的插件根；普通同步会额外执行未选 User 位置时，在 Gemini 中完成下述人工步骤，再回 TUI 精确同步 Project。
-
-其他 Gemini 版本的跨流提示缺少可验证的完整授权边界，安装、更新及破坏性刷新在启动原生动作前返回 `nativeConsentProtocolUnconfirmed`。固定版本路径的未知或重复提示返回 `nativeConsentPromptUnsupported`。人工步骤使用回执中绑定的冻结来源、工作区和共享激活文件。原生操作前备份该文件或记录文件不存在，并在 Gemini 中亲自审阅各项许可。已有同名扩展时先核验归属和来源，保存额外文件、本地设置及扩展副本。重新 Review 前，对照备份恢复经核实由 Gemini 改写的 User 规则、全部 Project 规则及其他扩展字段，并保留并发编辑。若核验过的首次 Project 安装计划要求 User 停用，原来无 User 规则时为这个扩展显式设置 `!*` 默认值并保留项目规则，避免 Gemini 缺省启用所有项目。其余情况下若原来没有文件，仅移除确认由本次宿主操作创建且没有无关修改的文件。无法安全核验时，保留现场与备份，通过 Gemini 检查该扩展，并在原范围运行 `aw plugin status`。普通资格及只读观察仍可继续。独立保存的 Gemini 信任条目在扩展卸载后仍可能有效。
-
-Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副本完整摘要核验后，以原生卸载、重装更新实际副本，并保留原有全局及项目激活。原生目录中的 `.env`、额外或改写文件、弱 owner 会以 `nativeRefreshDataUnconfirmed` 阻断，原目录保留；先保存或处理这些本地数据，不能用 `--yes`、`--native-consent` 或 force 越过该保护。重装后的实际包体必须匹配冻结投影，无法确认时报告 `nativeInstallContentPostcheckFailed` 和部分结果，保留 AW 源包与已核验的激活规则。修复现场后，在同一工作区使用上述带 `--native-consent` 的 sync 恢复；已保存的配置和需求不会回滚。
-
-普通 Gemini sync 每次比较实际原生副本与本次冻结包体；AW 源包已更新，也不能省略落后副本的 refresh。副本 owner、包体或数据无法确认时保持未完成。处理阻断数据或修复安装现场后，普通许可 sync 会按新读取的副本状态重试，不要求重新发布源包；status 的旧副本显示 drifted，无法确认的副本显示 unknown。
-
 `aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口。显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。同时声明 Node 构建和动态 renderer 时，源码校验提示组件仍需构建验证，`aw dev catalog publish plan` 按发布合同校验构建后的组件。 [Catalog 发布计划](catalog.md#41-发布命令接口与两阶段授权)
 
 ### 1.1 本机 target 选择
 
-`aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
+`aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
 
 `aw target set ...` 在保存前检查新增选择。新增 missing、unsupported 或 unknown 且没有 `--force` 时，整体不保存，返回 blocked/3，并列出需强制选择的项及重试命令。非法 ID 始终为参数错误/2。保留已有选择、取消选择及 `--none` 不因可用性受阻；先取消再选择属于新增。
 
@@ -144,7 +134,7 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
 
-`plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Gemini、Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
 
@@ -159,7 +149,6 @@ type LifecycleData = {
     targets: string[];
     targetOrigin: 'argument' | 'preference' | 'none';
     mode: 'apply' | 'requirements-only' | 'outputs-only';
-    nativeConsent?: boolean; // 本次是否显式提供 Gemini 原生许可，不表示执行成功。
   };
   confirmation: Confirmation | null;
   changes: {
@@ -187,6 +176,8 @@ type LifecycleData = {
   // requirements / commandResults / nativeToolChanges 按当前公开领域合同提供。
 };
 ```
+
+若已安装的 Skill 声明手动调用或可见性规则，而实际目标不能保证其中的要求，回执会在 `diagnostics` 中给出 `skillInvocationPolicyNotGuaranteed` 警告，关联插件、技能、平台与作用域。终端和 TUI 在结果中显示该提示。只有这类提示时，状态为 `success`，退出码为 `0`，目标无需重试。
 
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 

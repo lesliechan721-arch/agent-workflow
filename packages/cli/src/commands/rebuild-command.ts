@@ -710,7 +710,6 @@ async function runSingleSourceRebuildCommand(options: {
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
-    nativeConsent: options.runtime?.nativeConsent === true,
     referencePlugins: options.runtime?.referencePlugins,
     recoveryCandidates: options.runtime?.recoveryCandidates,
     sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
@@ -1653,7 +1652,7 @@ async function cleanupOfflineOwnedComponents(options: {
         // This offline path can revoke only independently owned files and directory-loaded packages.
         if (component.kind === 'owned-directory'
           && ((action.recoveryCandidate && needsFrozenNativeRemoval(action.recoveryCandidate))
-            || ['codex', 'claude', 'gemini', 'copilot', 'pi'].includes(target.platform)
+            || ['codex', 'claude', 'copilot', 'pi'].includes(target.platform)
             || path.relative(path.join(resolveAwHome(options.env), 'platforms'), component.path).split(path.sep)[0] !== '..')) {
           preservedOutputs.push(component.path);
           continue;
@@ -3547,7 +3546,6 @@ async function runRebuildCommandInSession(
         }
       }
       const executionContext: RebuildExecutionContext = {
-        nativeConsent: options.runtime?.nativeConsent === true,
         recoveryCandidates: options.runtime?.recoveryCandidates,
         sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
         platformRebuildSession: options.runtime?.platformRebuildSession,
@@ -4098,10 +4096,9 @@ async function runRebuildCommandInSession(
               : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId)) ? 'direct' : 'transitive',
           }];
         }) : [];
-      const assertPreApplyAuthorization = (plan: ReconcileOperationPlan,
-        preparedTargets: ReadonlyMap<string, { target: DesiredTarget }>) => {
+      const assertPreApplyAuthorization = (plan: ReconcileOperationPlan) => {
         if (options.commandOptions.yes === true || options.runtime?.preApplyConfirmed === true
-          || !preApplyAuthorizationForPlan(plan, preparedTargets).length) return;
+          || !preApplyAuthorizationForPlan(plan).length) return;
         throw namespacedPreflightError(
           'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
           preflightTargets,
@@ -4544,6 +4541,7 @@ async function runRebuildCommandInSession(
           exactOwnedTextTargets(lockedPlan),
           exactSkillMarkerTargets(lockedPlan),
         );
+        assertPreApplyAuthorization(lockedPlan);
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
@@ -4552,7 +4550,6 @@ async function runRebuildCommandInSession(
             || action.action === 'repair'));
         let lockedCodexPlans = provisionalLockedCodexPlans;
         let lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
-        assertPreApplyAuthorization(lockedPlan, lockedPreparation.preparedTargets);
         let lockedOperationPlan = await withNativeToolRemovalImpact(createRebuildOperationPlan({
           dependencyPlan: lockedPlan,
           codexPlans: lockedCodexPlans,
@@ -4608,16 +4605,21 @@ async function runRebuildCommandInSession(
           return commandForTarget(selection, lockedPlan);
         };
         const deferredPreApply = new Set<string>();
+        let serialScriptGeneration = 0;
+        const currentGeneration = () => admission?.exclusiveGeneration ?? serialScriptGeneration;
         let observationGeneration = initialGeneration;
-        const refreshCodexObservation = () => {
-          if (!admission || observationGeneration === admission.exclusiveGeneration) return;
+        const refreshCodexObservation = (includeSerial = false) => {
+          if (!admission && !includeSerial) return;
+          const generation = currentGeneration();
+          if (observationGeneration === generation) return;
           executionContext.codexObservationSession?.invalidate();
-          observationGeneration = admission.exclusiveGeneration;
+          observationGeneration = generation;
         };
         const prepareOperation = async (input: Parameters<typeof prepareRebuildOperation>[0]) => {
           refreshCodexObservation();
           const prepared = await prepareRebuildOperation({ ...input, onActionEvent: async (event) => {
             if (event.data.name === 'preApply' && event.data.phase === 'start') {
+              if (!admission) serialScriptGeneration++;
               try { options.runtime?.onInstallTargetState?.(input.target.identity, 'running'); }
               catch { /* Progress observers cannot change execution. */ }
             }
@@ -4717,7 +4719,7 @@ async function runRebuildCommandInSession(
             // A consumer's script can change external state. Wait for the provider's
             // actual execution result even when both targets passed native preflight.
             const hasScript = hasPlannedPreApply(prepared.target);
-            if (options.runtime?.batchInstallPlatform && entry.plugin.manifest.dependencies?.length && hasScript) deferredPreApply.add(key);
+            if (entry.plugin.manifest.dependencies?.length && hasScript) deferredPreApply.add(key);
             const skipPreApply = preparationOptions.skipPreApply || deferredPreApply.has(key);
             const prepare = () => prepareOperation({
               command: executionCommand,
@@ -4864,8 +4866,8 @@ async function runRebuildCommandInSession(
               'observed',
               executionContext.codexManager,
             );
+            assertPreApplyAuthorization(lockedPlan);
             lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, false);
-            assertPreApplyAuthorization(lockedPlan, lockedPreparation.preparedTargets);
             const eligibleKeys = new Set(operationPreparations.keys());
             const initialOperationPreparations = new Map(operationPreparations);
             const finalPreparation = await prepareLockedTargets({
@@ -5233,6 +5235,62 @@ async function runRebuildCommandInSession(
         }
       const results: RebuildCommandResult[] = [];
       const dependencyStates = new Map<string, 'completed' | 'kept' | 'failed' | 'skipped'>();
+      const directProviders = new Map(executionSelections.map((selection) => {
+        const planned = planTargetFor(lockedPlan, selection)!;
+        const dependencies = (selection.entry.plugin.manifest.dependencies ?? []).flatMap((pluginName) => {
+          const pluginId = formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName });
+          const provider = dependencyTargetFor(lockedPlan, planned, pluginId);
+          return provider ? [planExecutionKey(provider)] : [];
+        });
+        return [executionKey(selection, lockedPlan), dependencies] as const;
+      }));
+      const providerKeys = new Set([...directProviders.values()].flat());
+      const verifiedGenerations = new Map<string, number>();
+      const providerReady = (key: string) => ['completed', 'kept'].includes(dependencyStates.get(key) ?? '');
+      const providersReady = (key: string) => directProviders.get(key)!.every(providerReady);
+      const providerDeployment = (key: string) => {
+        const deployment = preparedTargets.get(key)?.target.platformDeployment;
+        return deployment?.plans.length && !deployment.blockedReceipts.length ? deployment : undefined;
+      };
+      // A provider's package check does not read its own providers. Include the
+      // whole resolved closure after a script can invalidate earlier readback.
+      const providerClosure = (key: string) => {
+        const providers = new Set<string>();
+        const visit = (consumerKey: string) => {
+          for (const providerKey of directProviders.get(consumerKey) ?? []) {
+            if (providers.has(providerKey)) continue;
+            providers.add(providerKey);
+            visit(providerKey);
+          }
+        };
+        visit(key);
+        return providers;
+      };
+      const verifyProviders = async (selection: ExecutionSelection, key: string) => {
+        const generation = currentGeneration();
+        const target = preparedTargets.get(key)?.target;
+        if (generation === initialGeneration || !directProviders.get(key)?.length
+          || !target || !providersReady(key) || operationPreparationFailures.has(key)) return;
+        refreshCodexObservation(true);
+        for (const provider of providerClosure(key)) {
+          if (verifiedGenerations.get(provider) === generation) continue;
+          try {
+            const deployment = providerDeployment(provider);
+            if (!providerReady(provider) || !deployment) {
+              throw new Error('Dependency evidence is unavailable.');
+            }
+            await deployment.verify();
+          } catch (error) {
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+            const failure = failedResult(selection.requestedMethod ?? options.command, target.identity,
+              `dependencyInstallFailed: ${provider.split('\0', 1)[0]} could not be reverified before publishing ${selection.entry.pluginId}.`);
+            failure.actions = operationPreparations.get(key)?.actions ?? [];
+            operationPreparationFailures.set(key, failure);
+            return;
+          }
+          verifiedGenerations.set(provider, generation);
+        }
+      };
       const nativeTargetExecution = lifecycleCommand ? options.runtime?.nativeTargetExecution : undefined;
       const recordTargetCommands = (commands: readonly CommandProducerResult[]): void => {
         executionContext.commandResults ??= [];
@@ -5256,15 +5314,10 @@ async function runRebuildCommandInSession(
         const planned = planTargetFor(lockedPlan, selection)!;
         const key = executionKey(selection, lockedPlan);
         const requestedMethod = selection.requestedMethod ?? options.command;
-        const directDependencyIds = (entry.plugin.manifest.dependencies ?? []).map((pluginName) =>
-          formatPluginId({ sourceId: entry.source.sourceId, pluginName }));
-        const failedDependency = directDependencyIds.find((pluginId) => {
-          const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
-          const state = dependency
-            ? dependencyStates.get(planExecutionKey(dependency))
-            : undefined;
+        const failedDependency = directProviders.get(key)!.find((provider) => {
+          const state = dependencyStates.get(provider);
           return state === 'failed' || state === 'skipped';
-        });
+        })?.split('\0', 1)[0];
         const failedConsumer = [...(removalRequiredConsumers.get(key) ?? [])]
           .find((consumerKey) => {
             const state = dependencyStates.get(consumerKey);
@@ -5333,10 +5386,13 @@ async function runRebuildCommandInSession(
         }
         // Target execution normally verifies its deployment immediately before writing.
         // A producer or a retained target can finish without entering that executor.
-        if (admission && admission.exclusiveGeneration !== initialGeneration
+        if ((admission || providerKeys.has(key)) && currentGeneration() !== initialGeneration
           && (planned.action === 'keep' || reconcileActivationOnly || nativeTargetExecution && (nativeTargetExecution.produces?.(identity) ?? true))
           && !operationPreparationFailures.has(key)) {
-          try { await preparedTargets.get(key)?.target.platformDeployment?.verify(); }
+          try {
+            refreshCodexObservation(true);
+            await preparedTargets.get(key)?.target.platformDeployment?.verify();
+          }
           catch (error) {
             if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
             operationPreparationFailures.set(key, failedResult(requestedMethod, identity,
@@ -5356,7 +5412,6 @@ async function runRebuildCommandInSession(
           dependencyStates.set(key, 'kept');
           return;
         }
-        if (!admission) await prepareDependentScript(selection, key);
         const operationPreparationFailure = operationPreparationFailures.get(key);
         if (operationPreparationFailure) {
           const targetResult = toTargetResult(operationPreparationFailure);
@@ -5639,24 +5694,19 @@ async function runRebuildCommandInSession(
         return true;
       };
       const codexSelections = executionSelections.filter(({ platform }) => platform === 'codex');
-      const codexProviders = new Set(options.runtime?.batchInstallPlatform === 'codex'
-        ? codexSelections.flatMap((selection) => (selection.entry.plugin.manifest.dependencies ?? []).flatMap((name) => {
-          const provider = dependencyTargetFor(lockedPlan, planTargetFor(lockedPlan, selection)!,
-            formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName: name }));
-          return provider ? [planExecutionKey(provider)] : [];
-        })) : []);
+      const codexProviders = new Set(options.runtime?.batchInstallPlatform === 'codex' || deferredPreApply.size || serialScriptGeneration
+        ? codexSelections.flatMap((selection) => directProviders.get(executionKey(selection, lockedPlan))!) : []);
       const reportTargetState = (selection: ExecutionSelection, state: 'running' | 'completed'): void => {
         const identity = targetIdentity(selection, planTargetFor(lockedPlan, selection)!.resolvedScope);
         try { options.runtime?.onInstallTargetState?.(identity, state); }
         catch { /* Progress observers cannot change a target's outcome. */ }
       };
       const pendingCodex = new Set<ExecutionSelection>();
-      const verifiedGenerations = new Map<string, number>();
       const runSelection = async (selection: ExecutionSelection, index: number): Promise<void> => {
         reportTargetState(selection, 'running');
         refreshCodexObservation();
         await executeSelection(selection, index);
-        if (admission) verifiedGenerations.set(executionKey(selection, lockedPlan), admission.exclusiveGeneration);
+        const key = executionKey(selection, lockedPlan);
         if (selection.platform === 'codex') pendingCodex.add(selection);
         const unconfirmed = results[index]?.rebuildResults.flatMap((result) => [
           ...result.failures.flatMap((failure) => failure.operationDiagnostic ? [failure.operationDiagnostic] : []),
@@ -5667,10 +5717,8 @@ async function runRebuildCommandInSession(
           throw attachSafeOperationError(new Error(message), { code: unconfirmed.code, safeMessage: message });
         }
         if (selection.platform === 'codex') {
-          const key = executionKey(selection, lockedPlan);
-          if (!codexProviders.has(key)) return;
           const prepared = preparedTargets.get(key)?.target;
-          if (prepared && (dependencyStates.get(key) === 'completed' || dependencyStates.get(key) === 'kept')) {
+          if (codexProviders.has(key) && prepared && providerReady(key)) {
             try {
               await lockedPreparation.integration.postcheckCodexProvider(prepared);
             } catch (error) {
@@ -5678,7 +5726,11 @@ async function runRebuildCommandInSession(
               failCompletedCodexTarget({ identity: prepared.identity, message: error instanceof Error ? error.message : String(error) });
             }
           }
+          if (providerReady(key) && providerDeployment(key)) verifiedGenerations.set(key, currentGeneration());
+          if (!codexProviders.has(key)) return;
           pendingCodex.delete(selection);
+        } else if (providerReady(key) && providerDeployment(key)) {
+          verifiedGenerations.set(key, currentGeneration());
         }
         reportTargetState(selection, 'completed');
       };
@@ -5910,14 +5962,8 @@ async function runRebuildCommandInSession(
         if (admission && options.runtime?.batchInstallPlatform) {
           const selectedKeys = new Set(executionSelections.map((selection) => executionKey(selection, lockedPlan)));
           const tasks = executionSelections.flatMap((selection, index): InstallTask<void>[] => {
-            const planned = planTargetFor(lockedPlan, selection)!;
             const id = executionKey(selection, lockedPlan);
-            const dependencies = (selection.entry.plugin.manifest.dependencies ?? []).flatMap((pluginName) => {
-              const pluginId = formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName });
-              const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
-              const key = dependency && planExecutionKey(dependency);
-              return key && selectedKeys.has(key) ? [key] : [];
-            });
+            const dependencies = directProviders.get(id)!.filter((key) => selectedKeys.has(key));
             const target = lockedPreparation.preparedTargets.get(id)?.target;
             const deployment = target?.platformDeployment;
             const resources = nativeInstallResources(deployment?.plans ?? []);
@@ -5929,33 +5975,15 @@ async function runRebuildCommandInSession(
             }
             const leaves: InstallTask<void>[] = [];
             let prerequisites = dependencies;
-            const providersReady = () => dependencies.every((key) => ['completed', 'kept'].includes(dependencyStates.get(key) ?? ''));
-            for (const key of dependencies) {
-              const plans = preparedTargets.get(key)?.target.platformDeployment?.plans;
-              if (plans?.length) for (const resource of nativeInstallResources(plans)) {
-                resources.push(resource.kind === 'exclusive' ? resource : { ...resource, access: 'read' });
-              }
+            const providerPlans = [...providerClosure(id)].flatMap((key) => preparedTargets.get(key)?.target.platformDeployment?.plans ?? []);
+            if (providerPlans.length) for (const resource of nativeInstallResources(providerPlans)) {
+              resources.push(resource.kind === 'exclusive' ? resource : { ...resource, access: 'read' });
             }
-            const verifyProviders = async () => {
-              if (!target || !providersReady() || operationPreparationFailures.has(id)) return;
-              refreshCodexObservation();
-              for (const key of dependencies) {
-                if (verifiedGenerations.get(key) === admission.exclusiveGeneration) continue;
-                try { await preparedTargets.get(key)?.target.platformDeployment?.verify(); }
-                catch (error) {
-                  if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
-                  operationPreparationFailures.set(id, failedResult(options.command, target.identity,
-                    `dependencyInstallFailed: ${key.split('\0')[0]} changed after verification.`));
-                  return;
-                }
-                verifiedGenerations.set(key, admission.exclusiveGeneration);
-              }
-            };
             if (deferredPreApply.has(id) && operationPreparations.has(id)) {
               const script = `preApply:\0${id}`;
               leaves.push({ id: script, dependencies, resources: [{ kind: 'exclusive' }], run: async () => {
-                if (!providersReady()) return;
-                await verifyProviders();
+                if (!providersReady(id)) return;
+                await verifyProviders(selection, id);
                 await prepareDependentScript(selection, id);
               } });
               prerequisites = [script];
@@ -5965,7 +5993,7 @@ async function runRebuildCommandInSession(
               privatePackages.push(staging);
               const stage = `package-staging:\0${id}`;
               leaves.push({ id: stage, dependencies: prerequisites, resources: [], run: async () => {
-                if (!providersReady() || operationPreparationFailures.has(id)) return;
+                if (!providersReady(id) || operationPreparationFailures.has(id)) return;
                 reportTargetState(selection, 'running');
                 try { await staging.prepare(); }
                 catch (error) {
@@ -5977,7 +6005,7 @@ async function runRebuildCommandInSession(
               prerequisites = [stage];
             }
             leaves.push({ id, dependencies: prerequisites, resources, run: async () => {
-              await verifyProviders();
+              await verifyProviders(selection, id);
               await runSelection(selection, index);
             } });
             return leaves;
@@ -5986,6 +6014,12 @@ async function runRebuildCommandInSession(
         } else {
           for (const [index, selection] of executionSelections.entries()) {
             if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+            const key = executionKey(selection, lockedPlan);
+            if (deferredPreApply.has(key) && providersReady(key)) {
+              await verifyProviders(selection, key);
+              await prepareDependentScript(selection, key);
+            }
+            await verifyProviders(selection, key);
             await runSelection(selection, index);
           }
         }

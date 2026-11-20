@@ -60,8 +60,8 @@ function target(plan: FrozenDeploymentPlan): RecoveryTarget {
 
 describe('native deployment public and TUI consumers', () => {
   // A host grants permission to the physical dependency; the TUI must retry the declared root in the pending scope.
-  it.each(['grok', 'gemini'] as const)('shows the native source and a scope-safe recovery action for %s dependencies', (agent) => {
-    const scope = agent === 'grok' ? 'user' : 'project';
+  it.each(['user', 'project'] as const)('shows the Grok source and a scope-safe recovery action for %s dependencies', (scope) => {
+    const agent = 'grok';
     const rootId = 'official/agent-lab';
     const providerId = 'official/provider';
     const receipt = scopedReceipt({ kind: 'recovery', scope, selectors: [rootId], targets: [agent] });
@@ -73,23 +73,23 @@ describe('native deployment public and TUI consumers', () => {
     receipt.targetResults = [provider, root];
     receipt.remainingTargets = [provider, root];
     const subject: NonNullable<Diagnostic['subject']> = { pluginId: providerId, target: agent, scope };
-    const nativeSource: Diagnostic = { code: agent === 'grok' ? 'grokNativeInstallRecovery' : 'nativeConsentRequired',
+    const nativeSource: Diagnostic = { code: 'grokNativeInstallRecovery',
       message: 'Native permission is pending.', severity: 'error', subject: { ...subject, field: 'nativeSource' },
-      detail: { reasonCode: agent === 'grok' ? 'grokNativeInstallSource' : 'geminiNativeConsentSource', path: '/isolated/frozen-provider' } };
-    const workspace: Diagnostic = { code: 'nativeConsentWorkspace', message: 'Inspect workspace trust.', severity: 'warning',
-      subject: { ...subject, field: 'workspace' }, detail: { reasonCode: 'geminiNativeConsentWorkspace', path: '/isolated/current-workspace' } };
+      detail: { reasonCode: 'grokNativeInstallSource', path: '/isolated/frozen-provider' } };
+    const workspace: Diagnostic = { code: 'grokNativeInstallWorkspace', message: 'Inspect workspace trust.', severity: 'warning',
+      subject: { ...subject, field: 'workspace' }, detail: { reasonCode: 'grokNativeInstallWorkspace', path: '/isolated/current-workspace' } };
     const deploymentReceipt = target(deployment()).deploymentReceipts![0]!;
     deploymentReceipt.effects[0]!.diagnostics = [nativeSource];
-    deploymentReceipt.diagnostics = agent === 'gemini' ? [nativeSource, workspace] : [];
+    deploymentReceipt.diagnostics = [workspace];
     const details = deploymentResultLines([projectDeploymentReceipt(deploymentReceipt, { receipt, target: provider })], true).join('\n');
     expect(details.match(/\/isolated\/frozen-provider/gu)).toHaveLength(1);
     expect(details).not.toContain(`sync ${providerId}`);
-    if (agent === 'grok') {
-      expect(details).toContain('--trust');
+    expect(details).toContain('--trust');
+    expect(details).toContain('/isolated/current-workspace');
+    if (scope === 'user') {
       expect(details).toContain(`aw plugin sync ${rootId} --context user --target grok`);
     } else {
-      expect(details).toContain('/isolated/current-workspace');
-      expect(details).toContain(`review only the Project location for ${rootId} on gemini`);
+      expect(details).toContain(`review only the Project location for ${rootId} on grok`);
       expect(details).not.toContain(`sync ${rootId}`);
     }
     receipt.ok = false;
@@ -98,9 +98,69 @@ describe('native deployment public and TUI consumers', () => {
     history.record(projectScopedRecoveryHistory(receipt, { recordId: 'permission', epoch: 0, operationId: 'sync', createdAtMs: 0 }));
     const report = history.preview('permission')!.content;
     expect(report).toContain(`在 TUI 中重新检查 ${rootId} 的 ${agent} ${scope === 'project' ? '项目' : '个人'}位置。`);
-    expect(report).toContain(agent === 'gemini' ? '启用规则' : '信任步骤');
+    expect(report).toContain('信任步骤');
     expect(report).not.toContain('/isolated/');
     expect(report).not.toContain(`sync ${providerId}`);
+  });
+
+  it.each([false, true])('shows installed Skill invocation notices once per actual location with failed sibling=%s', async (failed) => {
+    const pluginId = 'official/agent-lab';
+    const providerId = 'official/provider';
+    const code = 'skillInvocationPolicyNotGuaranteed';
+    const generic = (scope: 'user' | 'project'): RecoveryTarget => ({
+      pluginId: providerId, agent: 'generic', scope, delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
+      execution: 'applied', observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [pluginId],
+      reasons: ['commit', 'inspect'].map((skill) => ({
+        code, message: `${skill} was installed without a bound executor.`,
+        subject: { pluginId: providerId, target: 'generic', scope, field: `skill.${skill}` },
+        detail: { reasonCode: 'noBoundExecutor' },
+      })),
+    });
+    const prepare = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const execute = vi.fn(async () => {
+      const receipt = scopedReceipt({ kind: 'recovery', command: 'install', scope: 'user', selectors: [pluginId] });
+      const user = generic('user');
+      const project = generic('project');
+      const sibling: RecoveryTarget = { pluginId, agent: 'claude', scope: 'project', delivery: { kind: 'native', platform: 'claude' },
+        execution: failed ? 'failed' : 'applied', observation: failed ? 'missing' : 'verified',
+        blockers: failed ? [{ code: 'writeFailed', message: 'Write did not complete.' }] : [], requiredBy: [],
+        reasons: [...user.reasons ?? [], ...(!failed ? [{
+          code, message: 'Installed Skill "diagnose". Invocation control is unverified.',
+          subject: { pluginId, target: 'claude', scope: 'project' as const, field: 'skill.diagnose' },
+          detail: { reasonCode: 'invocationControlUnverified' },
+        }] : [])],
+      };
+      receipt.targetResults = [user, project, sibling];
+      receipt.ok = !failed;
+      receipt.remainingTargets = failed ? [sibling] : [];
+      return { kind: 'recovery' as const, receipt };
+    });
+    const value = controller({ prepareScopedTask: prepare, executeScopedTask: execute });
+    value.push({ name: 'pluginDetail', pluginId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 140, rows: 40 }} />);
+    await nextTurn(4);
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r', '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+    expect(instance.lastFrame()).not.toContain('没有绑定执行客户端');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain(failed ? '请求仍有未完成目标。' : '请求已完成。');
+    expect(frame.match(/commit 已安装/gu)).toHaveLength(2);
+    expect(frame.match(/inspect 已安装/gu)).toHaveLength(2);
+    expect(frame).toContain('所有项目 · commit 已安装');
+    expect(frame).toContain('当前项目 · commit 已安装');
+    expect(frame).toContain('通用输出没有绑定执行客户端');
+    expect(frame).not.toMatch(/Claude Code.+commit 已安装/u);
+    if (failed) {
+      expect(frame).toContain('执行失败');
+      expect(frame).not.toContain('diagnose 已安装');
+    } else {
+      expect(frame).not.toContain('重试明确失败项');
+      expect(frame).toContain('Claude Code · 当前项目 · diagnose 已安装。尚未验证该客户端');
+    }
+    value.dispose();
   });
 
   // Test Value Gate: local declarations can disagree with effective native state;
@@ -161,7 +221,7 @@ describe('native deployment public and TUI consumers', () => {
     const loaded = loadResult();
     const summary = loaded.pluginSummaries[0]!;
     summary.supportedTargets = Object.fromEntries(NATIVE_PLATFORM_TARGETS.map((platform) =>
-      [platform, platform === 'gemini' ? ['user'] : ['project']]));
+      [platform, platform === 'pi' ? ['user'] : ['project']]));
     loaded.payload.targets = [];
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     try {
@@ -169,8 +229,8 @@ describe('native deployment public and TUI consumers', () => {
       const options = value.listInstallTargets(summary.pluginId, 'project');
       expect(options.map((option) => option.platform)).toEqual(NATIVE_PLATFORM_TARGETS);
       expect(options.find((option) => option.platform === 'cursor')).toEqual({ platform: 'cursor', compatible: true });
-      expect(options.find((option) => option.platform === 'gemini'))
-        .toEqual({ platform: 'gemini', compatible: false, disabled: '不支持所选位置' });
+      expect(options.find((option) => option.platform === 'pi'))
+        .toEqual({ platform: 'pi', compatible: false, disabled: '不支持所选位置' });
     } finally { value.dispose(); }
   });
 
@@ -263,15 +323,15 @@ describe('native deployment public and TUI consumers', () => {
     expect(instance.lastFrame()).not.toContain('恢复结果');
     const receipt = scopedReceipt({ kind: 'recovery', scope: 'user', selectors: ['official/agent-lab'] });
     receipt.ok = false; receipt.outputsMayHaveChanged = true; receipt.targetResults = [target(frozen),
-      { pluginId: 'official/agent-lab', agent: 'gemini', scope: 'project', delivery: { kind: 'native', platform: 'gemini' }, execution: 'failed', observation: 'missing', content: 'absent', blockers: [], requiredBy: [] }, genericGapTarget()];
+      { pluginId: 'official/agent-lab', agent: 'claude', scope: 'project', delivery: { kind: 'native', platform: 'claude' }, execution: 'failed', observation: 'missing', content: 'absent', blockers: [], requiredBy: [] }, genericGapTarget()];
     pending.resolve({ kind: 'recovery', receipt });
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     expect(instance.lastFrame()).toContain('部分完成');
     expect(instance.lastFrame()).toContain('0.151.0 · 未执行 · clientVersionUnsupported');
     expect(instance.lastFrame()).toContain('可能已变更'); expect(instance.lastFrame()).toContain('尚未观察到加载');
     await focusAction(instance, '重试明确失败项（1）'); await input(instance, '\r'); await nextTurn(5);
-    expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({ targets: ['gemini'],
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'gemini', scope: 'project' }] }), expect.any(AbortSignal));
+    expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({ targets: ['claude'],
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude', scope: 'project' }] }), expect.any(AbortSignal));
     value.dispose();
   });
 });

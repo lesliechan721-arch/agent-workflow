@@ -15,9 +15,7 @@ import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
 import { getPhysicalKey } from './identity.js';
-import { queryNativeDeployment, queryNativeDeploymentResult } from './inspection-query.js';
-import { geminiActivationRules, geminiExtensionPaths, geminiScopePattern, geminiUserActivation,
-  readGeminiActivationSnapshot, readGeminiNativeCopyContentDigest } from './gemini-activation.js';
+import { queryNativeDeployment } from './inspection-query.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('nativeObservationInvalid');
@@ -289,70 +287,6 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
     case 'pi-package':
       await inspectPiDeployment(ctx, binding, layout, result);
       break;
-    case 'gemini-extension': {
-      await inspectConfiguration(ctx, binding, result, async () => {
-        const snapshot = await readGeminiActivationSnapshot(ctx);
-        const rules = geminiActivationRules(snapshot, nativeId);
-        if (binding.scope.kind === 'project') {
-          const target = geminiScopePattern(binding.scope.projectRoot);
-          const explicit = rules.filter((rule) => rule === target || rule === `!${target}`).at(-1);
-          return { activation: explicit === undefined ? 'absent' : explicit === target ? 'enabled' : 'disabled' };
-        }
-        if (!rules.some((rule) => rule === '*' || rule === '!*')) return { activation: 'absent' };
-        const enabled = geminiUserActivation(snapshot, nativeId, geminiExtensionPaths(ctx).home);
-        return { activation: enabled === 'unknown' ? 'unknown' : enabled ? 'enabled' : 'disabled' };
-      });
-      // Gemini 0.67 flushes its JSON ConsoleLog events to stderr on exit.
-      // A second output stream cannot establish an unambiguous inventory.
-      const output = await queryNativeDeploymentResult(ctx, binding, ['extensions', 'list', '--output-format', 'json']);
-      if (output.stdout.trim()) throw new Error('nativeObservationInvalid');
-      const inventory = rows(output.stderr);
-      if (inventory.some((row) => typeof row.name !== 'string' || !row.name.trim()
-        || typeof row.isActive !== 'boolean' || typeof row.path !== 'string')) throw new Error('nativeObservationInvalid');
-      const matches = inventory.filter((row) => row.name === nativeId);
-      if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
-      result.registration = matches.length ? 'present' : 'absent';
-      const row = matches[0];
-      setActivation(result, row?.isActive === true ? 'enabled' : row?.isActive === false ? 'disabled' : 'unknown');
-      if (!row) break;
-      // Identity and content checks protect mutation. They cannot negate list facts.
-      try {
-        const { root } = geminiExtensionPaths(ctx);
-        const directory = path.join(root, nativeId);
-        if (!nativeSourceMatches(row.path, directory)) { result.ownership = 'foreign'; break; }
-        const stats = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') return null;
-          throw error;
-        });
-        result.nativePackage = stats ? 'present' : 'absent';
-        if (!stats) {
-          result.ownership = 'unknown';
-          break;
-        }
-        if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('nativeExtensionPathUnconfirmed');
-        const metadata = await jsonFile(path.join(directory, '.gemini-extension-install.json'));
-        const manifest = await jsonFile(path.join(directory, 'gemini-extension.json'));
-        if (typeof metadata.source !== 'string' || typeof metadata.type !== 'string' || typeof manifest.name !== 'string') {
-          throw new Error('nativeExtensionIdentityUnknown');
-        }
-        if (!['local', 'link'].includes(metadata.type) || !nativeSourceMatches(metadata.source, layout.packageRoot)
-          || manifest.name !== nativeId) result.ownership = 'foreign';
-        if (result.ownership === 'aw') {
-          result.nativePackageContentDigest = await readGeminiNativeCopyContentDigest(ctx, layout.nativeIdentity, {
-            owner: 'agent-workflows', plugin: nativeId, pluginId: binding.plugin.pluginId,
-            sourceId: binding.plugin.sourceId, sourceIdentity: binding.plugin.sourceIdentity,
-            platform: binding.platform, scope: 'user', physicalKey: binding.physicalKey, artifactKey: path.basename(layout.packageRoot),
-          });
-          if (!result.nativePackageContentDigest) diagnostic(result, binding, 'nativePackageContentUnconfirmed',
-            'The installed extension content could not be confirmed. Keep the native copy until its ownership is checked.');
-        }
-      } catch (error) {
-        rethrowFatalError(error); ctx.signal?.throwIfAborted();
-        if (!['foreign', 'shared'].includes(result.ownership)) result.ownership = 'unknown';
-        diagnostic(result, binding, 'nativePackageContentUnconfirmed', 'The installed extension identity or content could not be read. Native observations are retained.');
-      }
-      break;
-    }
     case 'grok-cli':
     case 'grok-directory':
       await inspectGrokDeployment(ctx, binding, layout, result);

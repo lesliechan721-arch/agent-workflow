@@ -18,38 +18,6 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 
 describe('scoped Native recovery receipt', () => {
-  it('retains checked native recovery locations when preparation stops before execution', async () => {
-    const { env, layout } = getCurrentSourceTestIsolation();
-    const target = { pluginId: 'team/demo', pluginName: 'demo', pluginVersion: '1.0.0', platform: 'gemini' as const,
-      scope: 'user' as const, cwd: layout.fixtureCwd };
-    const diagnostic = { code: 'nativeConsentProtocolUnconfirmed', severity: 'error' as const, message: 'Review host permissions.',
-      subject: { pluginId: target.pluginId, target: 'gemini', scope: 'user' as const, field: 'nativeSource' },
-      detail: { reasonCode: 'geminiNativeConsentSource', path: path.join(layout.fixtureCwd, 'frozen-source') } };
-    native.run.mockResolvedValue({
-      platforms: ['gemini'], plugins: [target.pluginId], warnings: [], overallState: 'failed',
-      targetResults: [{ target, action: 'cleanup', state: 'failed', errorCode: diagnostic.code }],
-      rebuildResults: [{ status: 'failed', command: 'cleanup', target, actions: [], cleanupAttempted: false,
-        error: { phase: 'native.write', message: diagnostic.message },
-        removed: [], absent: [], residual: [], quarantined: [], failures: [],
-        deploymentReceipts: [{ bindingId: 'binding', physicalKey: 'physical', effects: [], unmet: [], reload: 'none',
-          diagnostics: [diagnostic], after: { physicalKey: 'physical', package: 'unknown', registration: 'unknown',
-            ownership: 'unknown', consumers: [], components: [], nativeIdentity: null, diagnostics: [],
-            prerequisites: { agentConsumers: { observation: 'unknown', candidates: [], reasonCodes: [] } } } }],
-      }],
-      operationPlan: createOperationPlan({ actions: [], intentChanges: [], changes: [], warnings: [],
-        evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } }),
-    } satisfies RebuildCommandResult);
-    const plan = await prepareScopedRecovery('cleanup', [target.pluginId], {
-      scope: 'user', cwd: layout.fixtureCwd, env, cliVersion: '1.0.0', targets: ['gemini'], yes: true,
-    }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
-    try {
-      expect(plan.receipt.targetResults[0]?.blockers).toContainEqual(expect.objectContaining({
-        code: diagnostic.code, subject: diagnostic.subject, detail: diagnostic.detail,
-      }));
-      expect(native.run).toHaveBeenCalledTimes(1);
-    } finally { await plan.context.dispose(); }
-  });
-
   // Frozen Skill native authority must reach the authorization gate without a legacy write action.
   it('requires authorization for a top-level frozen Skill native tool change before execution', async () => {
     const isolation = getCurrentSourceTestIsolation();

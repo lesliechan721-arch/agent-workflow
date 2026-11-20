@@ -22,14 +22,14 @@ describe('buildConfig validation', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       buildConfig: {
-        templates: { vars: { agent_name: { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' } }, include: ['skills/**/*.md'] },
+        templates: { vars: { agent_name: { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' } }, include: ['skills/**/*.md'] },
         fileRules: { claude: { include: ['skills/**', 'assets/claude/**'], exclude: [] },
           codex: { include: ['skills/**'], exclude: ['assets/claude/**'] },
-          gemini: { include: ['skills/**'], exclude: [] } },
+          pi: { include: ['skills/**'], exclude: [] } },
       },
     });
     expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['assets/claude/**']);
-    expect(manifest.buildConfig?.templates?.vars.agent_name).toMatchObject({ gemini: 'Gemini CLI' });
+    expect(manifest.buildConfig?.templates?.vars.agent_name).toMatchObject({ pi: 'Pi' });
   });
 
   it('rejects removed host manifest overrides without an alias', () => {

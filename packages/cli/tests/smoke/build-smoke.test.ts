@@ -31,7 +31,7 @@ const tempDirs: string[] = [];
 let buildSnapshot: SmokeBuildSnapshot | null = null;
 
 const EXPECTED_PLATFORMS = [
-  'codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic',
+  'codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic',
 ] as const;
 const EXPECTED_PLUGIN_PLATFORMS = {
   'agent-content-toolkit': EXPECTED_PLATFORMS,

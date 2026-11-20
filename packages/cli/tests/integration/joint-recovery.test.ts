@@ -34,7 +34,7 @@ import { snapshotRegularTree } from '../helpers/write-command-fixture.js';
 
 async function fixture(collide = false, platforms: Array<'generic' | 'opencode' | 'cursor' | 'claude'> = ['generic'],
   hooks: boolean | string[] = false, graph: Record<string, string[]> = { a: ['d'], b: ['d'], d: [] },
-  projectHookMutation?: { consumer: string; provider: string }) {
+  projectHookMutation?: { consumer: string; provider: string; scope?: 'user' | 'project'; replaceRetired?: boolean }, nativeHookMutation?: string) {
   const names = Object.keys(graph).sort();
   const skill = (name: string) => collide && name === 'b' ? 'a' : name;
   const hasHook = (name: string) => hooks === true || Array.isArray(hooks) && hooks.includes(name);
@@ -53,9 +53,16 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
     `fs.appendFileSync(${JSON.stringify(hookTrace)}, JSON.stringify({ plugin: c.plugin.name, platform: c.target.platform, scope: c.target.scope }) + '\\n');`,
     `const failure = ${JSON.stringify(hookFailure)};`,
     "if (fs.existsSync(failure) && fs.readFileSync(failure, 'utf8') === [c.plugin.name, c.target.platform, c.target.scope].join('/')) process.exit(23);",
-    ...(name === projectHookMutation?.consumer ? [
-      `if (c.target.scope === 'project') fs.writeFileSync(${JSON.stringify(path.join(isolation.env.HOME!, '.agents', 'skills', projectHookMutation.provider, 'README.md'))}, 'External bytes.');`,
-    ] : []),
+    ...(name !== nativeHookMutation ? [] : [
+      "if (c.target.scope === 'project') fs.appendFileSync(fs.readFileSync(failure, 'utf8'), '\\nExternal D-only bytes.\\n');",
+    ]),
+    ...(name !== projectHookMutation?.consumer ? [] : projectHookMutation.replaceRetired ? [
+      `const retired = ${JSON.stringify(path.join(isolation.env.HOME!, '.agents', 'skills', 'retiring-skill'))};`,
+      "if (c.target.scope === 'project') { fs.mkdirSync(retired, { recursive: true }); fs.writeFileSync(retired + '/README.md', 'External bytes.'); }",
+    ] : [
+      `const file = ${JSON.stringify(path.join(isolation.env.HOME!, '.agents', 'skills', projectHookMutation.provider, 'README.md'))};`,
+      `if (c.target.scope === ${JSON.stringify(projectHookMutation.scope ?? 'project')} && fs.existsSync(file)) fs.writeFileSync(file, 'External bytes.');`,
+    ]),
   ].join('\n'));
   await createDependencyCatalogSnapshotFixture(source, names.map((name) => ({ name,
     ...(graph[name]!.length ? { dependencies: graph[name] } : {}), configureManifest: (manifest) => {
@@ -214,6 +221,112 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(removed.intent.roots).toEqual([root]);
     expect(removed.intent.digest).not.toBe(added.intent.digest);
     expect(await observeIntent(other)).toEqual(otherBefore);
+  }, 30000);
+
+  // Test Value Gate: a real script cannot publish a consumer after invalidating a reused provider;
+  // an authorized, verified retirement alone must leave the provider usable.
+  it.each([
+    ['first Project install', 'bytes'],
+    ['sync with a retiring Skill', 'bytes'],
+    ['rebuild with a retiring Skill', 'bytes'],
+    ['sync with a retired Skill reoccupied', 'retired'],
+    ['sync with a clean retirement', 'none'],
+    ['first Project install with a provider owner read failure', 'read failure'],
+  ] as const)('validates User provider outputs at publication after %s', async (operation, mutation) => {
+    const firstInstall = operation.startsWith('first Project install');
+    const value = await fixture(false, ['generic'], ['b'], { a: [], b: ['d'], d: [], q: [] },
+      mutation === 'bytes' || mutation === 'retired' ? { consumer: 'b', provider: 'd', replaceRetired: mutation === 'retired' } : undefined);
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const, targets: ['generic'] };
+    const project = { ...value.options, context: 'project' as const, scope: 'project' as const, targets: ['generic'] };
+    for (const location of [user, project]) {
+      const observed = await observeIntent(location);
+      if (observed.state !== 'valid') throw new Error('Expected a saved Intent.');
+      const names = location.scope === 'user' ? ['d'] : firstInstall ? [] : ['b', 'q'];
+      await writeIntent(location, { ...observed.value, roots: names.map((name) => ({ pluginId: `team/${name}` })) });
+    }
+    const refreshProvider = async (addOld: boolean) => {
+      const root = path.join(value.source, 'plugins', 'd');
+      for (const subtree of ['skills', 'generic/skills']) {
+        const old = path.join(root, subtree, 'retiring-skill');
+        if (addOld) {
+          await fs.copy(path.join(root, subtree, 'd'), old);
+          await fs.writeFile(path.join(old, 'SKILL.md'), '---\nname: retiring-skill\ndescription: Old provider output\n---\nPreviously shipped.\n');
+        } else {
+          await fs.remove(old);
+          await fs.appendFile(path.join(root, subtree, 'd', 'README.md'), 'Now updated.\n');
+        }
+      }
+      const manifestPath = path.join(value.source, 'catalog-manifest.json');
+      const manifest = await fs.readJson(manifestPath);
+      const entry = await createCatalogManifestV7Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
+      await fs.writeJson(manifestPath, { ...manifest, entries: manifest.entries.map((item: typeof entry) =>
+        item.name === entry.name ? entry : item) });
+      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: user.cliVersion, env: user.env });
+    };
+    if (!firstInstall) await refreshProvider(true);
+    expect((await runPublicLifecycle('sync', ['team/d'], user)).status).toBe('success');
+    const providerFile = path.join(value.userRoot, 'd', 'README.md');
+    const retired = path.join(value.userRoot, 'retiring-skill');
+    if (!firstInstall) {
+      await expect(fs.pathExists(path.join(retired, 'SKILL.md'))).resolves.toBe(true);
+      await refreshProvider(false);
+    }
+
+    const marker = path.join(value.userRoot, 'd', SKILL_OWNER_MARKER);
+    const owner = await fs.readFile(marker);
+    const readFile = fs.readFile.bind(fs);
+    const failure = mutation === 'read failure' ? vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof readFile>) => {
+      if (String(args[0]) === marker && await fs.pathExists(value.hookTrace)) {
+        throw Object.assign(new Error('Provider owner read failed'), { code: 'EIO' });
+      }
+      return readFile(...args);
+    }) : undefined;
+    const result = await runPublicLifecycle(firstInstall ? 'install' : 'sync', ['team/b', 'team/q'],
+      { ...project, rebuild: operation === 'rebuild with a retiring Skill' }).finally(() => failure?.mockRestore());
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe(mutation === 'none' ? 'success' : 'partial');
+    expect(result.data.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/b', scope: 'project', ...(mutation === 'none'
+        ? { execution: 'applied', observation: 'verified' }
+        : { execution: 'not-run', blockerCodes: ['operationReviewStale'] }) }),
+      expect.objectContaining({ pluginId: 'team/q', scope: 'project', execution: 'applied', observation: 'verified' }),
+    ]));
+    if (firstInstall) expect(result.data.targetResults.map((target) => target.pluginId)).toEqual(['team/b', 'team/q']);
+    await expect(fs.readFile(providerFile, 'utf8')).resolves.toBe(mutation === 'bytes' ? 'External bytes.'
+      : firstInstall ? 'Use d.\n' : 'Use d.\nNow updated.\n');
+    if (firstInstall) await expect(fs.readFile(marker)).resolves.toEqual(owner);
+    await expect(fs.pathExists(path.join(retired, 'SKILL.md'))).resolves.toBe(false);
+    if (mutation === 'retired') await expect(fs.readFile(path.join(retired, 'README.md'), 'utf8')).resolves.toBe('External bytes.');
+    else await expect(fs.pathExists(retired)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).resolves.toBe(mutation === 'none');
+    await expect(fs.readFile(path.join(value.projectRoot, 'q', 'SKILL.md'), 'utf8')).resolves.toContain('Use q.');
+    await expect(fs.readFile(value.hookTrace, 'utf8')).resolves.toBe('{"plugin":"b","platform":"generic","scope":"project"}\n');
+  }, 45000);
+
+  it('retains changes made by a User provider script and blocks its consumer while an independent Skill publishes', async () => {
+    const value = await fixture(false, ['generic'], ['d'], { a: [], b: ['d'], d: [], q: [] },
+      { consumer: 'd', provider: 'd', scope: 'user' });
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    const project = { ...value.options, context: 'project' as const, scope: 'project' as const };
+    const observed = await observeIntent(user);
+    if (observed.state !== 'valid') throw new Error('Expected a saved Intent.');
+    await writeIntent(user, { ...observed.value, roots: [{ pluginId: 'team/d' }] });
+    await writeIntent(project, { ...observed.value, roots: [{ pluginId: 'team/b' }, { pluginId: 'team/q' }] });
+    expect((await runPublicLifecycle('sync', ['team/d'], user)).status).toBe('success');
+    await fs.writeFile(value.hookTrace, '');
+    const marker = path.join(value.userRoot, 'd', SKILL_OWNER_MARKER);
+    const owner = await fs.readFile(marker);
+
+    const result = await runPublicLifecycle('sync', ['team/d', 'team/b', 'team/q'], project);
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('partial');
+    expect(result.data.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/d', scope: 'user', execution: 'not-run', blockerCodes: ['operationReviewStale'] }),
+      expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'not-run', blockerCodes: ['userProviderNotSatisfied'] }),
+      expect.objectContaining({ pluginId: 'team/q', scope: 'project', execution: 'applied', observation: 'verified' }),
+    ]));
+    await expect(fs.readFile(path.join(value.userRoot, 'd', 'README.md'), 'utf8')).resolves.toBe('External bytes.');
+    await expect(fs.readFile(marker)).resolves.toEqual(owner);
+    await expect(fs.pathExists(path.join(value.projectRoot, 'b'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(value.projectRoot, 'q', 'SKILL.md'), 'utf8')).resolves.toContain('Use q.');
   }, 30000);
 
   it('publishes two independent generic Skills concurrently and returns their reviewed order', async () => {
@@ -1709,6 +1822,63 @@ describe('independent native package publication', () => {
 
 describe('native install with shared registration', () => {
   beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+
+  it.each(['install', 'sync', 'rebuild'] as const)('blocks %s publication after a Project hook changes a transitive User provider', async (command) => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const graph = { a: ['d'], b: ['d'], d: [], q: ['a', 'b'], r: ['a', 'b'], s: [] };
+    const value = await fixture(false, ['claude'], ['r', 'q'], graph, undefined, 'r');
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const, targets: ['claude'] };
+    const project = { ...value.options, context: 'project' as const, targets: ['claude'] };
+    const runtime = { nativeCliRunner: claude.nativeCliRunner };
+    await setTargets(user, ['claude']);
+    for (const [location, names] of [[user, ['d']], [project, command === 'install' ? ['q'] : ['q', 'r', 's']]] as const) {
+      const intent = await observeIntent(location);
+      if (intent.state !== 'valid') throw new Error('Missing fixture Intent.');
+      await writeIntent(location, { ...intent.value, roots: names.map((name) => ({ pluginId: `team/${name}` })) });
+    }
+    const registrations = async () => (await fs.readJson(claude.installedPath)).plugins as Record<string, Array<{ scope: string; installPath: string }>>;
+    const installedPath = (source: Awaited<ReturnType<typeof registrations>>, name: string, scope: string) =>
+      Object.entries(source).filter(([id]) => id.startsWith(`${name}@`)).flatMap(([, items]) => items)
+        .find((item) => item.scope === scope)?.installPath;
+    const skill = (root: string, name: string) => path.join(root, 'skills', name, 'SKILL.md');
+    const hooks = async () => (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+
+    const installed = await runPublicLifecycle('sync', ['team/d'], user, runtime);
+    expect(installed.status, JSON.stringify(installed)).toBe('success');
+    const d = skill(installedPath(await registrations(), 'd', 'user')!, 'd');
+    const dBefore = await fs.readFile(d, 'utf8');
+    await fs.writeFile(value.hookFailure, d);
+    const control = await runPublicLifecycle('sync', ['team/q'], project, runtime);
+    expect(control.status, JSON.stringify(control)).toBe('success');
+    expect(await hooks()).toEqual([{ plugin: 'q', platform: 'claude', scope: 'project' }]);
+    await expect(fs.readFile(d, 'utf8')).resolves.toBe(dBefore);
+    const before = await registrations();
+    const q = installedPath(before, 'q', 'local')!;
+    await expect(fs.readFile(skill(q, 'q'), 'utf8')).resolves.toContain('Use q.');
+    const r = path.join(path.dirname(q), 'r');
+    const a = skill(installedPath(before, 'a', 'local')!, 'a');
+    const b = skill(installedPath(before, 'b', 'local')!, 'b');
+    const [aBefore, bBefore] = await Promise.all([fs.readFile(a, 'utf8'), fs.readFile(b, 'utf8')]);
+    await fs.writeFile(value.hookTrace, '');
+
+    const result = await runPublicLifecycle(command === 'rebuild' ? 'sync' : command, ['team/r', 'team/s'], {
+      ...project, ...(command === 'install' ? { scope: 'project' } : {}), rebuild: command === 'rebuild',
+    }, runtime);
+    expect(await hooks()).toEqual([{ plugin: 'r', platform: 'claude', scope: 'project' }]);
+    await expect(fs.readFile(d, 'utf8')).resolves.toBe(`${dBefore}\nExternal D-only bytes.\n`);
+    await expect(fs.readFile(a, 'utf8')).resolves.toBe(aBefore);
+    await expect(fs.readFile(b, 'utf8')).resolves.toBe(bBefore);
+    await expect(fs.pathExists(skill(r, 'r'))).resolves.toBe(false);
+    const after = await registrations();
+    expect(installedPath(after, 'r', 'local')).toBeUndefined();
+    expect(installedPath(after, 'd', 'user')).toBe(installedPath(before, 'd', 'user'));
+    await expect(fs.readFile(skill(installedPath(after, 's', 'local')!, 's'), 'utf8')).resolves.toContain('Use s.');
+    expect(result.status, JSON.stringify(result)).toBe('partial');
+    expect(result.data.targetResults.find((target) => target.pluginId === 'team/r' && target.scope === 'project'))
+      .toMatchObject({ blockerCodes: expect.arrayContaining(['dependencyInstallFailed']) });
+    expect(result.data.targetResults.find((target) => target.pluginId === 'team/s' && target.scope === 'project'))
+      .toMatchObject({ execution: 'applied', observation: 'verified', blockerCodes: [] });
+  }, 45000);
 
   it('previews a shared Native provider hook only when the User root also runs', async () => {
     const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());

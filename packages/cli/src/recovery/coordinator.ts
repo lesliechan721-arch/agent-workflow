@@ -116,7 +116,7 @@ export interface RecoveryOptions {
   excludedPluginIds?: string[];
   /** User generic placements required only by a selected Project root in this sync. */
   inheritedPortableProviderIds?: readonly string[];
-  /** Reviewed User outputs that must still satisfy each consumer after a Project hook. */
+  /** Reviewed shared User outputs checked at each Portable consumer's publication. */
   portableProviderChecks?: ReadonlyMap<string, readonly PortablePreparation[]>;
   /** Reviewed scoped activation work for an existing shared Native provider. */
   nativeActivationOnlyTargets?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
@@ -554,6 +554,12 @@ function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
   agent: AgentId, outcomes: PortableExecutionTarget[], globalBlockers: string[]): void {
   const target = pair(plan, prepared.options.selector, agent)!;
   const contentOutcomes = outcomes.filter((entry) => entry.disposition !== 'remove');
+  for (const entry of contentOutcomes) {
+    if (entry.invocationWarning && entry.disposition === 'write' && entry.observation === 'satisfied'
+      && (entry.execution === 'applied' || entry.execution === 'no-op') && !entry.blockers.length) {
+      (target.reasons ??= []).push(entry.invocationWarning);
+    }
+  }
   const preparedTargets = prepared.targets.filter((entry) => entry.agent === agent);
   const gaps = (prepared.unmet ?? []).filter((gap) => gap.agent === agent);
   if (gaps.length) target.componentGaps = gaps;
@@ -606,15 +612,10 @@ function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation
     .filter((plugin) => !prepared.options.excludedPluginIds?.includes(plugin.pluginId!));
 }
 
-export function canCheckPortableProvider(group: PortablePreparation): boolean {
-  return !group.blockers.length
-    && !group.unmet.length && group.targets.some((target) => target.providerPluginId === group.options.selector)
-    && group.targets.every((target) => target.disposition === 'write');
-}
-
 function isHealthyPortableProvider(group: PortablePreparation): boolean {
-  return canCheckPortableProvider(group) && group.targets.every((target) => target.ownership === 'aw'
-    && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest);
+  return !group.blockers.length && !group.unmet.length && (group.intentionalEmpty || group.targets.length > 0)
+    && group.targets.every((target) => target.disposition === 'write' && target.ownership === 'aw'
+      && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest);
 }
 
 function preparePortablePreApplyAuthorization(plan: RecoveryPlan): void {
@@ -1174,7 +1175,7 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
       signal: plan.runtime.signal }, readScope);
     // The provider ran first. Its original missing state is never sufficient for a consumer.
     if (providers.has(prepared) && !isHealthyPortableProvider(checked)
-      || !portableReviewMatches(prepared, checked, progress?.completed)) return diagnostic('operationReviewStale');
+      || !await portableReviewMatches(prepared, checked, progress?.completed)) return diagnostic('operationReviewStale');
   }, { signal: plan.runtime.signal });
   return problems.find((problem) => problem !== undefined);
 }

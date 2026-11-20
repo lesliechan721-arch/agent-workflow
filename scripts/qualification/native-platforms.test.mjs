@@ -6,19 +6,19 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
+import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
   observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
-import { prepareGeminiFixtureTrust, observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
+import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-marker-confirmations.test.mjs';
 import './native-platform-process-query-timings.test.mjs';
 import './native-platform-acquisition.test.mjs';
 import './native-platform-copilot-skills.test.mjs';
-import './native-platform-gemini-skills.test.mjs';
+import './native-platform-copilot-grok-manual.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
@@ -75,26 +75,6 @@ test('records redacted discovery observations separately from required checks', 
     { id: 'loading', status: 'unverified', reason: 'discovery unavailable in <TEMP_ROOT>' },
   ]);
   assert.deepEqual(report.checks, [{ id: 'scope', status: 'passed' }]);
-});
-
-// Test Value Gate: public Gemini observation must bind its current revision to
-// the fixture record and require complete removal without opening an RPC session.
-test('public Gemini reads use current Skill metadata and require absence after removal', async () => {
-  const calls = [];
-  let stdout = 'Discovered Agent Skills:\n\nskill [Enabled]\n  Description: AW public acceptance revision 2\n  Location:    /fixture/SKILL.md\n\n';
-  const ctx = { platform: 'gemini', skillName: 'skill',
-    async command(...args) { calls.push(args); return { stdout }; },
-    async rpc() { assert.fail('Gemini Skill discovery must not open an RPC session.'); } };
-  assert.deepEqual(await readPublicSkills(ctx, '/project', 2, true), {
-    level: 'fresh-process-skill-discovery', name: 'skill', present: true, description: 'AW public acceptance revision 2' });
-  await assert.rejects(readPublicSkills(ctx, '/project', 1, true), { code: 'ERR_ASSERTION' });
-  stdout = stdout.replace('[Enabled]', '[Disabled]');
-  await assert.rejects(readPublicSkills(ctx, '/neutral', 2, false, { requireAbsent: true }), { code: 'ERR_ASSERTION' });
-  stdout = 'No skills discovered.\n';
-  assert.deepEqual(await readPublicSkills(ctx, '/neutral', 2, false, { requireAbsent: true }), {
-    level: 'fresh-process-skill-discovery', name: 'skill', present: false });
-  assert(calls.every(([args]) => JSON.stringify(args) === JSON.stringify(['skills', 'list'])));
-  assert.equal(calls[3][1], '/neutral');
 });
 
 // Test Value Gate: public observation must use the public revision and a fresh
@@ -254,76 +234,6 @@ test('reports only complete native installation intervals when measuring the bat
   assert.equal(partial.commands[1].finishTime, null);
 });
 
-// Test Value Gate: local trust is an explicit Gemini public-fixture permission,
-// restricted to the actual macOS host. No CLI argument can override the host.
-test('restricts the local macOS fallback to explicit public Gemini qualification', () => {
-  const base = ['--candidate', 'candidate.json', '--report', 'report.json', '--install'];
-  const valid = [...base, '--client', 'gemini', '--public-aw', '--local-macos-fallback'];
-  assert.equal(parseArgs(valid, 'darwin')['local-macos-fallback'], true);
-  for (const host of ['linux', 'win32']) assert.throws(() => parseArgs(valid, host), /invalid-arguments/u);
-  for (const client of ['all', 'codex', 'pi', 'claude', 'copilot', 'grok', 'opencode']) {
-    assert.throws(() => parseArgs([...base, '--client', client, '--public-aw', '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
-  }
-  assert.throws(() => parseArgs([...base, '--client', 'gemini', '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
-  assert.throws(() => parseArgs([...valid, '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
-  assert.throws(() => parseArgs([...valid, '--host', 'darwin']), /invalid-arguments/u);
-  assert.equal(Boolean(parseArgs([...base, '--client', 'gemini', '--public-aw'], 'darwin')['local-macos-fallback']), false);
-  if (process.platform !== 'darwin') assert.throws(() => parseArgs(valid), /invalid-arguments/u);
-});
-
-test('keeps default Gemini fixture trust Hosted-only and writes only authorized temporary trust', async t => {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-gemini-local-trust-')));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const savedHosted = process.env.GITHUB_ACTIONS;
-  delete process.env.GITHUB_ACTIONS;
-  try {
-    const env = await prepareEnvironment(root);
-    const workspace = path.join(root, 'workspace');
-    const ctx = { platform: 'gemini', scope: 'project', root, env,
-      project: path.join(root, 'project'), neutral: path.join(root, 'neutral') };
-    const directory = path.join(env.GEMINI_CLI_HOME, '.gemini');
-    await assert.rejects(prepareGeminiFixtureTrust(ctx, workspace), { code: 'ERR_ASSERTION' });
-    assert.equal(await fs.stat(path.join(directory, 'trustedFolders.json')).then(() => true, () => false), false);
-    ctx.localMacosFallback = true;
-    if (process.platform !== 'darwin') {
-      await assert.rejects(prepareGeminiFixtureTrust(ctx, workspace), { code: 'ERR_ASSERTION' });
-      return;
-    }
-    const evidence = await prepareGeminiFixtureTrust(ctx, workspace);
-    assert.equal(evidence.boundary, 'authorized-local-macos-fallback');
-    assert.equal(evidence.host, process.platform);
-    assert.equal(evidence.hosted, false);
-    assert.equal(evidence.activationOverridesWritten, false);
-    assert.equal(process.env.GITHUB_ACTIONS, undefined);
-    const trust = JSON.parse(await fs.readFile(path.join(directory, 'trustedFolders.json'), 'utf8'));
-    const expected = [workspace, ctx.project, ctx.neutral];
-    assert.equal(Object.keys(trust).length, 3);
-    assert.equal(expected.every(location => trust[location] === 'TRUST_FOLDER'), true);
-    assert.equal((await fs.readdir(directory)).length, 1);
-    assert.equal(env.GITHUB_TOKEN, undefined);
-    assert.equal(env.NODE_OPTIONS, undefined);
-    assert.equal(env.GITHUB_ACTIONS, undefined);
-  } finally {
-    if (savedHosted === undefined) delete process.env.GITHUB_ACTIONS;
-    else process.env.GITHUB_ACTIONS = savedHosted;
-  }
-});
-
-test('reports the authorized local fixture boundary even when candidate verification fails', {
-  skip: process.platform !== 'darwin',
-}, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-gemini-local-report-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const options = parseArgs(['--candidate', path.join(root, 'missing.json'), '--client', 'gemini',
-    '--report', path.join(root, 'report.json'), '--install', '--public-aw', '--local-macos-fallback']);
-  const report = await run(options);
-  assert.equal(report.status, 'failed');
-  assert.equal(report.boundary.fixtureTrust, 'authorized-local-macos-fallback');
-  assert.equal(report.boundary.host, process.platform);
-  assert.equal(report.boundary.hosted, process.env.GITHUB_ACTIONS === 'true');
-  assert.equal(report.clients.length, 0);
-});
-
 test('isolates configuration and does not pass arbitrary credentials or startup injection', () => {
   const before = process.env.AW_QUALIFICATION_TEST_SECRET;
   process.env.AW_QUALIFICATION_TEST_SECRET = 'private';
@@ -392,7 +302,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 test('uses actual AW projection bytes for both candidate revisions', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-projection-test-'));
   try {
-    for (const platform of ['codex', 'pi', 'claude', 'gemini', 'copilot', 'grok', 'opencode']) {
+    for (const platform of ['codex', 'pi', 'claude', 'copilot', 'grok', 'opencode']) {
       const current = path.join(root, platform); await fs.mkdir(current);
       const ctx = { root: current, platform, scope: 'user', project: current, env: await prepareEnvironment(current),
         pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
@@ -402,7 +312,7 @@ test('uses actual AW projection bytes for both candidate revisions', async () =>
       assert.notEqual(first.contentDigest, second.contentDigest);
       assert.match(await fs.readFile(path.join(ctx.bundle, 'skills/aw-qualification/SKILL.md'), 'utf8'), /revision 2/);
       const descriptor = { codex: '.codex-plugin/plugin.json', claude: '.claude-plugin/plugin.json',
-        pi: 'package.json', gemini: 'gemini-extension.json', copilot: 'plugin.json', grok: '.grok-plugin/plugin.json', opencode: 'package.json' }[platform];
+        pi: 'package.json', copilot: 'plugin.json', grok: '.grok-plugin/plugin.json', opencode: 'package.json' }[platform];
       const manifest = JSON.parse(await fs.readFile(path.join(ctx.bundle, descriptor), 'utf8'));
       assert.equal(manifest.name, ctx.pluginName);
       assert.equal(manifest.version, platform === 'opencode' ? '0.1.1' : '1.0.2');
@@ -516,9 +426,9 @@ test('Linux private marker row evidence preserves a real missing-marker failure'
   }
 });
 
-// Native Gemini uses the same strict observer. Diagnostic wiring must retain
+// Native Grok uses the same strict observer. Diagnostic wiring must retain
 // an actual wrong-marker failure and must not expose the startup marker.
-test('Linux native Gemini diagnostics retain a strict missing-marker failure', {
+test('Linux native Grok diagnostics retain a strict missing-marker failure', {
   skip: process.platform !== 'linux', timeout: 30_000,
 }, async () => {
   const keys = ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'];
@@ -529,7 +439,7 @@ test('Linux native Gemini diagnostics retain a strict missing-marker failure', {
       const script = "require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),1000)'],"
         + "{env:{...process.env,AW_AGENT_SKILL_EVAL_PROCESS_MARKER:'deliberately-incorrect-marker'},stdio:'ignore'});"
         + 'setTimeout(()=>process.exit(0),1500);';
-      await assert.rejects(execute(nodeLauncher, ['-e', script], { ...options, nativeClient: 'gemini' }), error => {
+      await assert.rejects(execute(nodeLauncher, ['-e', script], { ...options, nativeClient: 'grok' }), error => {
         assert.match(error.message, /lost its process marker/);
         assert(error.qualificationMarkerRows?.length > 0);
         assert(error.qualificationMarkerRows.every(row => row.markerMatches === false && row.commandForm));

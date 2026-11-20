@@ -9,12 +9,12 @@
 | Codex、Pi | `0.167.0`、`1.5.0` | 六环境，User / Project | [六环境记录](native-skills-2026-11-12.json) |
 | Claude | `2.1.317` | 六环境，User / Project | [管理与有效启用状态](native-claude-skills-2026-11-12.json) |
 | Copilot | `1.0.95` | 六环境，User / Project | [原生管理与 scope](native-copilot-skills-2026-11-12.json) |
-| Gemini | `0.67.0` | 六环境，User | [User 记录](native-gemini-skills-2026-11-12.json) |
-| Gemini | `0.67.0` | 六环境，Project | [Project 记录](native-gemini-project-skills-2026-11-13.json) |
 | Grok | `1.0.77` | 四环境，User | [User 记录](native-grok-skills-2026-11-12.json) |
 | Grok | `1.0.77` | 四环境，Project | [Project 记录](native-grok-project-skills-2026-11-13.json) |
 | OpenCode | `2.0.0` | 六环境，User / Project | [管理、消费字节与 scope](native-opencode-skills-2026-11-13.json) |
 | Antigravity | `1.3.4` | 六环境，User | [管理、消费字节与 scope](native-antigravity-user-skills-six-hosts-2026-11-14.json) |
+
+[技能调用证据](native-manual-skill-invocation-2026-11-20.json) 单独记录固定 CLI 的手动入口、自动候选、原生字段及对应的对照。各条目保存本机实际范围、探针及证据层级，含需要登录或只能核对本地协议的边界。九目标 Catalog 矩阵和各系统托管资格分别生成对应候选的报告。
 
 六环境指 Linux、macOS、Windows 的 x64 / arm64。Grok 四环境指 Linux x64 / arm64、macOS arm64、Windows x64；缺少官方分发的另外两环境排除，不记通过。
 
@@ -26,9 +26,8 @@
 
 ## 证据的限制
 
-- 只覆盖表内精确 CLI 版本、环境、scope 和普通 Skill。Desktop / App、相邻版本、其他组件和模型行为不继承资格。
+- 表中的普通 Skill 管理记录只覆盖所列精确 CLI 版本、环境和 scope。Desktop / App、相邻版本、其他组件和模型行为不继承资格。
 - 管理和有效启用状态不等于 Skill 已加载。加载、模型采用与调用控制未知独立记录，不阻塞管理验收；scope 未知仍阻塞。动态内容需要实际消费位置的字节证据。
 - Copilot Project 记录使用临时环境 `COPILOT_ALLOW_ALL=true`，同时批准工具；夹具没有 prompt、工具或模型请求，不将该设置传给用户环境。Darwin 普通进程观察不构成 Provider 或 OS 隔离资格。
-- Gemini Project 原生夹具有临时来源 / 项目信任与默认禁用规则前提，不证明 AW 自动配置正确；公开链必须验证生产 writer 的激活及外部隔离。
 - Grok Project 使用固定版本的精确临时目录信任状态，不授予生产自动信任权限。User 四环境执行过 `uninstall --keep-data`，但持久数据哨兵对照只在单独的 macOS arm64 探针完成。
 - OpenCode POSIX 使用已批准的普通管理观察；Windows 保留实际 Job 回执。Antigravity 六环境 User 记录来自两次原始运行，分别保留来源；Project 有效 scope 与会话 trust 不继承 User 资格。

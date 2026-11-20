@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
+import YAML from 'yaml';
 import { afterEach, expect, it } from 'vitest';
 import type { PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
@@ -12,10 +13,15 @@ afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => fs.remove(root)));
 });
 
-it('loads an OpenCode local package without an SDK install and registers a Skill at its absolute location', async () => {
+it.each([
+  ['ordinary', '', undefined],
+  ['manual-only', 'disable-model-invocation: true\n', false],
+  ['explicit model access', 'disable-model-invocation: false\n', true],
+  ['metadata-only', 'metadata:\n  opencode/autoinvoke: "false"\n', undefined],
+] as const)('registers the OpenCode %s Skill at its absolute location without an SDK install', async (_case, policy, autoinvoke) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-opencode-projection-'));
   temporaryRoots.push(root);
-  const skillText = '---\nname: check\ndescription: Check the input.\n---\nRun the check.\n';
+  const skillText = `---\nname: check\ndescription: Check the input.\n${policy}---\nRun the check.\n`;
   const skill: PluginComponent = { id: 'skill:check', kind: 'skill', name: 'check', content: { files: {
     'SKILL.md': { text: skillText },
   } } };
@@ -37,7 +43,10 @@ it('loads an OpenCode local package without an SDK install and registers a Skill
         hook: { status: 'unsupported', reasonCodes: [], delivery: [] },
         instruction: { status: 'unsupported', reasonCodes: [], delivery: [] },
       },
-      features: {},
+      features: {
+        'skill.invocation.manual': { status: 'supported', reasonCodes: [], values: ['true'] },
+        'skill.invocation.model': { status: 'supported', reasonCodes: [], values: ['true', 'false'] },
+      },
     },
     components: [skill], policy: { platform: 'opencode', permissions: [] },
     resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'closure' },
@@ -50,7 +59,7 @@ it('loads an OpenCode local package without an SDK install and registers a Skill
   expect(manifest.dependencies).toBeUndefined();
   const entrypoint = path.resolve(bundle, manifest.exports['.']);
   const extension = await import(/* @vite-ignore */ pathToFileURL(entrypoint).href);
-  const registered: Array<{ id: string; name: string; description: string; content: string; location: string }> = [];
+  const registered: Array<{ id: string; name: string; description: string; content: string; location: string; autoinvoke?: boolean }> = [];
   const cleanup = await extension.default.setup({ skill: {
     transform: async (edit: (editor: {
       get: (id: string) => typeof registered[number] | undefined;
@@ -62,8 +71,15 @@ it('loads an OpenCode local package without an SDK install and registers a Skill
   } });
   expect(extension.default.id).toBe('aw-source-example');
   expect(registered).toEqual([{ id: 'check', name: 'check', description: 'Check the input.', content: 'Run the check.\n',
-    location: path.join(bundle, 'skills/check/SKILL.md') }]);
+    location: path.join(bundle, 'skills/check/SKILL.md'), ...(autoinvoke === undefined ? {} : { autoinvoke }) }]);
   expect(path.isAbsolute(registered[0]!.location)).toBe(true);
-  expect(await fs.readFile(registered[0]!.location, 'utf8')).toBe(skillText);
+  const final = await fs.readFile(registered[0]!.location, 'utf8');
+  if (autoinvoke !== undefined) {
+    expect(YAML.parse(final.split('---')[1]!)).toEqual({
+      name: 'check', description: 'Check the input.', metadata: { 'opencode/autoinvoke': String(autoinvoke) },
+    });
+  } else {
+    expect(final).toBe(skillText);
+  }
   await cleanup();
 });

@@ -121,7 +121,6 @@ async function writeNativeAndPortableSkillBundle(
     'antigravity/skills/example',
     'opencode/skills/example',
     'pi/skills/example',
-    'gemini/skills/example',
     'copilot/skills/example',
     'grok/skills/example',
     'generic/skills/example',
@@ -161,7 +160,7 @@ describe('AW Catalog Workspace v1', () => {
     expect(await fs.pathExists(path.join(root, '.aw', 'catalog'))).toBe(false)
   })
 
-  it.each(['antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'])(
+  it.each(['antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'])(
     'validates %s Catalog static inputs with shared source syntax and keeps final Portable format strict', async (platform) => {
       const root = await createWorkspace()
       await initializeCatalogWorkspace({ workspaceRoot: root })
