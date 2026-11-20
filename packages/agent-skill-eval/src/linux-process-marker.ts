@@ -85,6 +85,9 @@ export async function readLinuxMarkerScan(
       try {
         const file = await open(`${base}/environ`, 'r');
         try {
+          // A read stream created with an already-aborted signal can emit an
+          // unhandled error before its async iterator observes the stream.
+          signal.throwIfAborted();
           const chunks: Buffer[] = [];
           for await (const chunk of file.createReadStream({ signal, autoClose: false })) {
             bytes += chunk.length;

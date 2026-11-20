@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -186,6 +186,54 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.abort(), 16_384, root))
       .rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// Cancellation after the environment opens must reject the scan without crashing Node.
+it.skipIf(process.platform !== 'linux')('survives cancellation while opening a Linux process environment', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'aw-marker-abort-'));
+  try {
+    const ts = await import('typescript');
+    const source = await readFile(new URL('../../src/linux-process-marker.ts', import.meta.url), 'utf8');
+    const { outputText } = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ESNext },
+    });
+    await writeFile(join(root, 'marker.mjs'), outputText);
+    const script = `
+      import assert from 'node:assert/strict';
+      import { promises as fs } from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { readLinuxMarkerScan } from './marker.mjs';
+
+      const row = 'proc/' + process.pid;
+      const fields = Array(49).fill('0');
+      fields[0] = 'S'; fields[19] = '100';
+      await fs.mkdir(row, { recursive: true });
+      await fs.writeFile(row + '/stat', process.pid + ' (fixture) ' + fields.join(' '));
+      await fs.writeFile(row + '/environ', '');
+
+      const controller = new AbortController();
+      const open = fs.open;
+      let environment;
+      fs.open = async (path, ...args) => {
+        const file = await open(path, ...args);
+        if (path.endsWith('/environ')) {
+          environment = file;
+          controller.abort();
+        }
+        return file;
+      };
+      syncBuiltinESMExports();
+
+      await assert.rejects(readLinuxMarkerScan('AW_MARKER', new Set(['fixture']),
+        controller.signal, 1_024, 'proc'), { name: 'AbortError' });
+      assert.equal(environment?.fd, -1);
+    `;
+    await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, env: {}, timeout: 3_000, killSignal: 'SIGKILL',
+    })).resolves.toMatchObject({ stdout: '', stderr: '' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 // Cleanup may succeed with unreaped zombies only if every member has exited.
