@@ -291,10 +291,13 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
   const candidates = await cliPaths(profile.names, ctx);
-  // A cold Windows Copilot launch can need more than the ordinary version timeout.
-  // Charge only time beyond that allowance so fast PATH entries leave the reserve available.
+  // Slow Windows launches can use one reserve shared across PATH entries.
+  // Fast entries leave the reserve available to later candidates.
+  const host = ctx.platform ?? process.platform;
+  const hasVersionReserve = host === 'win32' && (platform === 'copilot'
+    || (platform === 'antigravity' && (ctx.arch ?? process.arch) === 'arm64'));
   const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
-  let extraVersionBudgetMs = platform === 'copilot' && (ctx.platform ?? process.platform) === 'win32' ? versionTimeoutMs : 0;
+  let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
     'A client entry could not be inspected safely. Repair its permissions or launcher and check again.')] : [];
   const checkCandidate = async (executable: string): Promise<{ product: ProductInstallation; failure?: Diagnostic }> => {

@@ -44,7 +44,10 @@ async function windowsCopilotFixture() {
   return { ctx, entry: await fs.realpath(entry) };
 }
 
-function timedCopilotVersion(invocation: NativeCliInvocation, elapsedMs: number, stdout = 'GitHub Copilot CLI 1.0.95.\r\n') {
+const copilotVersionOutput = 'GitHub Copilot CLI 1.0.95.\r\n';
+type VersionProbe = Pick<NativeCliInvocation, 'command' | 'args' | 'timeoutMs'>;
+
+function timedVersion(invocation: NativeCliInvocation, elapsedMs: number, stdout: string) {
   const timeoutMs = invocation.timeoutMs!;
   vi.advanceTimersByTime(Math.min(elapsedMs, timeoutMs));
   if (elapsedMs > timeoutMs) {
@@ -286,10 +289,11 @@ describe('read-only target discovery and production selection', () => {
     onTestFinished(() => { vi.useRealTimers(); });
     const { ctx, entry } = await windowsCopilotFixture();
     ctx.discoveryCache = new Map();
-    const calls: NativeCliInvocation[] = [];
+    const calls: VersionProbe[] = [];
     ctx.runner = async (invocation) => {
-      calls.push(invocation);
-      return timedCopilotVersion(invocation, 7_000);
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      return timedVersion(invocation, 7_000, copilotVersionOutput);
     };
     const [selected, found] = await Promise.all([
       targetsSet({ ...ctx, discovery: ctx, targets: ['copilot'] }),
@@ -298,7 +302,7 @@ describe('read-only target discovery and production selection', () => {
     expect(publicExitCode(projectReceipt('target.set', selected))).toBe(0);
     expect(selected.policy?.targets).toEqual(['copilot']);
     expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
-    expect(calls).toMatchObject([{ command: process.execPath, args: [entry, '--version'], timeoutMs: 10_000 }]);
+    expect(calls).toEqual([{ command: process.execPath, args: [entry, '--version'], timeoutMs: 10_000 }]);
   });
 
   // Test Value Gate: a fast entry leaves the extra time available to a later
@@ -317,14 +321,15 @@ describe('read-only target discovery and production selection', () => {
     const second = path.join(ctx.cwd, 'second-bin', 'copilot.exe');
     await fs.outputFile(second, 'controlled probe boundary');
     ctx.env = { ...ctx.env, PATH: [ctx.env!.PATH, path.dirname(second)].join(';') };
-    const calls: NativeCliInvocation[] = [];
+    const calls: VersionProbe[] = [];
     ctx.runner = async (invocation) => {
-      calls.push(invocation);
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
       if (calls.length === 1 && firstFailure) {
         throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: firstFailure });
       }
       const elapsedMs = invocation.command === process.execPath ? delays[0]! : delays[1]!;
-      return timedCopilotVersion(invocation, elapsedMs);
+      return timedVersion(invocation, elapsedMs, copilotVersionOutput);
     };
     const found = await discoverPlatform('copilot', ctx);
     expect(found.installations).toMatchObject(available.map(confirmed => confirmed
@@ -333,7 +338,7 @@ describe('read-only target discovery and production selection', () => {
     if (available.includes(true)) {
       expect(selectNativeProduct(found.installations)?.entry).toMatchObject({ kind: 'cli', executable: available[0] ? first : await fs.realpath(second) });
     }
-    expect(calls).toMatchObject([
+    expect(calls).toEqual([
       { command: process.execPath, args: [entry, '--version'], timeoutMs: deadlines[0] },
       { command: await fs.realpath(second), args: ['--version'], timeoutMs: deadlines[1] },
     ]);
@@ -379,7 +384,7 @@ describe('read-only target discovery and production selection', () => {
     ctx.runner = async (invocation) => {
       const arg = invocation.args.at(-1)!;
       calls.push(arg);
-      if (arg === '--version') return timedCopilotVersion(invocation, 7_000, output);
+      if (arg === '--version') return timedVersion(invocation, 7_000, output);
       return { exitCode: 0, stderr: '', stdout: 'Unrelated tool' };
     };
     const found = await discoverPlatform('copilot', ctx);
@@ -401,6 +406,98 @@ describe('read-only target discovery and production selection', () => {
     });
     expect(calls.map(({ args, timeoutMs }) => [args.at(-1), timeoutMs])).toEqual([
       ['--version', 10_000], ['--help', DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS],
+    ]);
+  });
+
+  // Test Value Gate: a slow native version must still prove identity before
+  // the public target command can save a new selection.
+  it.each([
+    { name: 'slow Windows ARM64', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'fast Windows ARM64', host: 'win32', arch: 'arm64', delay: 1_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'Windows ARM64 deadline', host: 'win32', arch: 'arm64', delay: 10_001, deadline: 10_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Windows ARM64 unrelated entry', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Unrelated tool', version: '1.3.4', exit: 3, availability: 'unknown' },
+    { name: 'Windows ARM64 older version', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.3', exit: 3, availability: 'unsupported' },
+    { name: 'Windows x64 deadline', host: 'win32', arch: 'x64', delay: 7_000, deadline: 5_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Linux ARM64 deadline', host: 'linux', arch: 'arm64', delay: 7_000, deadline: 5_000,
+      exit: 3, availability: 'unknown' },
+  ] as const)('enforces Antigravity target selection for $name', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = scenario.host;
+    ctx.arch = scenario.arch;
+    ctx.linuxDesktopDirectories = [];
+    ctx.windowsApplicationsDirectories = [];
+    const name = scenario.host === 'win32' ? 'agy.exe' : 'agy';
+    await executable(ctx, name);
+    const bin = ctx.env!.PATH!;
+    const entry = await fs.realpath(path.join(bin, name));
+    ctx.env = scenario.host === 'win32' ? { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification' }
+      : { ...ctx.env, HOME: '/qualification', PATH: path.relative(ctx.cwd, bin) };
+    const version = 'version' in scenario ? scenario.version : '1.3.4';
+    const help = 'help' in scenario ? scenario.help : '';
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      if (invocation.command !== entry) return { exitCode: 0, stdout: '[]', stderr: '' };
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      if (invocation.args[0] === '--version') {
+        return timedVersion(invocation, scenario.delay, `${version}\n`);
+      }
+      return { exitCode: 0, stdout: help, stderr: '' };
+    };
+    const selected = await targetsSet({ ...ctx, discovery: ctx, targets: ['antigravity'] });
+    const publicResult = projectReceipt('target.set', selected);
+    expect(publicExitCode(publicResult)).toBe(scenario.exit);
+    expect(publicResult).toMatchObject({ data: { availability: expect.arrayContaining([expect.objectContaining({
+      id: 'antigravity', selected: scenario.exit === 0, installations: [expect.objectContaining({
+        availability: scenario.availability, version: scenario.availability === 'unknown' ? null : version,
+      })],
+    })]) } });
+    expect((await observePreferences({ ...ctx, scope: 'user' })).state).toBe(scenario.exit === 0 ? 'valid' : 'absent');
+    expect(calls).toEqual([
+      { command: entry, args: ['--version'], timeoutMs: scenario.deadline },
+      ...(help ? [{ command: entry, args: ['--help'], timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }] : []),
+    ]);
+  });
+
+  // Test Value Gate: multiple Antigravity entries share one reserve and a slow
+  // entry can only use the time left by earlier entries.
+  it('shares the Windows ARM64 Antigravity version budget across PATH entries', async () => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = 'win32';
+    ctx.arch = 'arm64';
+    const delays = new Map([['fast', 1_000], ['slow', 7_000], ['over-budget', 8_001]]);
+    const entries = await Promise.all([...delays.keys()].map(async (name) => {
+      const entry = path.join(ctx.cwd, name, 'agy.exe');
+      await fs.outputFile(entry, 'controlled probe boundary');
+      return fs.realpath(entry);
+    }));
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', PATH: entries.map((entry) => path.dirname(entry)).join(';') };
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      return timedVersion(invocation, delays.get(path.basename(path.dirname(command)))!, 'Antigravity CLI 1.3.4');
+    };
+    const found = await discoverPlatform('antigravity', ctx);
+    expect(found.installations).toMatchObject([
+      { availability: 'available', version: '1.3.4' },
+      { availability: 'available', version: '1.3.4' },
+      { availability: 'unknown', reasonCodes: ['clientProbeFailed'] },
+    ]);
+    expect(calls).toEqual([
+      { command: entries[0], args: ['--version'], timeoutMs: 10_000 },
+      { command: entries[1], args: ['--version'], timeoutMs: 10_000 },
+      { command: entries[2], args: ['--version'], timeoutMs: 8_000 },
     ]);
   });
 
