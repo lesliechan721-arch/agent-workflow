@@ -11,7 +11,7 @@ import { readJointDemand, deriveJointDemand, projectSkillCandidates, isInstalled
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
-import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
+import type { NativeCliRunner } from '../utils/native-cli.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { createCodexNativeObservationSession, type CodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
@@ -35,7 +35,6 @@ import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import { resolvePluginDependencyClosure, resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { installationInvocation, selectNativeProduct, type ReadContext } from '../platforms/discovery.js';
-import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
 import { withNativeObservationBatch } from '../platforms/inspection-query.js';
@@ -169,11 +168,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           if (ctx.codexObservationSession) ctx.codexObservationSession.setManager(manager);
           else {
             ownedSession = await createCodexNativeObservationSession({ exactCwd: context.executionCwd, env: context.env, manager,
-              runner: async (request) => {
-                const result = await runNativeCli({ ...request, signal: options.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, options.nativeCliRunner);
-                if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
-                return result;
-              } });
+              runner: options.nativeCliRunner, probe: { platform: ctx.platform, signal: options.signal } });
             ctx.codexObservationSession = ownedSession;
           }
         }
@@ -1044,12 +1039,7 @@ async function readRecoveryStatusWithQueries(options: ReadRecoveryStatusOptions 
   try {
     options.signal?.throwIfAborted();
     session = await createCodexNativeObservationSession({ exactCwd: context.executionCwd, env: context.env,
-      runner: async (request) => {
-        const result = await runNativeCli({ ...request, signal: options.signal,
-          timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, options.nativeCliRunner);
-        if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
-        return result;
-      } });
+      runner: options.nativeCliRunner, probe: { signal: options.signal } });
     // User reads use only this session's neutral cwd. Project reads add the
     // exact project snapshot without repeating the same neutral observation.
     return await readRecoveryStatusInSession({ ...options, codexObservationSession: session }, snapshot);

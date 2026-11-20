@@ -15,7 +15,7 @@ import { getCodexHome } from './state-paths.js';
 import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
 import { resolveWindowsNpmCommand } from './windows-npm-shim.js';
 
-const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
+export const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
 const MIN_NATIVE_CLI_TIMEOUT_MS = 1_000;
 const MAX_NATIVE_CLI_TIMEOUT_MS = 600_000;

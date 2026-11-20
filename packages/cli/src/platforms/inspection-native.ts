@@ -2,9 +2,8 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
-import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import { NativeCliError, runNativeCli } from '../utils/native-cli.js';
+import { NativeCliError } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { inspectOwnedComponents, readSkillOwnerMarker } from '../utils/ownership.js';
@@ -184,12 +183,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       const manager = { kind: product.product === 'app' ? 'app' as const : 'system' as const,
         version: product.version ?? 'unknown', command: invocation.command, argsPrefix: invocation.args };
       const session = ctx.codexObservationSession ?? await createCodexNativeObservationSession({ exactCwd: binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd,
-        env: ctx.env ?? process.env, manager,
-        runner: async (request) => {
-          const response = await runNativeCli({ ...request, signal: ctx.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
-          if (Buffer.byteLength(response.stdout) + Buffer.byteLength(response.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
-          return response;
-        } });
+        env: ctx.env ?? process.env, manager, runner: ctx.runner, probe: { platform: ctx.platform, signal: ctx.signal } });
       try {
         // inspectPlugin binds both list invocations synchronously before yielding.
         // A concurrent product can invalidate the cache, not change these reads.
