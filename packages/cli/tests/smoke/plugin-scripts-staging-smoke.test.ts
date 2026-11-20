@@ -163,6 +163,8 @@ describe('plugin scripts staging smoke', () => {
     const temporary = await makeTempRepo();
     const bundle = path.join(temporary, 'detached-plugin');
     await fs.copy(path.join(snapshot.catalogOutputRoot, 'plugins', 'agent-subagent'), bundle);
+    const bridge = await fs.readFile(path.join(bundle, 'skills/spawn-subagent/scripts/runtime/windows-native.mjs'), 'utf8');
+    expect(bridge.includes('aw-plugin-staging-'), 'the delivered bridge embeds a temporary build directory').toBe(false);
     const manifests = await importSmokeSnapshotModule<typeof import('../../src/utils/manifest.js')>(
       path.join(snapshot.cliDistRoot, 'src', 'utils', 'manifest.js'));
     const renderer = await importSmokeSnapshotModule<typeof import('../../src/utils/artifact-renderer.js')>(
