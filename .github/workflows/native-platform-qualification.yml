@@ -161,6 +161,12 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/native-results"
           node scripts/qualification/native-platform-public-components.mjs --target generic --report "$RUNNER_TEMP/native-results/generic-components.json"
+      - name: Verify all shipped plugins through the generic writer in both scopes
+        if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-results"
+          node scripts/qualification/native-platform-public-components.mjs --target generic --suite candidate --report "$RUNNER_TEMP/native-results/generic-shipped.json"
       - name: Verify the public Cursor component matrix with its pinned Linux x64 distribution
         if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
         shell: bash

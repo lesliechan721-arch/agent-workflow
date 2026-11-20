@@ -28,7 +28,7 @@ producer 拥有资源及更新/删除生命周期；set 是一次完整替换的
 
 Claude 的 allow 与沙箱例外独立；需要例外时声明 `agentOverrides.claude.sandbox.excludedCommands`，另要求 `aw.claude.sandbox-exclusions.v1`。按实际需要限定命令 ID 与子命令前缀，不扩大到整个 aw 或其它 ID。生成规则正确不证明宿主实际放行。
 
-遇到 `invocationPolicyNotApplied`，查看实际作用域和受影响的权限项。该入口缺少权限映射，宿主保持自己的策略。需要该权限才能安全执行的流程由作者适配或省略，最终产物继续核对精确引用和命令闭包。
+遇到 `invocationPolicyNotApplied`，查看作用域和 `detail.skippedPermissionActions` 中列出的动作。AW 继续安装该入口能施加的规则。对于已跳过的动作，宿主使用自身策略。需要这些动作才能安全执行的流程由作者适配或省略，最终产物继续核对精确引用和命令闭包。
 
 ## 维护与核对
 

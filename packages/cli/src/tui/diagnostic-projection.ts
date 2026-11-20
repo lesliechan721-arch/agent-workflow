@@ -48,7 +48,7 @@ export function projectDeliveryNoticeHistory(diagnostics: readonly RecoveryDiagn
     if (!target) return [];
     const reason = detail?.reasonCode ? safeDiagnosticCode(detail.reasonCode, 'unknown') : undefined;
     return [{ id: `${recordId}:delivery-notice:${index}`, code, stage,
-      safeMessage: deliveryNoticeMessage(code, reason, subject?.field), target, causes: [], detailLines: reason ? [reason] : [] }];
+      safeMessage: deliveryNoticeMessage(code, detail, subject?.field), target, causes: [], detailLines: reason ? [reason] : [] }];
   });
 }
 

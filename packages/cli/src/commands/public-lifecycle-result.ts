@@ -7,8 +7,8 @@ import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../out
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
-import { deliveryNoticeMessage, isDeliveryNoticeCode, projectComponentDelivery, projectComponentGap,
-  PREVIOUS_DEPLOYMENT_RETAINED, safeComponentIdentity, type ComponentDelivery } from '../output/component-delivery.js';
+import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, isDeliveryNoticeCode, isSkippedPermissionReason, projectComponentDelivery, projectComponentGap,
+  PREVIOUS_DEPLOYMENT_RETAINED, safeComponentIdentity, safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
@@ -130,10 +130,15 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const combinedSubject: NonNullable<Diagnostic['subject']> = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
   if (isDeliveryNoticeCode(code) && code !== PREVIOUS_DEPLOYMENT_RETAINED) {
-    if (detail) detail = { reasonCode: detail.reasonCode };
+    if (detail) {
+      const actions = code === INVOCATION_POLICY_NOT_APPLIED && typeof value !== 'string'
+        ? safeSkippedPermissionActions(value.detail?.skippedPermissionActions) : [];
+      detail = code === INVOCATION_POLICY_NOT_APPLIED && !isSkippedPermissionReason(detail.reasonCode) ? undefined
+        : { reasonCode: detail.reasonCode, ...(actions.length ? { skippedPermissionActions: actions } : {}) };
+    }
     if (combinedSubject.field && safeComponentIdentity(combinedSubject.field) !== combinedSubject.field) delete combinedSubject.field;
   }
-  return { code, severity, message: isDeliveryNoticeCode(code) ? deliveryNoticeMessage(code, detail?.reasonCode, combinedSubject.field)
+  return { code, severity, message: isDeliveryNoticeCode(code) ? deliveryNoticeMessage(code, detail, combinedSubject.field)
     : messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
 }
@@ -153,7 +158,8 @@ export function projectDeploymentNotices(targets: readonly RecoveryTarget[]): Di
     for (const notice of target.reasons ?? []) {
       if (isDeliveryNoticeCode(notice.code) && !deployment.some((entry) => entry.code === notice.code
         && JSON.stringify(entry.subject ?? subject) === JSON.stringify(notice.subject ?? subject)
-        && entry.detail?.reasonCode === notice.detail?.reasonCode)) {
+        && entry.detail?.reasonCode === notice.detail?.reasonCode
+        && JSON.stringify(entry.detail?.skippedPermissionActions) === JSON.stringify(notice.detail?.skippedPermissionActions))) {
         diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, 'warning'));
       }
     }

@@ -61,7 +61,7 @@ import { selectAgents, writePreferences,
 import { calculateIntentDigest } from '../intent/intent-codec.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
-import { retainedOutputDiagnostic, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
+import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
 import { prepareJointRecovery, executeJointRecovery, type JointRecoveryState } from './joint-coordinator.js';
 import { createEmptyNativeDemandView, type NativeSharedReferenceView } from '../utils/native-demand.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -391,8 +391,8 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       .map((deployment) => [deployment.binding.id, deployment]));
     if (deploymentPlans.size) {
       target.deploymentPlans = [...deploymentPlans.values()];
-      const gaps = target.deploymentPlans.flatMap(({ expected }) => expected.unmet.map((gap) =>
-        ({ ...gap, providerPluginId: pluginId, agent: platform, renderScope: plan.options.scope })));
+      const gaps = target.deploymentPlans.flatMap(({ expected, evidence }) =>
+        scopeNativeComponentGaps(expected.unmet, target, evidence.renderUnits));
       if (gaps.length) target.componentGaps = uniqueRecoveryComponentGaps(gaps);
     }
     const exclusions = [
@@ -503,8 +503,8 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
         target.content = succeeded ? 'satisfied' : 'unknown';
       }
       if (deployments.length && plan.command !== 'cleanup' && plan.command !== 'uninstall') {
-        const gaps = deployments.flatMap((entry) => entry.unmet.map((gap) =>
-          ({ ...gap, providerPluginId: pluginId, agent: platform, renderScope: plan.options.scope })));
+        const gaps = deployments.flatMap((entry) =>
+          scopeNativeComponentGaps(entry.unmet, target, deploymentPlans.get(entry.bindingId)?.evidence.renderUnits));
         if (gaps.length) target.componentGaps = uniqueRecoveryComponentGaps(gaps);
         const installed = new Set(deployments.flatMap((entry) => {
           const deployment = deploymentPlans.get(entry.bindingId);

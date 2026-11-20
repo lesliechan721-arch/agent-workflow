@@ -9,6 +9,8 @@ import * as catalogContexts from '../../src/utils/catalog-operation-context.js';
 import { writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
 import { setRebuildCommandTestHooksForTests, type RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
+import type { CommandResult } from '../../src/output/public-result.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
 import type { FrozenDeploymentPlan } from '../../src/platforms/contracts.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -21,7 +23,7 @@ import fs from 'fs-extra';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCapturedCliIo, runCliEntry } from '../helpers/cli-entry.js';
 import { setNativeCliRunnerOverrideForTests, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import type { PluginMeta } from '../../src/types.js';
 import { parseOwnedTextHeader, readSkillOwnerMarker } from '../../src/utils/ownership.js';
@@ -107,6 +109,68 @@ describe('five namespaced write commands', () => {
         deploymentObservations: [{ after: { package: 'absent', registration: 'absent',
           components: [{ id: 'reviewer', presence: 'present' }] } }],
       }] }] } });
+  });
+
+  it('reports each Codex component gap in its render scope for a Project install', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const sourceRoot = path.join(cwd, 'mixed-render-scopes');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'mixed', configureManifest(manifest) {
+      manifest.platforms = ['codex'];
+      manifest.extensions = {
+        instructions: [{ name: 'project-guide', title: 'Guide', content: 'Check the change.', coverage: ['main'] }],
+        agents: [
+          { name: 'reviewer', description: 'Reviews changes', prompt: 'Check the diff.' },
+          { name: 'restricted', description: 'Reviews without tools', prompt: 'Check the diff.', tools: [] },
+        ],
+        hooks: [{ id: 'guard', event: 'session_start', feedback: 'block', command: 'echo guard' }],
+      };
+    } }]);
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ env, expectedDigest: config.digest, config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', path: sourceRoot, primary: true },
+    ] } });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    await writePreferences({ scope: 'user', cwd, env }, { ...createEmptyPreferences(), targets: ['codex'] });
+    const { nativeCliRunner } = await createCodexNativeTestRuntime(isolation);
+    const aw = (...argv: string[]) => runCliEntry(['plugin', ...argv, '--json'], { cwd, env, nativeCliRunner, interactive: false });
+    const requestedTarget = { pluginId: 'team/mixed', target: 'codex', scope: 'project',
+      componentGaps: expect.arrayContaining([
+        expect.objectContaining({ kind: 'hook', providerPluginId: 'team/mixed', agent: 'codex', renderScope: 'user',
+          requiredFeatures: [{ feature: 'hook.common.session_start', values: ['block'] }] }),
+        expect.objectContaining({ kind: 'agent', providerPluginId: 'team/mixed', agent: 'codex', renderScope: 'project',
+          requiredFeatures: [{ feature: 'agent.tools', values: ['none'] }] }),
+      ]) };
+    const tui = createTuiControllerDependencies(createCliExecutionContext({ cwd, env, nativeCliRunner, interactive: false }));
+    const preview = await tui.prepareScopedTask({
+      kind: 'recovery', command: 'install', scope: 'project', selectors: ['team/mixed'],
+    }, new AbortController().signal);
+    if (preview.kind !== 'recovery') throw new Error('Expected recovery plan.');
+    try {
+      expect(preview.plan.receipt.targetResults).toMatchObject([{ pluginId: 'team/mixed', agent: 'codex', scope: 'project',
+        componentGaps: requestedTarget.componentGaps }]);
+    } finally {
+      await preview.plan.context.dispose();
+    }
+    const install = await aw('install', 'team/mixed', '--scope', 'project', '--yes');
+    expect(install.exitCode, install.stdout).toBe(0);
+    expect(install.stderr).toBe('');
+    expect(install.parseJsonStdout<CommandResult<LifecycleData>>()).toMatchObject({
+      schemaVersion: 2, status: 'success', data: {
+        targetResults: [{ ...requestedTarget, installedComponentCount: 2,
+          deploymentReceipts: [{ after: { package: 'present' } }] }],
+        remainingTargets: [],
+      },
+    });
+    const status = await aw('status', '--context', 'project');
+    expect(status.exitCode, status.stdout).toBe(0);
+    expect(status.stderr).toBe('');
+    expect(status.parseJsonStdout<CommandResult>()).toMatchObject({
+      schemaVersion: 2, status: 'success', data: { allSatisfied: true, inSync: true,
+        inventory: [{ targetResults: [requestedTarget] }] },
+    });
+    await expect(fs.readFile(path.join(cwd, '.codex', 'agents', 'aw-team-mixed-reviewer.toml'), 'utf8'))
+      .resolves.toContain('Check the diff.');
   });
 
   it('installs a dependency closure in dependency-first order and keeps present dependencies', async () => {

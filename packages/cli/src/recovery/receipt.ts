@@ -3,7 +3,7 @@ import type { CommandProducerResult, Scope } from '../types.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
 import type { Delivery } from './types.js';
-import type { DeploymentObservation, DeploymentReceipt, DeploymentExclusion, FrozenDeploymentPlan, ProductInstallation } from '../platforms/contracts.js';
+import type { DeploymentObservation, DeploymentReceipt, DeploymentExclusion, FrozenDeploymentPlan, ProductInstallation, RenderUnit } from '../platforms/contracts.js';
 
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 
@@ -11,6 +11,14 @@ export interface RecoveryComponentGap extends ComponentUnmet {
   providerPluginId: string;
   agent: AgentId;
   renderScope: Scope;
+}
+
+export function scopeNativeComponentGaps(gaps: readonly ComponentUnmet[], target: RecoveryPosition,
+  renderUnits: readonly RenderUnit[] = []): RecoveryComponentGap[] {
+  return gaps.map((gap) => ({
+    ...gap, providerPluginId: target.pluginId, agent: target.agent,
+    renderScope: renderUnits.find((unit) => unit.kinds.includes(gap.kind))?.renderScope.kind ?? target.scope,
+  }));
 }
 
 export function uniqueRecoveryComponentGaps(gaps: readonly RecoveryComponentGap[]): RecoveryComponentGap[] {

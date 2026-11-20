@@ -34,7 +34,7 @@ test('validates and redacts the session response', () => {
   const project = path.resolve(os.tmpdir(), 'isolated');
   assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project), /^Error: skill-inventory-location-mismatch$/u);
   const inProject = { ...selected, path: path.join(project, '.agents', 'plugins', 'aw-fixture', 'skills', 'manual', 'SKILL.md') };
-  assert.deepEqual(parseAntigravitySkillInventory(make([inProject]), names, project), { ...safe, projectLocations: 'verified' });
+  assert.deepEqual(parseAntigravitySkillInventory(make([inProject]), names, project), { ...safe, verifiedProjectLocations: 1 });
 });
 async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false, dropOwner = false, neutralEnabled = true, retainOnUninstall = false } = {}) {
   let installed = false, installs = 0;
@@ -62,10 +62,12 @@ async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false,
       assert.deepEqual(args, ['-p', '/skills', '--output-format', 'json']);
       const skills = [{ name: 'unrelated-private-skill', description: 'private-path', model_invocable: true }];
       if (cwd === ctx.project) {
-        skills.push({ name: 'aw-local-management-direct', model_invocable: true });
+        skills.push({ name: 'aw-local-management-direct', model_invocable: true,
+          path: path.join(ctx.project, '.agents', 'skills', 'aw-local-management-direct', 'SKILL.md') });
         if (present && projectVisible) {
           const [name] = await fs.readdir(path.join(projectDirectory, 'skills'));
-          skills.push({ name: `${path.basename(projectDirectory)}:${name}`, model_invocable: true });
+          skills.push({ name: `${path.basename(projectDirectory)}:${name}`, model_invocable: true,
+            path: path.join(projectDirectory, 'skills', name, 'SKILL.md') });
         }
       }
       return result(JSON.stringify({ status: 'SUCCESS', num_turns: 0, command: { name: 'skills', data: { skills } } }));

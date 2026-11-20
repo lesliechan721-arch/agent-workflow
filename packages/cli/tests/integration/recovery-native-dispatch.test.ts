@@ -464,6 +464,87 @@ describe('native recovery dispatch', () => {
     } finally { await reviewed.context.dispose(); }
   });
 
+  it('keeps installed Pi roles current while the execution extension changes', async () => {
+    // Test Value Gate: check live notices and no-op sync without masking a lost role file.
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const source = path.join(cwd, 'pi-roles-catalog');
+    const bin = path.join(cwd, 'bin');
+    const env = { ...isolation.env, PATH: bin };
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'fixture entry', { mode: 0o755 });
+    await createCatalogSnapshotFixture(source, 'roles', [], 'Pi roles.', (manifest) => {
+      manifest.platforms = ['pi'];
+      manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review the work.', prompt: 'Check the work.' }] };
+    });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['pi']);
+    const root = resolvePlatformConfigRoot('pi', { cwd, env });
+    const settings = path.join(root, 'settings.json');
+    const extension = 'npm:@tintinweb/pi-subagents@0.22.0';
+    const extensionRoot = path.join(root, 'npm', 'node_modules', '@tintinweb', 'pi-subagents');
+    const registration = 'aw-packages/aw-local-roles';
+    const packageRoot = path.join(root, registration);
+    let installs = 0;
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      const reply = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' });
+      if (args.includes('--version')) return reply('Pi coding agent 1.5.0');
+      const packages: Array<string | { source: string }> = (await fs.readJson(settings, { throws: false }).catch(() => null))?.packages ?? [];
+      if (args[0] === 'list') return reply(packages.length ? ['User packages:',
+        ...packages.flatMap((entry) => {
+          const name = typeof entry === 'string' ? entry : entry.source;
+          return [`  ${name}`, `    ${name === extension ? extensionRoot : packageRoot}`];
+        }), ''].join('\n') : 'No packages installed.\n');
+      if (args[0] !== 'install' || args.includes('--local') || args.at(-1) !== packageRoot) throw new Error('Unexpected Pi operation');
+      installs++;
+      await fs.outputJson(settings, { packages: [registration] });
+      return reply(`Installed ${packageRoot}`);
+    };
+    const aw = async (...args: string[]) => {
+      const result = await runCliEntry(['plugin', ...args, '--context', 'user', '--json'], { cwd, env, nativeCliRunner, interactive: false });
+      return { exitCode: result.exitCode, value: result.parseJsonStdout<CommandResult>() };
+    };
+    const role = { target: 'pi', scope: 'user', satisfaction: 'installed', installedComponentCount: 1,
+      installedComponentIds: ['agent:reviewer'] };
+    const notice = (reasonCode: string) => expect.objectContaining({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode } });
+    const install = await aw('install', 'local/roles', '--scope', 'user', '--yes');
+    expect(install, JSON.stringify(install)).toMatchObject({ exitCode: 0, value: { diagnostics: expect.arrayContaining([notice('piAgentConsumerMissing')]),
+      data: { remainingTargets: [], targetResults: [role] } } });
+    const agentRoot = path.join(packageRoot, 'agents');
+    const [agentFile] = await fs.readdir(agentRoot);
+    const rolePath = path.join(agentRoot, agentFile!);
+    const roleBytes = await fs.readFile(rolePath);
+    const untouchedTimestamp = new Date('2020-01-01T00:00:00Z');
+    await fs.utimes(rolePath, untouchedTimestamp, untouchedTimestamp);
+    const assertStatus = async () => {
+      const status = await aw('status');
+      expect(status, JSON.stringify(status)).toMatchObject({ exitCode: 0, value: { data: { counts: { pending: 0 }, allSatisfied: true,
+        inSync: true, inventory: [{ targetResults: [role] }] } } });
+      expect(status.value.diagnostics.map(({ code }) => code)).not.toContain('platformInputDrift');
+      expect(status.value.nextActions).toEqual([]);
+      return status.value.diagnostics;
+    };
+    expect(await assertStatus()).toContainEqual(notice('piAgentConsumerMissing'));
+    await fs.outputJson(path.join(extensionRoot, 'package.json'), { name: '@tintinweb/pi-subagents', version: '0.22.0', pi: { extensions: ['./index.ts'] } });
+    await fs.outputFile(path.join(extensionRoot, 'index.ts'), 'export default function () {}\n');
+    await fs.outputJson(settings, { packages: [registration, { source: extension, extensions: [] }] });
+    expect(await assertStatus()).toContainEqual(notice('piAgentConsumerDisabled'));
+    await fs.outputJson(settings, { packages: [registration, extension] });
+    expect((await assertStatus()).map(({ code }) => code)).not.toContain('piAgentConsumerUnavailable');
+    const sync = await aw('sync', 'local/roles', '--yes');
+    expect(sync, JSON.stringify(sync)).toMatchObject({ exitCode: 0, value: { data: { remainingTargets: [], changes: { outputs: 'none' } } } });
+    expect(installs).toBe(1);
+    await expect(fs.readFile(rolePath)).resolves.toEqual(roleBytes);
+    expect((await fs.stat(rolePath)).mtimeMs).toBe(untouchedTimestamp.getTime());
+
+    await fs.remove(rolePath);
+    const missing = await aw('status');
+    expect(missing.value.data, JSON.stringify(missing)).toMatchObject({ counts: { pending: 1 }, allSatisfied: false, inSync: false });
+    expect(missing.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'componentOutputMissing' }));
+  });
+
   it('verifies a zero-output Pi Project against current registration and the skipped Hook script', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;

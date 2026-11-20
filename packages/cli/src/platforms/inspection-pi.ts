@@ -10,7 +10,6 @@ import type { DeploymentLayout } from './layout.js';
 import { queryNativeDeployment } from './inspection-query.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { readSkillOwnerMarker } from '../utils/ownership.js';
-import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { resolveUserHome } from '../utils/state-paths.js';
 
 type ObjectValue = Record<string, unknown>;
@@ -237,13 +236,14 @@ async function isGeneratedPiExtension(root: string, namespaceRoot: string, scope
   try {
     const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: namespaceRoot });
     const projection = marker?.nativeProjection;
-    if (!marker || !projection || marker.scope !== scope || marker.plugin !== name
+    if (!marker || !projection?.piExtensionDigest || marker.scope !== scope || marker.plugin !== name
       || marker.artifactKey !== `aw-${marker.sourceId}-${marker.plugin}`
       || projection.physicalIdentity.route !== 'pi-package' || projection.physicalIdentity.namespaceRoot !== namespaceRoot
       || projection.physicalIdentity.resourceKey !== marker.artifactKey
-      || getPhysicalKey(projection.physicalIdentity) !== marker.physicalKey
-      || !projection.components.some((component) => component.relativeOutputs.includes('index.mjs'))) return false;
-    return await readPlatformPackageContentDigest(root) === projection.contentDigest;
+      || getPhysicalKey(projection.physicalIdentity) !== marker.physicalKey) return false;
+    const file = path.join(root, 'index.mjs');
+    if (!(await fs.lstat(file)).isFile()) return false;
+    return `sha256:${crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex')}` === projection.piExtensionDigest;
   } catch (error) {
     rethrowFatalError(error);
     return false;
@@ -324,6 +324,8 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
       if (!autoload) return extensionDelta(file, root, patterns ?? []) === true;
       return patterns === undefined || extensionSelected(file, root, patterns);
     };
+    if (Array.isArray(extensions) && extensions.length === 1 && extensions[0] === './index.mjs'
+      && selected(path.join(root, 'index.mjs')) && await isGeneratedPiExtension(root, entry.root, entry.scope.kind, id)) return;
     if (Array.isArray(extensions) && extensions.length > 256) throw new Error('piDiscoveryLimit');
     const files = stringArray(extensions) && extensions.every((value) => !/[*!?\[\]{}()]/u.test(value))
       ? extensions.map((value) => path.resolve(root, value)) : undefined;
@@ -340,8 +342,6 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
       const entries = await Promise.all(conventional.filter(selected).map(statIfPresent));
       enabled = !source || (source.isFile() && selected(root)) || entries.some(Boolean) ? 'unknown' : 'no';
     } else enabled = 'unknown';
-    if (enabled === 'yes' && Array.isArray(extensions) && extensions.length === 1 && extensions[0] === './index.mjs'
-      && await isGeneratedPiExtension(root, entry.root, entry.scope.kind, id)) return;
     if (!piAgentConsumers.includes(id)) {
       if (enabled !== 'no' && entry.trust !== 'blocked') {
         evidence.push([root, id, extensions ?? null, patterns, delta, enabled]);

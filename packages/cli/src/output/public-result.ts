@@ -6,7 +6,7 @@ import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, isDeliveryNoticeCode, isInstallationAdvisory,
-  safeComponentIdentity, type ComponentDelivery } from './component-delivery.js';
+  safeComponentIdentity, type ComponentDelivery, type PermissionAction } from './component-delivery.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
 
@@ -40,7 +40,8 @@ export interface Diagnostic {
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
-  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[] };
+  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[];
+    skippedPermissionActions?: PermissionAction[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }

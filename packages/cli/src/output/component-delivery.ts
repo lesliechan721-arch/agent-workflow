@@ -1,6 +1,7 @@
 import { getPlatformFeatureRegistry, type ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import type { RecoveryComponentGap, RecoveryTarget } from '../recovery/receipt.js';
-import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
+import type { Diagnostic } from './public-result.js';
+import { isDeliveryCapabilityGap, isDeliveryCapabilityGapReason } from '../utils/component-gap.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 
 export type ComponentDelivery = Pick<RecoveryTarget, 'satisfaction' | 'installedComponentCount' | 'componentGaps' | 'installedComponentIds'>;
@@ -54,6 +55,16 @@ export function componentGapDescription(gap: ComponentUnmet, featureSeparator = 
 export const PI_AGENT_CONSUMER_NOTICE = 'piAgentConsumerUnavailable';
 export const PREVIOUS_DEPLOYMENT_RETAINED = 'previousDeploymentRetained';
 export const INVOCATION_POLICY_NOT_APPLIED = 'invocationPolicyNotApplied';
+export const PERMISSION_ACTIONS = ['allow', 'ask', 'deny', 'sandbox'] as const;
+export type PermissionAction = typeof PERMISSION_ACTIONS[number];
+
+export function safeSkippedPermissionActions(value: unknown): PermissionAction[] {
+  return Array.isArray(value) ? PERMISSION_ACTIONS.filter((action) => value.includes(action)) : [];
+}
+
+export function isSkippedPermissionReason(reasonCode: string): boolean {
+  return isDeliveryCapabilityGapReason(reasonCode) || reasonCode === 'not-offered' || reasonCode === 'config-disabled';
+}
 
 export function isDeliveryNoticeCode(code: string): boolean {
   return code === PI_AGENT_CONSUMER_NOTICE || code === PREVIOUS_DEPLOYMENT_RETAINED || code === INVOCATION_POLICY_NOT_APPLIED;
@@ -63,9 +74,15 @@ export function isInstallationAdvisory(code: string): boolean {
   return code === PI_AGENT_CONSUMER_NOTICE || code === INVOCATION_POLICY_NOT_APPLIED || code === SKILL_INVOCATION_NOTICE;
 }
 
-export function deliveryNoticeMessage(code: string, reasonCode?: string, field?: string): string {
+export function deliveryNoticeMessage(code: string, detail?: Diagnostic['detail'], field?: string): string {
   if (code === PREVIOUS_DEPLOYMENT_RETAINED) return 'Previous output was retained and may still be active. Inspect it before retrying.';
-  if (code === INVOCATION_POLICY_NOT_APPLIED) return `The platform could not apply the invocation policy${field ? ` ${safeComponentIdentity(field)}` : ''}.`;
+  if (code === INVOCATION_POLICY_NOT_APPLIED) {
+    const actions = safeSkippedPermissionActions(detail?.skippedPermissionActions);
+    const position = field ? ` for ${safeComponentIdentity(field)}` : '';
+    return actions.length ? `Skipped invocation policy actions (${actions.join(', ')})${position}.`
+      : `Some invocation policy actions were skipped${position}.`;
+  }
+  const reasonCode = detail?.reasonCode;
   if (reasonCode === 'piAgentPackageSourceUnsupported') {
     return 'Pi roles are installed. The detected pi-subagents version cannot read this Pi package source. Enable a compatible extension such as @tintinweb/pi-subagents and reload Pi.';
   }

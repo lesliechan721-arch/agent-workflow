@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import { createPlatformEmptyState, createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformDeliveryGaps, writePlatformEmptyState, type PlatformInputEvidence } from '../../src/utils/platform-empty-state.js';
+import { createPlatformEmptyState, createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformDeliveryState, writePlatformEmptyState, type PlatformInputEvidence } from '../../src/utils/platform-empty-state.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
@@ -22,14 +22,14 @@ describe('native intentional empty currentness', () => {
     const state = { ...input, kind: 'aw-platform-empty-state' as const, result: 'capability-gaps' as const,
       gaps, installedComponentIds: ['skill:demo'] };
     await writePlatformEmptyState({ state, env });
-    expect(await readPlatformDeliveryGaps({ input, env })).toEqual({ gaps, installedComponentIds: ['skill:demo'] });
+    expect(await readPlatformDeliveryState({ input, env })).toEqual({ result: 'capability-gaps', gaps, installedComponentIds: ['skill:demo'] });
     const file = path.join(env.AW_HOME!, 'platforms', 'cursor', 'empty-state', `${id.slice(7)}.json`);
     const record = await fs.readJson(file);
     await fs.writeJson(file, { ...record, installedComponentIds: [] });
-    expect(await readPlatformDeliveryGaps({ input, env })).toBeUndefined();
+    expect(await readPlatformDeliveryState({ input, env })).toBeUndefined();
     delete record.deliveryDigest;
     await fs.writeJson(file, record);
-    expect(await readPlatformDeliveryGaps({ input, env })).toBeUndefined();
+    expect(await readPlatformDeliveryState({ input, env })).toBeUndefined();
   });
 
   // Test Value Gate: a different entry or native inventory must not invalidate a package when the actual renderer inputs agree.
@@ -165,8 +165,8 @@ describe('native intentional empty currentness', () => {
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units }), env: ctx.env })).toBe(false);
   });
 
-  // Test Value Gate: metadata and capabilities unused by a static projection cannot mark it stale.
-  it('tracks static Skills using their actual resource bytes and declared capability requirements', async () => {
+  // Test Value Gate: only capability facts that affect static delivery mark its inputs stale.
+  it('tracks static resource bytes, writer support and explicit cross-kind prerequisites', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const rootDir = path.join(isolation.layout.fixtureCwd, 'static-platform');
     const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
@@ -210,6 +210,16 @@ describe('native intentional empty currentness', () => {
     const afterAttachment = await digest();
     expect(afterAttachment).not.toBe(afterBody);
     modelInvocation.values = ['true'];
+    profile.kinds.skill = { ...profile.kinds.skill, status: 'unverified', reasonCodes: ['capability-unverified'] };
+    expect(await digest()).toBe(afterAttachment);
+    profile.kinds.skill.delivery = [];
     expect(await digest()).not.toBe(afterAttachment);
+
+    plugin.manifest.extensions = { hooks: [{ id: 'announce', event: 'session_start', feedback: 'notify', command: 'echo ready',
+      requires: [{ feature: 'component.kind.agent' }] }] };
+    const withoutAgent = await digest();
+    // The Hook writer has no Agent output. The host still must satisfy its explicit prerequisite.
+    profile.kinds.agent = { status: 'supported', reasonCodes: [], delivery: [] };
+    expect(await digest()).not.toBe(withoutAgent);
   });
 });

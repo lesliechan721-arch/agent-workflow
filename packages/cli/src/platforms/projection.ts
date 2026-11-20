@@ -479,7 +479,8 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
       ? path.join(stagingRoot, contribution.stagingPath) : path.join(outputRoot, contribution.stagingPath) }));
     for (const component of files.components) component.relativeOutputs.sort();
     return { renderUnitId: input.renderUnit.id,
-      bundle: input.renderUnit.output === 'package' && files.files.size > 0 ? { stagingRoot: outputRoot, contentDigest: files.digest() } : null,
+      bundle: input.renderUnit.output === 'package' && files.files.size > 0 ? { stagingRoot: outputRoot, contentDigest: files.digest(),
+        ...(platform === 'pi' && files.files.has('index.mjs') ? { piExtensionDigest: files.digest('index.mjs') } : {}) } : null,
       supplements, components: files.components, diagnostics };
   } catch (error) {
     await fs.remove(stagingRoot);

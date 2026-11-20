@@ -345,7 +345,41 @@ export async function requireProductionSkillProfile(ctx) {
   }
 }
 
+async function observePublicComponentSuites(ctx) {
+  const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
+  const failures = [];
+  for (const scope of scopes) {
+    for (const suite of ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate']) {
+      try {
+        await ctx.check('public-components-' + scope + '-' + suite, async () => {
+          const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
+            ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
+          if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
+          assert.equal(result.status, 'passed', result.reason);
+          return result;
+        });
+      } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
+    }
+  }
+  return failures;
+}
+
 export async function qualifyPublicAw(ctx) {
+  if (process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS !== '1') return qualifyPublicLifecycle(ctx);
+  // Component delivery has its own file and receipt evidence. Collect it before
+  // the runtime/session observer can defer a platform with an unknown profile.
+  const entry = await preparePublicClientPath(ctx);
+  const failures = await observePublicComponentSuites(ctx);
+  try {
+    await qualifyPublicLifecycle(ctx, entry);
+  } catch (error) {
+    if (!failures.length) throw error;
+    failures.push('public lifecycle: ' + error.message);
+  }
+  assert.deepEqual(failures, []);
+}
+
+async function qualifyPublicLifecycle(ctx, preparedEntry) {
   if (!['codex', 'pi', 'grok', 'copilot', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'antigravity') {
     if (ctx.scope !== 'user' || process.env.GITHUB_ACTIONS !== 'true') await ctx.defer('antigravity-public-aw-limited-to-hosted-user');
@@ -353,7 +387,7 @@ export async function qualifyPublicAw(ctx) {
     // Check before even target preferences are written in the isolated AW home.
     await requireProductionSkillProfile(ctx);
   }
-  const expectedEntry = await preparePublicClientPath(ctx);
+  const expectedEntry = preparedEntry ?? await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => assertPublicClientDiscovery(
     await ctx.aw(['target', 'set', ctx.platform]), ctx, expectedEntry));
@@ -558,23 +592,5 @@ export async function qualifyPublicAw(ctx) {
   if (ctx.platform === 'codex' && ctx.scope === 'user') {
     const { qualifyPublicCodexBehavior } = await import('./native-platform-codex-behavior.mjs');
     await qualifyPublicCodexBehavior(ctx);
-  }
-  if (process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1') {
-    const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
-    const failures = [];
-    for (const scope of scopes) {
-      for (const suite of ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate']) {
-        try {
-          await ctx.check('public-components-' + scope + '-' + suite, async () => {
-            const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
-              ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
-            if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
-            assert.equal(result.status, 'passed', result.reason);
-            return result;
-          });
-        } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
-      }
-    }
-    assert.deepEqual(failures, []);
   }
 }

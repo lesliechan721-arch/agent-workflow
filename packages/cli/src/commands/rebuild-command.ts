@@ -3828,6 +3828,15 @@ async function runRebuildCommandInSession(
               : requestedMethod === 'reinstall' ? 'reinstall' : 'install'
             : requestedMethod === 'reinstall' ? 'reinstall' : 'install';
           let errorCode: string | undefined;
+          // Grok rules can be complete with an empty native package slot. Let
+          // component preparation determine whether the current source needs a package.
+          const grokRulesWithoutPackage = platform === 'grok' && requestedMethod === 'sync'
+            && requestedInspection.platformObservations.length > 0
+            && requestedInspection.platformObservations.every(({ observation }) => observation.package === 'absent'
+              && ['absent', 'not-applicable'].includes(observation.registration))
+            && requestedInspection.components.some(({ component, state }) => component.kind === 'owned-text-file' && state === 'present')
+            && requestedInspection.components.every(({ component, state }) => state === 'present'
+              || component.kind === 'owned-directory' && state === 'absent');
           if (!dependencyEnabled && platform === 'codex'
             && relation === 'requested'
             && !uninstallForce
@@ -3849,6 +3858,7 @@ async function runRebuildCommandInSession(
             && (requestedInspection.state === 'error'
               || (requestedInspection.state === 'partial'
                 && !activationOnly
+                && !grokRulesWithoutPackage
                 && platform !== 'codex'
                 && requestedMethod !== 'reinstall'
                 && options.command !== 'cleanup'))) {

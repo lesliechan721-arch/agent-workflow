@@ -1,9 +1,10 @@
 import type { FrozenDeploymentPlan, DeploymentExclusion } from '../platforms/contracts.js';
 import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploymentExclusion } from '../commands/public-lifecycle-result.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
+import type { Diagnostic } from '../output/public-result.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { componentGapDescription, componentGapOutcome, isDeliveryNoticeCode, INVOCATION_POLICY_NOT_APPLIED, PI_AGENT_CONSUMER_NOTICE, safeComponentIdentity,
-  type ComponentDelivery } from '../output/component-delivery.js';
+  safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { agentLabel, scopeLabel } from './glossary.js';
 
 const stateLabels: Record<string, string> = { present: '存在', absent: '缺失', unknown: '未知', 'not-applicable': '不适用',
@@ -30,9 +31,14 @@ export function componentDeliveryLines(delivery: ComponentDelivery): string[] {
   ];
 }
 
-export function deliveryNoticeText(code: string, reason?: string, field?: string): string {
-  if (code === INVOCATION_POLICY_NOT_APPLIED) return `当前平台无法应用调用权限${field ? ` ${safeComponentIdentity(field)}` : ''}。`;
+export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], field?: string): string {
+  if (code === INVOCATION_POLICY_NOT_APPLIED) {
+    const actions = safeSkippedPermissionActions(detail?.skippedPermissionActions);
+    const position = field ? ` ${safeComponentIdentity(field)}` : '';
+    return actions.length ? `已跳过调用权限${position}中的动作（${actions.join(', ')}）。` : `已跳过部分调用权限${position}。`;
+  }
   if (code !== PI_AGENT_CONSUMER_NOTICE) return '旧输出仍保留，可能仍在生效。请先检查该位置再重试。';
+  const reason = detail?.reasonCode;
   if (reason === 'piAgentConsumerDisabled') return 'Pi 角色已安装。请启用兼容的角色扩展并重载 Pi。';
   if (reason === 'piAgentPackageAccessDenied') return 'Pi 角色已安装。请检查角色扩展能否访问此包并重载 Pi。';
   if (reason === 'piAgentPackageSourceUnsupported') return 'Pi 角色已安装。检测到的 pi-subagents 版本无法读取此包来源。请启用兼容的扩展，例如 @tintinweb/pi-subagents，然后重载 Pi。';

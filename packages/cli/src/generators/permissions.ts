@@ -1,4 +1,5 @@
 import type { Diagnostic } from '../output/public-result.js';
+import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, PERMISSION_ACTIONS, type PermissionAction } from '../output/component-delivery.js';
 import type { PermissionDefinition } from '../types.js';
 import { buildGeneratedName, dedupe } from './shared.js';
 import type { GeneratedTextArtifact } from './instructions.js';
@@ -17,27 +18,32 @@ export { parsePermissionCommand } from '@lesliechan721/aw-plugin-core/manifest';
 export function selectPlatformInvocationPolicy(policy: ResolvedInvocationPolicy, subject: Diagnostic['subject'],
   skippedProducer?: (reference: ManagedCommandReference) => string | undefined): { policy: ResolvedInvocationPolicy; diagnostics: Diagnostic[] } {
   const diagnostics: Diagnostic[] = [];
+  const warn = (field: string, reasonCode: string, skippedPermissionActions: PermissionAction[]) => {
+    const detail = { reasonCode, skippedPermissionActions };
+    diagnostics.push({ code: INVOCATION_POLICY_NOT_APPLIED, severity: 'warning', subject: { ...subject, field },
+      detail, message: deliveryNoticeMessage(INVOCATION_POLICY_NOT_APPLIED, detail, field) });
+  };
   const permissions = policy.permissions.flatMap((original) => {
     let permission = original;
     if (skippedProducer) {
-      const skipped = new Set<string>();
-      const keep = (entry: PermissionCommand) => {
+      const skipped = new Map<string, { reasonCode: string; actions: Set<PermissionAction> }>();
+      const keep = (action: PermissionAction) => (entry: PermissionCommand) => {
         if (typeof entry === 'string') return true;
-        const reason = skippedProducer(entry.command);
-        if (!reason) return true;
+        const reasonCode = skippedProducer(entry.command);
+        if (!reasonCode) return true;
         const { set, key, variant } = entry.command;
         const field = `permissions.${original.name}.${set}.${key}.${variant}`;
-        if (!skipped.has(field)) diagnostics.push({ code: 'invocationPolicyNotApplied', severity: 'warning',
-          subject: { ...subject, field }, detail: { reasonCode: reason },
-          message: `Skipped the permission for ${set}/${key}/${variant} because its producer was skipped (${reason}).` });
-        skipped.add(field);
+        const earlier = skipped.get(field);
+        if (earlier) earlier.actions.add(action);
+        else skipped.set(field, { reasonCode, actions: new Set([action]) });
         return false;
       };
-      const allow = original.allow?.filter(keep);
-      const ask = original.ask?.filter(keep);
-      const deny = original.deny?.filter(keep);
-      const excludedCommands = original.sandbox?.excludedCommands.filter(keep);
+      const allow = original.allow?.filter(keep('allow'));
+      const ask = original.ask?.filter(keep('ask'));
+      const deny = original.deny?.filter(keep('deny'));
+      const excludedCommands = original.sandbox?.excludedCommands.filter(keep('sandbox'));
       if (skipped.size) {
+        for (const [field, { reasonCode, actions }] of skipped) warn(field, reasonCode, [...actions]);
         if (!allow?.length && !ask?.length && !deny?.length && !excludedCommands?.length) return [];
         permission = { name: original.name, allow, ask, deny, ...(excludedCommands?.length ? { sandbox: { excludedCommands } } : {}) };
       }
@@ -47,11 +53,9 @@ export function selectPlatformInvocationPolicy(policy: ResolvedInvocationPolicy,
     }
     // Keep enforceable restrictions. A policy with unmapped controls supplies no new grants.
     const codex = policy.platform === 'codex';
-    const skipped = (codex ? ['allow', 'sandbox'] as const : ['allow', 'ask', 'deny', 'sandbox'] as const)
+    const skipped = (codex ? ['allow', 'sandbox'] as const : PERMISSION_ACTIONS)
       .filter((field) => field === 'sandbox' ? permission.sandbox?.excludedCommands.length : permission[field]?.length);
-    if (skipped.length) diagnostics.push({ code: 'invocationPolicyNotApplied', severity: 'warning',
-      subject: { ...subject, field: `permissions.${permission.name}` }, detail: { reasonCode: 'delivery-unavailable' },
-      message: `Permission policy "${permission.name}" has unmapped command controls: ${skipped.join(', ')}.` });
+    if (skipped.length) warn(`permissions.${permission.name}`, 'delivery-unavailable', skipped);
     if (codex && (permission.ask?.length || permission.deny?.length)) {
       return [{ name: permission.name, ask: permission.ask, deny: permission.deny }];
     }

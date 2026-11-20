@@ -9,7 +9,7 @@ import type { StatusScopedTarget } from '../commands/status-v6.js';
 import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
 import { readJointDemand, deriveJointDemand, type JointDemandSnapshot } from './joint-demand.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
-import { retainedOutputDiagnostic, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
+import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
@@ -21,7 +21,8 @@ import { piAgentConsumerDiagnostic } from '../platforms/inspection-pi.js';
 import { gapSupplementFiles } from '../platforms/supplement-layout.js';
 import { inspectPlatformSupplementState } from '../platforms/supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
-import { createPlatformInputEvidence, matchesPlatformEmptyState, readPlatformDeliveryGaps, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
+import { createPlatformInputEvidence, matchesPlatformEmptyState, readPlatformDeliveryState, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
+import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED } from '../output/component-delivery.js';
 import { piProjectEmptyDeliveryObserved } from '../platforms/lifecycle-native.js';
 import { getDeploymentLayout, hasSharedUserPackage } from '../platforms/layout.js';
 import { identityDigest } from '../platforms/identity.js';
@@ -222,32 +223,14 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const dynamicUnits = new Set<(typeof resolution.renderUnits)[number]['output']>();
             const inputUnits: Parameters<typeof createPlatformInputEvidence>[0]['units'] = [];
             const profile = getQualifiedPlatformProfile(platform);
-            let expectedCount = 0;
-            let grokAgentRecipientScope: string | undefined;
-            for (const unit of resolution.renderUnits.filter((unit) => binding.renderUnitIds.includes(unit.id))) {
+            const renderUnits = resolution.renderUnits.filter((unit) => binding.renderUnitIds.includes(unit.id));
+            for (const unit of renderUnits) {
               const artifacts = plugin.manifest.artifacts;
               if (artifacts && unit.kinds.length && (!artifacts.scopes || artifacts.scopes.includes(unit.renderScope.kind))) {
                 dynamicUnits.add(unit.output);
               }
               const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
                 profile });
-              const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot,
-                manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds,
-                hasInstructionAgentRecipients: platform === 'grok' && unit.output === 'supplement'
-                  ? grokAgentRecipientScope === identityDigest(unit.renderScope) : undefined });
-              if (platform === 'grok' && unit.output === 'package') {
-                // Package projection and the recorded gaps confirm dynamic recipients without rerunning the renderer.
-                if (dynamicUnits.has('package') || expected.components.some(({ kind }) => kind === 'agent')) {
-                  grokAgentRecipientScope = identityDigest(unit.renderScope);
-                }
-              }
-              expectedCount += expected.components.length;
-              for (const component of expected.components) {
-                const grokRoleText = platform === 'grok' && component.kind === 'instruction' && !component.content.coverage.includes('main');
-                if (unit.output === 'supplement' && !grokRoleText) staticSupplements.push(component);
-                else staticPackageIds.add(component.id);
-              }
-              unmet.push(...expected.unmet);
               inputUnits.push({ renderUnit: unit, capabilities,
                 config: await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, sourceId: binding.plugin.sourceId,
                   sourceIdentity: binding.plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
@@ -265,7 +248,48 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               return undefined;
             });
             if (!inputEvidence) { states.push('unknown'); continue; }
-            const recordedGaps = await readPlatformDeliveryGaps({ input: inputEvidence, env: context.env });
+            const readPackageProjection = async () => {
+              const layout = await getDeploymentLayout(ctx, binding);
+              const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
+                expectedIdentity: deploymentPackageComponent(binding, layout).identity });
+              return { layout, projection: marker?.nativeProjection };
+            };
+            const packageUnit = renderUnits.find((unit) => unit.output === 'package');
+            const rolePackage = (platform === 'copilot' || platform === 'grok') && packageUnit?.kinds.includes('agent')
+              && dynamicUnits.has('package') && plugin.manifest.extensions?.instructions?.length
+              && live.package === 'present' && live.ownership === 'aw' ? await readPackageProjection() : undefined;
+            // The current package projection identifies renderer-produced roles. File presence and bytes are checked below.
+            const roleProjection = rolePackage?.projection;
+            const projectedRole = rolePackage && roleProjection?.preparation === 'complete'
+              && roleProjection.inputDigest === platformPackageInputDigest(inputEvidence)
+              && identityDigest(roleProjection.physicalIdentity) === identityDigest(rolePackage.layout.physicalIdentity)
+              && roleProjection.components.some(({ nativeName, relativeOutputs }) => relativeOutputs.includes(platform === 'copilot'
+                ? `com.github.copilot/agents/${nativeName}.agent.md` : `agents/${nativeName}.md`));
+            let expectedCount = 0;
+            let grokAgentRecipientScope: string | undefined;
+            for (const { renderUnit: unit, capabilities } of inputUnits) {
+              const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot,
+                manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds,
+                hasInstructionAgentRecipients: platform === 'grok' && unit.output === 'supplement'
+                  ? grokAgentRecipientScope === identityDigest(unit.renderScope) : projectedRole || undefined });
+              if (platform === 'grok' && unit.output === 'package'
+                && (projectedRole || expected.components.some(({ kind }) => kind === 'agent'))) {
+                grokAgentRecipientScope = identityDigest(unit.renderScope);
+              }
+              expectedCount += expected.components.length;
+              for (const component of expected.components) {
+                const grokRoleText = platform === 'grok' && component.kind === 'instruction' && !component.content.coverage.includes('main');
+                if (unit.output === 'supplement' && !grokRoleText) staticSupplements.push(component);
+                else staticPackageIds.add(component.id);
+              }
+              unmet.push(...expected.unmet);
+            }
+            const recordedDelivery = await readPlatformDeliveryState({ input: inputEvidence, env: context.env });
+            const recordedGaps = recordedDelivery?.result === 'capability-gaps' && recordedDelivery.gaps.length ? recordedDelivery : undefined;
+            for (const { field, ...detail } of recordedDelivery?.permissionNotices ?? []) {
+              observation.reasons!.push({ code: INVOCATION_POLICY_NOT_APPLIED, subject: { ...subject, field }, detail,
+                message: deliveryNoticeMessage(INVOCATION_POLICY_NOT_APPLIED, detail, field) });
+            }
             const currentIds = recordedGaps ? new Set(recordedGaps.installedComponentIds) : undefined;
             if (currentIds && recordedGaps) {
               // A renderer receipt can add dynamic expectations. A positive static
@@ -281,9 +305,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const gaps = recordedGaps?.gaps ?? unmet;
             const blockingGaps = gaps.filter((gap) => !isDeliveryCapabilityGap(gap));
             if (gaps.length) {
-              (observation.componentGaps ??= []).push(...gaps.map((gap) => ({ ...gap,
-                providerPluginId: root.pluginId, agent: platform,
-                renderScope: inputUnits.find(({ renderUnit }) => renderUnit.kinds.includes(gap.kind))?.renderUnit.renderScope.kind ?? binding.scope.kind })));
+              (observation.componentGaps ??= []).push(...scopeNativeComponentGaps(gaps,
+                { pluginId: root.pluginId, agent: platform, scope: binding.scope.kind }, renderUnits));
             }
             const supplementInput = inputEvidence.units.find((unit) => unit.output === 'supplement');
             const recordedSupplements = dynamicUnits.has('supplement') && supplementInput
@@ -317,7 +340,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const onlyCapabilityGaps = expectedCount === 0 && gaps.length > 0 && !blockingGaps.length;
             const capabilityEmpty = onlyCapabilityGaps && recordedGaps !== undefined;
             const confirmedEmpty = capabilityEmpty || Boolean(plugin.manifest.artifacts && expectedCount === 0 && gaps.length === 0
-              && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' }, env: context.env }));
+              && recordedDelivery?.result === 'intentional-empty');
             const confirmedEmptyPackage = Boolean(currentIds?.size && !packageExpectedCount) || binding.route === 'codex-marketplace' && recordedSupplements !== null
               && dynamicUnits.has('package') && packageExpectedCount === 0
               && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
@@ -356,10 +379,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             let nativeContentDrift = false;
             let nativeContentUnconfirmed = false;
             if (hasPackageExpectation && live.package === 'present' && live.ownership === 'aw' && !missing) {
-              const layout = await getDeploymentLayout(ctx, binding);
-              const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
-                expectedIdentity: deploymentPackageComponent(binding, layout).identity });
-              const projection = marker?.nativeProjection;
+              const { layout, projection } = rolePackage ?? await readPackageProjection();
               const contentDigest = projection ? await readPlatformPackageContentDigest(layout.packageRoot) : undefined;
               if (['grok-cli', 'antigravity-cli'].includes(binding.route) && live.registration === 'present') {
                 nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;

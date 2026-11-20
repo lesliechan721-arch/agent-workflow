@@ -60,13 +60,14 @@ export interface NativeProjectionEvidence {
   components: Array<{ id: string; nativeName: string; relativeOutputs: string[] }>;
   inputDigest: string;
   contentDigest: string;
+  piExtensionDigest?: string;
 }
 export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3; nativeProjection?: NativeProjectionEvidence };
 
 function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjectionEvidence {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Native projection evidence must be an object.');
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => !['components', 'inputDigest', 'contentDigest', 'physicalIdentity', 'preparation'].includes(key))
+  if (Object.keys(record).some((key) => !['components', 'inputDigest', 'contentDigest', 'physicalIdentity', 'preparation', 'piExtensionDigest'].includes(key))
     || !Array.isArray(record.components)
     || typeof record.inputDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.inputDigest)
     || typeof record.contentDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.contentDigest)) throw new Error('Native projection evidence is invalid.');
@@ -103,7 +104,11 @@ function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjecti
     if (new Set(outputs).size !== outputs.length) throw new Error('Native projection outputs must be unique.');
     return { id: component.id, nativeName: component.nativeName, relativeOutputs: outputs };
   });
-  return { components, inputDigest: record.inputDigest, contentDigest: record.contentDigest, physicalIdentity: physical as unknown as PhysicalIdentity, ...(record.preparation ? { preparation: record.preparation } : {}) };
+  const piExtensionDigest = record.piExtensionDigest;
+  const hasPiExtensionDigest = typeof piExtensionDigest === 'string' && /^sha256:[a-f0-9]{64}$/u.test(piExtensionDigest)
+    && physical.route === 'pi-package' && components.some((component) => component.relativeOutputs.includes('index.mjs'));
+  return { components, inputDigest: record.inputDigest, contentDigest: record.contentDigest, physicalIdentity: physical as unknown as PhysicalIdentity,
+    ...(record.preparation ? { preparation: record.preparation } : {}), ...(hasPiExtensionDigest ? { piExtensionDigest } : {}) };
 }
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';

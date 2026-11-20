@@ -65,6 +65,7 @@ type Diagnostic = {
     reasonCode: string;
     path?: string;
     configKey?: string;
+    skippedPermissionActions?: Array<'allow' | 'ask' | 'deny' | 'sandbox'>;
     skillInvocationControls?: Array<{
       feature: 'skill.invocation.manual' | 'skill.invocation.model' | 'skill.visibility';
       values?: Array<'true' | 'false' | 'visible' | 'hidden'>;
@@ -100,7 +101,7 @@ type Confirmation = {
 - `command` 是已解析的稳定命令 ID，例如 `plugin.install`、`source.sync`、`dev.catalog.publish.apply`；无法识别命令时为 null，不把任意输入回显成命令 ID。
 - `data` 始终是对象。不同业务有明确的类型；列表通常使用 `items`。请求尚未完成归一化、且未执行业务变更时，允许使用严格的空对象 `{}`，即使命令 ID 已经识别。已完成的空列表才输出 `[]`，不能用它替代尚未取得的事实。
 - `status` 描述这次调用是否完成；`data` 描述插件、来源、配置等业务事实。插件尚未就绪不等于 status 查询执行失败。
-- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey 或 Skill 调用控制。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
+- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey、Skill 调用控制或跳过的命令权限动作。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
 - 业务对象自身的 schemaVersion、Manifest schema 和配置定义版本位于相应 data 内，与顶层输出协议版本分别管理。
 - data 使用显式投影，不直接 JSON.stringify 内部 backend、Error、renderer context 或整个服务对象。单次请求内部的锁、进程句柄和授权对象不属于输出协议。
 
@@ -194,6 +195,8 @@ type LifecycleData = {
 
 Antigravity 的诊断只在已确认实际读者不支持该控制（`invocationControlUnsupported`），或有可靠回读表明策略实际降级（`invocationControlDegraded`）时生成。每项控制以 `product: 'cli' | 'app'` 标识相关读者。缺少会话实测、未登录或查询失败时仍保留未知资格，回执省略该提示。CLI 文本、JSON、TUI、历史和导出表达同一结果。警告不影响成功退出码或重试范围。
 
+命令规则部分或全部未施加时，`invocationPolicyNotApplied` 通过 `detail.skippedPermissionActions` 列出具体动作。`sandbox` 指沙箱排除。`subject.field` 标明权限规则，按需附上托管命令的集合、键和变体标识。CLI 文本、JSON、TUI、历史和导出均报告这些动作。`plugin.status` 在有适用证据时也保留提示。诊断只使用安全标识和固定动作，省略作者命令、参数和文件路径。其他适用动作照常交付，提示不影响成功退出码或重试范围。
+
 独立运行 `plugin config apply` 时，`configWrite` 为 `notStarted`。中断回执保留当时已解析的请求、已完成的确认以及已有的应用结果。收到 SIGINT 或 SIGTERM 后等待清理并分别退出 130 或 143，清理无法确认时退出 1。如果所有目标已完成并通过核验，收尾时收到信号仍保留成功回执和已交付 Skill 的警告。
 
 配置应用的文本回执按插件、平台和范围列出每个位置的状态和已有错误码，也列出命令包的归属、名称、范围和状态。同一目标若有部分输出已读回、其余输出仍失败，`data.apply.targetResults[]` 保留 `state: "failed"` 和失败原因，并附 `partialDelivery: true`。已交付 Skill 的提示保留在对应的 `diagnostics` 中。此时回执引导用户检查未完成的输出。仅需恢复项目位置、公开同步命令会重跑已完成的个人位置时，回执指向 TUI 中的项目选择。
@@ -202,7 +205,7 @@ Antigravity 的诊断只在已确认实际读者不支持该控制（`invocation
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
-生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
+生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。`renderScope` 对应组件实际准备的范围。例如 Codex 的 Project 目标中，共享包里的 Hook 缺口标为 `user`，独立角色的缺口标为 `project`。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
 
 `plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。
 

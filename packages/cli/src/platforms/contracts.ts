@@ -105,7 +105,7 @@ export interface ProjectionInput {
 }
 export interface ProjectionResult {
   renderUnitId: string;
-  bundle: { stagingRoot: string; contentDigest: string } | null;
+  bundle: { stagingRoot: string; contentDigest: string; piExtensionDigest?: string } | null;
   supplements: HostContribution[];
   components: Array<{ id: string; nativeName: string; relativeOutputs: string[] }>;
   diagnostics: Diagnostic[];

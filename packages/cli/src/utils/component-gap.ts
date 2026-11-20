@@ -2,8 +2,11 @@ import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 
 /** A missing host mapping can finish without a write. Missing inputs and execution errors still need recovery. */
 export function isDeliveryCapabilityGap(gap: Pick<ComponentUnmet, 'reasonCode' | 'requiredFeatures'>): boolean {
-  if (!gap.requiredFeatures.length) return false;
-  switch (gap.reasonCode) {
+  return Boolean(gap.requiredFeatures.length) && isDeliveryCapabilityGapReason(gap.reasonCode);
+}
+
+export function isDeliveryCapabilityGapReason(reasonCode: string): boolean {
+  switch (reasonCode) {
     case 'delivery-unavailable':
     case 'interface-unsupported':
     case 'scope-unsupported':

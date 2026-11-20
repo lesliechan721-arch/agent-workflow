@@ -79,6 +79,10 @@ describe('native deployment public and TUI consumers', () => {
       satisfaction: 'installed', installedComponentCount: 1, installedComponentIds: ['commit'], componentGaps: [
         { ...gap, agent: 'antigravity' },
       ], reasons: [
+        { code: 'invocationPolicyNotApplied', message: 'Author command at /private/test-user/arguments.',
+          subject: { pluginId, target: 'antigravity', scope, field: 'permissions.commit' },
+          detail: { reasonCode: 'delivery-unavailable', path: '/private/test-user/arguments',
+            skippedPermissionActions: ['allow', 'deny', '/private/test-user/arguments'] as NonNullable<Diagnostic['detail']>['skippedPermissionActions'] } },
         { code: 'skillInvocationPolicyNotGuaranteed', message: 'Private details.',
           subject: { pluginId, target: 'antigravity', scope, field: 'skill.unknown' }, detail: { reasonCode: 'invocationControlUnverified',
             skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnverified', product: 'app' }] } },
@@ -100,6 +104,9 @@ describe('native deployment public and TUI consumers', () => {
       { target: 'pi', installedComponentCount: 1, installedComponentIds: ['reviewer'] },
       { target: 'antigravity', installedComponentCount: 1, installedComponentIds: ['commit'] },
     ] } });
+    expect(result.diagnostics.filter(({ code }) => code === 'invocationPolicyNotApplied')).toEqual([expect.objectContaining({
+      detail: { reasonCode: 'delivery-unavailable', skippedPermissionActions: ['allow', 'deny'] },
+    })]);
     expect(result.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed')).toEqual([expect.objectContaining({
       subject: { pluginId, target: 'antigravity', scope, field: 'skill.commit' }, detail: { reasonCode: 'invocationControlDegraded', skillInvocationControls: [
         { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported', product: 'cli' },
@@ -140,6 +147,8 @@ describe('native deployment public and TUI consumers', () => {
       expect(instance.lastFrame()).toContain('已安装 0 项');
       expect(instance.lastFrame()).toContain('Pi 角色已安装');
       expect(instance.lastFrame()).toContain('Antigravity App');
+      expect(instance.lastFrame()).toContain('permissions.commit中的动作（allow, deny）');
+      expect(instance.lastFrame()).not.toContain('/private/test-user');
       expect(instance.lastFrame()).not.toContain('重试明确失败项');
       await input(instance, 'd');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('invocationControlDegraded'));
@@ -154,6 +163,7 @@ describe('native deployment public and TUI consumers', () => {
     expect(report).toContain('Installed: reviewer');
     expect(report).toContain('skill.invocation.model=false · invocationControlDegraded · product=app');
     expect(report).toContain('skill.visibility=hidden · invocationControlUnsupported · product=cli');
+    expect(report).toContain('(allow, deny) for permissions.commit');
     expect(report).not.toContain('skill.unknown');
     expect(report).not.toContain('/private/test-user');
     expect(report).not.toContain('aw plugin sync');

@@ -435,7 +435,7 @@ function deliveryAdvisoryLines(diagnostics: readonly Diagnostic[], technical = f
   return diagnostics.filter(({ code }) => isDeliveryNoticeCode(code)).flatMap(({ code, subject, detail, severity }) => {
     const position = [subject?.pluginId, subject?.target ? agentLabel(subject.target) : undefined,
       subject?.scope ? scopeLabel(subject.scope) : undefined].filter(Boolean).join(' · ');
-    return [`${severity === 'error' ? '×' : '!'} ${position} · ${deliveryNoticeText(code, detail?.reasonCode, subject?.field)}`,
+    return [`${severity === 'error' ? '×' : '!'} ${position} · ${deliveryNoticeText(code, detail, subject?.field)}`,
       ...(technical ? [`  ${code}${detail?.reasonCode ? ` · ${detail.reasonCode}` : ''}${detail?.path ? ` · ${detail.path}` : ''}`] : [])];
   });
 }

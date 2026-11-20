@@ -31,7 +31,7 @@ export function parseAntigravitySkillInventory(record, expectedNames, projectRoo
     if (observed !== expected && observed !== path.join(expected, 'SKILL.md')) throw new Error('skill-inventory-location-mismatch');
   }
   return { status: 'SUCCESS', num_turns: 0,
-    ...(projectRoot ? { projectLocations: 'verified' } : {}),
+    ...(projectRoot ? { verifiedProjectLocations: matched.length } : {}),
     skills: matched.map(({ name, model_invocable }) => ({ name, model_invocable })).sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
@@ -82,7 +82,7 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
         const first = `${path.basename(projectDirectory)}:management-check`;
         const next = `${path.basename(projectDirectory)}:management-updated`;
         const fixtures = [first, next, directName];
-        const query = async (id, cwd) => parseAntigravitySkillInventory(await run(id, antigravitySkillQuery, cwd), fixtures);
+        const query = async (id, cwd) => parseAntigravitySkillInventory(await run(id, antigravitySkillQuery, cwd), fixtures, cwd);
         const matches = (evidence, names) => JSON.stringify(evidence.skills.map(({ name }) => name).sort()) === JSON.stringify([...names].sort());
         await run('project-validate-1', ['plugin', 'validate', ctx.bundle], context.project);
         await fs.mkdir(pluginRoot, { recursive: true });

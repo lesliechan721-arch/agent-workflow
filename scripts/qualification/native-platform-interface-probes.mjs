@@ -303,8 +303,9 @@ export async function runInterfaceProbes(options) {
         if (platform === 'antigravity') {
           const projectScope = client.management?.scopes.find(scope => scope.scope === 'project');
           client.projectQualification = {
-            status: 'blocked',
-            reason: projectScope?.reason ?? 'No verified effective Project plugin or Skill scope query result.',
+            status: projectScope?.status === 'observed' ? 'observed' : 'unverified',
+            ...(projectScope?.status === 'observed' ? {}
+              : { reason: projectScope?.reason ?? 'No verified Project Skill inventory was returned.' }),
             inventoryScope: projectScope?.scopeEvidence ?? 'unverified',
             executedInThisRun: projectScope !== undefined, productionProfilePromoted: false,
             previousProcessFailure: 'https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43466772539' };

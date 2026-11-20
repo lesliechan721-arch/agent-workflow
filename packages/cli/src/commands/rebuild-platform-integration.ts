@@ -27,7 +27,7 @@ import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from
 import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, renderOwnedTextFile, writeOwnedTextFile,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
 import type { CleanupResult } from '../utils/ownership.js';
-import { createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
+import { createPlatformInputEvidence, platformPackageInputDigest, platformPermissionNotices, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
 import { writePlatformSupplementState } from '../platforms/supplement-state.js';
 import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { assertManagedCommandBindingIdentities, captureManagedCommandBindingRecoveryEvidence, publishManagedCommandBindings, listManagedCommands, readInstalledCommandProducer, revokeManagedCommandBindings,
@@ -107,7 +107,7 @@ function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObser
 function piProjectInventoryKey(binding: DeploymentBinding, settingsPath: string): string | undefined {
   if (binding.route !== 'pi-package' || binding.scope.kind !== 'project') return undefined;
   const product = selectNativeProduct(binding.consumers);
-  return product ? JSON.stringify([settingsPath, product.id]) : undefined;
+  return product ? JSON.stringify([binding.scope.projectRoot, settingsPath, product.id]) : undefined;
 }
 
 function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string,
@@ -976,11 +976,13 @@ export class PlatformRebuildSession {
         const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
         inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence));
         if (expected.unmet.every(isDeliveryCapabilityGap)) {
-          if (expected.unmet.length) gapStates.set(entry.binding.id, { ...inputEvidence,
+          const permissionNotices = platformPermissionNotices(projections.flatMap(({ diagnostics }) => diagnostics));
+          const noticeFields = permissionNotices.length ? { permissionNotices } : {};
+          if (expected.unmet.length || expected.components.length && permissionNotices.length) gapStates.set(entry.binding.id, { ...inputEvidence,
             kind: 'aw-platform-empty-state', result: 'capability-gaps', gaps: expected.unmet,
-            installedComponentIds: expected.components.map(({ id }) => id) });
+            installedComponentIds: expected.components.map(({ id }) => id), ...noticeFields });
           if (expected.components.length === 0 && expected.unmet.length === 0) {
-            emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' });
+            emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty', ...noticeFields });
           } else if (entry.layout.supplementRoot && input.plugin.manifest.artifacts) {
             const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
             if (supplement) {
@@ -1168,7 +1170,12 @@ export class PlatformRebuildSession {
           if (!gaps.length) {
             const gapState = gapStates.get(plan.binding.id);
             if (gapState && !receipt.diagnostics.some((entry) => entry.severity === 'error')) {
-              await writePlatformEmptyState({ state: gapState, env: this.context.env });
+              if (gapState.result === 'capability-gaps' && !gapState.gaps.length) {
+                // A notice alone is optional status evidence. Failure to retain it does not undo verified delivery.
+                await writePlatformEmptyState({ state: gapState, env: this.context.env }).catch(() => ctx.signal?.throwIfAborted());
+              } else {
+                await writePlatformEmptyState({ state: gapState, env: this.context.env });
+              }
             }
             continue;
           }
@@ -1238,6 +1245,7 @@ export class PlatformRebuildSession {
                 publication = publishDirectory(bundle.stagingRoot, component, {
                   components: prepared.plan.projections.filter((projection) => projection.bundle !== null).flatMap((projection) => projection.components),
                   inputDigest: inputDigests.get(prepared.plan.binding.id)!, contentDigest: bundle.contentDigest,
+                  ...(bundle.piExtensionDigest ? { piExtensionDigest: bundle.piExtensionDigest } : {}),
                   preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
                   physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity,
                 }, stagedPackage);
@@ -1358,10 +1366,12 @@ export class PlatformRebuildSession {
               && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
               && packageDeliveryConfirmed(prepared.plan.binding, receipt.after, bundle.contentDigest, requireIndependentActivation)
               && await readPlatformPackageContentDigest(root) === bundle.contentDigest) {
+              const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, expectedIdentity: packageOwner.identity });
               const projection: NativeProjectionEvidence = { components: mappings, contentDigest: bundle.contentDigest,
                 inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
+                ...(bundle.piExtensionDigest && marker?.nativeProjection?.piExtensionDigest === bundle.piExtensionDigest
+                  ? { piExtensionDigest: bundle.piExtensionDigest } : {}),
                 physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity };
-              const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, expectedIdentity: packageOwner.identity });
               if (marker && (!marker.nativeProjection || artifactValueDigest(marker.nativeProjection) !== artifactValueDigest(projection))) {
                 await writeSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, identity: packageOwner.identity, nativeProjection: projection });
                 for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey) await check.rebase();

@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   assertFeatureRequirement, COMPONENT_KINDS, getComponentFeatureRequirements, getPlatformCapabilityFact, normalizeStaticPluginComponents, partitionStaticPluginComponents, resolveInvocationPolicy,
-  type ComponentUnmet, type ExpectedComponentSet, type FeatureRequirement, type PlatformCapabilitiesV2,
+  type ComponentUnmet, type PlatformCapabilitiesV2, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
@@ -19,6 +19,9 @@ import { resolveAbsoluteAwHome } from './state-paths.js';
 import { assertTestReadablePath, assertTestWritablePath } from './test-path-fence.js';
 import { SKILL_OWNER_MARKER } from './ownership.js';
 import { createDynamicSkillTreeContentDigest } from './dynamic-skill-tree.js';
+import { INVOCATION_POLICY_NOT_APPLIED, isSkippedPermissionReason, safeComponentIdentity, safeSkippedPermissionActions,
+  type PermissionAction } from '../output/component-delivery.js';
+import type { Diagnostic } from '../output/public-result.js';
 
 export interface PlatformInputEvidence {
   schemaVersion: 1;
@@ -28,13 +31,28 @@ export interface PlatformInputEvidence {
   binding: Pick<DeploymentBinding, 'id' | 'physicalKey' | 'scope'>;
   units: Array<Pick<RenderUnit, 'id' | 'physicalKey' | 'renderScope' | 'output' | 'kinds'> & { inputDigest: string }>;
 }
-export interface PlatformDeliveryGaps {
-  gaps: ComponentUnmet[];
-  installedComponentIds: string[];
+interface PermissionNotice {
+  field: string;
+  reasonCode: string;
+  skippedPermissionActions: PermissionAction[];
 }
-export type PlatformEmptyState = Omit<PlatformInputEvidence, 'kind'> & { kind: 'aw-platform-empty-state' } & (
-  { result: 'intentional-empty' } | ({ result: 'capability-gaps' } & PlatformDeliveryGaps)
+type PlatformDeliveryState = { permissionNotices?: PermissionNotice[] } & (
+  { result: 'intentional-empty' } | { result: 'capability-gaps'; gaps: ComponentUnmet[]; installedComponentIds: string[] }
 );
+export type PlatformEmptyState = Omit<PlatformInputEvidence, 'kind'> & { kind: 'aw-platform-empty-state' } & PlatformDeliveryState;
+
+/** Keep only the declaration label and fixed tokens needed for the next status read. */
+export function platformPermissionNotices(diagnostics: readonly Diagnostic[]): PermissionNotice[] {
+  const notices = diagnostics.flatMap(({ code, subject, detail }) => {
+    const field = subject?.field;
+    const reasonCode = detail?.reasonCode;
+    const skippedPermissionActions = safeSkippedPermissionActions(detail?.skippedPermissionActions);
+    return code === INVOCATION_POLICY_NOT_APPLIED && field && safeComponentIdentity(field) === field
+      && reasonCode && isSkippedPermissionReason(reasonCode) && skippedPermissionActions.length
+      ? [{ field, reasonCode, skippedPermissionActions }] : [];
+  });
+  return [...new Map(notices.map((notice) => [JSON.stringify(notice), notice])).values()];
+}
 
 export interface PlatformInputEvidenceOptions {
   plugin: PluginMeta;
@@ -46,22 +64,27 @@ export interface PlatformInputEvidenceOptions {
   }>;
 }
 
-function staticCapabilityInputs(expected: ExpectedComponentSet, capabilities: PlatformCapabilitiesV2): unknown {
-  const usedFeatures = (requirements: readonly FeatureRequirement[]) => requirements.map(({ feature, values }) => {
-    const fact = getPlatformCapabilityFact(feature, capabilities);
-    const mapping = capabilities.deliveryFeatures?.find((entry) => entry.feature === feature);
-    return { feature, status: fact.status, reasonCodes: fact.reasonCodes,
-      ...(capabilities.deliveryFeatures ? { delivery: mapping
-        ? { ...(values ? { values: values.filter((value) => mapping.values?.includes(value)) } : {}) } : null } : {}),
-      ...(values ? { values: (fact.values ?? []).filter((value) => values.includes(value)) } : {}),
-      ...(feature === 'instruction.coverage' && ['codex', 'claude'].includes(capabilities.platform) ? { maxBytes: fact.maxBytes } : {}) };
+function staticCapabilityInputs(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2): unknown {
+  const { deliveryFeatures } = capabilities;
+  return components.map((component) => {
+    const kind = capabilities.kinds[component.kind];
+    const features = getComponentFeatureRequirements(component, { deliveryOnly: true })
+      .filter(({ feature }) => !deliveryFeatures || feature !== `component.kind.${component.kind}`)
+      .map(({ feature, values }) => {
+        const maxBytes = component.kind === 'instruction' && feature === 'instruction.coverage'
+          && ['codex', 'claude'].includes(capabilities.platform) ? capabilities.features[feature]?.maxBytes : undefined;
+        // The writer handles a component's own fields. Cross-kind requirements still depend on the host.
+        if (deliveryFeatures && feature.startsWith(`${component.kind}.`)) {
+          const mapping = deliveryFeatures.find((entry) => entry.feature === feature);
+          const delivery = mapping ? { values: values?.filter((value) => mapping.values?.includes(value)) } : null;
+          return { feature, delivery, maxBytes };
+        }
+        const fact = getPlatformCapabilityFact(feature, capabilities);
+        return { feature, status: fact.status, reasonCodes: fact.reasonCodes,
+          ...(values ? { values: (fact.values ?? []).filter((value) => values.includes(value)) } : {}), maxBytes };
+      });
+    return { id: component.id, kind: deliveryFeatures ? { delivery: kind.delivery } : kind, features };
   });
-  return [
-    ...expected.components.map((component) => ({ id: component.id, kind: capabilities.kinds[component.kind],
-      features: usedFeatures(getComponentFeatureRequirements(component)) })),
-    ...expected.unmet.map((gap) => ({ id: gap.id, kind: capabilities.kinds[gap.kind],
-      features: usedFeatures(gap.requiredFeatures) })),
-  ];
 }
 
 /** Currentness evidence only. This state never grants ownership or removal rights. */
@@ -115,7 +138,7 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
     const hasSkills = expected.components.some((component) => component.kind === 'skill');
     return { id, physicalKey, renderScope, output, kinds: [...kinds],
       inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, route: binding.route, renderScope, dynamic, declared, expected,
-        capabilities: staticCapabilityInputs(declared, capabilityView), staticResources, instructions, instructionRenderer, policy,
+        capabilities: staticCapabilityInputs(declared.components, capabilityView), staticResources, instructions, instructionRenderer, policy,
         ...(hasSkills ? { requires: manifest.requires?.aw, nativeTools: manifest.nativeTools } : {}),
         ...(commandSets.length ? { commandSets, commandConfig,
           commandRendererSource: commandSets.some((set) => set.mode === 'dynamic') ? sourceDigest : undefined } : {}) }) };
@@ -168,7 +191,7 @@ function statePath(state: Pick<PlatformInputEvidence, 'platform' | 'binding'>, e
 
 function storedState(state: PlatformEmptyState): PlatformEmptyState & { deliveryDigest?: string } {
   // Detect accidental edits to the delivered IDs or skipped declarations without rerunning a renderer.
-  return state.result === 'capability-gaps' ? { ...state, deliveryDigest: artifactValueDigest(state) } : state;
+  return state.result === 'capability-gaps' || state.permissionNotices ? { ...state, deliveryDigest: artifactValueDigest(state) } : state;
 }
 
 /** Records only a verified delivery. This weak record grants no ownership. */
@@ -196,16 +219,33 @@ export async function matchesPlatformEmptyState(options: { state: PlatformEmptyS
   } catch { return false; }
 }
 
-export async function readPlatformDeliveryGaps(options: { input: PlatformInputEvidence; env?: NodeJS.ProcessEnv }): Promise<PlatformDeliveryGaps | undefined> {
+export async function readPlatformDeliveryState(options: { input: PlatformInputEvidence; env?: NodeJS.ProcessEnv }): Promise<PlatformDeliveryState | undefined> {
   try {
     const stored = await readState(options.input, options.env);
     if (!stored || typeof stored !== 'object') return;
     const { deliveryDigest, ...record } = stored as Record<string, unknown>;
-    const { kind, result, gaps, installedComponentIds, ...evidence } = record;
-    if (kind !== 'aw-platform-empty-state' || result !== 'capability-gaps' || artifactValueDigest(record) !== deliveryDigest
-      || artifactValueDigest({ ...evidence, kind: 'aw-platform-input' }) !== artifactValueDigest(options.input)
-      || !Array.isArray(installedComponentIds) || !installedComponentIds.every((id) => typeof id === 'string' && id.length > 0)
-      || new Set(installedComponentIds).size !== installedComponentIds.length || !Array.isArray(gaps) || !gaps.length) return;
+    const { kind, result, gaps, installedComponentIds, permissionNotices, ...evidence } = record;
+    if (kind !== 'aw-platform-empty-state' || (result !== 'capability-gaps' && result !== 'intentional-empty')
+      || artifactValueDigest({ ...evidence, kind: 'aw-platform-input' }) !== artifactValueDigest(options.input)) return;
+    if (result === 'capability-gaps' || permissionNotices !== undefined) {
+      if (artifactValueDigest(record) !== deliveryDigest) return;
+    } else if (deliveryDigest !== undefined) return;
+    const notices: PermissionNotice[] = [];
+    if (permissionNotices !== undefined) {
+      if (!Array.isArray(permissionNotices) || !permissionNotices.length) return;
+      for (const notice of permissionNotices) {
+        if (!notice || typeof notice.field !== 'string' || safeComponentIdentity(notice.field) !== notice.field
+          || typeof notice.reasonCode !== 'string' || !isSkippedPermissionReason(notice.reasonCode)) return;
+        const skippedPermissionActions = safeSkippedPermissionActions(notice.skippedPermissionActions);
+        if (!skippedPermissionActions.length || skippedPermissionActions.length !== notice.skippedPermissionActions.length) return;
+        notices.push({ field: notice.field, reasonCode: notice.reasonCode, skippedPermissionActions });
+      }
+    }
+    const noticeFields = notices.length ? { permissionNotices: notices } : {};
+    if (result === 'intentional-empty') return gaps === undefined && installedComponentIds === undefined ? { result, ...noticeFields } : undefined;
+    if (!Array.isArray(installedComponentIds) || !installedComponentIds.every((id) => typeof id === 'string' && id.length > 0)
+      || new Set(installedComponentIds).size !== installedComponentIds.length || !Array.isArray(gaps)
+      || !gaps.length && !notices.length) return;
     for (const gap of gaps) {
       if (!gap || typeof gap.id !== 'string' || !gap.id || !COMPONENT_KINDS.includes(gap.kind)
         || gap.name !== undefined && typeof gap.name !== 'string' || gap.componentId !== undefined && typeof gap.componentId !== 'string'
@@ -213,6 +253,6 @@ export async function readPlatformDeliveryGaps(options: { input: PlatformInputEv
       for (const feature of gap.requiredFeatures) assertFeatureRequirement(feature);
       if (!isDeliveryCapabilityGap(gap)) return;
     }
-    return { gaps, installedComponentIds };
+    return { result, gaps, installedComponentIds, ...noticeFields };
   } catch { return undefined; }
 }

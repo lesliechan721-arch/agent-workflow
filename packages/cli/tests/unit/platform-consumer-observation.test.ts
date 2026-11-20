@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { getPlatformCapabilities, getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
+import { getPhysicalKey } from '../../src/platforms/identity.js';
 import { piAgentConsumerDiagnostic } from '../../src/platforms/inspection-pi.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
@@ -355,6 +357,41 @@ describe('public native consumer observation', () => {
     const filtered = await inspectDeployment(item.ctx, item.binding);
     expect(filtered.prerequisites.agentConsumers.candidates[0]?.enabled).toBe('no');
     expect(filtered.prerequisites.agentConsumers.configurationEvidence).not.toBe(consumerInstalled.prerequisites.agentConsumers.configurationEvidence);
+  });
+
+  it('observes a generated Pi extension without reading the sibling package Skill bytes', async () => {
+    const item = await fixture('pi');
+    const sibling = { ...item.binding, plugin: { ...item.binding.plugin, pluginId: 'team/guide' } };
+    const layout = await getDeploymentLayout(item.ctx, sibling);
+    sibling.physicalKey = getPhysicalKey(layout.physicalIdentity);
+    const root = layout.packageRoot;
+    const file = path.join(root, 'index.mjs');
+    const skill = path.join(root, 'skills', 'guide', 'SKILL.md');
+    const code = 'export default function register(pi) { pi.on("session_start", () => {}); }\n';
+    await fs.outputJson(path.join(root, 'package.json'), { name: 'guide', version: '1.0.0',
+      pi: { extensions: ['./index.mjs'], skills: ['./skills'] } });
+    await fs.outputFile(file, code);
+    await fs.outputFile(skill, 'Guide content.\n'.repeat(64000));
+    await fs.outputJson(item.layout.activationPath, { packages: [root] });
+    item.setPiList(`User packages:\n  ${root}\n    ${root}\n`);
+    const nativeProjection = { physicalIdentity: layout.physicalIdentity, inputDigest: `sha256:${'c'.repeat(64)}`,
+      contentDigest: (await readPlatformPackageContentDigest(root))!, components: [
+        { id: 'hook:guide', nativeName: 'guide', relativeOutputs: ['index.mjs'] },
+        { id: 'skill:guide', nativeName: 'guide', relativeOutputs: ['skills/guide/SKILL.md'] },
+      ] };
+    const owner = { skillRoot: root, allowedRoot: path.dirname(root), identity: deploymentPackageComponent(sibling, layout).identity };
+    const observe = async () => (await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.observation;
+    const read = vi.spyOn(fs, 'readFile');
+    try {
+      await writeSkillOwnerMarker({ ...owner, nativeProjection });
+      expect(await observe()).toBe('unknown');
+      await writeSkillOwnerMarker({ ...owner, nativeProjection: { ...nativeProjection,
+        piExtensionDigest: `sha256:${createHash('sha256').update(code).digest('hex')}` } });
+      expect(await observe()).toBe('complete');
+      const reads = read.mock.calls.map(([filename]) => filename);
+      expect(reads).toContain(file);
+      expect(reads).not.toContain(skill);
+    } finally { read.mockRestore(); }
   });
 
   // Optional consumer settings control the delivered-role warning. No warning

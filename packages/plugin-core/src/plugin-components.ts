@@ -412,11 +412,12 @@ export function getMissingDeliveryRequirements(component: PluginComponent, capab
           if (!['plugin-agents', 'other-agents'].every((audience) => requirement.values!.includes(audience))) {
             values = values.filter((audience) => audience === 'main');
           }
+        } else if (capabilities.platform === 'copilot' || capabilities.platform === 'grok') {
+          // These writers can reach plugin agents only by adding to the same-scope role files.
+          if (!hasInstructionAgentRecipients) values = values.filter((audience) => audience !== 'plugin-agents');
         } else if (capabilities.platform !== 'claude' && !component.content.coverage.includes('main')) {
-          // Copilot and Grok can put unconditional text directly in roles from the same package.
           // Other rule and extension entries reach the main session whenever enabled.
-          values = hasInstructionAgentRecipients && ['copilot', 'grok'].includes(capabilities.platform)
-            ? values.filter((audience) => audience === 'plugin-agents') : [];
+          values = [];
         }
       }
       const absent = requirement.values.filter((value) => !values.includes(value));
