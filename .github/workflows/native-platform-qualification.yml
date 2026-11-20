@@ -136,6 +136,12 @@ jobs:
       - name: Verify Windows process setup and timeout handling
         if: runner.os == 'Windows'
         run: pnpm test:qualification:native-platforms:harness
+      - name: Prepare the browser-use plugin's real preApply prerequisite
+        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/native-browser-tool" --ignore-scripts --no-audit --no-fund agent-browser@0.38.1
+          node scripts/qualification/native-platform-public-browser.mjs "$RUNNER_TEMP/native-browser-tool" "$RUNNER_TEMP/native-browser-bin"
       - name: Verify real clients and public AW status in credential-free temporary environments
         if: env.QUALIFICATION_CLIENT != 'antigravity-user'
         shell: bash

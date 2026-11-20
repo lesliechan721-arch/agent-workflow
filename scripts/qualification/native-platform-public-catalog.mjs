@@ -133,32 +133,40 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     }
   }
   if (!frozen) {
+    const failures = [];
     for (const entry of metadata.entries.filter(entry => !Object.hasOwn(roleSkills, entry.name))) {
       const id = catalogId + '/' + entry.name;
-      const manifest = JSON.parse(await fs.readFile(path.join(catalog, entry.source, manifestFile), 'utf8'));
-      const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
-      const install = await ctx.aw(['plugin', 'install', id, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
-      const receipt = targetOf(install, ctx, id);
-      const verified = [];
-      for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
-        if (!dir.isDirectory()) continue;
-        const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
-        let skill;
-        try { skill = await fs.readFile(sourceFile, 'utf8'); }
-        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-        assert(!(receipt.componentGaps ?? []).some(gap => gap.providerPluginId === id && gap.kind === 'skill' && gap.name === dir.name));
-        // Platform projections can translate frontmatter and command bindings.
-        // Read back an authored body line at the actual native publication path.
-        const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
-        const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('aw.command:') && !line.includes('{{'));
-        assert(authored, id + '/' + dir.name + ' must have an authored body');
-        const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
-        verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });
+      try {
+        const manifest = JSON.parse(await fs.readFile(path.join(catalog, entry.source, manifestFile), 'utf8'));
+        const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
+        const install = await ctx.aw(['plugin', 'install', id, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
+        const receipt = targetOf(install, ctx, id);
+        const verified = [];
+        for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
+          if (!dir.isDirectory()) continue;
+          const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
+          let skill;
+          try { skill = await fs.readFile(sourceFile, 'utf8'); }
+          catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+          assert(!(receipt.componentGaps ?? []).some(gap => gap.providerPluginId === id && gap.kind === 'skill' && gap.name === dir.name));
+          // Platform projections can translate frontmatter and command bindings.
+          // Read back an authored body line at the actual native publication path.
+          const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
+          const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('aw.command:') && !line.includes('{{'));
+          assert(authored, id + '/' + dir.name + ' must have an authored body');
+          const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
+          verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });
+        }
+        assert(verified.length > 0);
+        report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, skills: verified };
+      } catch (error) {
+        failures.push(entry.name);
+        const reason = error.message.replaceAll(ctx.root, '<isolated>').replaceAll(repoRoot, '<repo>');
+        report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, error: reason };
       }
-      assert(verified.length > 0);
-      report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, skills: verified };
     }
     assert.equal(Object.keys(report.catalog.plugins).length, metadata.entries.length);
+    assert.deepEqual(failures, [], 'Shipped plugin installation failed: ' + failures.join(', '));
     checkSettled(await ctx.aw(['plugin', 'status', '--context', ctx.scope]));
   }
 }

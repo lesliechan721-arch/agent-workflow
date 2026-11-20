@@ -63,7 +63,7 @@ export function safeSkippedPermissionActions(value: unknown): PermissionAction[]
 }
 
 export function isSkippedPermissionReason(reasonCode: string): boolean {
-  return isDeliveryCapabilityGapReason(reasonCode) || reasonCode === 'not-offered' || reasonCode === 'config-disabled';
+  return isDeliveryCapabilityGapReason(reasonCode) || ['not-offered', 'config-disabled', 'scope-excluded'].includes(reasonCode);
 }
 
 export function isDeliveryNoticeCode(code: string): boolean {

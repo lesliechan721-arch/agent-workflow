@@ -14,6 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
 const packages = ['agent-skill-eval', 'cli', 'plugin-core'];
 const buildArtifactRoots = packages.flatMap((name) => [`packages/${name}/dist`, `packages/${name}/package.json`]);
+const coreSchemas = 'packages/plugin-core/schemas';
 const nativeClients = ['codex', 'pi', 'claude'];
 const batch = {
   targets: ['claude', 'pi', 'codex', 'generic'],
@@ -62,17 +63,19 @@ async function readSelectors() {
 
 async function describeBuild(buildRoot, identity, selectorOverrides = {}) {
   return { ...identity, buildRoot, readCap: 4, selectorOverrides,
+    runtimeSchemaDigest: `sha256:${await computeTreeDigest(buildRoot, [coreSchemas])}`,
     artifactDigest: `sha256:${await computeTreeDigest(buildRoot, buildArtifactRoots)}` };
 }
 
 // Each arm uses the same complete build and installed dependencies. Change only
 // its private copies of the source selectors and their emitted declarations.
 async function makeArm(root, identity, definitions, enabled) {
-  for (const relative of buildArtifactRoots) {
+  for (const relative of [...buildArtifactRoots, coreSchemas]) {
     await fs.cp(path.join(repoRoot, relative), path.join(root, relative), { recursive: true, verbatimSymlinks: true });
   }
-  const modules = 'packages/cli/node_modules';
-  await fs.symlink(path.join(repoRoot, modules), path.join(root, modules), process.platform === 'win32' ? 'junction' : 'dir');
+  for (const modules of ['node_modules', ...packages.map(name => `packages/${name}/node_modules`)]) {
+    await fs.symlink(path.join(repoRoot, modules), path.join(root, modules), process.platform === 'win32' ? 'junction' : 'dir');
+  }
   const overrides = {};
   for (const { key, sourcePath, bundledPath, source, bundled, sourceLine, bundledLine, platforms } of definitions) {
     if (platforms.includes(process.platform) === enabled.includes(key)) continue;
@@ -229,7 +232,9 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
     phase = 'build-variants';
     const variants = plan.markerScans ? { query: ['query'], scan: ['scan'], combined: ['query', 'scan'] } : { query: ['query'] };
     for (const [name, enabled] of Object.entries(variants)) {
-      plan.arms[name] = await makeArm(path.join(scratch, name), identity, definitions, enabled);
+      const arm = await makeArm(path.join(scratch, name), identity, definitions, enabled);
+      if (arm.runtimeSchemaDigest !== baseline.runtimeSchemaDigest) throw new Error('variant-runtime-schema-mismatch');
+      plan.arms[name] = arm;
     }
     const input = path.join(scratch, 'input.json');
     await writeJson(input, plan);

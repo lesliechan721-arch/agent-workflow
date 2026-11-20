@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { expect, it } from 'vitest';
+import type { Diagnostic, NextAction } from '../../src/output/public-result.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
@@ -69,8 +70,8 @@ console.log(JSON.stringify({ version: 3, components, omitted: [], unmet }));
     expect(result.stderr).toContain('platformComponentsUnmet');
     const receipt = result.parseJsonStdout<{
       data: { apply: { targetResults: Array<{ partialDelivery?: true }> } };
-      diagnostics: Array<{ code: string }>;
-      nextActions: unknown[];
+      diagnostics: Diagnostic[];
+      nextActions: NextAction[];
     }>();
     expect(receipt).toMatchObject({ schemaVersion: 2, command: 'plugin.config.apply', status: 'partial',
       data: { configWrite: 'notStarted', apply: { state: 'partial', targetResults: [{
@@ -86,21 +87,30 @@ console.log(JSON.stringify({ version: 3, components, omitted: [], unmet }));
 
 it('reports verified native role delivery during a partial config apply', async () => {
   const { apply, codex, roleFile, initialRole } = await installFixture('initial');
-  const [packageRoot] = codex.packageRoots.values();
-  const skillFile = path.join(packageRoot!, 'skills/check/SKILL.md');
+  const packageRoot = [...codex.packageRoots.values()][0]!;
+  const skillFile = path.join(packageRoot, 'skills/check/SKILL.md');
   const initialSkill = await fs.readFile(skillFile);
   const retained = await apply('retain-only');
   expect(await fs.readFile(skillFile)).toEqual(initialSkill);
   expect(await fs.readFile(roleFile, 'utf8')).toBe(initialRole);
   expect(retained.data.apply.targetResults[0]).not.toHaveProperty('partialDelivery');
-  expect(retained.nextActions).toMatchObject([{ kind: 'command', argv: ['aw', 'plugin', 'sync', 'team/demo',
-    '--context', 'user', '--target', 'codex'] }]);
+  expect(retained.diagnostics).toContainEqual(expect.objectContaining({
+    code: 'previousDeploymentRetained', subject: { pluginId: 'team/demo', target: 'codex', scope: 'user' },
+    detail: expect.objectContaining({ path: packageRoot }),
+  }));
+  expect(retained.nextActions).toContainEqual({ kind: 'manual', message: expect.stringContaining(JSON.stringify(packageRoot)) });
+  expect(retained.nextActions.filter((action) => action.kind === 'command')).toMatchObject([{
+    kind: 'command', argv: ['aw', 'plugin', 'sync', 'team/demo', '--context', 'user', '--target', 'codex'],
+    requiresConfirmation: true,
+  }]);
 
   const changed = await apply('update-role');
   expect(await fs.readFile(skillFile)).toEqual(initialSkill);
   expect(await fs.readFile(roleFile, 'utf8')).toContain('Check with new settings.');
   expect(changed.data.apply.targetResults[0]).toMatchObject({ partialDelivery: true });
-  expect(changed.nextActions).toEqual([{ kind: 'manual', message: expect.stringContaining('team/demo (codex/user)') }]);
+  expect(changed.nextActions).toContainEqual({ kind: 'manual', message: expect.stringContaining(JSON.stringify(packageRoot)) });
+  expect(changed.nextActions).toContainEqual({ kind: 'manual', message: expect.stringContaining('team/demo (codex/user)') });
+  expect(changed.nextActions).not.toContainEqual(expect.objectContaining({ kind: 'command' }));
 }, 30_000);
 
 it('reports newly published native Skill delivery during a partial config apply', async () => {
@@ -114,5 +124,6 @@ it('reports newly published native Skill delivery during a partial config apply'
   expect(await fs.readFile(path.join(packageRoot!, skillPath), 'utf8')).toContain('Check content.');
   expect(await fs.readFile(roleFile, 'utf8')).toBe(initialRole);
   expect(changed.data.apply.targetResults[0]).toMatchObject({ partialDelivery: true });
-  expect(changed.nextActions).toEqual([{ kind: 'manual', message: expect.stringContaining('team/demo (codex/user)') }]);
+  expect(changed.nextActions).toContainEqual({ kind: 'manual', message: expect.stringContaining('team/demo (codex/user)') });
+  expect(changed.nextActions).not.toContainEqual(expect.objectContaining({ kind: 'command' }));
 }, 30_000);

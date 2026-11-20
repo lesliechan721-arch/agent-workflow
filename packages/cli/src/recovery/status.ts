@@ -341,10 +341,11 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const capabilityEmpty = onlyCapabilityGaps && recordedGaps !== undefined;
             const confirmedEmpty = capabilityEmpty || Boolean(plugin.manifest.artifacts && expectedCount === 0 && gaps.length === 0
               && recordedDelivery?.result === 'intentional-empty');
-            const confirmedEmptyPackage = Boolean(currentIds?.size && !packageExpectedCount) || binding.route === 'codex-marketplace' && recordedSupplements !== null
-              && dynamicUnits.has('package') && packageExpectedCount === 0
-              && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
-                units: inputEvidence.units.filter((unit) => unit.output === 'package') }, env: context.env });
+            const confirmedEmptyPackage = packageExpectedCount === 0 && (Boolean(currentIds?.size)
+              || dynamicUnits.has('package') && (recordedDelivery?.result === 'intentional-empty-package'
+                || binding.route === 'codex-marketplace' && recordedSupplements !== null
+                && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
+                  units: inputEvidence.units.filter((unit) => unit.output === 'package') }, env: context.env })));
             const dynamicSupplementsUnconfirmed = dynamicUnits.has('supplement') && !confirmedEmpty
               && !recordedSupplements?.inputMatches && !supplementInputDrift;
             if (dynamicSupplementsUnconfirmed) warn('dynamicExpectationUnconfirmed');
@@ -422,7 +423,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             }
             live.components.push(...supplements.components);
             currentMatches.push(Boolean(currentIds) || !dynamicUnits.size || confirmedEmpty || packageExpectationConfirmed || missing
-              || recordedSupplements !== null && !hasPackageExpectation);
+              || !dynamicSupplementsUnconfirmed && confirmedEmptyPackage || recordedSupplements !== null && !hasPackageExpectation);
             emptyMatches.push(confirmedEmpty && !capabilityEmpty);
             for (const entry of blockingGaps) block(entry.reasonCode);
 

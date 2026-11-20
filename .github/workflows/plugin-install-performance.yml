@@ -56,16 +56,13 @@ jobs:
     with:
       source-ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  measure:
-    needs: [frozen-catalog, native-windows-job]
-    if: ${{ !cancelled() && needs.frozen-catalog.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.runner }}
+  measure-linux:
+    needs: frozen-catalog
+    runs-on: ubuntu-24.04
+    env:
+      PERFORMANCE_RUNNER: ubuntu-24.04
     timeout-minutes: 90
-    steps:
+    steps: &measurement-steps
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -90,9 +87,10 @@ jobs:
           path: ${{ runner.temp }}/windows-job-qualified
       - name: Restore the verified Catalog transport
         shell: bash
+        working-directory: ${{ runner.temp }}
         run: |
-          mkdir "$RUNNER_TEMP/catalog"
-          tar -xzf - -C "$RUNNER_TEMP/catalog" < "$RUNNER_TEMP/catalog-input/catalog.tgz"
+          mkdir catalog
+          tar -xzf catalog-input/catalog.tgz -C catalog
       - name: Verify Windows timeout and process-tree setup
         if: runner.os == 'Windows'
         shell: bash
@@ -116,7 +114,15 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
-          name: plugin-install-performance-${{ matrix.runner }}
+          name: plugin-install-performance-${{ env.PERFORMANCE_RUNNER }}
           path: ${{ runner.temp }}/aw-install-public/*.json
           if-no-files-found: ignore
           retention-days: 14
+
+  measure-windows:
+    needs: [frozen-catalog, native-windows-job]
+    runs-on: windows-2025
+    env:
+      PERFORMANCE_RUNNER: windows-2025
+    timeout-minutes: 90
+    steps: *measurement-steps

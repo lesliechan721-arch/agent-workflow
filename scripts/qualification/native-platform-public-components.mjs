@@ -199,6 +199,20 @@ async function matrix(ctx, report) {
   const sync = () => aw(['plugin', 'sync', '--context', scope, '--yes']);
   const status = () => aw(['plugin', 'status', '--context', scope]);
   if (report.suite === 'pi-pair') return piPair(ctx, report, inputs, install, status, sync);
+  if (report.suite === 'pi-seven') {
+    // Replay the seven independent roots from the first failed Pi User batch.
+    const installed = await install(ids);
+    assert.deepEqual(installed.data.remainingTargets, []);
+    assert.deepEqual(installed.data.requirements.roots.toSorted(), ids.toSorted());
+    const observed = await status();
+    checkSettled(observed);
+    for (const spec of inputs) report.cases.push(await verifyFixture(ctx, observed, spec, 1));
+    const unchanged = await sync();
+    assert.deepEqual(unchanged.data.remainingTargets, []);
+    assert.equal(unchanged.data.changes.outputs, 'none');
+    report.batch = { roots: ids, installStatus: installed.status, syncOutputs: unchanged.data.changes.outputs };
+    return;
+  }
   // A target with only missing capability starts in a genuinely empty scope.
   if (['opencode', 'generic'].includes(platform)) {
     const spec = inputs.find(spec => spec.name === 'hook-only');
@@ -291,8 +305,8 @@ async function matrix(ctx, report) {
 
 export async function runComponentQualification({ platform, scope, clientPath, suite = 'matrix', catalog }) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
-  assert(['matrix', 'pi-pair', 'candidate', 'frozen'].includes(suite));
-  if (suite === 'pi-pair') assert.equal(platform, 'pi');
+  assert(['matrix', 'pi-pair', 'pi-seven', 'candidate', 'frozen'].includes(suite));
+  if (suite.startsWith('pi-')) assert.equal(platform, 'pi');
   const artifactIdentity = async () => {
     const files = Object.entries(await candidateFiles()).filter(([name]) => name.startsWith('packages/'));
     return sha256(JSON.stringify(files));
@@ -324,6 +338,26 @@ export async function runComponentQualification({ platform, scope, clientPath, s
         await fs.symlink(entry, path.join(bin, name));
       }
       env.PATH = [bin, '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter);
+    }
+    if (suite === 'candidate') {
+      // Keep only this real preApply prerequisite on the otherwise isolated PATH.
+      const entryName = process.platform === 'win32' ? 'agent-browser.exe' : 'agent-browser';
+      const hosted = process.env.AW_QUALIFICATION_BROWSER_BIN;
+      const search = hosted ? [hosted] : (process.env.PATH ?? '').split(path.delimiter);
+      report.browserUsePrerequisite = { available: false };
+      for (const directory of search.filter(directory => path.isAbsolute(directory))) {
+        const entry = path.join(directory, entryName);
+        if (!(await fs.access(entry, constants.X_OK).then(() => true, () => false))) continue;
+        const bin = path.join(root, 'browser-prerequisite');
+        await fs.mkdir(bin);
+        const destination = path.join(bin, entryName);
+        if (process.platform === 'win32') await fs.copyFile(entry, destination);
+        else await fs.symlink(await fs.realpath(entry), destination);
+        env.PATH = [bin, env.PATH].join(path.delimiter);
+        report.browserUsePrerequisite = { available: true, sha256: sha256(await fs.readFile(destination)),
+          ...(hosted ? { source: 'agent-browser@0.38.1' } : { source: 'local executable' }) };
+        break;
+      }
     }
     const project = path.join(root, 'project');
     await fs.mkdir(project);
@@ -384,7 +418,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
     const ctx = { root, project, env, aw, result, scope, platform };
-    if (suite === 'matrix' || suite === 'pi-pair') await matrix(ctx, report);
+    if (suite === 'matrix' || suite.startsWith('pi-')) await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';

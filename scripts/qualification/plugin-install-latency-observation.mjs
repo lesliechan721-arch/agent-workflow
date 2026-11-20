@@ -153,7 +153,7 @@ export async function readNativePackages(targets, root) {
       if (!resolved || !resolved.startsWith(`${root}${path.sep}`)) continue;
       const owner = await optionalJson(path.join(resolved, '.agent-workflows-owner.json'));
       const manifests = [];
-      for (const file of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.agents-plugin/plugin.json',
+      for (const file of ['.antigravity-plugin/plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.agents-plugin/plugin.json',
         '.github/plugin/plugin.json', 'package.json']) {
         const manifest = await optionalJson(path.join(resolved, file));
         if (manifest?.version) manifests.push({ file, name: manifest.name, version: manifest.version });

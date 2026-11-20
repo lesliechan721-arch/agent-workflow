@@ -20,7 +20,6 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
-import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -80,11 +79,9 @@ async function fixture(platforms: FixtureTarget[], dependency = false, options: 
     // Synthetic qualification only; use the real discovery, package projection and lifecycle.
     context.platformRebuildSession = new PlatformRebuildSession(context, (platform) => {
       const adapter = getAgentPluginAdapter(platform);
+      if (platform === 'antigravity') return adapter;
       return { ...adapter, capabilities: (input) => {
-        // Exercise the finite User-only profile on every host. This test grants
-        // synthetic Project Skill capability; it does not qualify that scope.
-        const profile = structuredClone(platform === 'antigravity'
-          ? getQualifiedPlatformProfile(platform, { platform: 'linux', arch: 'x64' }) : input.profile);
+        const profile = structuredClone(input.profile);
         delete profile.qualifiedConsumers;
         delete profile.qualificationEvidence;
         profile.kinds.skill = { ...profile.kinds.skill, status: 'supported', reasonCodes: [] };
@@ -207,7 +204,8 @@ describe('Native and generic preApply execution', () => {
     } else {
       const cursorCliQualified = (process.platform === 'darwin' && process.arch === 'arm64')
         || (process.platform === 'linux' && process.arch === 'x64');
-      const ready = platform === 'pi' || platform === 'opencode' || (platform === 'cursor' && cursorCliQualified);
+      const ready = platform === 'antigravity' || platform === 'pi' || platform === 'opencode'
+        || (platform === 'cursor' && cursorCliQualified);
       if (ready) {
         expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
         expect(status.value).toMatchObject({ command: 'plugin.status', status: 'success', data: {
@@ -225,7 +223,17 @@ describe('Native and generic preApply execution', () => {
             package: 'present', components: expect.arrayContaining([expect.objectContaining({ id: 'skill:demo', presence: 'present' })]),
             consumers: expect.arrayContaining([expect.objectContaining({ load: expect.stringMatching(/^(?:unknown|not-observed)$/u) })]),
           }) })]) })]) }));
-      if (platform === 'pi') {
+      if (platform === 'antigravity') {
+        expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
+          targetResults: expect.arrayContaining([expect.objectContaining({ target: 'antigravity', scope: 'project',
+            observation: 'verified', content: 'satisfied', installedComponentIds: ['skill:demo'],
+            deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+              registration: 'not-applicable', nativeIdentity: expect.objectContaining({ route: 'antigravity-directory' }),
+              consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', load: 'unknown' })]),
+            }) })]),
+          })]),
+        }));
+      } else if (platform === 'pi') {
         expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
           targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
             deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({

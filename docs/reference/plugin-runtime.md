@@ -266,7 +266,7 @@ stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64
 
 Hook/MCP 命令引用的本地文件须来自已允许的来源。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
 
-Copilot 和 Grok 将无路径条件、仅覆盖 `plugin-agents` 的 Instructions 写入同一目标和 render scope 中实际可交付的同包角色正文。单独准备 Instructions 或没有适用角色时，AW 报告 `plugin-agents` 的交付缺口。规则文件只接收声明覆盖 `main` 的正文。
+Copilot 和 Grok 将无路径条件、覆盖 `plugin-agents` 的 Instructions 写入同一目标和 render scope 中实际可交付的同包角色正文。没有适用角色时，AW 提示 `plugin-agents` 的交付缺口。如果同一条指令还覆盖 `main`，AW 继续将正文写入主会话的规则文件。
 
 Grok User 和 Project 的包投影从同一 binding、同一 render scope 的完整集合组合 Agent Instructions 正文。修改或关闭 Instructions 时，同 scope 受影响的 Agent 包和规则补足一起重投影、Review 与冻结。组合输入失败阻止相关 Agent 包发布。
 

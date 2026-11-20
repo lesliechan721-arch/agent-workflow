@@ -165,10 +165,10 @@
   },
   "publicAwQualification": {
     "schemaVersion": 1,
-    "date": "2026-11-20T09:37:47.136Z",
+    "date": "2026-11-20T10:10:51.340Z",
     "host": "darwin-arm64",
-    "baseSourceSha": "c623d4ca83c61d26f15d755162550646c6871df1",
-    "candidateSha256": "67942f8c2e1af6b55387bae6ca6173edd0d8ae9142177a70bac1fdeee23c9718",
+    "baseSourceSha": "f1bdb1911ddc4ef375b5ea6cdb4a5f6f18b82266",
+    "candidateSha256": "3b6dee73cec2288f9194a32fe2034c05cf82818d2675196a7d0e6e55b663fe85",
     "fixture": "repository git-toolkit plus a local root and two dependencies with seven Skills",
     "clientSha256": "3f669d53b6a9807b161c327bf6ce33cdd24ecbf3026edcbb7347c004d1a2d9f2",
     "client": "1.5.13",
@@ -195,8 +195,230 @@
       "gaps": []
     },
     "sessions": {
-      "status": "unverified",
-      "reason": "authentication-session-probe-not-requested"
+      "status": "observed",
+      "user": "unobserved",
+      "project": "observed",
+      "samples": {
+        "git-project-a": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 4,
+          "skills": [
+            {
+              "name": "aw-qualification-official-git-toolkit:git-commit",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:isolating-work-with-git-worktrees",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:reconciling-git-merges",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-scope-proof-direct",
+              "model_invocable": true
+            }
+          ]
+        },
+        "git-project-b": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 0,
+          "skills": []
+        },
+        "first-project-a": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 11,
+          "skills": [
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-extra",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-ordinary",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:git-commit",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:isolating-work-with-git-worktrees",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:reconciling-git-merges",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-scope-proof-direct",
+              "model_invocable": true
+            }
+          ]
+        },
+        "first-project-b": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 0,
+          "skills": []
+        },
+        "updated-project-a": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 11,
+          "skills": [
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-hidden",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-updated",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:git-commit",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:isolating-work-with-git-worktrees",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-qualification-official-git-toolkit:reconciling-git-merges",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-scope-proof-direct",
+              "model_invocable": true
+            }
+          ]
+        },
+        "updated-project-b": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 7,
+          "skills": [
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-extra",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-ordinary",
+              "model_invocable": true
+            }
+          ]
+        },
+        "removed-project-a": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 1,
+          "skills": [
+            {
+              "name": "aw-scope-proof-direct",
+              "model_invocable": true
+            }
+          ]
+        },
+        "removed-project-b": {
+          "status": "SUCCESS",
+          "num_turns": 0,
+          "verifiedProjectLocations": 7,
+          "skills": [
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-a:dependency-a-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-first",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-dependency-b:dependency-b-second",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-extra",
+              "model_invocable": true
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-project-proof-scope-root:scope-ordinary",
+              "model_invocable": true
+            }
+          ]
+        }
+      },
+      "explicitInvocation": "unverified"
     },
     "firstPublication": [
       {
@@ -301,8 +523,9 @@
         ]
       }
     ],
-    "status": "failed",
-    "reason": "aw-plugin-remove-exit-2-invalidOptionValue"
+    "mixedCleanup": "project-a-owned-project-b-user-and-foreign-retained",
+    "status": "passed",
+    "elapsedSeconds": 148.63
   },
   "boundaries": {
     "explicitInvocation": "unverified",

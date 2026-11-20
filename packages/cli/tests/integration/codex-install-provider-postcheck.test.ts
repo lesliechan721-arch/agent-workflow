@@ -63,9 +63,26 @@ it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed',
         ? Promise.resolve({ exitCode: 1, stdout: '', stderr: 'Install failed.' }) : runtime.nativeCliRunner(call),
     });
     const receipt = JSON.parse(capture.readStdout());
-    const partial = native === 'write failed' || native === 'hard gap';
+    const partial = native === 'write failed';
     expect(code, capture.readStdout()).toBe(partial ? 4 : 0);
     expect(receipt.status).toBe(partial ? 'partial' : 'success');
+    if (native === 'hard gap') {
+      for (const [target, reasonCode] of [['codex', 'delivery-unavailable'], ['generic', 'interface-unsupported']] as const) {
+        expect(receipt.data.targetResults).toContainEqual(expect.objectContaining({
+          target, scope: 'user', satisfaction: 'installed', installedComponentCount: 3,
+          installedComponentIds: expect.arrayContaining(names.map((name) => `skill:${name}`)),
+          componentGaps: [expect.objectContaining({
+            id: 'skill:isolated', reasonCode, requiredFeatures: [{ feature: 'skill.execution', values: ['isolated-context'] }],
+          })],
+        }));
+      }
+      expect(receipt.nextActions).toEqual([]);
+    } else if (native === 'write failed') {
+      expect(runtime.installed.size).toBe(0);
+      expect(receipt.data.targetResults).toContainEqual(expect.objectContaining({
+        target: 'generic', scope: 'user', execution: 'applied', content: 'satisfied',
+      }));
+    }
     const warnings = receipt.diagnostics.filter((item: { code: string }) => item.code === 'skillInvocationPolicyNotGuaranteed');
     expect(warnings).toHaveLength(native === 'supported' || native === 'write failed' ? 1 : 2);
     expect(warnings).toContainEqual(expect.objectContaining({ severity: 'warning', detail: expect.objectContaining({ reasonCode: 'noBoundExecutor' }),

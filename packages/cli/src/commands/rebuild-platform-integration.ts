@@ -987,9 +987,10 @@ export class PlatformRebuildSession {
             const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
             if (supplement) {
               supplementInputDigests.set(entry.binding.id, supplement.inputDigest);
-              if (entry.binding.route === 'codex-marketplace' && !projections.some((projection) => projection.bundle)) {
-                emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
-                  units: inputEvidence.units.filter((unit) => unit.output === 'package') });
+              if (['codex-marketplace', 'grok-directory'].includes(entry.binding.route) && !expected.unmet.length
+                && !projections.some((projection) => projection.bundle)) {
+                emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state',
+                  result: 'intentional-empty-package', ...noticeFields });
               }
             }
           }
@@ -1157,8 +1158,11 @@ export class PlatformRebuildSession {
                 id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
               })));
               const emptyPackage = emptyStates.get(plan.binding.id);
-              if (!gaps.length && emptyPackage && after.package === 'absent' && after.registration === 'absent') {
+              if (!gaps.length && supplementIds.size && emptyPackage?.result === 'intentional-empty-package'
+                && after.package === 'absent' && ['absent', 'not-applicable'].includes(after.registration)) {
+                // The package absence and permission notices describe the same binding.
                 await writePlatformEmptyState({ state: emptyPackage, env: this.context.env });
+                continue;
               }
             } catch {
               ctx.signal?.throwIfAborted();

@@ -1739,26 +1739,27 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const runtime = await createCodexNativeTestRuntime(isolation);
+    const projectRoot = await fs.realpath(isolation.layout.fixtureCwd);
+    const unreadableScopes = new Set<'user' | 'project'>();
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const pluginArgs = pluginIndex >= 0
         ? invocation.args.slice(pluginIndex)
         : invocation.args;
       if (pluginArgs.join(' ') === `plugin list --marketplace ${codexLayout.marketplaceName} --json`) {
+        unreadableScopes.add(await fs.realpath(invocation.cwd) === projectRoot ? 'project' : 'user');
         return { exitCode: 0, stdout: '{invalid', stderr: '' };
       }
       return runtime.nativeCliRunner(invocation);
     });
 
-    const installed = await installFixturePlugin(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
-    }, { ...runtime, nativeCliRunner });
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' } as const;
+    const installed = await installFixturePlugin(['team/demo'], options, { ...runtime, nativeCliRunner });
 
+    expect(unreadableScopes).toEqual(new Set(['user', 'project']));
     expect(installed.overallState).toBe('failed');
     expect(installed.targetResults).toEqual([
-      expect.objectContaining({ errorCode: 'platformComponentsUnmet' }),
+      expect.objectContaining({ state: 'failed', errorCode: 'nativeObservationUnknown' }),
     ]);
     const mutationCalls = nativeCliRunner.mock.calls.filter(([invocation]) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -1772,15 +1773,21 @@ describe('five namespaced write commands', () => {
       path.join(isolation.layout.fixtureCwd, 'unreadable-registration-prefix'),
       runtime.codexVersion,
     );
-    const status = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd,
-      env: { ...isolation.env, PATH: binRoot }, nativeCliRunner, cliVersion: '1.0.0', targets: ['codex'], context: 'user' });
-    const target = observedTarget(status, 'team/demo', 'user');
-    expect(target.content).toBe('unknown');
+    unreadableScopes.clear();
+    const status = await readRecoveryStatus({ cwd: options.cwd, env: { ...isolation.env, PATH: binRoot },
+      nativeCliRunner, cliVersion: '1.0.0', targets: ['codex'], context: 'project' });
+    expect(unreadableScopes).toEqual(new Set(['user', 'project']));
+    const target = observedTarget(status, 'team/demo', 'project');
+    expect(target).toMatchObject({ content: 'unknown', observation: 'unknown' });
     expect(target.deploymentObservations).toContainEqual(expect.objectContaining({ after: expect.objectContaining({
       registration: 'unknown', consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown' })]),
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeObservationFailed' })]),
     }) }));
-    expect(status.allSatisfied).not.toBe(true);
+    expect(status.allSatisfied).toBeNull();
+
+    const repaired = await syncFixturePlugin(['team/demo'], options, runtime);
+    expect(repaired.overallState, JSON.stringify(repaired.targetResults)).toBe('succeeded');
+    expect(runtime.installed.has(nativeId('demo'))).toBe(true);
   }, 30_000);
 
   it.each([

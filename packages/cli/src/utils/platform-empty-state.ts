@@ -37,7 +37,8 @@ interface PermissionNotice {
   skippedPermissionActions: PermissionAction[];
 }
 type PlatformDeliveryState = { permissionNotices?: PermissionNotice[] } & (
-  { result: 'intentional-empty' } | { result: 'capability-gaps'; gaps: ComponentUnmet[]; installedComponentIds: string[] }
+  { result: 'intentional-empty' | 'intentional-empty-package' }
+  | { result: 'capability-gaps'; gaps: ComponentUnmet[]; installedComponentIds: string[] }
 );
 export type PlatformEmptyState = Omit<PlatformInputEvidence, 'kind'> & { kind: 'aw-platform-empty-state' } & PlatformDeliveryState;
 
@@ -191,7 +192,7 @@ function statePath(state: Pick<PlatformInputEvidence, 'platform' | 'binding'>, e
 
 function storedState(state: PlatformEmptyState): PlatformEmptyState & { deliveryDigest?: string } {
   // Detect accidental edits to the delivered IDs or skipped declarations without rerunning a renderer.
-  return state.result === 'capability-gaps' || state.permissionNotices ? { ...state, deliveryDigest: artifactValueDigest(state) } : state;
+  return state.result !== 'intentional-empty' || state.permissionNotices ? { ...state, deliveryDigest: artifactValueDigest(state) } : state;
 }
 
 /** Records only a verified delivery. This weak record grants no ownership. */
@@ -225,9 +226,9 @@ export async function readPlatformDeliveryState(options: { input: PlatformInputE
     if (!stored || typeof stored !== 'object') return;
     const { deliveryDigest, ...record } = stored as Record<string, unknown>;
     const { kind, result, gaps, installedComponentIds, permissionNotices, ...evidence } = record;
-    if (kind !== 'aw-platform-empty-state' || (result !== 'capability-gaps' && result !== 'intentional-empty')
+    if (kind !== 'aw-platform-empty-state' || (result !== 'capability-gaps' && result !== 'intentional-empty' && result !== 'intentional-empty-package')
       || artifactValueDigest({ ...evidence, kind: 'aw-platform-input' }) !== artifactValueDigest(options.input)) return;
-    if (result === 'capability-gaps' || permissionNotices !== undefined) {
+    if (result !== 'intentional-empty' || permissionNotices !== undefined) {
       if (artifactValueDigest(record) !== deliveryDigest) return;
     } else if (deliveryDigest !== undefined) return;
     const notices: PermissionNotice[] = [];
@@ -242,7 +243,7 @@ export async function readPlatformDeliveryState(options: { input: PlatformInputE
       }
     }
     const noticeFields = notices.length ? { permissionNotices: notices } : {};
-    if (result === 'intentional-empty') return gaps === undefined && installedComponentIds === undefined ? { result, ...noticeFields } : undefined;
+    if (result !== 'capability-gaps') return gaps === undefined && installedComponentIds === undefined ? { result, ...noticeFields } : undefined;
     if (!Array.isArray(installedComponentIds) || !installedComponentIds.every((id) => typeof id === 'string' && id.length > 0)
       || new Set(installedComponentIds).size !== installedComponentIds.length || !Array.isArray(gaps)
       || !gaps.length && !notices.length) return;
