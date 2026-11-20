@@ -35,6 +35,8 @@ const pairPrerequisites = new Map([
 ]);
 const componentCommands = new Set(['target.set', 'source.add', 'source.sync', 'dev.catalog.create', 'dev.catalog.build',
   'dev.plugin.create', 'plugin.install', 'plugin.remove', 'plugin.status', 'plugin.sync']);
+const publicStatusByExitCode = new Map([[0, 'success'], [1, 'failed'], [2, 'failed'], [3, 'blocked'], [4, 'partial']]);
+const publicStatuses = new Set(publicStatusByExitCode.values());
 const rows = (value, limit) => Array.isArray(value) ? value.slice(0, limit) : [];
 const receiptCodes = new Set(['commandFailed', 'operationInterrupted', 'operationPlanStale', 'operationReviewStale',
   'platformPreparationFailed', 'platformExecutionFailed', 'platformMutationFailed', 'platformComponentsUnmet',
@@ -53,7 +55,7 @@ const receiptReasons = new Set(['operationPlanStale: client discovery changed af
   'Process cleanup could not be confirmed. Check status before retrying.',
   'The preApply process cleanup could not be confirmed.']);
 
-function failedComponentCommand(args, dependencies) {
+function componentCommand(args, dependencies) {
   const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
   const fields = {};
   for (const field of ['scope', 'context']) {
@@ -73,16 +75,20 @@ function awProcessCompleted(result) {
 }
 
 function awCommandCompleted(result) {
-  return awProcessCompleted(result) && [0, 1, 2, 3, 4].includes(result.exitCode);
+  return awProcessCompleted(result) && publicStatusByExitCode.has(result.exitCode);
 }
 
-function retainedReceipt(result) {
-  // Cleanup can fail after the child has written its final JSON. The receipt
-  // describes AW's result and never upgrades the outer process failure.
-  if (!awProcessCompleted(result) || ![0, 1, 2, 3, 4, 250].includes(result.exitCode) || result.stdoutTruncated
+function readComponentReceipt(result, command) {
+  if (!awProcessCompleted(result) || (!publicStatusByExitCode.has(result.exitCode) && result.exitCode !== 250) || result.stdoutTruncated
     || typeof result.stdout !== 'string' || result.stdout.length > 2 * 1024 * 1024) return undefined;
-  try { return JSON.parse(result.stdout); }
+  let value;
+  try { value = JSON.parse(result.stdout); }
   catch { return undefined; }
+  if (value?.schemaVersion !== 2 || command === 'unknown' || value.command !== command || !publicStatuses.has(value.status)) return undefined;
+  // AW can preserve a business status while overriding its exit to 1 for unconfirmed cleanup.
+  const cleanupFailure = Array.isArray(value.diagnostics) && value.diagnostics.some(item => item?.code === 'processCleanupUnconfirmed');
+  // The caller accepts Job 250 only as diagnostic evidence after rejecting the outer process.
+  if (result.exitCode === 250 || (cleanupFailure ? result.exitCode === 1 : value.status === publicStatusByExitCode.get(result.exitCode))) return value;
 }
 
 function receiptDiagnostics(value) {
@@ -95,8 +101,7 @@ function receiptDiagnostics(value) {
 }
 
 function componentReceiptEvidence(value, command, platform) {
-  if (value?.schemaVersion !== 2 || command.command === 'unknown' || value.command !== command.command
-    || !['success', 'blocked', 'partial', 'failed'].includes(value.status)) return {};
+  if (!value) return {};
   const installScope = command.command === 'plugin.install' ? command.scope : undefined;
   const targets = rows(value.data?.targetResults, 64).filter(target => command.pluginIds?.includes(target?.pluginId)
     && target.target === platform && ['user', 'project'].includes(target.scope)
@@ -719,8 +724,8 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       let value;
       let failure;
       let stage = 'execute';
+      const command = componentCommand(args, dependencies);
       const recordFailure = (stage, kind, error, receipt) => {
-        const command = failedComponentCommand(args, dependencies);
         failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
           ...componentReceiptEvidence(receipt, command, platform) };
         const failures = report.commandFailures ??= [];
@@ -733,13 +738,13 @@ export async function runComponentQualification({ platform, scope, clientPath, t
         // Only AW's public exit codes carry command results in this suite.
         assert(awCommandCompleted(response), 'Public AW process did not complete');
         stage = 'response';
-        value = JSON.parse(response.stdout);
-        assert.equal(value?.schemaVersion, 2);
-        if (response.exitCode !== 0 || value.status !== 'success') recordFailure('command', 'public-aw-failed', undefined, value);
+        value = readComponentReceipt(response, command.command);
+        assert(value, 'Public AW receipt does not match its command and exit code');
+        if (response.exitCode !== 0) recordFailure('command', 'public-aw-failed', undefined, value);
       } catch (error) {
         const kind = stage === 'response' ? 'invalid-public-receipt'
           : error?.name === 'ProviderProcessCleanupError' ? 'ProviderProcessCleanupError' : 'process-failed';
-        recordFailure(stage, kind, error, retainedReceipt(error?.result ?? response));
+        recordFailure(stage, kind, error, stage === 'execute' ? readComponentReceipt(error?.result ?? response, command.command) : undefined);
         publicAwFailures.set(error, `${failure.command} ${stage} failed (${kind})`);
         throw error;
       } finally {
@@ -778,7 +783,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     }
     async function aw(args, cwd) {
       const { exitCode, value, failure } = await result(args, cwd);
-      if (exitCode !== 0 || value.status !== 'success') {
+      if (exitCode !== 0) {
         const reason = `${failure.command} failed (exit ${exitCode})`;
         const error = new Error(reason);
         publicAwFailures.set(error, reason);

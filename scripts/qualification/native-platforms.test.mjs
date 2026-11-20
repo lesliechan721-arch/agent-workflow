@@ -428,11 +428,17 @@ test('removes a Windows qualification executable only after its lock is released
   let closed;
   let release;
   try {
-    await fs.copyFile(process.execPath, executable);
-    child = spawn(executable, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0)); setTimeout(() => process.exit(1), 30000)'],
-      { env: isolatedEnvironment(root), stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    await fs.writeFile(executable, 'qualification fixture');
+    const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    // Hold an actual non-delete-sharing handle. An executable image mapping alone can allow unlink on NTFS.
+    const holdFile = "$ErrorActionPreference='Stop'; $file=[IO.File]::Open($env:AW_TEST_LOCK_FILE, 'Open', 'Read', 'Read'); "
+      + "try { [Console]::Write('1'); [Console]::Out.Flush(); [void][Console]::ReadLine() } finally { $file.Dispose() }";
+    child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', holdFile],
+      { env: { ...isolatedEnvironment(root), AW_TEST_LOCK_FILE: executable }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     closed = once(child, 'close');
-    await once(child, 'spawn');
+    const signal = AbortSignal.timeout(30_000);
+    const ready = await Promise.race([once(child.stdout, 'data', { signal }), closed]);
+    assert.ok(Buffer.isBuffer(ready[0]) && ready[0].toString() === '1', 'Expected confirmation that the fixture file is locked');
     await assert.rejects(removeQualificationRoot(root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
     release = setTimeout(() => child.stdin.end(), 150);
     await removeQualificationRoot(root);

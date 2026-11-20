@@ -195,7 +195,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，把本次外层 AW 的标记传给脚本的隔离环境。脚本 runner 同时生成自己的标记并管理自己的进程组。若调用已经带有另一份外层标记，资格工具会在启动前报错。组件报告用 `pluginScriptSupervision` 记录这项测试条件。观察器逐次检查标记和退出情况，当前归属无法确认时保留失败。[资格预加载器](../../scripts/qualification/native-platform-public-plugin-marker.mjs)
 
-组件报告在 `commandFailures` 保留最多 16 条公开命令失败，包含实际取得的退出和清理信息。有观察记录时，附上首末快照、按 PID 和启动时间匹配的进程名、行形态和身份确认。AW 返回失败回执，或 AW 写完回执后外层清理失败时，`awReceipt` 保留 v2 状态、受控诊断和已知夹具的目标结果。`scope` 和 `context` 分别记录命令适用的安装范围与请求上下文。`target.set` 写个人偏好，Catalog 来源命令没有插件安装范围。独立 Catalog 插件各自保留失败及已知夹具名称，资格仍以原有验收判定退出。[公共组件资格](../../scripts/qualification/native-platform-public-components.mjs)
+组件资格要求 v2 回执属于本次公开命令，并且状态符合公开退出码。`commandFailures` 保留最多 16 条失败，包含实际取得的退出和清理信息。POSIX 进程观察器会将外层 AW 正常退出时仍存活的后代判为清理失败。有观察记录时，报告附上首末快照、按 PID 和启动时间匹配的进程名、行形态和身份确认。AW 返回失败回执，或 AW 写完回执后外层清理失败时，`awReceipt` 保留受控的状态、诊断和已知夹具的目标结果。`scope` 和 `context` 分别记录命令适用的安装范围与请求上下文。`target.set` 写个人偏好，Catalog 来源命令没有插件安装范围。独立 Catalog 插件各自保留失败及已知夹具名称。[公开 CLI 退出码](../reference/cli.md#3-状态与进程退出码) · [公共组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
 Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。Codex Project 官方候选安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
@@ -236,7 +236,7 @@ gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=antigra
 
 Linux 上，资格工具启动候选 AW CLI 时，从哨兵预检、运行期轮询到各阶段清理均使用独立的 `/proc` 观察，核对 PID、启动身份和标记。直接启动第三方客户端时使用对应客户端的观察路径。
 
-Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_PROCESS_NAMES=1` 时，Copilot Darwin 管理命令及使用 `ps` 的 Linux/macOS 资格观察启用私有进程名取证：对原 identity `ps` 查询同次附加 `ucomm` 列，再逐行投影回原五列。它消除二次查名的进程退出竞争，但读取全部行的有限进程名，并改变原查询输出量与失败面；timeout、maxBuffer、频率、信号和原错误保持，不增加查询或重试，无法可靠恢复 identity 行时查询失败，不能丢行后报告成功。完整扩展表只在内存中处理；仅缓存最近最多32个 root/后代身份，并在原离组或标记失败的 PID/启动身份交叉核对后附加最多8项 `processNames`。名称来自有限进程名，可能截断或变化，不是完整可执行身份；拒绝路径、控制字符或过长名称，不保存 argv、环境、marker 或原扩展表。名称不参与归属、信号、收尾或成功判定；停止后晚到回调仍恢复 identity，但不改变已保存的名称提示。未显式启用该 Hosted 开关的查询保持原样，Eval 的通用合同不变。
+Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_PROCESS_NAMES=1` 时，Copilot Darwin 管理命令及使用 `ps` 的 Linux/macOS 资格观察启用私有进程名取证：对原 identity `ps` 查询同次附加 `ucomm` 列，再逐行投影回原五列。它消除二次查名的进程退出竞争，但读取全部行的有限进程名，并改变原查询输出量与失败面；timeout、maxBuffer、频率、信号和原错误保持，不增加查询或重试，无法可靠恢复 identity 行时查询失败，不能丢行后报告成功。完整扩展表只在内存中处理；仅缓存最近最多32个 root/后代身份，并在 PID 与启动时间和原诊断一致时附加最多 8 项 `processNames`。适用的诊断包括离组、标记失败以及正常退出前仍存活的后代。名称来自有限进程名，可能截断或变化，不是完整可执行身份；拒绝路径、控制字符或过长名称，不保存 argv、环境、marker 或原扩展表。名称不参与归属、信号、收尾或成功判定；停止后晚到回调仍恢复 identity，但不改变已保存的名称提示。未显式启用该 Hosted 开关的查询保持原样，Eval 的通用合同不变。
 
 资格场景使用候选的真实 `projectPlatform` 和 Marketplace 投影生成普通 Skill 包，明确使用测试候选 profile，不改生产能力资格。真实客户端负责安装、更新、移除和只读发现；user/project 各有独立临时 HOME、AW/Agent/XDG 根及有效 Git 项目，neutral 工作目录位于其外。仅允许本地管理命令、Codex `skills/list`、显式项目 status 的 `config/read`、Pi `get_commands/get_state`，以及 OpenCode 隔离 loopback server 的插件激活等待、插件清单和可选 Skill 清单；OpenCode 使用每次新建的本地控制 nonce，不使用账号认证，等待激活会运行生成插件的 setup，不能称为纯清单读取。不提供凭据、不登录、不发送 prompt、不调用模型、不连接已有 server。下载阶段可访问公共 npm，并可沿用 HTTP(S) 下载代理；此类网络传输认证不会传给客户端。下载子进程禁用安装脚本并保留原180秒超时与输出上限；成功和失败均记录开始／结束时间、单调时钟耗时及固定时限。npm 显式启用 timing，仅从本次私有缓存中最后一份 timing JSON 有界读取最多256KiB加一个溢出字节；报告只投影固定 npm／install／idealTree／reify 阶段的非负有限耗时和未完成阶段名，不保留原日志、URL、路径或任意 timer 键。失败的 deadlineReached 只说明测得耗时达到固定时限，不单凭 SIGKILL 推定超时或网络原因。timing 会增加本次缓存 IO，不作无插桩性能证明；该阶段只使用有界的直接子进程管理，不声称已验证进程树。客户端阶段使用阻断代理，这不是 OS 网络防火墙。Linux/macOS 客户端进程默认使用既有 verified-observed 管理，Copilot Darwin 使用上述限定 observed 合同；Windows 从 Eval 自身依赖解析已准备的 helper，使用既有 Windows Job 管理后代进程，缺失 helper 时在启动前失败。两条路径均保留超时和输出上限，并在 finally 清理临时目录；这些机制不构成文件系统或网络容器隔离。
 
@@ -252,7 +252,7 @@ Windows Codex 的共享 User 提供者场景在 Project 安装依赖时记录原
 
 报告区分 Skill 发现、组件 inventory 和 activation inventory；Claude details 只证明组件清单。Copilot 项目 fixture 按固定版公开帮助显式设置 `COPILOT_ALLOW_ALL=true`，让宿主信任临时 project 与 neutral 目录；该变量还授予工具自动批准，但本 fixture 只有普通 Skill，不创建会话、发送 prompt 或请求工具，且不传给真实用户环境。project 与 neutral 仍分别要求启用/发现和禁用/不可见，不能靠用户级全局启用代替项目隔离。Copilot 的 live 来源先通过 uninstall 验证停用，再注销本测试独占的 marketplace，最后验证插件和 Skill 消失；project 管理查询未观察到配置生效时保留失败，不能直接推断宿主无 project 支持。
 
-Windows 上，原生进程退出后，系统可能暂时占用测试目录中的可执行文件。删除本轮创建的范围目录和客户端下载目录时，遇到临时占用最多重试五次。持续占用会使资格失败，报告保留最后的文件系统错误。
+Windows 上，原生进程退出后，系统可能暂时占用测试目录中的可执行文件。删除本轮创建的作用域临时根和客户端下载目录时，遇到临时占用等可重试错误，对整个目录最多额外尝试五次，退避间隔共 1.5 秒。仍无法删除时，资格失败，报告保留最后的文件系统错误。
 
 每个 scope 记录断言、退出码、有限脱敏命令输出及清理结果，更新前另记录候选 revision 与投影摘要。直接客户端和 RPC 的进程审计失败也保留命令回执、已有输出及首次/末次 observer 元数据，不因 await 抛错而丢掉该命令。RPC 的 stderr 另包含最多32个单调时钟事件，记录请求/响应类型、是否收到结果、子进程 PID、信号、exit/close 及进程组等待顺序，不记录响应正文、命令文本、环境或 marker。组检查失败另给出有限分类：查询启动/返回、输出格式、PID、自身组/缺行或组内未知状态。仅保留允许的系统错误字段、数字 PID/PGID、行数及 helper/inspector/member 角色；不记录原始进程表或状态文本。事件仅用于归因，不改变原失败退出、RPC 响应、15秒请求截止、500ms SIGKILL 后备或完成前后代退出门槛。
 

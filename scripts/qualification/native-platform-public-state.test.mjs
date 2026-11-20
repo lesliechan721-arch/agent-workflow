@@ -69,6 +69,50 @@ test('keeps the public command and actual scope when the process has no snapshot
   }
 });
 
+// A plausible payload from another command, or a failed receipt with exit 0,
+// must stop the qualification before its next command consumes the result.
+test('binds component receipts to the requested command and public status and exit code', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-receipt-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: ['agent-subagent', 'codex-enhance']
+    .map(name => ({ name, dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest' })) }));
+  const commands = ['target.set', 'source.add', 'source.sync', 'plugin.install', 'plugin.status'];
+  for (const { request, command = request, status, exitCode, diagnostics = [], valid = false } of [
+    { request: 'target.set', command: 'plugin.status', status: 'success', exitCode: 0 },
+    { request: 'plugin.install', status: 'failed', exitCode: 0 },
+    { request: 'plugin.status', status: 'failed', exitCode: 0 },
+    { request: 'plugin.install', status: 'partial', exitCode: 1 },
+    { request: 'target.set', status: 'success', exitCode: 0, diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] },
+    { request: 'plugin.install', status: 'partial', exitCode: 4, valid: true },
+    { request: 'plugin.install', status: 'partial', exitCode: 1, valid: true,
+      diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] },
+  ]) {
+    const calls = [];
+    const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args, { env }) {
+        const called = args.slice(0, 2).join('.');
+        calls.push(called);
+        if (called === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+          sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+        }));
+        const data = called === 'target.set' ? { availability: [{ id: 'generic', installations: [] }] } : { targetResults: [] };
+        const result = publicResponse(called, data);
+        if (called !== request) return result;
+        return { ...result, exitCode, stdout: JSON.stringify({ schemaVersion: 2, command, status, data, diagnostics }) };
+      },
+    });
+    assert.equal(report.status, 'failed');
+    assert.deepEqual(calls, valid ? commands : commands.slice(0, commands.indexOf(request) + 1));
+    assert.equal(report.commandFailures.length, 1);
+    const [failure] = report.commandFailures;
+    assert.equal(failure.command, request);
+    assert.equal(failure.exitCode, exitCode);
+    assert.equal(failure.stage, valid ? 'command' : 'response');
+    assert.equal(failure.awReceipt?.status, valid ? status : undefined);
+  }
+});
+
 // Test Value Gate: published evidence must keep each independent Catalog failure and omit private command data.
 test('records separate, redacted failures from the public component Catalog report', async (t) => {
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-catalog-test-'));
