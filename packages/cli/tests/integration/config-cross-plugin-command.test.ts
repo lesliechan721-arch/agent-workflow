@@ -21,7 +21,7 @@ import { listManagedCommandPackages } from '../../src/utils/managed-command-stor
 import * as managedCommandStore from '../../src/utils/managed-command-store.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
-import type { OperationIntent } from '../../src/tui/controller.js';
+import { TuiController, type OperationIntent } from '../../src/tui/controller.js';
 import type { PluginConfigWriteReceipt } from '../../src/utils/plugin-config-write.js';
 
 function isClaudeInvocation(invocation: NativeCliInvocation): boolean {
@@ -508,6 +508,56 @@ describe('cross-plugin public config apply', () => {
         expect(applied.payload.diagnostics).toContainEqual(expect.objectContaining({ code: 'processCleanupUnconfirmed' }));
       }
     } finally { commits.mockRestore(); }
+  }, 60_000);
+
+  it('keeps the committed group and delivered targets when direct TUI batch apply is interrupted', async () => {
+    const { run, config, cwd, env, dependencies } =
+      await createCommandPackageReferenceFixture({ initialSelection: 'next' });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    const value = new TuiController(dependencies);
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'configSaveBatch', pluginId: 'team/consumer', context: 'user', apply: true,
+      groups: [
+        { updates: { selected: 'native' } },
+        { platform: 'codex', updates: { selected: 'next' } },
+      ],
+    });
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage').mockImplementation(async () => {
+      throw Object.assign(new Error('Unconfirmed process cleanup'), { code: 'pluginProcessCleanupFailed' });
+    });
+    try {
+      await value.executeOperation(review.reviewToken);
+      const result = value.snapshot.result;
+      expect(result).toMatchObject({
+        state: 'partial',
+        effects: { configCommit: 'partial' },
+        summary: {
+          configGroups: [
+            { configSaved: true, applyStatus: 'partial', errorCode: 'processCleanupUnconfirmed' },
+            { platform: 'codex', configSaved: false, applyStatus: 'notStarted', notStarted: true },
+          ],
+          configTargets: expect.arrayContaining([
+            expect.objectContaining({ pluginId: 'team/provider', platform: 'codex', state: 'completed' }),
+            expect.objectContaining({ pluginId: 'team/consumer', platform: 'codex', state: 'failed' }),
+          ]),
+          commandResults: expect.arrayContaining([
+            expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'failed' }),
+          ]),
+        },
+      });
+      expect(commits).toHaveBeenCalledOnce();
+      const storedConfig = await fs.readJson(resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'consumer', scope: 'user', cwd, env,
+      }));
+      expect(storedConfig.common.selected).toBe('native');
+      expect(storedConfig.platforms?.codex).toBeUndefined();
+      expect(await fs.readJson(config)).toEqual({ selected: 'next' });
+    } finally {
+      commits.mockRestore();
+      value.dispose();
+    }
   }, 60_000);
 
   it('updates two hosts and publishes each cross-platform command package once after its provider', async () => {

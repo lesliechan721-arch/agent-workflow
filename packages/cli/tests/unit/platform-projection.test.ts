@@ -168,17 +168,28 @@ describe('platform projection', () => {
     expect(YAML.parse(text.split('---')[1]!).metadata).toEqual({ 'skill.invocation.model': 'false,true', 'skill.visibility': '' });
   });
 
-  it.each([['true', false], ['"yes"', false], ['1', false], ['false', true]] as const)(
-    'maps Codex automatic invocation control %s to its native Skill policy', async (value, implicit) => {
+  it.each([
+    ['true', 'true', false, true],
+    ['"yes"', 'true', false, true],
+    ['1', 'true', false, true],
+    ['"  true  "', '"  YeS  "', false, true],
+    ['false', 'false', true, false],
+    ['"  OfF  "', '"  nO  "', true, false],
+  ] as const)(
+    'maps Codex invocation controls %s and %s to the projected Skill', async (disableModel, manual, implicit, visible) => {
       const controlled: PluginComponent = { ...skill, content: { files: {
-        'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: true\ndisable-model-invocation: ${value}\n---\nRun explicitly.\n` },
+        'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: ${manual}\ndisable-model-invocation: ${disableModel}\n---\nRun explicitly.\n` },
       } } };
       const { input, ctx } = await fixture('codex', [controlled]);
       const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
       input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
       const result = await projectPlatform(ctx, input);
-      const policy = await fs.readFile(path.join(result.bundle!.stagingRoot, 'skills/check/agents/openai.yaml'), 'utf8');
-      expect(policy).toContain(`allow_implicit_invocation: ${implicit}`);
+      const skillRoot = path.join(result.bundle!.stagingRoot, 'skills/check');
+      const definition = YAML.parse(await fs.readFile(path.join(skillRoot, 'agents/openai.yaml'), 'utf8'));
+      expect(definition.policy.allow_implicit_invocation).toBe(implicit);
+      const projected = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
+      const { metadata } = YAML.parse(projected.split('---')[1]!);
+      expect(metadata?.['skill.visibility']).toBe(visible ? undefined : 'hidden');
     },
   );
 

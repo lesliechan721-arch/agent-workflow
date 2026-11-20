@@ -1,10 +1,35 @@
+import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import type { PlatformName, Scope } from '../types.js';
+import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
+import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import type { OperationKind } from './controller.js';
 import type { OperationEffectFacts, SafeOperationDiagnostic } from './operation-history.js';
 
 type Target = { pluginId?: string; platform: PlatformName; scope: Scope };
+
+export function projectSkillInvocationHistory(
+  diagnostics: readonly RecoveryDiagnostic[],
+  recordId: string,
+  stage: 'execute' | 'apply',
+): SafeOperationDiagnostic[] {
+  return skillInvocationNotices(diagnostics).flatMap(({ pluginId, platform, scope, skill, reasonCode, controls }, index) => {
+    try { parsePluginId(pluginId); }
+    catch { return []; }
+    return [{
+      id: `${recordId}:skill-invocation:${index}`,
+      code: SKILL_INVOCATION_NOTICE,
+      stage,
+      safeMessage: 'This location cannot guarantee all declared invocation controls for the installed Skill.',
+      target: { pluginId, platform, scope },
+      causes: [],
+      detailLines: [`skill.${skill} · ${reasonCode}`, ...controls.map((control) =>
+        `${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product ? ` · product=${control.product}` : ''}`)],
+    }];
+  });
+}
 
 const FIXED_STAGE_MESSAGES: Record<string, string> = {
   preApply: 'The installation pre-check did not complete.',
@@ -377,6 +402,8 @@ export function projectExecutionDiagnostics(
         : group.scope === 'user' ? 'user' : `unknown-${index}`;
       const execution = group.execution && typeof group.execution === 'object'
         ? group.execution as Record<string, unknown> : {};
+      const configWrite = group.configSaved === true ? 'succeeded'
+        : group.status === 'notStarted' ? 'notStarted' : 'failed';
       const apply = execution.apply && typeof execution.apply === 'object'
         ? execution.apply
         : {
@@ -386,11 +413,19 @@ export function projectExecutionDiagnostics(
           };
       const projected = projectExecutionDiagnostics({
         ...execution,
-        configWrite: group.configSaved === true ? 'succeeded' : 'failed',
+        configWrite,
         apply,
       }, `${idPrefix}:config-batch:${scope}:${index}`, sensitiveValues, 'configSave');
       diagnostics.push(...projected.diagnostics);
-      if (group.status === 'failed'
+      if (readSafeOperationError(execution)) {
+        diagnostics.push(projectThrownOperationDiagnostic({
+          error: execution,
+          id: `${idPrefix}:config-batch:${scope}:${index}:interruption`,
+          stage: 'apply',
+          fallbackCode: 'configApplyFailed',
+          sensitiveValues,
+        }));
+      } else if (group.status === 'failed'
         && (group.configSaved !== true || projected.diagnostics.length === 0)) {
         const saved = group.configSaved === true;
         diagnostics.push({

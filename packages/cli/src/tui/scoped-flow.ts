@@ -12,6 +12,7 @@ import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
   recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+import { projectSkillInvocationHistory } from './diagnostic-projection.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
 import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
@@ -50,6 +51,8 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
 ): OperationHistoryRecord {
   const diagnostics: SafeOperationDiagnostic[] = [];
+  const skillDiagnostics = projectSkillInvocationHistory(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []),
+    identity.recordId, 'execute');
   const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target'], detailLines: string[] = []) => {
     const code = safeDiagnosticCode(rawCode, 'recoveryFailed');
     const id = `${identity.recordId}:diagnostic:${diagnostics.length}`;
@@ -102,6 +105,8 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         }
         return addDiagnostic(code, target, details);
       });
+    diagnosticIds.push(...skillDiagnostics.filter((diagnostic) => diagnostic.target?.pluginId === target.pluginId
+      && diagnostic.target.platform === target.platform && diagnostic.target.scope === target.scope).map(({ id }) => id));
     return { ...target, state, diagnosticIds,
       ...(entry.blockers[0] ? { errorCode: safeDiagnosticCode(entry.blockers[0].code, 'recoveryFailed') } : {}) };
   });
@@ -115,7 +120,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
       code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
       message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale')
         : receipt.unconfirmedSavedState ? '保存后的内容需要重新检查，平台目标尚未执行。' : '批量恢复仍有目标未完成。',
-      diagnosticCount: diagnostics.length,
+      diagnosticCount: diagnostics.length + skillDiagnostics.length,
       effects: {
         configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
         awWrite: receipt.outputsMayHaveChanged ? 'possible' : targetWorkNotStarted ? 'notStarted' : 'notApplicable',
@@ -123,7 +128,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : targetWorkNotStarted ? 'notStarted' : 'unknown',
       },
     },
-    diagnostics,
+    diagnostics: [...diagnostics, ...skillDiagnostics],
     targets,
   };
 }

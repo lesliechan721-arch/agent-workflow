@@ -217,7 +217,7 @@ function parseSkillFrontmatter(text: string): Record<string, unknown> {
   return record;
 }
 function metadataBoolean(value: unknown): boolean {
-  return value === true || value === 1 || (typeof value === 'string' && ['true', 'yes', 'on', '1'].includes(value.toLowerCase()));
+  return value === true || value === 1 || (typeof value === 'string' && ['true', 'yes', 'on', '1'].includes(value.trim().toLowerCase()));
 }
 export function isSkillInvocationFeature(feature: string): boolean {
   return feature === 'skill.invocation.manual' || feature === 'skill.invocation.model' || feature === 'skill.visibility';

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { executeIntentPlan, executeTargetsPlan,
   prepareIntentPlan, prepareTargetsPlan, projectScopedRecoveryHistory } from '../../src/tui/scoped-flow.js';
-import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
+import type { RecoveryDiagnostic, RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
 import { operationDiagnosticText } from '../../src/tui/operation-diagnostic-screens.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -143,4 +143,58 @@ it('exports one recovery command for both unfinished scopes and keeps the succes
   expect(store.get('final-read')?.diagnostics).toMatchObject([{ code: 'statusUnavailable', detailLines: [status] }]);
   expect(store.preview('final-read')?.content).toContain(status);
   expect(store.preview('final-read')?.content).not.toContain('aw plugin sync');
+});
+
+// Test Value Gate: a mixed receipt can repeat a delivered provider's notice under several roots.
+it('keeps one Skill notice per delivered location in partial recovery history and reports', () => {
+  const position = (pluginId: string, scope: 'user' | 'project') =>
+    ({ pluginId, scope, agent: 'codex' as const, delivery: null });
+  const user = position('team/provider', 'user');
+  const project = position('team/provider', 'project');
+  const root = position('team/root', 'project');
+  const failure = { code: 'nativeRecoveryFailed', message: 'Private sibling failure.' };
+  const notice = (scope: 'user' | 'project'): RecoveryDiagnostic => ({
+    code: 'skillInvocationPolicyNotGuaranteed',
+    message: 'Private diagnostic from /private/catalog/skill.',
+    subject: { pluginId: 'team/provider', target: 'codex', scope, field: 'skill.commit' },
+    detail: { reasonCode: 'invocationControlUnverified', path: '/private/catalog/skill', skillInvocationControls: [
+      { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+      { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported' },
+    ] },
+  });
+  const receipt: RecoveryReceipt = {
+    schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'sync', ok: false,
+    coverage: { scopes: ['user', 'project'] }, intent: { state: 'valid', roots: ['team/root'] },
+    requestedRoots: [root.pluginId], requestedTargets: [position(root.pluginId, 'user'), root],
+    selection: { agents: ['codex'], origin: 'argument', preferences: 'valid' },
+    blockers: [], errors: [], remainingTargets: [root], recoveryActions: [],
+    declarationChanged: false, configChanged: false, preferencesChanged: false, outputsMayHaveChanged: true,
+    targetResults: [
+      { ...root, execution: 'failed', observation: 'missing', blockers: [failure], requiredBy: [], reasons: [notice('user')] },
+      { ...user, execution: 'applied', observation: 'verified', blockers: [], requiredBy: [root.pluginId], reasons: [notice('user')] },
+      { ...project, execution: 'applied', observation: 'verified', blockers: [], requiredBy: [root.pluginId], reasons: [notice('project')] },
+    ],
+  };
+  const store = new OperationHistoryStore();
+  store.record(projectScopedRecoveryHistory(receipt, { recordId: 'sync', epoch: 0, operationId: 'sync', createdAtMs: 0 }));
+
+  const record = store.get('sync')!;
+  expect(record.summary).toMatchObject({ state: 'partial', code: failure.code, diagnosticCount: 3 });
+  const warnings = record.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed');
+  expect(warnings.map(({ target }) => target)).toEqual([
+    { pluginId: user.pluginId, platform: user.agent, scope: user.scope },
+    { pluginId: project.pluginId, platform: project.agent, scope: project.scope },
+  ]);
+  expect(record.targets).toMatchObject([
+    { pluginId: root.pluginId, state: 'failed', diagnosticIds: [record.diagnostics[0]!.id] },
+    { pluginId: user.pluginId, state: 'completed', diagnosticIds: [warnings[0]!.id] },
+    { pluginId: project.pluginId, state: 'completed', diagnosticIds: [warnings[1]!.id] },
+  ]);
+  for (const text of [operationDiagnosticText(record), store.preview('sync')!.content]) {
+    expect(text.match(/skill\.commit · invocationControlUnverified/gu)).toHaveLength(2);
+    expect(text.match(/skill\.invocation\.model=false · invocationControlUnverified · product=app/gu)).toHaveLength(2);
+    expect(text.match(/skill\.visibility=hidden · invocationControlUnsupported/gu)).toHaveLength(2);
+    expect(text).not.toContain('Private diagnostic');
+    expect(text).not.toContain('/private/catalog');
+  }
 });

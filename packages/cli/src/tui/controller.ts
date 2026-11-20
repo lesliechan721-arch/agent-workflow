@@ -22,6 +22,8 @@ import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { NativeCliError } from '../utils/native-cli.js';
+import { ConfigApplyInterruptedError } from '../utils/plugin-config-write.js';
+import { parsePluginId } from '../utils/multi-source-catalog.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationFreshnessResult,
@@ -51,8 +53,7 @@ import type {
 } from '../output/rebuild-progress.js';
 import { buildRebuildReceiptJson, requestedIntentAction } from '../output/command-receipt.js';
 import type { Diagnostic } from '../output/public-result.js';
-import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
-import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { buildOperationResultModel } from '../commands/operation-planner.js';
 import { buildOperationReviewProjection } from './operation-review-planner.js';
 import {
@@ -78,7 +79,7 @@ import {
 import type { PluginContentOverview } from './plugin-content.js';
 import { buildPluginDetailSubject, type PluginDetailSubject } from './plugin-detail.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
-import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
+import { projectExecutionDiagnostics, projectSkillInvocationHistory, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
 import {
   OperationHistoryStore,
   type OperationDiagnosticDetail,
@@ -328,10 +329,10 @@ export interface ConfigSaveBatchGroup {
 export interface ConfigSaveBatchGroupResult {
   scope: 'user';
   platform?: PlatformTarget;
-  status: 'succeeded' | 'failed';
+  status: 'succeeded' | 'failed' | 'notStarted';
   configSaved: boolean;
   applyRequested: boolean;
-  applyStatus: 'notRequested' | 'notNeeded' | 'succeeded' | 'failed';
+  applyStatus: 'notRequested' | 'notStarted' | 'notNeeded' | 'succeeded' | 'partial' | 'failed';
   errorCode?: string;
   execution?: unknown;
 }
@@ -749,8 +750,11 @@ export interface OperationResultSummary {
     scope: Scope;
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     errorCode?: string;
+    diagnosticIds?: string[];
+    effects?: OperationEffectFacts;
   }>;
   configApplyRetryAvailable?: boolean;
+  configApplyRetryTargets?: PlatformTarget[];
   configRetryApply?: boolean;
   configGroups?: Array<{
     scope: Scope;
@@ -758,6 +762,8 @@ export interface OperationResultSummary {
     configSaved: boolean;
     applyRequested: boolean;
     applyStatus: ConfigSaveBatchGroupResult['applyStatus'];
+    notStarted?: true;
+    retryTargets?: PlatformTarget[];
     errorCode?: string;
   }>;
   resetDisposition?: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
@@ -1992,31 +1998,23 @@ export class TuiController {
         finalVerification: result.state === 'succeeded' ? 'completed' as const : 'unknown' as const,
       },
     };
-    if ('summary' in result && result.summary) {
-      Object.assign(result.summary, sanitizeOperationSummary(
-        result.summary,
+    const summary = 'summary' in result ? result.summary : undefined;
+    if (summary) {
+      Object.assign(summary, sanitizeOperationSummary(
+        summary,
         projected.sensitiveValues ?? [],
       ));
     }
-    const configDiagnostics = 'summary' in result ? result.summary?.configDiagnostics : undefined;
-    const diagnostics = [...projected.diagnostics, ...skillInvocationNotices(configDiagnostics ?? [])
-      .map(({ pluginId, platform, scope, skill, reasonCode, controls, message }, index): SafeOperationDiagnostic => ({
-        id: `${recordId}:config-invocation:${index}`,
-        code: SKILL_INVOCATION_NOTICE,
-        stage: 'apply',
-        safeMessage: message,
-        target: { pluginId, platform, scope },
-        causes: [],
-        detailLines: [`skill.${skill} · ${reasonCode}`, ...controls.map((control) =>
-          `${describeSkillInvocationControl(control)} · ${control.reasonCode}`)],
-      }))];
+    const diagnostics = [...projected.diagnostics,
+      ...projectSkillInvocationHistory(summary?.configDiagnostics ?? [], recordId, 'apply')];
     const diagnosticIds = diagnostics.map((diagnostic) => diagnostic.id);
+    const targets = summary ? summary.targets ?? summary.configTargets ?? [] : projected.targets ?? [];
     Object.assign(result, { operationRecordId: recordId, diagnosticIds, effects: projected.effects });
-    if ('summary' in result && result.summary) {
-      result.summary.diagnosticIds = diagnosticIds;
-      result.summary.effects = projected.effects;
-      for (const target of result.summary.targets ?? []) {
-        const targetDiagnostics = projected.diagnostics.filter((diagnostic) => diagnostic.target
+    if (summary) {
+      summary.diagnosticIds = diagnosticIds;
+      summary.effects = projected.effects;
+      for (const target of targets) {
+        const targetDiagnostics = diagnostics.filter((diagnostic) => diagnostic.target
           && diagnostic.target.platform === target.platform
           && diagnostic.target.scope === target.scope
           && (diagnostic.target.pluginId === undefined || diagnostic.target.pluginId === target.pluginId));
@@ -2043,12 +2041,7 @@ export class TuiController {
         effects: projected.effects,
       },
       diagnostics,
-      targets: 'summary' in result && result.summary
-        ? structuredClone((result.summary.targets ?? []).map((target) => ({
-            ...target,
-            diagnosticIds: target.diagnosticIds ?? [],
-          })))
-        : structuredClone(projected.targets ?? []),
+      targets: targets.map((target) => ({ ...target, diagnosticIds: target.diagnosticIds ?? [] })),
     }, { sensitiveValues: projected.sensitiveValues });
     this.#operationDiagnostics.delete(result.operationId);
     this.#lastRecordedResultId = recordId;
@@ -2721,12 +2714,17 @@ export class TuiController {
     const isBatch = plan.kind === 'recovery' && (plan.plan.command === 'install' || plan.plan.command === 'sync')
       && plan.plan.receipt.requestedTargets.length > 1;
     const promise = this.dependencies.executeScopedTask(plan).then((outcome) => {
-      if (outcome.kind === 'recovery' && (isBatch || this.#progress.installProgress)) {
+      const recordByDefault = isBatch || this.#progress.installProgress !== undefined;
+      if (outcome.kind === 'recovery' && (recordByDefault || outcome.receipt.targetResults.some(({ reasons }) =>
+        reasons?.some(({ code }) => code === SKILL_INVOCATION_NOTICE)))) {
         const operationId = `scoped-${crypto.randomUUID()}`;
-        this.#operationHistory.record(projectScopedRecoveryHistory(outcome.receipt, {
+        const record = projectScopedRecoveryHistory(outcome.receipt, {
           operationId, recordId: `${this.#sessionEpoch}:${operationId}`, epoch: this.#sessionEpoch,
           createdAtMs: this.dependencies.now?.() ?? Date.now(),
-        }));
+        });
+        if (recordByDefault || record.diagnostics.some(({ code }) => code === SKILL_INVOCATION_NOTICE)) {
+          this.#operationHistory.record(record);
+        }
       }
       return outcome;
     }, (error: unknown) => {
@@ -5155,7 +5153,7 @@ export class TuiController {
               && ((execution as ConfigSaveBatchExecutionResult).groups
                 .some((group) => group.configSaved)));
         const configRetryReportedDelivery = ticket.intent.kind === 'configSave' && ticket.intent.retryApply
-          && configApplyDiagnostics(execution).length > 0;
+          && configApplyHasCompletedWork(configApplyResult(execution));
         if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
           || ticket.intent.kind === 'configReset') && (configCommitted || configRetryReportedDelivery)) {
           const baseSummary = operationResultSummary(ticket.intent, execution);
@@ -5408,6 +5406,8 @@ export class TuiController {
       const code = issueCode(error);
       const metadata = readSafeOperationError(error);
       const preApply = metadata?.stage === 'preApply';
+      const interruptedApply = error instanceof ConfigApplyInterruptedError ? error : undefined;
+      const applyCompletedWork = configApplyHasCompletedWork(interruptedApply?.apply);
       const configWrite = error && typeof error === 'object' && 'configWrite' in error
         ? (error as { configWrite?: unknown }).configWrite : undefined;
       this.#captureThrownProjection(operationId, error, code, 'execute', ticket.intent, {
@@ -5418,6 +5418,20 @@ export class TuiController {
         preApplyExternalEffect: preApply ? 'possible' : 'notApplicable',
         finalVerification: 'notStarted',
       });
+      if (interruptedApply && (configWrite === 'succeeded' || applyCompletedWork)) {
+        const projected = this.#operationDiagnostics.get(operationId)!;
+        const applyProjection = projectExecutionDiagnostics(
+          interruptedApply, `${this.#sessionEpoch}:${operationId}:interrupted-apply`,
+          projected.sensitiveValues, ticket.intent.kind,
+        );
+        projected.diagnostics.push(...applyProjection.diagnostics);
+        projected.effects = {
+          ...applyProjection.effects,
+          preApplyExternalEffect: preApply ? 'possible' : applyProjection.effects.preApplyExternalEffect,
+          finalVerification: 'notStarted',
+        };
+        projected.targetEffects = applyProjection.targetEffects;
+      }
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
@@ -5461,13 +5475,17 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
-        && configWrite === 'succeeded') {
+        && (configWrite === 'succeeded' || applyCompletedWork)) {
         const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
-        const configDiagnostics = configApplyDiagnostics(error);
+        const applySummary = interruptedApply ? operationResultSummary(ticket.intent, interruptedApply) : undefined;
+        const retryTargets = configApplyInterruptionRetryTargets(interruptedApply?.apply);
         const summary: OperationResultSummary = {
+          ...applySummary,
           code: 'operationPartial',
           message: ticket.intent.kind === 'configReset'
             ? '设置层重置已提交，但后续步骤未完成。'
+            : applyCompletedWork
+              ? configWrite === 'succeeded' ? '设置已保存，部分插件目标已更新。' : '部分插件目标已更新。'
             : finalVerification === 'failed'
               ? ticket.intent.apply
                 ? '设置已保存，但后续应用或状态复核失败。'
@@ -5477,13 +5495,20 @@ export class TuiController {
                 : '设置已保存，但后续步骤未完成。',
           pluginId: ticket.intent.pluginId,
           configScope: 'user', configPlatform: ticket.intent.platform, configContext: ticket.intent.context ?? 'user',
-          ...(configDiagnostics.length ? { configDiagnostics } : {}),
+          ...(interruptedApply ? { configApplied: applyCompletedWork } : {}),
           ...(ticket.intent.kind === 'configSave' && ticket.intent.apply
-            ? { configApplyRetryAvailable: true } : {}),
+            ? { configApplyRetryAvailable: !interruptedApply || retryTargets.length > 0 } : {}),
+          ...(interruptedApply ? { configApplyRetryTargets: retryTargets } : {}),
           elapsedMs,
-          messages: [ticket.intent.kind === 'configReset'
-            ? '设置层重置已经提交；失败的后续步骤没有恢复旧设置。'
-            : '配置写入已经提交；失败的后续步骤没有回滚设置。'],
+          messages: [
+            ...(applySummary?.messages ?? []),
+            ...(configWrite === 'succeeded' ? [ticket.intent.kind === 'configReset'
+              ? '设置层重置已经提交；失败的后续步骤没有恢复旧设置。'
+              : '配置写入已经提交；失败的后续步骤没有回滚设置。'] : []),
+            ...(interruptedApply ? [configApplyInterruptionMessage(interruptedApply.code, retryTargets)] : []),
+            ...(finalVerification === 'failed' && interruptedApply
+              ? ['最终状态无法刷新。请稍后重新检查状态。'] : []),
+          ],
         };
         this.#progress = { ...this.#progress, elapsedMs };
         const result: OperationExecuteResult = {
@@ -5697,9 +5722,61 @@ export class TuiController {
   }
 }
 
-function configApplyDiagnostics(execution: unknown): Diagnostic[] {
-  if (!execution || typeof execution !== 'object') return [];
-  return (execution as { apply?: ConfigApplyResult }).apply?.diagnostics ?? [];
+function configApplyResult(execution: unknown): ConfigApplyResult | undefined {
+  if (!execution || typeof execution !== 'object') return undefined;
+  return (execution as { apply?: ConfigApplyResult }).apply;
+}
+
+export function configApplyHasCompletedWork(apply: ConfigApplyResult | undefined): boolean {
+  return apply?.targetResults?.some((target) => target.state === 'completed' && target.action !== 'skipped') === true
+    || apply?.commandResults?.some((result) => result.state === 'completed') === true;
+}
+
+function configApplyInterruptionRetryTargets(apply: ConfigApplyResult | undefined): PlatformTarget[] {
+  if (!apply || apply.commandResults?.length) return [];
+  const completed = new Set(apply.targetResults.filter((result) => result.state === 'completed')
+    .map((result) => result.target.platform));
+  return [...new Set(apply.targetResults.filter((result) =>
+    (result.state === 'failed' || result.state === 'skipped' && result.errorCode)
+    && !completed.has(result.target.platform))
+    .map((result) => result.target.platform))];
+}
+
+function configApplyInterruptionMessage(code: string, retryTargets: readonly PlatformTarget[]): string {
+  const nextStep = retryTargets.length > 0
+    ? '可为未完成平台重新准备确认。' : '请检查未完成位置后，从设置重新准备应用。';
+  return code === 'processCleanupUnconfirmed'
+    ? `无法确认进程已清理。请先检查相关平台进程。${nextStep}`
+    : `应用已中断。${nextStep}`;
+}
+
+function configApplyTargets(apply: ConfigApplyResult | undefined): NonNullable<OperationResultSummary['configTargets']> {
+  return (apply?.targetResults ?? []).flatMap((entry) => {
+    const target = entry.target;
+    if (!target || !isPlatformTarget(target.platform)
+      || (target.scope !== 'user' && target.scope !== 'project')
+      || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
+    let pluginId: string | undefined;
+    if (typeof target.pluginId === 'string') {
+      try {
+        parsePluginId(target.pluginId);
+        pluginId = target.pluginId;
+      } catch {
+        // Target identity can be unavailable in older receipts.
+      }
+    }
+    return [{
+      ...(pluginId ? { pluginId } : {}),
+      platform: target.platform,
+      scope: target.scope,
+      state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped'
+        : entry.state === 'failed' ? 'failed'
+          : entry.action === 'keep' ? 'kept' : 'completed',
+      ...(typeof entry.errorCode === 'string'
+        ? { errorCode: safeDiagnosticCode(entry.errorCode, 'configApplyFailed') }
+        : {}),
+    }];
+  });
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
@@ -6084,11 +6161,27 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
   }
   if (intent.kind === 'configSaveBatch') {
     const batch = execution as ConfigSaveBatchExecutionResult;
-    const configDiagnostics = batch.groups.flatMap((group) => configApplyDiagnostics(group.execution));
+    const applies = batch.groups.map((group) => configApplyResult(group.execution));
+    const configDiagnostics = applies.flatMap((apply) => apply?.diagnostics ?? []);
+    const commandResults = applies.flatMap((apply) => apply?.commandResults ?? []);
+    const targets = [...new Map(applies.flatMap(configApplyTargets)
+      .map((target) => [[target.pluginId ?? '', target.platform, target.scope].join('\0'), target] as const)).values()];
     const savedCount = batch.groups.filter((group) => group.configSaved).length;
-    const failedCount = batch.groups.filter((group) => group.status === 'failed').length;
-    const retryScopes = batch.groups.filter((group) =>
-      group.configSaved && group.applyStatus === 'failed' && group.errorCode !== 'invalidConfig');
+    const targetsUpdated = applies.some(configApplyHasCompletedWork);
+    const configGroups = batch.groups.map((group, index) => ({
+      scope: group.scope,
+      platform: group.platform,
+      configSaved: group.configSaved,
+      applyRequested: group.applyRequested,
+      applyStatus: group.applyStatus,
+      ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
+      ...(group.status === 'notStarted' ? { notStarted: true as const } : {}),
+      ...(group.errorCode === 'operationInterrupted' || group.errorCode === 'processCleanupUnconfirmed'
+        ? { retryTargets: configApplyInterruptionRetryTargets(applies[index]) } : {}),
+    }));
+    const retryScopes = configGroups.filter((group) =>
+      group.configSaved && (group.applyStatus === 'failed' || group.applyStatus === 'partial')
+      && group.errorCode !== 'invalidConfig' && group.retryTargets?.length !== 0);
     const invalidConfig = savedCount === batch.groups.length
       && batch.groups.some((group) => group.configSaved && group.errorCode === 'invalidConfig')
       && retryScopes.length === 0;
@@ -6102,44 +6195,40 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       group.scope === 'user' && group.execution && typeof group.execution === 'object'
       && (group.execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true);
     return {
-      code: failedCount > 0
-        ? savedCount > 0 ? 'operationPartial' : 'operationFailed'
-        : 'operationSucceeded',
+      code: batch.status === 'succeeded' ? 'operationSucceeded'
+        : batch.status === 'partial' || targetsUpdated ? 'operationPartial' : 'operationFailed',
       message: invalidConfig
         ? '设置已保存，但没有应用。当前配置仍无效。'
-        : failedCount > 0
+        : batch.status !== 'succeeded'
         ? savedCount > 0
-          ? `已保存 ${savedCount} 个设置层；${failedCount} 个设置层失败。`
+          ? `已保存 ${savedCount} 个设置层；${targetsUpdated ? '部分插件目标已更新。' : '部分步骤未完成。'}`
           : '设置没有保存。'
         : '设置已保存。',
       pluginId: intent.pluginId,
+      configContext: intent.context ?? 'user',
       configApplyRetryAvailable: retryScopes.length > 0,
       ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
       configApplied: intent.apply
-        ? batch.groups.some((group) => group.applyStatus === 'succeeded')
+        ? targetsUpdated || batch.groups.some((group) => group.applyStatus === 'succeeded')
         : false,
-      configGroups: batch.groups.map((group) => ({
-        scope: group.scope,
-        platform: group.platform,
-        configSaved: group.configSaved,
-        applyRequested: group.applyRequested,
-        applyStatus: group.applyStatus,
-        ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
-      })),
+      configGroups,
+      ...(targets.length > 0 ? { configTargets: targets } : {}),
       ...(configDiagnostics.length ? { configDiagnostics } : {}),
-      commandResults: batch.groups.flatMap((group) => group.execution
-        && typeof group.execution === 'object'
-        ? ((group.execution as { apply?: { commandResults?: CommandProducerResult[] } }).apply?.commandResults ?? [])
-        : []),
+      commandResults,
+      ...(commandResults.length ? { recoveryActions: [...new Set(commandResults.flatMap((result) => result.recoveryActions))] } : {}),
       messages: [
-        ...batch.groups.map((group) => {
+        ...configGroups.map((group) => {
           const label = group.platform ? `${group.platform} 平台配置` : '公共配置';
+          if (group.notStarted) return `${label}尚未保存。`;
           return group.configSaved
             ? `${label}已保存${group.errorCode === 'invalidConfig'
               ? '，但当前配置无效，未应用'
-              : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
+              : group.applyStatus === 'partial' ? '，部分插件目标已更新'
+                : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
             : `${label}保存失败。`;
         }),
+        ...configGroups.flatMap((group) => group.retryTargets !== undefined
+          ? [configApplyInterruptionMessage(group.errorCode!, group.retryTargets)] : []),
         ...publicWarnings.map((warning) => `警告：${warning}`),
         ...(otherProjectsMayRequireSync
           ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
@@ -6148,43 +6237,15 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     };
   }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
-    const configDiagnostics = configApplyDiagnostics(execution);
-    const rawApply = typeof execution === 'object' && execution !== null
-      && typeof (execution as { apply?: unknown }).apply === 'object'
-      && (execution as { apply?: unknown }).apply !== null
-      ? (execution as { apply: Record<string, unknown> }).apply
-      : {};
-    const rawTargets = Array.isArray(rawApply.targetResults)
-      ? rawApply.targetResults as Array<Record<string, unknown>>
-      : [];
-    const commandResults = Array.isArray(rawApply.commandResults)
-      ? rawApply.commandResults as CommandProducerResult[] : [];
-    const targets = rawTargets.flatMap((entry) => {
-      const target = typeof entry.target === 'object' && entry.target !== null
-        ? entry.target as Record<string, unknown>
-        : entry;
-      if (!isPlatformTarget(target.platform)
-        || (target.scope !== 'user' && target.scope !== 'project')
-        || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
-      return [{
-        ...(typeof target.pluginId === 'string' ? { pluginId: target.pluginId } : {}),
-        platform: target.platform,
-        scope: target.scope as Scope,
-        state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped' as const
-          : entry.state === 'failed' ? 'failed' as const
-            : entry.action === 'keep' ? 'kept' as const
-              : entry.state as 'completed' | 'failed',
-        ...(typeof entry.errorCode === 'string'
-          ? { errorCode: safeDiagnosticCode(entry.errorCode, 'configApplyFailed') }
-          : {}),
-      }];
-    });
+    const apply = configApplyResult(execution);
+    const configDiagnostics = apply?.diagnostics ?? [];
+    const commandResults = apply?.commandResults ?? [];
+    const targets = configApplyTargets(apply);
     const overallState = typeof execution === 'object' && execution !== null
       ? (execution as { overallState?: unknown }).overallState
       : undefined;
-    const applyState = rawApply.state;
-    const applyReason = rawApply.reason;
-    const invalidConfig = applyState === 'unavailable' && applyReason === 'invalidConfig';
+    const applyState = apply?.state;
+    const invalidConfig = apply?.state === 'unavailable' && apply.reason === 'invalidConfig';
     const resetDisposition = typeof execution === 'object' && execution !== null
       ? (execution as { resetDisposition?: unknown }).resetDisposition
       : undefined;
@@ -6214,18 +6275,24 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     const failed = overallState === 'failed'
       || (targets.length > 0
         && targets.every((target) => target.state === 'failed' || target.state === 'skipped'));
+    const retryApply = intent.kind === 'configSave' && intent.retryApply === true;
+    const applied = applyState === 'succeeded' || configApplyHasCompletedWork(apply);
     return {
       code: failed || partial ? 'operationPartial' : 'operationSucceeded',
-      message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
-        : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
+      message: retryApply
+        ? invalidConfig ? '当前配置仍无效。请返回设置修复。'
+          : failed || partial ? applied ? '部分插件目标已更新。' : '插件设置应用未完成。'
+            : applied ? '已应用已保存的设置。' : '应用检查完成。'
+        : invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
+          : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
       pluginId: intent.pluginId,
       configScope: 'user', configPlatform: intent.platform, configContext: intent.context ?? 'user',
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
-      ...(intent.kind === 'configSave' && intent.retryApply ? { configRetryApply: true } : {}),
+      ...(retryApply ? { configRetryApply: true } : {}),
       ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'
-        ? { configApplied: applyState === 'succeeded' || applyState === 'partial' }
+        ? { configApplied: applied }
         : invalidConfig ? { configApplied: false } : {}),
       ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
       ...(intent.kind === 'configReset'

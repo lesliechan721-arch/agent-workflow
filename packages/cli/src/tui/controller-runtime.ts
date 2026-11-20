@@ -67,6 +67,7 @@ import { prepareTargetsPlan, executeTargetsPlan, prepareIntentPlan, executeInten
 import {
   applyPluginConfigWrite,
   applyPluginConfig,
+  ConfigApplyInterruptedError,
   preparePluginConfigApply,
   disposePluginConfigApply,
   resolveConfigPreApplyAuthorization,
@@ -80,6 +81,7 @@ import { inventoryCatalogSourceReferences } from '../utils/catalog-source-refere
 import {
   operationEvidenceMatches,
   operationEvidenceFingerprint,
+  configApplyHasCompletedWork,
   TuiConfigInvalidStoreError,
   TuiController,
   TuiOperationBlockedError,
@@ -2961,7 +2963,15 @@ export function createTuiControllerDependencies(
               group.config.preApplyAuthorization ?? []);
             const results: ConfigSaveBatchExecutionResult['groups'] = [];
             const packageInfo = await readCliPackageInfo();
+            let interrupted = false;
             for (const group of intent.groups) {
+              if (interrupted) {
+                results.push({
+                  scope: 'user', platform: group.platform, status: 'notStarted',
+                  configSaved: false, applyRequested: intent.apply, applyStatus: intent.apply ? 'notStarted' : 'notRequested',
+                });
+                continue;
+              }
               const groupIntent = configSaveBatchGroupIntent(intent, group);
               const reviewedGroup = reviewedBatch.groups.find((item) => item.platform === group.platform);
               if (!reviewedGroup) {
@@ -3084,6 +3094,13 @@ export function createTuiControllerDependencies(
                   } : {}),
                 });
               } catch (error) {
+                const interruption = error instanceof ConfigApplyInterruptedError ? error : undefined;
+                if (interruption) {
+                  interrupted = true;
+                  if (context.interruption && interruption.code === 'processCleanupUnconfirmed') {
+                    context.interruption.cleanupFailed = true;
+                  }
+                }
                 configSaved = (error as { configWrite?: unknown })?.configWrite === 'succeeded';
                 const errorCode = typeof error === 'object' && error !== null
                   && 'code' in error && typeof error.code === 'string'
@@ -3094,10 +3111,14 @@ export function createTuiControllerDependencies(
                   status: 'failed',
                   configSaved,
                   applyRequested: intent.apply,
-                  applyStatus: intent.apply ? 'failed' : 'notRequested',
+                  applyStatus: !intent.apply ? 'notRequested'
+                    : configApplyHasCompletedWork(interruption?.apply) ? 'partial' : 'failed',
                   errorCode,
-                  ...(operationRebuildResults.length > 0
-                    ? { execution: { operationRebuildResults } }
+                  ...(interruption || operationRebuildResults.length > 0
+                    ? { execution: {
+                        operationRebuildResults,
+                        ...(interruption ? { apply: interruption.apply, operationDiagnostic: interruption.operationDiagnostic } : {}),
+                      } }
                     : {}),
                 });
               }
@@ -3227,6 +3248,12 @@ export function createTuiControllerDependencies(
                       });
                 return { ...result, operationRebuildResults };
               },
+            }).catch((error: unknown) => {
+              if (error instanceof ConfigApplyInterruptedError && context.interruption
+                && error.code === 'processCleanupUnconfirmed') {
+                context.interruption.cleanupFailed = true;
+              }
+              throw error;
             });
           }
           throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');

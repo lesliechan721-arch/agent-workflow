@@ -127,6 +127,25 @@ describe('platform component contract', () => {
     expect(() => assertPlan(plan([restricted]), profile)).toThrow(/skill.tools/u);
     expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual([{ feature: 'skill.tools', values: ['none'] }]);
   });
+  it.each([
+    ['true', 'false', 'true', 'true', 'visible'],
+    ['"  TRUE  "', '"  Off  "', 'true', 'true', 'visible'],
+    ['"  No  "', '"  on  "', 'false', 'false', 'hidden'],
+    ['0', '1', 'false', 'false', 'hidden'],
+  ])('interprets explicit Skill invocation controls %s and %s', (manualValue, disableModelValue, manual, model, visibility) => {
+    const text = skillText.replace('description:', `user-invocable: ${manualValue}\ndisable-model-invocation: ${disableModelValue}\ndescription:`);
+    expect(getComponentFeatureRequirements(skill, { skillText: text })).toEqual([
+      { feature: 'component.kind.skill' },
+      { feature: 'skill.invocation.manual', values: [manual] },
+      { feature: 'skill.visibility', values: [visibility] },
+      { feature: 'skill.invocation.model', values: [model] },
+    ]);
+  });
+  it('rejects invalid Skill invocation controls before interpreting them', () => {
+    const text = skillText.replace('description:', 'user-invocable: "  enabled  "\ndisable-model-invocation: 2\ndescription:');
+    expect(() => getComponentFeatureRequirements(skill, { skillText: text }))
+      .toThrow(/Invalid Skill frontmatter:.*user-invocable.*disable-model-invocation/u);
+  });
   it('normalizes five static kinds, preserves overridden IDs, records gaps and rejects links', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-components-')); roots.push(root);
     await fs.ensureDir(path.join(root, 'skills/check')); await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), skillText);

@@ -212,7 +212,7 @@ feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 
 FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记；values 若有须非空、无重复。满足要求须 status=supported 且包括全部必需值。内容自动推导要求，作者 requires 只能追加，不能撤销。Skill 中声明的工具限制、模型、fork、角色、后台、Hook 等行为字段也必须进入能力判断；仅复制 metadata 不算支持。未声明字段不增加默认执行语义，纯展示字段不增加行为门槛。例如 tools=[] 要求 none，Hook feedback=block 要求该事件的 block。合法但未支持的取值可以进入 unmet，未知 ID/取值则非法。
 
-需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。静态 Skill 和动态 renderer 的 Skill 都完整交付正文及资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。目标能实施的部分由原生策略执行。缺少相应接口时，安装仍可成功，回执对实际安装的 Skill 给出非阻断提示。其他执行、权限或依赖要求仍按能力检查。[各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
+需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态 Skill 和动态 renderer 的 Skill 都完整交付正文及资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。目标能实施的部分由原生策略执行。缺少相应接口时，安装仍可成功，回执对实际安装的 Skill 给出非阻断提示。其他执行、权限或依赖要求仍按能力检查。[各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
 
 公共 Hook 的合法 matcher 可以保留在源码中。准备时，声明 matcher 的组件自动要求对应 `hook.matcher` 事件值；目标不支持时，静态组件报告具体 unmet，独立组件继续。动态集合返回超出能力的 matcher 则拒绝该批。显式 Native 声明仍须符合该宿主事件的 matcher 语法与允许规则。
 

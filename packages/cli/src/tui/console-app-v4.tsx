@@ -9817,9 +9817,16 @@ export function ConsoleAppV4(props: {
       ? blocked
         ? '× 设置未确认保存'
         : partial ? resultSummary?.configApplySkippedReason === 'invalidConfig'
-          ? '! 设置已保存，但未应用'
-          : '! 设置已保存，但部分应用失败'
-          : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
+          ? resultSummary.configRetryApply ? '! 配置无效，应用未完成' : '! 设置已保存，但未应用'
+          : resultSummary?.configRetryApply
+            ? resultSummary.configApplied ? '! 部分插件目标已更新' : '! 插件应用未完成'
+            : resultSummary?.configApplied && (resultSummary.configApplyRetryTargets !== undefined
+              || resultSummary.configGroups?.some((group) => group.applyStatus === 'partial'))
+              ? '! 设置已保存，部分插件目标已更新'
+              : '! 设置已保存，但部分应用失败'
+          : resultSummary?.configRetryApply
+            ? resultSummary.configApplied ? '✓ 已应用已保存的设置' : '✓ 应用检查完成'
+            : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
           : completedTitle;
@@ -9868,7 +9875,7 @@ export function ConsoleAppV4(props: {
         : configOperation
           ? partial
             ? resultSummary?.message ?? '设置层已经保存；平台应用失败不会回滚设置。'
-            : '设置层已经更新。'
+            : resultSummary?.configRetryApply ? '状态已刷新。' : '设置层已经更新。'
           : '状态已刷新。';
     if (taskOperation && splitTaskReview?.currentScope === 'user') {
       if (!blocked && !partial) title = '✓ 所有项目范围已处理';
@@ -9881,11 +9888,15 @@ export function ConsoleAppV4(props: {
       && 'pluginId' in result.returnRoute
       ? result.returnRoute.pluginId
       : undefined);
-    const configRetryProfiles: ConfigProfileKey[] = configResultPluginId === undefined ? []
+    const configRetries: Array<{ profile: ConfigProfileKey; targets?: PlatformTarget[] }> = configResultPluginId === undefined ? []
       : operationKind === 'configSaveBatch'
-        ? resultSummary?.configGroups?.filter((group) => group.configSaved && group.applyStatus === 'failed'
-          && group.errorCode !== 'invalidConfig').map((group) => group.platform ?? 'common') ?? []
-        : resultSummary?.configApplyRetryAvailable === true ? [resultSummary.configPlatform ?? 'common'] : [];
+        ? resultSummary?.configGroups?.filter((group) => group.configSaved
+          && (group.applyStatus === 'failed' || group.applyStatus === 'partial')
+          && group.errorCode !== 'invalidConfig' && group.retryTargets?.length !== 0)
+          .map((group) => ({ profile: group.platform ?? 'common', targets: group.retryTargets })) ?? []
+        : resultSummary?.configApplyRetryAvailable === true
+          ? [{ profile: resultSummary.configPlatform ?? 'common', targets: resultSummary.configApplyRetryTargets }]
+          : [];
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
@@ -10125,8 +10136,8 @@ export function ConsoleAppV4(props: {
           label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
-          ...configRetryProfiles.map((profile) => ({
-            label: configRetryProfiles.length > 1 ? `重试应用 · ${configLayerLabel({ profile })}` : '重试应用',
+          ...configRetries.map(({ profile, targets }) => ({
+            label: configRetries.length > 1 ? `重试应用 · ${configLayerLabel({ profile })}` : '重试应用',
             description: '先重新显示操作汇总，并重新读取当前状态',
             run: () => beginReview({
               kind: 'configSave',
@@ -10135,6 +10146,7 @@ export function ConsoleAppV4(props: {
               ...configReadOptions({ profile, context: resultSummary?.configContext }),
               apply: true,
               retryApply: true,
+              ...(targets ? { targets } : {}),
               updates: {},
               removeKeys: [],
             }),
@@ -10228,10 +10240,11 @@ export function ConsoleAppV4(props: {
     const configInvocationRows = configInvocationLines.flatMap((line) => wrapDisplayText(line, size.columns - 6))
       .map((line, index) => <Text key={`config-skill:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>);
     const configGroupRows = resultSummary?.configGroups?.map((group) => {
-      const status = !group.configSaved ? 'error' as const
-        : group.applyStatus === 'failed' ? 'warning' as const : 'success' as const;
-      const outcome = !group.configSaved ? '保存失败'
+      const status = group.notStarted ? 'muted' as const : !group.configSaved ? 'error' as const
+        : group.applyStatus === 'failed' || group.applyStatus === 'partial' ? 'warning' as const : 'success' as const;
+      const outcome = group.notStarted ? '尚未保存' : !group.configSaved ? '保存失败'
         : group.applyStatus === 'failed' ? '已保存 · 应用失败'
+        : group.applyStatus === 'partial' ? '已保存 · 部分应用'
           : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
             : '已保存';
       return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
