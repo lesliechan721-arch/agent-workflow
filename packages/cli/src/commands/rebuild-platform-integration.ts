@@ -2,22 +2,25 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, resolveInvocationPolicy, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
   PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
+import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGroup } from '../platforms/discovery.js';
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
-import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
+import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
-import type { PlatformDriverState } from '../platforms/lifecycle.js';
-import { piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
+import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
+import { piAgentConsumerDiagnostic, piProjectListContainsOnly } from '../platforms/inspection-pi.js';
+import { piProjectEmptyDeliveryObserved, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
 import { cursorHookEntryCommand, cursorHooks } from '../platforms/cursor-workspace-hook.js';
-import { ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
+import { gapSupplementFiles, ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
 import { projectPlatformMarketplace } from '../platforms/projection-marketplace.js';
 import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.js';
+import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type PreparedPlatformComponents } from '../utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from '../utils/component-command-preparation.js';
@@ -101,6 +104,12 @@ function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObser
     && after.nativePackageContentDigest !== contentDigest;
 }
 
+function piProjectInventoryKey(binding: DeploymentBinding, settingsPath: string): string | undefined {
+  if (binding.route !== 'pi-package' || binding.scope.kind !== 'project') return undefined;
+  const product = selectNativeProduct(binding.consumers);
+  return product ? JSON.stringify([settingsPath, product.id]) : undefined;
+}
+
 function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string,
   requireIndependentActivation: boolean): boolean {
   return after.package === 'present' && ['aw', 'shared'].includes(after.ownership)
@@ -121,7 +130,7 @@ export function nativeDeploymentHasVerifiedComponentWrite(plan: FrozenDeployment
   const { after, effects, unmet } = receipt;
   if (receipt.bindingId !== plan.binding.id || after.physicalKey !== plan.binding.physicalKey) return false;
   const delivered = after.components.filter(({ id, presence, reasonCodes }) => presence === 'present' && !reasonCodes.length
-    && !unmet.some((gap) => (gap.componentId ?? gap.id) === id));
+    && !unmet.some((gap) => !isDeliveryCapabilityGap(gap) && (gap.componentId ?? gap.id) === id));
   if (!delivered.length) return false;
 
   const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
@@ -363,6 +372,7 @@ export class PlatformRebuildSession {
   private readonly units = new Map<string, Promise<UnitPreparation>>();
   private readonly published = new Map<string, Promise<{ mutation: 'none' | 'confirmed' | 'possible'; changed: boolean }>>();
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
+  private readonly piProjectRegisteredRoots = new Map<string, Set<string>>();
   private readonly exclusions = new Map<string, DeploymentExclusion[]>();
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
@@ -403,13 +413,13 @@ export class PlatformRebuildSession {
     if (this.staging) await fs.remove(await this.staging);
     this.staging = undefined;
     this.targets.clear(); this.resolutions.clear(); this.units.clear(); this.published.clear();
-    this.nativeEffects.clear(); this.exclusions.clear();
+    this.nativeEffects.clear(); this.piProjectRegisteredRoots.clear(); this.exclusions.clear();
     this.contexts.clear(); this.mutableChecks.clear(); this.requestedOperations.clear(); this.marketplaces.clear();
     this.marketplaceTargets.clear(); this.marketplaceCandidatesFrozen = false;
   }
   freezeMarketplaceCandidates(): void { this.marketplaceCandidatesFrozen = true; }
   private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null, operation: operation(input) }); }
-  private resolve(input: TargetInput): Promise<TargetResolution> {
+  private resolve(input: TargetInput, placementProbeGroup?: PlacementProbeGroup): Promise<TargetResolution> {
     const key = this.key(input);
     // Inspection of a shared package does not request activation in that scope.
     if (!input.readOnlyInspectionPlan) this.requestedOperations.set(key, input);
@@ -424,7 +434,7 @@ export class PlatformRebuildSession {
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
           && candidate.binding.scope.kind === input.scope && (candidate.binding.scope.kind !== 'project' || candidate.binding.scope.projectRoot === input.cwd));
         const scope = input.scope === 'project' ? { kind: 'project' as const, projectRoot: input.cwd } : { kind: 'user' as const };
-        const discovery = await adapter.discover(ctx);
+        const discovery = await adapter.discover(placementProbeGroup ? { ...ctx, placementProbeGroup } : ctx);
         const resolution = await adapter.resolve(ctx, { plugin, scope, operation: operation(input), discovery, recoveryCandidates });
         this.exclusions.set(key, resolution.exclusions.flatMap((exclusion): DeploymentExclusion[] => {
           if (!exclusion.productId) return [];
@@ -449,7 +459,13 @@ export class PlatformRebuildSession {
   }
   /** Resolve the whole selected scope before any physical unit is rendered. */
   async resolveAll(inputs: readonly TargetInput[]): Promise<void> {
-    await Promise.allSettled(inputs.map((input) => this.resolve(input)));
+    const first = inputs[0];
+    const samePlacement = supportsSharedNativeProbe && first && inputs.length > 1
+      && this.context.batchInstallPlatform === first.platform && this.context.nativeObservationBatch?.scriptFreePlacement === true
+      && inputs.every((input) => input.platform === first.platform && input.scope === first.scope && input.cwd === first.cwd
+        && operation(input) === 'ensure');
+    const group = samePlacement ? { scope: first.scope, probes: new Map() } : undefined;
+    await Promise.allSettled(inputs.map((input) => this.resolve(input, group)));
   }
   private async freezeSharedPreApplyActions(targets: readonly DesiredTarget[]): Promise<void> {
     const prepared = (await Promise.allSettled(this.targets.values())).flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
@@ -658,8 +674,13 @@ export class PlatformRebuildSession {
             env: this.context.env, referencePlugins: this.context.referencePlugins });
           const platformRoot = path.join(input.plugin.rootDir, input.platform);
           const staticResourceRoot = await fs.pathExists(platformRoot) ? platformRoot : input.plugin.rootDir;
+          // Grok prepares the package before its rules. Only roles prepared for this same target can receive the text.
+          const grokRoleUnit = input.platform === 'grok' && unit.output === 'supplement'
+            ? bindingEntry.layout.renderUnits.find((candidate) => candidate.output === 'package'
+              && artifactValueDigest(candidate.renderScope) === artifactValueDigest(unit.renderScope)) : undefined;
           const prepared = await preparePlatformComponents({ plugin: input.plugin, platform: input.platform, staticResourceRoot,
             renderScope: unit.renderScope.kind, kinds: unit.kinds, capabilities, config, cwd: input.cwd,
+            hasInstructionAgentRecipients: grokRoleUnit && preparedUnits.get(grokRoleUnit.id)?.prepared.expected.components.some(({ kind }) => kind === 'agent'),
             commandEnv: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
             preparedResults: this.context.preparedArtifactRenderResults });
           const finalized = await finalizePlatformSkillProducers({ plugin: input.plugin, plugins: this.context.referencePlugins,
@@ -683,6 +704,7 @@ export class PlatformRebuildSession {
     const priorResourceRoots = new Map<string, string[]>();
     const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
     const emptyStates = new Map<string, PlatformEmptyState>();
+    const gapStates = new Map<string, PlatformEmptyState>();
     const inputDigests = new Map<string, string>();
     const supplementInputDigests = new Map<string, string>();
     const commandInventory = await listManagedCommands(this.context.env);
@@ -731,11 +753,16 @@ export class PlatformRebuildSession {
           files: sameScope.flatMap((candidate) => candidate.prepared.resources.files),
           commandResources: sameScope.flatMap((candidate) => candidate.prepared.resources.commandResources),
           digest: artifactValueDigest(sameScope.map((candidate) => candidate.prepared.resources.digest)) };
-        projections.push(await adapter.project({ ...ctx, stagingRoot: path.join(await this.root(), 'projection'), commandResolver: unit.finalized.commandResolver }, {
+        const projection = await adapter.project({ ...ctx, stagingRoot: path.join(await this.root(), 'projection'), commandResolver: unit.finalized.commandResolver }, {
           binding: entry.binding, renderUnit: unit.unit, capabilities: adapter.capabilities({ ...entry, renderUnit: unit.unit, profile: getQualifiedPlatformProfile(input.platform) }),
-          components, resources, policy: components.length ? resolveInvocationPolicy(input.plugin.manifest, input.platform) : { ...resolveInvocationPolicy(input.plugin.manifest, input.platform), permissions: [] } }));
+          components, resources, policy: components.length ? unit.finalized.invocationPolicy.policy : { platform: input.platform, permissions: [] } });
+        for (const notice of unit.finalized.invocationPolicy.diagnostics) {
+          projection.diagnostics.push({ ...notice, subject: { ...notice.subject, scope: entry.binding.scope.kind } });
+        }
+        projections.push(projection);
       }
       const policyKey = input.platform === 'codex' || input.platform === 'claude' ? await getInvocationPolicyPhysicalKey(ctx, entry.binding) : undefined;
+      const expected = mergeExpectedComponentSets(units.map((unit) => unit.prepared.expected));
       const currentComponents = [deploymentPackageComponent(entry.binding, entry.layout),
         ...projections.flatMap((projection) => projection.supplements.map((contribution) => contributionComponent(entry.binding, contribution,
           policyKey && (contribution.mergeKey?.startsWith('claude-permissions:') || input.platform === 'codex' && contribution.destination.endsWith('.rules'))
@@ -753,6 +780,9 @@ export class PlatformRebuildSession {
           destination: entry.layout.activationPath, stagingPath: '', contentDigest: '', mergeKey: `workspaceOpen:${getDeploymentResourceKey(entry.binding.plugin)}` }, entry.binding.physicalKey);
         if (component.kind === 'shared-config' && component.locator.kind === 'cursor-workspace-hook') component.locator.command = cursorWorkspaceOpenCommand(entry.binding, ctx.platform);
         historical.push(component);
+      }
+      for (const slot of gapSupplementFiles(entry.binding, entry.layout, expected.unmet)) {
+        if (!historical.some((component) => 'path' in component && component.path === slot.path)) historical.push(slot);
       }
       const components = [...currentComponents, ...historical.filter((component) => !currentComponents.some((current) =>
         'path' in current && 'path' in component && current.path === component.path
@@ -776,11 +806,11 @@ export class PlatformRebuildSession {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
       };
-      const fingerprintParts = async (discovery?: { value: unknown }, batch?: NativeObservationBatch) => ({
+      const fingerprintParts = async (discovery?: { value: unknown }) => ({
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
         discovery: discovery ? discovery.value : removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
-          consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(batch ? { ...ctx, ...batch } : ctx),
+          consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(ctx),
         sharedReferenceView: this.context.sharedReferenceView,
         layout: await getDeploymentLayout(ctx, entry.binding),
         config: await Promise.all(units.map((unit) => resolveArtifactRenderConfig({ ...sourceIdentity(input), pluginName: input.plugin.manifest.name,
@@ -802,8 +832,8 @@ export class PlatformRebuildSession {
         throw new Error('operationPlanStale: client discovery changed after the ordinary observation.');
       }
       const initial = artifactValueDigest(initialParts);
-      const fingerprint = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<string> =>
-        artifactValueDigest(await fingerprintParts(discovery, batch));
+      const fingerprint = async (discovery?: { value: unknown }): Promise<string> =>
+        artifactValueDigest(await fingerprintParts(discovery));
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
       const ordinaryObservation = ordinaryEvidence?.observations.get(entry.binding.id);
@@ -812,14 +842,28 @@ export class PlatformRebuildSession {
       }
       const preparationObservation = entry.binding.route === 'antigravity-cli'
         ? mutableBaseline.observation : entry.observation;
+      const piInventoryKey = piProjectInventoryKey(entry.binding, entry.layout.activationPath);
+      const matchesMutable = (current: Awaited<ReturnType<typeof currentMutable>>): boolean => {
+        const currentDigest = artifactValueDigest(current);
+        if (currentDigest === artifactValueDigest(mutableBaseline)) return true;
+        const registered = piInventoryKey && this.piProjectRegisteredRoots.get(piInventoryKey);
+        if (!registered || operation(input) !== 'ensure' || !piProjectEmptyDeliveryObserved(entry.binding, mutableBaseline.observation)
+          || current.observation.registration !== 'absent' || !piProjectListContainsOnly(current.observation, registered)) return false;
+        // The first successful register in an empty Project can expose its
+        // section. Compare every other fact with the original empty target.
+        const { observation: before, ...baseline } = mutableBaseline;
+        return currentDigest === artifactValueDigest({ ...baseline,
+          observation: { ...before, registration: 'absent',
+            diagnostics: before.diagnostics.filter(({ code }) => code !== 'piProjectRegistrationNotVisible') } });
+      };
       const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
-        if (!parallelNativeReads) return await fingerprint(discovery, batch) === initial
+        if (!parallelNativeReads) return await fingerprint(discovery) === initial
           && artifactValueDigest(await currentMutable(batch)) === artifactValueDigest(mutableBaseline);
-        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery, batch), currentMutable(batch)]);
+        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable(batch)]);
         if (immutableRead.status === 'rejected') throw immutableRead.reason;
         if (immutableRead.value !== initial) return false;
         if (mutableRead.status === 'rejected') throw mutableRead.reason;
-        return artifactValueDigest(mutableRead.value) === artifactValueDigest(mutableBaseline);
+        return matchesMutable(mutableRead.value);
       };
       checks.set(entry.binding.id, (batch) => check(undefined, batch));
       if (resolution.bindings.length === 1 && entry.binding.route === 'pi-package') {
@@ -909,14 +953,33 @@ export class PlatformRebuildSession {
           evidence.userActivationEnabled = !['remove', 'cleanup'].includes(operation(plannedUser));
         }
       }
-      const expected = mergeExpectedComponentSets(units.map((unit) => unit.prepared.expected));
-      evidence.retainPackage = !removing && expected.unmet.length > 0 && inspected.components.some((slot) =>
-        'path' in slot.component && slot.component.path === entry.layout.packageRoot && ['present', 'partial'].includes(slot.state));
+      const priorPackage = inspected.components.find((slot) => 'path' in slot.component
+        && slot.component.path === entry.layout.packageRoot && ['present', 'partial'].includes(slot.state))?.component;
+      if (!removing && expected.unmet.length && priorPackage?.kind === 'owned-directory') {
+        const complete = hasCompleteDeliveryDeclaration(expected);
+        const old = await readSkillOwnerMarker({ skillRoot: priorPackage.path, allowedRoot: priorPackage.allowedRoot,
+          expectedIdentity: priorPackage.identity }).catch(() => null);
+        const next = new Set(projections.filter((item) => item.bundle).flatMap((item) => item.components.map(({ id }) => id)));
+        const dropsPriorComponent = !old?.nativeProjection || old.nativeProjection.components.some(({ id }) => !next.has(id));
+        const currentDigest = evidence.ownership.find((slot) => slot.component === priorPackage)?.contentDigest;
+        // The marker identifies the directory. Only its recorded digest proves
+        // that replacing or withdrawing the whole tree would discard exclusively AW bytes.
+        const previousContentsVerified = !!old?.nativeProjection && old.nativeProjection.contentDigest === currentDigest;
+        const hasNativeCopy = ['grok-cli', 'antigravity-cli'].includes(entry.binding.route) && preparationObservation.registration === 'present';
+        const previousCopyUnconfirmed = hasNativeCopy && (!old?.nativeProjection
+          || old.nativeProjection.contentDigest !== preparationObservation.nativePackageContentDigest);
+        evidence.retainPackage = expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || previousCopyUnconfirmed
+          || !evidence.contentMatches && (!previousContentsVerified || dropsPriorComponent
+            && (!complete || evidence.sharedReferences !== 'none' || preparationObservation.ownership !== 'aw'));
+      }
       if (!removing) {
         const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
         inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence));
-        if (expected.unmet.length === 0) {
-          if (expected.components.length === 0) {
+        if (expected.unmet.every(isDeliveryCapabilityGap)) {
+          if (expected.unmet.length) gapStates.set(entry.binding.id, { ...inputEvidence,
+            kind: 'aw-platform-empty-state', result: 'capability-gaps', gaps: expected.unmet,
+            installedComponentIds: expected.components.map(({ id }) => id) });
+          if (expected.components.length === 0 && expected.unmet.length === 0) {
             emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' });
           } else if (entry.layout.supplementRoot && input.plugin.manifest.artifacts) {
             const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
@@ -959,7 +1022,7 @@ export class PlatformRebuildSession {
         && plan.effects.every((effect) => ['publish-package', 'register'].includes(effect.kind));
       const checkedBatch = this.context.batchInstallPlatform === plan.binding.platform && plan.binding.platform !== 'codex';
       return plan.operation === 'ensure' && (checkedBatch || ['copilot-marketplace', 'pi-package'].includes(plan.binding.route))
-        && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && !plan.expected.unmet.length
+        && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && plan.expected.unmet.every(isDeliveryCapabilityGap)
         && driverState.before.package !== 'unknown' && (driverState.before.registration !== 'unknown' || hiddenEmptyPiProject)
         && ['absent', 'aw', 'shared'].includes(driverState.before.ownership)
         && plan.effects.every((effect) => ['publish-package', 'register', 'refresh', 'activate'].includes(effect.kind));
@@ -1044,6 +1107,10 @@ export class PlatformRebuildSession {
               : await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundle.contentDigest));
           const delivered = new Set(after.components.filter((component) => component.presence === 'present' && !component.reasonCodes.length)
             .map((component) => component.id));
+          const roleIds = plan.expected.components.filter((component) => component.kind === 'agent' && delivered.has(component.id)
+            && packageIds.has(component.id) && !packageIncomplete && !plan.evidence.retainPackage).map(({ id }) => id);
+          const roleDiagnostic = piAgentConsumerDiagnostic(plan.binding, after, roleIds);
+          if (roleDiagnostic) receipt.diagnostics.push(roleDiagnostic);
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id) || !delivered.has(component.id));
           if (bundle && !packageIncomplete && !plan.evidence.retainPackage) {
             for (const unitId of plan.binding.renderUnitIds) {
@@ -1061,13 +1128,20 @@ export class PlatformRebuildSession {
                 && unit.unit.consumers.every(({ product, availability, entry }) => product === 'app'
                   || product === 'cli' && availability === 'available' && entry?.kind === 'cli')
                 ? adapter.capabilities({ ...capabilityInput, renderUnit: { ...unit.unit, consumers: cliReaders } }) : undefined;
+              const antigravityReaders = plan.binding.platform === 'antigravity'
+                ? unit.unit.consumers.flatMap((reader) => reader.availability === 'available' && reader.product !== 'generic'
+                  ? [{ id: reader.id, product: reader.product,
+                    unsupported: getAntigravityUnsupportedSkillControls(capabilityInput.profile, plan.binding.scope.kind, reader) }]
+                  : []) : [];
               for (const skill of unit.finalized.skills) {
                 if (!packageIds.has(skill.componentId) || !delivered.has(skill.componentId)) continue;
                 const component = unit.prepared.expected.components.find((item) => item.id === skill.componentId)!;
                 const requested = getComponentFeatureRequirements(component, { skillText: skill.tree.files['SKILL.md']!.toString('utf8') });
                 const warning = skillInvocationWarning(component.name, requested,
                   { pluginId: plan.binding.plugin.pluginId, target: plan.binding.platform, scope: plan.binding.scope.kind },
-                  capabilities, codexCliCapabilities);
+                  capabilities, codexCliCapabilities, antigravityReaders.map((reader) => ({ ...reader,
+                    observed: after.skillInvocationPolicies?.find(({ componentId, productId }) => componentId === component.id
+                      && productId === reader.id)?.features })));
                 if (warning) receipt.diagnostics.push(warning);
               }
             }
@@ -1075,7 +1149,7 @@ export class PlatformRebuildSession {
           if (options?.deliveredSkillsOnly) continue;
           const inputDigest = supplementInputDigests.get(plan.binding.id);
           if (inputDigest && [...supplementIds].every((id) => delivered.has(id))
-            && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+            && receipt.unmet.every(isDeliveryCapabilityGap) && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
             try {
               await writePlatformSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
                 id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
@@ -1091,7 +1165,13 @@ export class PlatformRebuildSession {
                 subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
             }
           }
-          if (!gaps.length) continue;
+          if (!gaps.length) {
+            const gapState = gapStates.get(plan.binding.id);
+            if (gapState && !receipt.diagnostics.some((entry) => entry.severity === 'error')) {
+              await writePlatformEmptyState({ state: gapState, env: this.context.env });
+            }
+            continue;
+          }
           incomplete = true;
           const code = plan.binding.route === 'grok-directory' && requiredActivation === 'blocked' ? 'grokProjectAuthorizationDenied'
             : plan.binding.route === 'codex-marketplace' && requireIndependentActivation && after.scopeActivation === 'unknown'
@@ -1127,7 +1207,7 @@ export class PlatformRebuildSession {
           const supplementFiles = componentSupplementFiles(prepared.plan);
           const writtenFiles = new Map<string, { digest: string; componentIds: string[] }>();
           const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
-            .some((resolution) => resolution.state === 'failed' || resolution.state === 'unmet'));
+            .some((resolution) => resolution.state === 'failed'));
           let receipt: DeploymentReceipt;
           const peers = prepared.plan.binding.route === 'codex-marketplace' ? [...this.mutableChecks.values()].filter((check) =>
             check.physicalKey !== prepared.plan.binding.physicalKey && check.marketplaceRoot === prepared.plan.evidence.layout.marketplaceRoot
@@ -1158,7 +1238,7 @@ export class PlatformRebuildSession {
                 publication = publishDirectory(bundle.stagingRoot, component, {
                   components: prepared.plan.projections.filter((projection) => projection.bundle !== null).flatMap((projection) => projection.components),
                   inputDigest: inputDigests.get(prepared.plan.binding.id)!, contentDigest: bundle.contentDigest,
-                  preparation: prepared.plan.expected.unmet.length || commandPreparationFailed ? 'partial' : 'complete',
+                  preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
                   physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity,
                 }, stagedPackage);
                 this.published.set(prepared.plan.binding.physicalKey, publication);
@@ -1207,7 +1287,8 @@ export class PlatformRebuildSession {
             receipt = { bindingId: prepared.plan.binding.id, effects: prepared.plan.effects.map((effect) => ({
               id: effect.id, status: 'unknown', mutation: 'possible', diagnostics: [diagnostic] })),
               after: await adapter.inspect(ctx, prepared.plan.binding).catch(() => prepared.driverState.before),
-              unmet: [], reload: 'unknown', diagnostics: [diagnostic] };
+              unmet: prepared.plan.expected.unmet.map((gap) => ({ ...gap, productIds: prepared.plan.binding.consumers.map(({ id }) => id) })),
+              reload: 'unknown', diagnostics: [diagnostic] };
           }
           receipts.push(receipt);
           if (receipt.diagnostics.some(({ code }) => code === 'processCleanupUnconfirmed')) return receipts;
@@ -1250,6 +1331,15 @@ export class PlatformRebuildSession {
           }
           if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
             || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
+          const piInventoryKey = piProjectInventoryKey(prepared.plan.binding, prepared.plan.evidence.layout.activationPath);
+          if (piInventoryKey && piProjectEmptyDeliveryObserved(prepared.plan.binding, prepared.driverState.before)
+            && receipt.after.registration === 'present' && receipt.after.ownership === 'aw' && receipt.after.configuration?.activation === 'enabled'
+            && prepared.plan.effects.some((effect) => effect.kind === 'register' && receipt.effects.some((result) =>
+              result.id === effect.id && result.status === 'applied' && result.mutation === 'confirmed'))) {
+            const registered = this.piProjectRegisteredRoots.get(piInventoryKey) ?? new Set<string>();
+            registered.add(prepared.plan.evidence.layout.packageRoot);
+            this.piProjectRegisteredRoots.set(piInventoryKey, registered);
+          }
           try {
             const candidates = [...preparedUnits.values()].flatMap((unit) => unit.finalized.commandCandidates)
               .filter((candidate) => candidate.producer.kind !== 'package' && candidate.producer.placementKey === prepared.plan.binding.physicalKey);
@@ -1269,7 +1359,7 @@ export class PlatformRebuildSession {
               && packageDeliveryConfirmed(prepared.plan.binding, receipt.after, bundle.contentDigest, requireIndependentActivation)
               && await readPlatformPackageContentDigest(root) === bundle.contentDigest) {
               const projection: NativeProjectionEvidence = { components: mappings, contentDigest: bundle.contentDigest,
-                inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.length || commandPreparationFailed ? 'partial' : 'complete',
+                inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
                 physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity };
               const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, expectedIdentity: packageOwner.identity });
               if (marker && (!marker.nativeProjection || artifactValueDigest(marker.nativeProjection) !== artifactValueDigest(projection))) {
@@ -1286,7 +1376,7 @@ export class PlatformRebuildSession {
                 await revokeManagedCommandBindings(producer, this.context.env);
               }
             }
-            const emptyState = emptyStates.get(prepared.plan.binding.id);
+            const emptyState = gapStates.get(prepared.plan.binding.id) ?? emptyStates.get(prepared.plan.binding.id);
             const removedByCommand = piProjectRemovalConfirmed(prepared.plan, receipt);
             const inactiveScope = removedByCommand || receipt.after.registration === 'absent'
               || receipt.after.package === 'absent' && receipt.after.registration === 'not-applicable'
@@ -1295,15 +1385,23 @@ export class PlatformRebuildSession {
                 && ['codex-marketplace', 'copilot-marketplace'].includes(prepared.plan.binding.route)
                 && receipt.after.configuration?.activation === 'absent'
               || receipt.after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
-            if (emptyState && !prepared.plan.expected.components.length && !receipt.unmet.length
-              && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
-              && (receipt.after.registration !== 'unknown' || removedByCommand) && receipt.after.package !== 'unknown'
-              && !['foreign', 'unknown'].includes(receipt.after.ownership)
-              && inactiveScope) {
+            if (emptyState && !prepared.plan.expected.components.length && receipt.unmet.every(isDeliveryCapabilityGap)
+              && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
               const residual = await inspectOwnedComponents({ components: prepared.plan.evidence.ownership
-                .filter((slot) => !('path' in slot.component) || slot.component.path !== prepared.plan.evidence.layout.packageRoot)
+                .filter((slot) => !('path' in slot.component) || slot.component.path !== root)
                 .map((slot) => slot.component), executor: this.ownership });
-              if (residual.components.every((component) => component.state === 'absent')) await writePlatformEmptyState({ state: emptyState, env: this.context.env });
+              const hiddenEmptyPi = emptyState.result === 'capability-gaps' && piProjectEmptyDeliveryObserved(prepared.plan.binding, receipt.after);
+              const clear = (receipt.after.registration !== 'unknown' || removedByCommand || hiddenEmptyPi)
+                && (emptyState.result !== 'capability-gaps' || prepared.plan.binding.route !== 'pi-package' || receipt.after.configuration?.activation === 'absent')
+                && receipt.after.package !== 'unknown' && !['foreign', 'unknown'].includes(receipt.after.ownership)
+                && (inactiveScope || hiddenEmptyPi)
+                && (emptyState.result === 'intentional-empty' || receipt.after.package === 'absent')
+                && residual.components.every((slot) => slot.state === 'absent');
+              if (clear) await writePlatformEmptyState({ state: emptyState, env: this.context.env });
+              else if (emptyState.result === 'capability-gaps') receipt.diagnostics.push({ code: 'previousDeploymentRetained', severity: 'error',
+                message: 'Previous output or registration could not be confirmed absent. Check the scoped deployment before retrying.',
+                subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind },
+                detail: { reasonCode: 'previousDeploymentRetained', path: root } });
             }
           } catch (error) {
             receipt.diagnostics.push({ code: 'managedCommandPublicationFailed', severity: 'error',

@@ -353,3 +353,57 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
   return { level: 'dynamic-consumer-content', revision, path: actual.path,
     sha256: sha256(actual.content), bytes: actual.content.length };
 }
+
+// Physical outputs of the public single-component and shipped Catalog qualifications.
+export function nativePath(ctx, spec, kind, packageRoot, name) {
+  const { platform, scope, project, env } = ctx;
+  const resource = 'aw-' + spec.id.replace('/', '-');
+  if (platform === 'generic') return path.join(scope === 'project' ? project : env.HOME, '.agents/skills', name, 'SKILL.md');
+  if (kind === 'agent' && platform === 'codex') return path.join(scope === 'project' ? path.join(project, '.codex') : env.CODEX_HOME,
+    'agents', resource + '-' + name + '.toml');
+  if (kind === 'instruction' && platform === 'grok') return path.join(scope === 'project' ? path.join(project, '.grok') : env.GROK_HOME,
+    'rules', resource + '-' + name + '.md');
+  assert(packageRoot, 'Missing native package path for ' + spec.id + '/' + kind);
+  let file;
+  if (kind === 'skill') file = 'skills/' + name + '/SKILL.md';
+  else if (kind === 'agent') file = platform === 'copilot' ? 'com.github.copilot/agents/' + name + '.agent.md'
+    : 'agents/' + (platform === 'pi' ? resource + '-' : '') + name + '.md';
+  else if (['opencode', 'pi'].includes(platform)) file = 'index.mjs';
+  else if (kind === 'hook') file = platform === 'antigravity' ? 'hooks.json' : platform === 'copilot' ? 'com.github.copilot/hooks/hooks.json' : 'hooks/hooks.json';
+  else if (kind === 'mcp') file = platform === 'antigravity' ? 'mcp_config.json' : ['copilot', 'cursor'].includes(platform) ? 'mcp.json' : '.mcp.json';
+  else if (['claude', 'codex'].includes(platform)) file = 'scripts/aw-instructions.mjs';
+  else if (platform === 'antigravity') file = 'rules/AGENTS.md';
+  else if (platform === 'copilot') file = 'com.github.copilot/rules/' + name + '.md';
+  else if (platform === 'cursor') file = 'rules/' + name + '.mdc';
+  assert(file, 'No independent path for ' + platform + '/' + kind);
+  return path.join(packageRoot, file);
+}
+
+export async function readInstalled(ctx, file, marker) {
+  const real = await fs.realpath(file);
+  const relative = path.relative(ctx.root, real);
+  assert(relative && !path.isAbsolute(relative) && !relative.startsWith('..'), 'Expected an isolated installation path');
+  const bytes = await fs.readFile(real);
+  assert(bytes.toString('utf8').includes(marker), 'Missing authored content in ' + relative);
+  return { path: relative.split(path.sep).join('/'), sha256: sha256(bytes) };
+}
+
+export function targetOf(result, ctx, id, allowBlockers = false) {
+  const targets = result.data.targetResults ?? result.data.inventory.flatMap(item => item.targetResults);
+  const rows = targets.filter(item => item.pluginId === id && item.scope === ctx.scope && item.target === ctx.platform);
+  assert.equal(rows.length, 1, id + ': missing or duplicate target');
+  if (!allowBlockers) assert.deepEqual(rows[0].blockerCodes, []);
+  return rows[0];
+}
+
+export function nativePackage(target, id = target.pluginId) {
+  const after = (target.deploymentObservations ?? target.deploymentReceipts ?? []).map(record => record.after)
+    .find(state => state?.package === 'present' && state.ownership === 'aw' && state.nativeIdentity?.packageId === id.split('/')[1]);
+  return after?.nativeIdentity?.sourceLocation;
+}
+
+export function checkSettled(result) {
+  assert.equal(result.data.inSync, true);
+  assert.equal(result.data.allSatisfied, true);
+  assert.equal(result.data.counts.pending, 0);
+}

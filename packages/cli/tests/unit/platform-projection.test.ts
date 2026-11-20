@@ -1,13 +1,13 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getComponentFeatureRequirements, getPlatformFeatureRegistry, type PlatformId, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { partitionStaticPluginComponents, getComponentFeatureRequirements, getPlatformFeatureRegistry, type PlatformId, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { projectPlatform } from '../../src/platforms/projection.js';
 import { projectPlatformMarketplace } from '../../src/platforms/projection-marketplace.js';
 import { prepareProjectionRoot, ProjectionFiles } from '../../src/platforms/projection-files.js';
@@ -61,6 +61,31 @@ const instruction: PluginComponent = { id: 'instruction:policy', kind: 'instruct
 } };
 
 describe('platform projection', () => {
+  it.each(['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'] as const)(
+    'separates %s role and Hook delivery from runtime qualification in both scopes', (platform) => {
+      const hook: PluginComponent = { id: 'notify', kind: 'hook', name: 'notify',
+        content: { dialect: 'common', event: 'before_tool', feedback: 'notify', command: 'echo ready' } };
+      for (const scope of ['user', 'project'] as const) {
+        const capabilities = getAuthoringPlatformCapabilities(platform, scope);
+        const expected = partitionStaticPluginComponents([skill, agent, hook], capabilities);
+        const installed = expected.components.map(({ kind }) => kind);
+        expect(installed).toContain('skill');
+        expect(installed.includes('agent')).toBe(platform !== 'opencode' && platform !== 'generic');
+        expect(installed.includes('hook')).toBe(platform !== 'cursor' && platform !== 'generic');
+        expect(capabilities.features['hook.common.before_tool']?.status).not.toBe('supported');
+        if (platform === 'pi') expect(capabilities.deliveryFeatures).toContainEqual(
+          { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] });
+      }
+    });
+  it('keeps an unmapped command policy out of the host while publishing the Skill', async () => {
+    const { input, ctx } = await fixture('pi', [skill]);
+    input.policy.permissions = [{ name: 'run-check', allow: ['node checker.mjs'] }];
+    const result = await projectPlatform(ctx, input);
+    expect(result.components.map(({ id }) => id)).toEqual([skill.id]);
+    expect(result.supplements).toEqual([]);
+    expect(result.diagnostics).toMatchObject([{ code: 'invocationPolicyNotApplied', severity: 'warning',
+      subject: { field: 'permissions.run-check', pluginId: 'source/example', target: 'pi', scope: 'user' } }]);
+  });
   it.each([
     ['codex', '.agents/plugins/marketplace.json'], ['claude', '.claude-plugin/marketplace.json'],
     ['copilot', '.github/plugin/marketplace.json'],
@@ -96,14 +121,19 @@ describe('platform projection', () => {
   });
 
   it.each(['codex', 'claude'] as const)('injects %s instruction text for the exact main and subagent events', async (platform) => {
-    const { input, ctx } = await fixture(platform, [instruction]);
+    const policy: PluginComponent = platform === 'codex' ? { ...instruction, content: { ...instruction.content, coverage: ['main', 'plugin-agents', 'other-agents'] } } : instruction;
+    const { input, ctx } = await fixture(platform, [policy]);
     const result = await projectPlatform(ctx, input);
     const bundle = result.bundle!.stagingRoot;
     const hooks = await fs.readJson(path.join(bundle, 'hooks/hooks.json'));
+    const script = path.join(bundle, 'scripts/aw-instructions.mjs');
     for (const event of ['SessionStart', 'SubagentStart']) {
       expect(hooks.hooks[event]).toHaveLength(1);
-      const { stdout } = await promisify(execFile)(process.execPath, [path.join(bundle, 'scripts/aw-instructions.mjs'), event]);
+      const stdout = execFileSync(process.execPath, [script, event], { input: JSON.stringify({ agent_type: 'example:review' }), encoding: 'utf8' });
       expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: event, additionalContext: 'Preserve the source files.' } });
+    }
+    if (platform === 'claude') {
+      expect(execFileSync(process.execPath, [script, 'SubagentStart'], { input: '{"agent_type":"other:review"}', encoding: 'utf8' })).toBe('');
     }
   });
 
@@ -125,6 +155,33 @@ describe('platform projection', () => {
     expect(text).toContain('Preserve the source files.');
     expect(text).toContain('Review this change.');
     if (platform === 'grok') expect(result.components.map((component) => component.id)).toEqual([agent.id]);
+  });
+
+  it.each(['grok', 'copilot'] as const)('delivers %s role-only instructions inside same-package role files', async (platform) => {
+    const roleOnly: PluginComponent = { ...instruction, content: { ...instruction.content, coverage: ['plugin-agents'] } };
+    const capabilities = getAuthoringPlatformCapabilities(platform, 'user');
+    const expected = partitionStaticPluginComponents([roleOnly, agent], capabilities);
+    expect(expected.unmet).toEqual([]);
+    expect(partitionStaticPluginComponents([roleOnly], capabilities)).toMatchObject({ components: [], unmet: [
+      { id: roleOnly.id, requiredFeatures: [{ feature: 'instruction.coverage', values: ['plugin-agents'] }] },
+    ] });
+    const restrictiveRole: PluginComponent = { ...agent, content: { ...agent.content, promptMode: 'append' } };
+    expect(partitionStaticPluginComponents([roleOnly, restrictiveRole], capabilities).components).toEqual([]);
+    const conditional: PluginComponent = { ...roleOnly, content: { ...roleOnly.content, paths: ['src/**'] } };
+    expect(partitionStaticPluginComponents([conditional, agent], capabilities).components).toEqual([agent]);
+
+    const { input, ctx } = await fixture(platform, expected.components);
+    input.capabilities = capabilities;
+    if (platform === 'grok') input.renderUnit.kinds = ['agent'];
+    const result = await projectPlatform(ctx, input);
+    const rolePath = platform === 'grok' ? 'agents/review.md' : 'com.github.copilot/agents/review.agent.md';
+    expect(result.components.find(({ id }) => id === roleOnly.id)?.relativeOutputs).toEqual([rolePath]);
+    expect(await fs.readFile(path.join(result.bundle!.stagingRoot, rolePath), 'utf8')).toContain('Preserve the source files.');
+    expect(await fs.pathExists(path.join(result.bundle!.stagingRoot, 'com.github.copilot/rules'))).toBe(false);
+    if (platform === 'grok') {
+      const supplement = await projectPlatform(ctx, { ...input, renderUnit: { ...input.renderUnit, output: 'supplement', kinds: ['instruction'] } });
+      expect(supplement).toMatchObject({ bundle: null, supplements: [], components: [] });
+    }
   });
 
   it('rejects an unsupported required Hook feedback before staging any package', async () => {

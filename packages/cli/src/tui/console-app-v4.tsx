@@ -129,11 +129,14 @@ import {
 } from './dependency-graph.js';
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
-import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { skillInvocationNotices, skillInvocationProductLabel } from '../output/skill-invocation-notices.js';
+import { hasComponentDeliveryNotice, isDeliveryNoticeCode, isInstallationAdvisory, type ComponentDelivery } from '../output/component-delivery.js';
+import type { Diagnostic } from '../output/public-result.js';
 import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE,
   type SkillInvocationControl, type SkillInvocationNoticeReason } from '../utils/skill-invocation-warning.js';
-import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines, componentGapLines } from './deployment-view.js';
-import { inventoryRecoveryActions, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
+import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines,
+  componentDeliveryLines, deliveryNoticeText } from './deployment-view.js';
+import { inventoryRecoveryActions, projectDeploymentNotices, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
@@ -308,23 +311,30 @@ function recoveryPluginLabel(id: string): string {
 
 function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[] {
   const groups = new Map<string, { label: string; targets: string[] }>();
+  const advisories = result ? projectDeploymentNotices(receipt.targetResults) : [];
   let unchanged = 0;
   for (const target of receipt.targetResults) {
     let action: string;
     if (result) {
-      action = target.satisfaction === 'unsupported' || target.satisfaction === 'excluded' ? '! 已跳过'
-        : target.execution === 'applied' || target.execution === 'no-op' ? '✓ 完成'
-        : target.execution === 'partial' ? '! 部分完成' : target.execution === 'failed' ? '× 执行失败'
-          : target.blockers.length ? '! 已跳过' : '? 尚未确认';
+      const advised = advisories.some(({ code, subject, severity }) => severity === 'warning' && isInstallationAdvisory(code) && subject?.pluginId === target.pluginId
+        && subject.target === target.agent && subject.scope === target.scope);
+      action = target.execution === 'partial' ? '! 部分完成' : target.execution === 'failed' ? '× 执行失败'
+        : target.satisfaction === 'not-applicable' ? '✓ 当前平台无适用组件'
+          : target.satisfaction === 'unsupported' || target.satisfaction === 'excluded' ? '! 已跳过'
+            : target.execution === 'applied' || target.execution === 'no-op'
+              ? (hasComponentDeliveryNotice(target) || advised) && target.content === 'satisfied' ? '✓ 已安装 · 有提示' : '✓ 完成'
+              : target.blockers.length ? '! 已跳过' : '? 尚未确认';
     } else if (target.blockers.length || target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') {
       action = '! 跳过';
+    } else if (target.satisfaction === 'not-applicable') {
+      action = '✓ 当前平台无适用组件';
     } else if (receipt.command === 'cleanup' || receipt.command === 'uninstall' || receipt.command === 'retire') {
       action = '− 移除';
     } else if ((target.content === 'satisfied' || target.observation === 'verified') && receipt.command !== 'reinstall') {
       if (!target.deploymentExclusions?.length && !target.componentGaps?.length) { unchanged += 1; continue; }
       action = '✓ 当前输出已满足';
     } else action = target.content === 'absent' || target.observation === 'missing' ? '+ 新增安装' : '↻ 同步并修复';
-    const diagnostic = target.blockers[0] ?? target.reasons?.find(({ code }) => code !== SKILL_INVOCATION_NOTICE);
+    const diagnostic = target.blockers[0] ?? target.reasons?.find(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code));
     const reason = diagnostic ? recoveryReason(diagnostic.code)
       : target.satisfaction === 'excluded' ? '已关闭此 Agent'
         : target.satisfaction === 'unsupported' ? '插件不支持此 Agent' : undefined;
@@ -333,9 +343,9 @@ function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[
     const group = groups.get(key) ?? { label: `→ ${agentLabel(target.agent)}`, targets: [] };
     group.targets.push(`${label}${reason ? ` · ${reason}` : ''}`);
     if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(
-      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target }))));
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target })), false, target.installedComponentIds));
     else if (result && target.deploymentObservations) group.targets.push(...deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation)));
-    group.targets.push(...deploymentExclusionLines(target.deploymentExclusions ?? []), ...componentGapLines(target.componentGaps ?? []));
+    group.targets.push(...deploymentExclusionLines(target.deploymentExclusions ?? []), ...componentDeliveryLines(target));
     groups.set(key, group);
   }
   return [...groups.values()].flatMap((group) => [group.label, ...group.targets])
@@ -384,11 +394,11 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   return [...new Set(lines)].join('\n');
 }
 
-const skillInvocationExplanations: Record<SkillInvocationNoticeReason | 'app', string> = {
-  noBoundExecutor: '通用输出没有绑定执行客户端，无法保证',
-  invocationControlUnsupported: '该客户端不支持',
-  invocationControlUnverified: '尚未验证该客户端能否保证',
-  app: '尚未验证 Codex 桌面 App 能否保证',
+const skillInvocationExplanations: Record<SkillInvocationNoticeReason, (reader?: string) => string> = {
+  noBoundExecutor: () => '通用输出没有绑定执行客户端，无法保证',
+  invocationControlUnsupported: (reader) => `${reader ?? '该客户端'}不支持`,
+  invocationControlUnverified: (reader) => `尚未验证${reader ? ` ${reader} ` : '该客户端'}能否保证`,
+  invocationControlDegraded: (reader) => `观察到${reader ? ` ${reader}` : '该客户端'}未执行`,
 };
 
 function skillInvocationControlLabel({ feature, values }: SkillInvocationControl): string {
@@ -403,22 +413,38 @@ function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], 
   return skillInvocationNotices(diagnostics).flatMap(({ skill, pluginId, platform, scope, reasonCode, controls, message }) => {
     const position = `! ${pluginId} · ${agentLabel(platform)} · ${scopeLabel(scope)} · ${skill} 已安装。`;
     if (!controls.length) {
-      return [`${position}${skillInvocationExplanations[reasonCode]}声明的调用限制。`, `  ${sanitizeDiagnosticDetailText(message)}`,
+      return [`${position}${skillInvocationExplanations[reasonCode]()}声明的调用限制。`, `  ${sanitizeDiagnosticDetailText(message)}`,
         ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`] : [])];
     }
-    const explanations = Object.entries(skillInvocationExplanations).flatMap(([reason, explanation]) => {
-      const affected = controls.filter((control) => (control.product ?? control.reasonCode) === reason).map(skillInvocationControlLabel);
-      return affected.length ? [`${explanation}「${affected.join('、')}」。`] : [];
-    });
+    const groups = new Map<string, string[]>();
+    for (const control of controls) {
+      const reader = control.product ? platform === 'codex' ? 'Codex 桌面 App'
+        : skillInvocationProductLabel(platform, control.product) : undefined;
+      const explanation = skillInvocationExplanations[control.reasonCode](reader);
+      groups.set(explanation, [...(groups.get(explanation) ?? []), skillInvocationControlLabel(control)]);
+    }
+    const explanations = [...groups].map(([explanation, affected]) => `${explanation}「${affected.join('、')}」。`);
     return [`${position}${explanations.join('')}`,
       ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`, ...controls.map((control) =>
-        `  ${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product ? ' · Codex 桌面 App' : ''}`)] : [])];
+        `  ${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product
+          ? ` · ${platform === 'codex' ? 'Codex 桌面 App' : skillInvocationProductLabel(platform, control.product)}` : ''}`)] : [])];
+  });
+}
+
+function deliveryAdvisoryLines(diagnostics: readonly Diagnostic[], technical = false): string[] {
+  return diagnostics.filter(({ code }) => isDeliveryNoticeCode(code)).flatMap(({ code, subject, detail, severity }) => {
+    const position = [subject?.pluginId, subject?.target ? agentLabel(subject.target) : undefined,
+      subject?.scope ? scopeLabel(subject.scope) : undefined].filter(Boolean).join(' · ');
+    return [`${severity === 'error' ? '×' : '!'} ${position} · ${deliveryNoticeText(code, detail?.reasonCode, subject?.field)}`,
+      ...(technical ? [`  ${code}${detail?.reasonCode ? ` · ${detail.reasonCode}` : ''}${detail?.path ? ` · ${detail.path}` : ''}`] : [])];
   });
 }
 
 function scopedResultSummary(receipt: RecoveryReceipt): string {
+  const notices = projectDeploymentNotices(receipt.targetResults);
   return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope),
-    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? [])),
+    ...skillInvocationResultLines(notices),
+    ...deliveryAdvisoryLines(notices),
     ...recoveryTargetLines(receipt, true),
     ...(receipt.unconfirmedSavedState === 'intent' ? ['插件清单写入后的内容需要重新检查。']
       : receipt.declarationChanged ? ['插件清单已保存。'] : []),
@@ -489,6 +515,7 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     .flatMap((target) => [...target.blockers, ...(target.reasons ?? [])])
     .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'
       || entry.subject?.field === 'nativeConfigRoot'), receipt);
+  const notices = projectDeploymentNotices(receipt.targetResults);
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -497,13 +524,18 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     `配置变更：${receipt.configChanged ? '是' : '无'}`,
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
     ...diagnostics,
-    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []), true),
-    ...receipt.targetResults.flatMap((target) => (target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
+    ...skillInvocationResultLines(notices, true),
+    ...deliveryAdvisoryLines(notices, true),
+    ...receipt.targetResults.flatMap((target) => (target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
       .map((reason) => `${reason.code} · ${reason.message}`)),
     ...(isRecoveryReviewStaleBeforeExecution(receipt) ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
+    ...receipt.targetResults.flatMap((target) => [
+      ...(target.satisfaction === 'not-applicable' ? [`${target.pluginId} · ${agentLabel(target.agent)} · ${scopeLabel(target.scope)} · 当前平台无适用组件`] : []),
+      ...componentDeliveryLines(target),
+    ]),
     ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(
-      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target })), true)
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target })), true, target.installedComponentIds)
       : target.deploymentObservations ? deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation), true) : []),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
@@ -10228,7 +10260,7 @@ export function ConsoleAppV4(props: {
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
     type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'>
-      & { platform: PlatformTarget; partialDelivery?: true };
+      & ComponentDelivery & { platform: PlatformTarget; partialDelivery?: true };
     const resultTargetName = (target: ResultTarget): string =>
       target.pluginId
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
@@ -10237,7 +10269,9 @@ export function ConsoleAppV4(props: {
     const resultStatus = blocked ? 'error' : partial ? 'warning' : 'success';
     const resultTargets: ResultTarget[] = configOperation ? resultSummary?.configTargets ?? resultSummary?.targets ?? []
       : resultSummary?.targets ?? [];
-    const configInvocationLines = skillInvocationResultLines(resultSummary?.configDiagnostics ?? [], showTechnical);
+    const configDiagnostics = resultSummary?.configDiagnostics ?? [];
+    const configInvocationLines = [...skillInvocationResultLines(configDiagnostics, showTechnical),
+      ...deliveryAdvisoryLines(configDiagnostics, showTechnical)];
     const configInvocationRows = configInvocationLines.flatMap((line) => wrapDisplayText(line, size.columns - 6))
       .map((line, index) => <Text key={`config-skill:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>);
     const configGroupRows = resultSummary?.configGroups?.map((group) => {
@@ -10269,17 +10303,23 @@ export function ConsoleAppV4(props: {
         : target.state === 'skipped' ? 1 : target.relation === 'requested' ? 2 : 3;
       return priority(left) - priority(right);
     });
-    const targetResultRows = prioritizedTargets.map((target) => {
-      const state = target.partialDelivery
-        ? { label: '部分完成', status: 'warning' as const }
-        : operationTargetStateLabel(target.state);
+    const targetResultRows = prioritizedTargets.flatMap((target) => {
+      const advisory = configDiagnostics.some(({ code, subject, severity }) => severity === 'warning' && isInstallationAdvisory(code)
+        && subject?.pluginId === target.pluginId && subject?.target === target.platform && subject?.scope === target.scope);
+      const state = target.partialDelivery ? { label: '部分完成', status: 'warning' as const }
+        : target.state !== 'failed' && !target.errorCode && target.satisfaction === 'not-applicable' ? { label: '当前平台无适用组件', status: 'success' as const }
+          : (target.state === 'completed' || target.state === 'kept') && (advisory || hasComponentDeliveryNotice(target))
+            ? { label: '已安装 · 有提示', status: 'success' as const } : operationTargetStateLabel(target.state);
       const relation = target.relation === 'requested' ? '你选择的插件'
         : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined;
       const targetDescription = configOperation
         ? [agentLabel(target.platform), scopeLabel(target.scope), target.errorCode].filter(Boolean).join(' · ')
         : relation;
-      return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)}
-        description={targetDescription} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
+      const key = `${target.pluginId ?? ''}:${target.platform}:${target.scope}`;
+      return [<ResultRow key={key} title={resultTargetName(target)}
+        description={targetDescription} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />,
+      ...componentDeliveryLines(target).flatMap((line) => wrapDisplayText(line, size.columns - 6))
+        .map((line, index) => <Text key={`${key}:component:${index}`} color={tuiTheme.statusColors.muted}>{line}</Text>)];
     });
     const generalResultRows = [...configInvocationRows, ...configGroupRows, ...targetResultRows, ...commandResultRows];
     const baseResultPaginationTotal = Math.max(

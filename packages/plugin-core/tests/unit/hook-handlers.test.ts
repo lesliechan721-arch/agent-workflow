@@ -87,7 +87,7 @@ describe('public Hook handler registry', () => {
     const expected = partitionStaticPluginComponents([hook, skill], capabilities);
     expect(expected.components.map((component) => component.id)).toEqual(['independent']);
     expect(expected.unmet).toEqual([{ id: 'guard', kind: 'hook', name: 'guard', requiredFeatures: [{ feature: 'hook.matcher', values: ['common.before_tool'] }], reasonCode: 'interface-unsupported' }]);
-    expect(() => assertPlatformComponentPlan({ version: 3, components: [hook], omitted: [], unmet: [] }, { platform, platformCapabilities: capabilities, allowedOutputKinds: ['hook'] })).toThrow();
+    expect(() => assertPlatformComponentPlan({ version: 3, components: [hook], omitted: [], unmet: [] }, { platform, platformCapabilities: capabilities, allowedOutputKinds: ['hook'] })).not.toThrow();
     expect(() => assertPlatformCapabilities({ ...capabilities, features: { ...capabilities.features, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['common.before_tool'] } } })).toThrow(/matcher is unverified or unsupported/u);
   });
 

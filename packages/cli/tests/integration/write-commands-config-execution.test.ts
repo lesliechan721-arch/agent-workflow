@@ -56,7 +56,10 @@ async function prepareManualSkillConfigFixture(test: TestContext) {
   const source = path.join(cwd, 'manual-skill-config-source');
   await timing.measure('fixture', 'manual-skill-catalog', async () => {
     await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `import fs from 'node:fs';
-const { values: { mode } } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8')).config;
+const { config: { values: { mode } }, allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+if (!allowedOutputKinds.includes('skill')) {
+  console.log(JSON.stringify({ version: 3, components: [], omitted: [], unmet: [] })); process.exit(0);
+}
 const skill = (name, policy) => ({ id: name, kind: 'skill', name, content: { files: {
   'SKILL.md': { text: '---\\nname: ' + name + '\\ndescription: Fixture skill.\\n' + policy + '---\\nMode: ' + mode + '\\n' },
   'README.md': { text: 'Fixture skill.\\n' }
@@ -174,7 +177,7 @@ describe('five namespaced write commands', () => {
       status: 'partial',
       data: { configWrite: 'notStarted', apply: { state: 'partial', targetResults: [{
         target: { pluginId: 'team/demo', platform: 'generic', scope: 'user' },
-        state: 'failed', partialDelivery: true, errorCode: 'portableComponentsUnmet',
+        state: 'failed', partialDelivery: true, errorCode: 'previousDeploymentRetained',
       }] } },
       nextActions: [{ kind: 'manual', message: expect.stringContaining('team/demo (generic/user)') }],
     } });

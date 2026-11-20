@@ -24,9 +24,15 @@ export function observeProcesses(currentStage) {
     const startedMs = performance.now();
     const result = Reflect.apply(original, this, [options]);
     if (!stage || !this.pid) return result;
+    const executable = path.basename(options.file).toLowerCase();
+    const psOutput = executable === 'ps' && options.args.at(-1);
+    const systemRole = executable === 'aw-windows-job.exe' ? 'windows-job-helper'
+      : psOutput === 'pid=,ppid=,pgid=,state=,lstart=,command=' ? 'posix-marker-scan'
+      : psOutput === 'pid=,ppid=,pgid=,state=,lstart=' ? 'posix-identity-scan'
+      : undefined;
     const call = {
       label: commandLabel({ command: options.file, args: options.args.slice(1) }),
-      pid: this.pid, startedMs, finishedMs: null, exitCode: null, signal: null,
+      pid: this.pid, startedMs, finishedMs: null, exitCode: null, signal: null, systemRole,
     };
     stage.processes.push(call);
     this.once('exit', (exitCode, signal) => {
@@ -86,7 +92,7 @@ async function fileDigests(directory) {
     .map((entry) => path.join(entry.parentPath, entry.name)).sort();
   const result = {};
   for (const file of files) {
-    result[path.relative(directory, file)] = createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    result[path.relative(directory, file).split(path.sep).join('/')] = createHash('sha256').update(await fs.readFile(file)).digest('hex');
   }
   return result;
 }
@@ -121,11 +127,17 @@ export async function readSkillOutputs(catalogs, selectors, root) {
     for (const entry of await readTree(path.join(root, hostDir))) {
       if (!entry.isFile() || entry.name !== 'SKILL.md' || !wanted.has(path.basename(entry.parentPath))) continue;
       const owner = await optionalJson(path.join(entry.parentPath, '.agent-workflows-owner.json'));
-      outputs.push({ path: path.relative(root, entry.parentPath), skill: path.basename(entry.parentPath), owner,
+      outputs.push({ path: path.relative(root, entry.parentPath).split(path.sep).join('/'), skill: path.basename(entry.parentPath), owner,
         files: await fileDigests(entry.parentPath) });
     }
   }
   return { fixtures, outputs };
+}
+
+export async function readCodexRoleDigests(codexHome) {
+  const directory = path.join(codexHome, 'agents');
+  const files = Object.entries(await fileDigests(directory));
+  return Object.fromEntries(files.filter(([file]) => path.posix.extname(file) === '.toml'));
 }
 
 export async function readNativePackages(targets, root) {

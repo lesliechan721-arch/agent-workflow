@@ -172,7 +172,7 @@ async function materializeStatusSkill(value: Awaited<ReturnType<typeof fixture>>
     nativeProjection: { physicalIdentity: layout.physicalIdentity, preparation: 'complete',
       components: [{ id: 'skill:example', nativeName: 'example', relativeOutputs: ['skills/example/SKILL.md'] }],
       inputDigest: platformPackageInputDigest(input), contentDigest: (await readPlatformPackageContentDigest(layout.packageRoot))! } });
-  return { binding, layout, skill };
+  return { binding, layout, skill, input };
 }
 
 describe('public status through platform adapters', () => {
@@ -612,6 +612,43 @@ describe('public status through platform adapters', () => {
     expect(target(status).content).toBe('conflict');
     expect(target(status).deploymentObservations?.[0]?.after.ownership).toBe('foreign');
     expect(await snapshot(layout.packageRoot)).toEqual(before);
+  });
+
+  it('retains a static Skill expectation when gap evidence omits its component ID', async () => {
+    const value = await fixture('cursor', { available: true, scope: 'project' });
+    await createCatalogSnapshotFixture(value.source, 'demo', [], 'Mixed static components', (manifest) => {
+      manifest.platforms = ['cursor'];
+      manifest.skills = './skills';
+      manifest.extensions = { hooks: [{ id: 'check', event: 'before_tool', feedback: 'notify', command: 'echo check' }] };
+    });
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0' });
+    const { input, layout } = await materializeStatusSkill(value, 'cursor', await placement(value, 'cursor'));
+    await writePlatformEmptyState({ env: value.env, state: { ...input, kind: 'aw-platform-empty-state', result: 'capability-gaps',
+      gaps: [{ id: 'hook:check', kind: 'hook', name: 'check', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['notify'] }],
+        reasonCode: 'interface-unsupported' }], installedComponentIds: [] } });
+    await fs.remove(layout.packageRoot);
+    const status = await value.read();
+    expect(target(status)).toMatchObject({ content: 'absent', satisfaction: 'pending' });
+    expect(status).toMatchObject({ allSatisfied: false, inSync: false, counts: { pending: 1 } });
+  });
+
+  it('keeps an unowned Codex role visible when its required tool restriction prevents projection', async () => {
+    isolateCodexAppDiscoveryQueries();
+    const value = await fixture('codex', { available: true, empty: true, scope: 'project' });
+    await createCatalogSnapshotFixture(value.source, 'demo', [], 'Restricted role', (manifest) => {
+      manifest.platforms = ['codex'];
+      manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Review the changes.', tools: [] }] };
+    });
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0' });
+    const { binding, layout } = await placement(value, 'codex');
+    const file = path.join(layout.supplementRoot!, supplementRelativePath(binding, { kind: 'agent', name: 'reviewer' }));
+    const previous = 'name = "reviewer"\ndescription = "User-edited role"\n';
+    await fs.outputFile(file, previous);
+    const status = await value.read();
+    expect(target(status)).toMatchObject({ content: 'conflict', componentGaps: [expect.objectContaining({ kind: 'agent' })],
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'previousDeploymentRetained', detail: expect.objectContaining({ path: file }) })]) });
+    expect(status.allSatisfied).toBe(false);
+    expect(await fs.readFile(file, 'utf8')).toBe(previous);
   });
 
   // Hook output belongs to an exact scope and is required for Cursor discovery.

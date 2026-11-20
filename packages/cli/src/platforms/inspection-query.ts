@@ -11,6 +11,8 @@ export interface NativeQuerySession {
 }
 
 export interface NativeObservationBatch {
+  /** The complete joint placement, including its peers, has no executable author scripts. */
+  scriptFreePlacement?: true;
   discoveryCache: NonNullable<ReadContext['discoveryCache']>;
   nativeQuerySession: NativeQuerySession;
   runner: NativeCliRunner;

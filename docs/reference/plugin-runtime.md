@@ -132,7 +132,7 @@ AW 在运行脚本前由固定平台布局确定 render units。每单元按权�
 | Skill | configKeys 的非敏感键及非敏感校验依赖 | skill |
 | 非 Skill | 获准键，可包含敏感字段 | mcp、agent、hook、instruction |
 
-allowedOutputKinds 是单元可交付类别与批次类别的交集。交集为空不调用；否则每批最多一次，无输出也返回合法空数组。schema、values、sources、issues、changedConfigKeys 和历史身份同时裁剪，不通过其他字段把敏感信息带入 Skill 批次。changedConfigKeys 仅供优化，不能据此只返回变化项。配置、资源、renderer 权限或能力依据变化时重新准备完整集合，即使上次无组件。
+`allowedOutputKinds` 是单元布局分配的类别与批次类别的交集。交集为空不调用，否则每批最多一次，无输出也返回合法空数组。该字段限定脚本可返回的类别，具体组件能否交付还要经过下述映射判断。schema、values、sources、issues、changedConfigKeys 和历史身份同时裁剪，不通过其他字段把敏感信息带入 Skill 批次。changedConfigKeys 仅供优化，不能据此只返回变化项。配置、资源、renderer 权限或能力依据变化时重新准备完整集合，即使上次无组件。
 
 sourceDirs 是 bundle 内已验证相对目录；runtimeImports 使用既有具名 runtime export 与依赖来源合同。引用须经 realpath 和内容闭包校验；绝对路径、..、逃逸 symlink、未知 import 或闭包外文件均拒绝。资源入口不是输出位置。脚本使用隔离 HOME/USERPROFILE/AW_HOME/XDG 与受控进程收尾；这是输入隔离，不是 OS 沙箱。
 
@@ -180,16 +180,20 @@ interface PlatformCapabilitiesV2 {
     delivery: Array<'native-package' | 'native-extension' |
       'managed-host-resource' | 'generic-files'> }>;
   features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
+  deliveryFeatures?: FeatureRequirement[];
 }
 ~~~
 
-AW 将交付方式、原因码和 feature 取值去重并排序。profile 用于作者准备，local 根据实际产品和 scope 判定能力。共享包按实际交付能力准备。客户端入口、精确版本、profile 标识以及 Pi 消费者的配置和授权证据留在现场检查。renderer 通过 kinds 和 features 得到 Pi Agents 消费者的启用、信任、访问限制和提示词模式所产生的能力结论。
+AW 将交付方式、原因码和 feature 取值去重并排序。profile 用于作者准备，local 根据实际产品和 scope 判定能力。共享包按实际读者准备。客户端入口、精确版本、profile 标识以及 Pi 消费者配置和授权的原始证据留在现场检查。
+
+- `kinds[*].status` 和 `features` 保留宿主运行资格及原因。`component.kind.<kind>` 的资格从 `kinds` 派生。renderer 可用这些事实判断调度流程依赖的实际执行能力，例如需要调用已安装的原生角色。
+- `kinds[*].delivery` 给出类别的写入方式。可选的 `deliveryFeatures` 列出 AW 标准写入器能保留的组件特性及取值，沿用 feature registry。该字段存在时，当前组件自身的声明按交付映射判断，跨类别的运行前提仍按宿主资格判断。旧能力输入省略该字段时，交付判断沿用运行资格。插件仍支持旧 AW 时，renderer 应在旧输入下返回符合旧资格的计划。作者可通过 `aw dev plugin capabilities --surface platform-capabilities --json` 查询字段合同。
 
 feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 
 | Feature | 必需语义或取值 |
 | --- | --- |
-| `component.kind.<kind>` | 对应五类 kind 的基础门槛，无 values；支持状态与原因从 kinds 统一派生，不增加调用或执行承诺 |
+| `component.kind.<kind>` | 五类组件的基础运行前提，无 values，资格状态与原因从 kinds 统一派生 |
 | skill.invocation.manual、skill.invocation.model、skill.visibility | 当前 Skill metadata 的调用与可见性控制 |
 | skill.runtime-config | AW 已安装配置合同版本 |
 | skill.tools | allowlist、denylist、none；对应实际工具限制 |
@@ -210,13 +214,13 @@ feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 | instruction.coverage | main、plugin-agents、other-agents |
 | instruction.paths、instruction.after-compaction | 条件匹配与压缩后覆盖 |
 
-FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记；values 若有须非空、无重复。满足要求须 status=supported 且包括全部必需值。内容自动推导要求，作者 requires 只能追加，不能撤销。Skill 中声明的工具限制、模型、fork、角色、后台、Hook 等行为字段也必须进入能力判断；仅复制 metadata 不算支持。未声明字段不增加默认执行语义，纯展示字段不增加行为门槛。例如 tools=[] 要求 none，Hook feedback=block 要求该事件的 block。合法但未支持的取值可以进入 unmet，未知 ID/取值则非法。
+FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记。values 若有须非空、无重复。满足运行前提须 `status: supported` 且包括全部必需值。内容自动推导要求，作者的 `requires` 可追加要求。Skill 中的工具限制、模型、fork、角色、后台、Hook 等行为字段也参与交付判断，需有能保留语义的映射。Tools 的空数组要求 `none`，Hook 的 `feedback: block` 要求该事件支持阻断。未声明字段和纯展示字段不增加执行要求。合法但缺少映射的取值进入 `unmet`，未知 ID 或取值会使声明校验失败。
 
-需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态 Skill 和动态 renderer 的 Skill 都完整交付正文及资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。目标能实施的部分由原生策略执行。缺少相应接口时，安装仍可成功，回执对实际安装的 Skill 给出非阻断提示。其他执行、权限或依赖要求仍按能力检查。[各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
+需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态和动态 Skill 均交付完整正文和资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。调用资格缺口不阻断交付，实际提示按产品判断。Antigravity 只提示已确认不支持或有可靠回读的策略降级。其他执行、权限或依赖要求仍按能力检查。[诊断合同](cli.md#4-业务-payload-的边界) · [各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
 
-公共 Hook 的合法 matcher 可以保留在源码中。准备时，声明 matcher 的组件自动要求对应 `hook.matcher` 事件值；目标不支持时，静态组件报告具体 unmet，独立组件继续。动态集合返回超出能力的 matcher 则拒绝该批。显式 Native 声明仍须符合该宿主事件的 matcher 语法与允许规则。
+公共 Hook 的合法 matcher 可以保留在声明中。准备时，声明 matcher 的组件自动要求对应的 `hook.matcher` 事件值。静态和动态组件在目标缺少安全映射时都报告具体 `unmet`，独立组件继续交付。显式 Native 声明仍须符合该宿主事件的合法语法。
 
-稳定原因码包括 client-missing、version-unsupported、interface-unsupported、scope-unsupported、capability-unverified、consumer-missing、consumer-disabled、policy-blocked。AW 的 requires.aw.capabilities 与宿主组件能力不共用集合。
+稳定原因码包括 `delivery-unavailable`、`client-missing`、`version-unsupported`、`interface-unsupported`、`scope-unsupported`、`capability-unverified`、`consumer-missing`、`consumer-disabled`、`policy-blocked`。`delivery-unavailable` 表示当前 AW 写入器缺少所需映射。`requires.aw.capabilities` 使用独立的 AW 运行接口注册表。
 
 ### 3.4 PlatformComponentPlan v3 与资源
 
@@ -248,9 +252,11 @@ Agent、Instructions、MCP 和静态声明见[Manifest](manifest-and-config.md#2
 
 Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。protocol=null 或所需反馈没有映射时不能声明 supported。协议定义与真实客户端资格分别判断；旧事件校验入口也消费此 registry，不能维护不同 allowlist。
 
-三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
+三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。非法来源、无效文件、秘密原值、类别越界或未知 feature 及其取值会拒绝整批。renderer 可以完整返回合规的声明，AW 校验资源和能力后交付可保真的部分，并为其余部分生成 `unmet`。
 
 unmet 的 requiredFeatures 保留具体缺失值及 componentId。例如 before_tool 只支持 notify 而要求 block，缺口为 {feature:'hook.common.before_tool',values:['block']}。Instructions 要求 main/plugin-agents 而只支持 main，则成功组件只含 main，关联缺口只含 plugin-agents。模型、工具限制与阻断不能静默删去。依赖或配置缺口可用空 requiredFeatures，能力缺口不能借此隐藏。reasonCode 必须与当前能力依据或登记的配置/依赖原因一致。
+
+如果已发布的 renderer 只返回 `dependency-unmet` 和空的 `requiredFeatures`，AW 会保留它报告的依赖问题。该版本没有提供的角色，需要升级到包含角色正文的插件版本才能安装。
 
 stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64 KiB。非零、超时、非法 JSON 或任一校验失败均没有有效集合，不能解释为空并删除旧输出。
 
@@ -260,12 +266,15 @@ stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64
 
 Hook/MCP 命令引用的本地文件须来自已允许的来源。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
 
-Grok 包投影从同一 binding、同一 render scope 的完整集合组合 Agent Instructions 正文。修改或关闭 Instructions 时，同 scope 受影响的 Agent 包和规则补足一起重投影、Review 与冻结；组合输入失败不能当无正文继续发布。
+Copilot 和 Grok 将无路径条件、仅覆盖 `plugin-agents` 的 Instructions 写入同一目标和 render scope 中实际可交付的同包角色正文。单独准备 Instructions 或没有适用角色时，AW 报告 `plugin-agents` 的交付缺口。规则文件只接收声明覆盖 `main` 的正文。
+
+Grok User 和 Project 的包投影从同一 binding、同一 render scope 的完整集合组合 Agent Instructions 正文。修改或关闭 Instructions 时，同 scope 受影响的 Agent 包和规则补足一起重投影、Review 与冻结。组合输入失败阻止相关 Agent 包发布。
 
 | 合并结果 | 维护语义 |
 | --- | --- |
 | 无组件且无 unmet | 有意空；新目标成功 no-op，旧输出的撤销须进 Review 并受归属/共享约束 |
-| 无组件但有 unmet | 能力仍期望提供，保留未完成项及恢复证据，不按空集卸载 |
+| 只有平台能力缺口 | 完成当前可执行的交付，可以安装 0 项。已有入口按声明完整性和归属处理，见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果) |
+| 有配置、依赖或其他真实未满足项 | 保留未完成项及恢复证据，继续处理独立的可用组件 |
 | 渲染失败 | 没有有效集合，不执行集合差异写入或清理，其他独立平台继续 |
 
 Review 冻结实际组件、资源字节、输出位置、删除候选、能力及输入证据。Execute 在唯一写锁内重查来源、配置、能力、入口和现场归属，变化返回 stale，重新准备和确认，不在确认后生成另一集合。status/list/inspect 不运行 renderer；有匹配的可重建物化证据时才显示当前配置不产生组件，否则显示动态期望待确认。物化证据和 previousComponents 均不授予删除权。
@@ -359,7 +368,7 @@ AW 固定使用 bundle 内的 Node entry 执行脚本，**以 bundle plugin root
 
 ### 5.2 generic 与通用 Skills 导出
 
-generic 安装根据作者声明的 Skill 名称校验并写入通用目录，writer 核对 owner 和内容，保留 foreign/shared/unknown。每个直接子目录必须完整，保留生产 README.md。每个 Skill 都可保留作者的调用意图。通用文件的自动发现及实际调用取决于以后读取它的客户端，AW 安装结果会提示这一限制。
+generic 安装根据作者声明的 Skill 名称校验并写入通用目录，writer 核对 owner 和内容，保留 foreign/shared/unknown。每个直接子目录必须完整，保留生产 README.md。每个 Skill 都可保留作者的调用意图。通用文件的自动发现及实际调用取决于以后读取它的客户端，AW 安装结果会提示这一限制。实际请求的非 Skill 声明按能力缺口报告。作者可提供通用 Skill 正文，使其工作流程适合通用环境。
 
 明确选择 profile 的通用 Skills 导出独立于安装机制；profile 准备不依赖本机客户端，不构成真实加载资格。不得以导出成功声明该 Agent 支持其余组件或本机命令运行。
 

@@ -1,4 +1,5 @@
-import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -1284,6 +1285,62 @@ describe('native-cli', () => {
             // The cleanup under test already terminated the descendant.
           }
         }
+      }
+    },
+  );
+
+  // Exercise concurrent, real process cleanup across completion and cancellation paths.
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'cleans only its own descendants when native POSIX marker scans are shared', async () => {
+      const runner = createExecFileNativeCliRunner({ coalescePosixMarkerScans: true });
+      const unrelated = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: 'ignore' });
+      const unrelatedClosed = once(unrelated, 'close');
+      const modes = [
+        ['normal-inherited', 'inherit', undefined, 0],
+        ['normal-closed', 'ignore', undefined, 0],
+        ['exit', 'inherit', 'exit', 7],
+        ['timeout', 'inherit', 'timeout', 124],
+        ['abort', 'inherit', 'aborted', 1],
+      ] as const;
+      try {
+        const results = await Promise.allSettled(modes.map(async ([mode, output, reason, exitCode]) => {
+          const script = `
+            const { spawn } = require('node:child_process');
+            const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], {
+              detached: true, stdio: ['ignore', ${JSON.stringify(output)}, ${JSON.stringify(output)}],
+            });
+            descendant.unref();
+            process.stdout.write(String(descendant.pid) + '\\n');
+            if (${JSON.stringify(reason)} === 'exit') process.exit(7);
+            if (${JSON.stringify(reason)} !== undefined) setTimeout(() => {}, 10_000);
+          `;
+          const controller = new AbortController();
+          let abortTimer: NodeJS.Timeout | undefined;
+          try {
+            const response = await runner({
+              command: process.execPath, args: ['-e', script], signal: controller.signal,
+              ...(reason === undefined ? {} : { agentKind: 'claude' }),
+              timeoutMs: mode === 'timeout' ? 500 : 3_000,
+              onSpawn() {
+                if (mode === 'abort') abortTimer = setTimeout(() => controller.abort(), 500);
+              },
+            }).catch((error: unknown) => error);
+            expect(response).toMatchObject(reason === undefined ? { exitCode } : {
+              exitCode, reason, cleanupError: undefined,
+            });
+            const pid = Number.parseInt((response as NativeCliResult | NativeCliError).stdout.trim(), 10);
+            expect(pid).toBeGreaterThan(1);
+            expect(() => process.kill(pid, 0)).toThrow();
+          } finally {
+            if (abortTimer) clearTimeout(abortTimer);
+          }
+        }));
+        expect(results).toEqual(modes.map(() => ({ status: 'fulfilled', value: undefined })));
+        expect(unrelated.exitCode).toBeNull();
+        expect(unrelated.signalCode).toBeNull();
+      } finally {
+        if (unrelated.exitCode === null && unrelated.signalCode === null) unrelated.kill();
+        await unrelatedClosed;
       }
     },
   );

@@ -5,12 +5,28 @@ import type { IntentObservation } from '../intent/intent-store.js';
 import type { Delivery } from './types.js';
 import type { DeploymentObservation, DeploymentReceipt, DeploymentExclusion, FrozenDeploymentPlan, ProductInstallation } from '../platforms/contracts.js';
 
-import type { PortableComponentGap } from '../portable/recovery.js';
+import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
+
+export interface RecoveryComponentGap extends ComponentUnmet {
+  providerPluginId: string;
+  agent: AgentId;
+  renderScope: Scope;
+}
+
+export function uniqueRecoveryComponentGaps(gaps: readonly RecoveryComponentGap[]): RecoveryComponentGap[] {
+  return [...new Map(gaps.map((gap) => [JSON.stringify([
+    gap.providerPluginId, gap.agent, gap.renderScope, gap.id, gap.reasonCode, gap.requiredFeatures,
+  ]), gap])).values()];
+}
 
 export interface RecoveryDiagnostic {
   code: string; message: string; pluginId?: string;
   subject?: import('../output/public-result.js').Diagnostic['subject'];
   detail?: import('../output/public-result.js').Diagnostic['detail'];
+}
+export function retainedOutputDiagnostic(pluginId: string, agent: AgentId, scope: Scope, path: string, field?: string): RecoveryDiagnostic {
+  return { code: 'previousDeploymentRetained', message: 'Previous output was retained and may still be active.',
+    subject: { pluginId, target: agent, scope, ...(field ? { field } : {}) }, detail: { reasonCode: 'previousDeploymentRetained', path } };
 }
 export type RecoveryDelivery = Delivery;
 export interface RecoveryTarget {
@@ -31,10 +47,12 @@ export interface RecoveryTarget {
   relation?: 'root' | 'dependency' | 'residue';
   requirementScope?: Scope;
   providerScope?: Scope;
-  satisfaction?: 'installed' | 'inherited-user' | 'unsupported' | 'excluded' | 'pending' | 'unknown';
+  satisfaction?: 'installed' | 'inherited-user' | 'not-applicable' | 'unsupported' | 'excluded' | 'pending' | 'unknown';
   recoveryActions?: string[];
   backend?: unknown;
-  componentGaps?: PortableComponentGap[];
+  componentGaps?: RecoveryComponentGap[];
+  installedComponentCount?: number;
+  installedComponentIds?: string[];
   deploymentExclusions?: DeploymentExclusion[];
   deploymentPlans?: FrozenDeploymentPlan[];
   deploymentReceipts?: Array<DeploymentReceipt & { products: ProductInstallation[] }>;

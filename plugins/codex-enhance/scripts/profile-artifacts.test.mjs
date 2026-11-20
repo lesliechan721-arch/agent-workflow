@@ -77,7 +77,6 @@ test('renders only specialist profiles and preserves optional external fields', 
     await assert.rejects(renderArtifactPlan(context({ advisorAdvancedProfile })));
   }
   await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
-  assert.equal((await renderArtifactPlan(renderContext({}, 'claude', ['skill']))).unmet.length, 2);
   const incomplete = context();
   delete incomplete.config.values.advisorGeneralProfile;
   await assert.rejects(renderArtifactPlan(incomplete), /Missing resolved config value: advisorGeneralProfile/);

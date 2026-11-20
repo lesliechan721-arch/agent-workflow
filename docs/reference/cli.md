@@ -146,6 +146,8 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 
 `plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
+八个原生目标的 User 和 Project 安装会交付当前入口可保真表达的组件，并报告其余能力缺口。`generic` 只交付作者提供的通用 Skill 和资源。适用组件全部交付后，仅有能力提示的目标仍正常完成。所有请求项都因能力缺口跳过时，目标为 `satisfaction: "not-applicable"`、`installedComponentCount: 0`。需求仍保留，安装或同步可以返回 `success`、退出码 0。真实依赖缺失、无效声明、写入失败或冲突继续按实际结果报告。
+
 plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
 
 生命周期公开 payload 的最低固定字段为：
@@ -178,7 +180,8 @@ type LifecycleData = {
     requiredBy: string[];
     blockerCodes: string[];
     // deploymentPlans、deploymentReceipts 按本次准备与执行事实提供。
-    // delivery、relation、requirementScope、providerScope、satisfaction
+    // delivery、relation、requirementScope、providerScope、satisfaction、
+    // installedComponentCount、installedComponentIds、componentGaps
     // 按适用条件保留，公开类型有固定定义，不能以 backend: unknown 替代。
   }>;
   remainingTargets: Array<{ pluginId: string; target: string; scope: 'user' | 'project' }>;
@@ -187,7 +190,9 @@ type LifecycleData = {
 };
 ```
 
-安装、同步、重建或配置应用交付 Skill 后，如果该位置无法保证声明的显式调用、模型自动调用或可见性要求，`diagnostics` 按实际插件、Skill、平台和范围给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 给出每项未能保证的控制、声明值与原因，区分未绑定执行客户端、客户端不支持和能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。CLI 文本和 TUI 结果显示同一事实。警告本身不影响成功状态或退出码，也不会使已交付目标进入重试。遇到其他失败时，仍报告实际未完成项。
+安装、同步、重建或配置应用交付 Skill 后，`diagnostics` 按实际插件、Skill、平台和范围最多给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 列出受影响的显式调用、模型自动调用或可见性控制及声明值、原因和适用产品。通常可报告未绑定执行客户端、客户端不支持或能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。
+
+Antigravity 的诊断只在已确认实际读者不支持该控制（`invocationControlUnsupported`），或有可靠回读表明策略实际降级（`invocationControlDegraded`）时生成。每项控制以 `product: 'cli' | 'app'` 标识相关读者。缺少会话实测、未登录或查询失败时仍保留未知资格，回执省略该提示。CLI 文本、JSON、TUI、历史和导出表达同一结果。警告不影响成功退出码或重试范围。
 
 独立运行 `plugin config apply` 时，`configWrite` 为 `notStarted`。中断回执保留当时已解析的请求、已完成的确认以及已有的应用结果。收到 SIGINT 或 SIGTERM 后等待清理并分别退出 130 或 143，清理无法确认时退出 1。如果所有目标已完成并通过核验，收尾时收到信号仍保留成功回执和已交付 Skill 的警告。
 
@@ -197,11 +202,13 @@ type LifecycleData = {
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
+生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
+
 `plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。
 
 无法确认安装所需证据时，目标为 `content: unknown` 并计入 `counts.unconfirmed`。显式目标没有可以独立完成的已知结果时返回 `blocked`（3），同时有可独立完成的已知结果时返回 `partial`（4）。各宿主的必需启用、权限和可选加载观察由实际部署路由决定。
 
-plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指定依赖插件时，inventory 返回其真实目标、requiredBy 和提供者关系，不把它加入直接需求。counts 仅统计可见目标；allSatisfied/inSync 仍描述整个授权读取上下文，明确不满足为 false，未完整观察为 null。可选 coverage.requestComplete 描述本次选择及必要依赖、共享与碰撞检查是否完整；本次请求可完成而全局汇总仍未知，未选目标未观察不独自使请求失败。
+plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指定依赖插件时，inventory 返回其真实目标、requiredBy 和提供者关系，不把它加入直接需求。counts 仅统计可见目标。allSatisfied/inSync 描述整个授权读取上下文，明确不满足为 false，未完整观察为 null。对于只有能力缺口的零产物位置，`counts.pending` 不增加。完整观察且没有其他问题时，`allSatisfied` 和 `inSync` 都为 true，表示当前可执行的安装工作已完成。可选 coverage.requestComplete 描述本次选择及必要依赖、共享与碰撞检查是否完整。本次请求可完成而全局汇总仍未知，未选目标未观察不独自使请求失败。
 
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 

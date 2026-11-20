@@ -1,7 +1,9 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
 import { commandResult, type CommandResult, type NextAction } from '../output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
+import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentNotices, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
+import { isDeliveryNoticeCode } from '../output/component-delivery.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
@@ -112,6 +114,9 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const inventory = status.inventory?.filter((entry) => selectedPlugin(entry.pluginId)).map((entry) => ({ pluginId: entry.pluginId, sourceId: entry.source, sourceState: entry.sourceState,
       blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map((target) => projectTarget(target)) })) ?? null;
     const diagnostics = status.errors.map((error) => publicDiagnostic(error));
+    const selectedTargets = (status.inventory ?? []).filter((entry) => selectedPlugin(entry.pluginId))
+      .flatMap((entry) => entry.targetResults.filter((target) => selectedTarget(target.agent)));
+    diagnostics.push(...projectDeploymentNotices(selectedTargets));
     const pending = new Map<string, { root: Pick<RecoveryTarget, 'pluginId' | 'scope' | 'agent'>; reason: string }>();
     const positionKey = (pluginId: string, scope: Scope, agent: string) => JSON.stringify([pluginId, scope, agent]);
     const declared = (pluginId: string, scope: Scope) => declarations.find((item) => item.scope === scope)?.roots?.includes(pluginId);
@@ -119,9 +124,10 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
       for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
         const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-        diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, error.subject ?? subject,
+        diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((error) => publicDiagnostic(error, error.subject ?? subject,
           error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
         for (const reason of target.reasons ?? []) {
+          if (isDeliveryNoticeCode(reason.code) || reason.code === SKILL_INVOCATION_NOTICE) continue;
           const diagnostic = publicDiagnostic(reason, reason.subject ?? subject, 'warning');
           diagnostics.push(diagnostic);
           if (!['platformInputDrift', 'platformContentDrift', 'nativePackageContentDrift',

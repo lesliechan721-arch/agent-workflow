@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 1,
+  "client": "Antigravity CLI",
+  "version": "1.5.13",
+  "host": "darwin-arm64",
+  "nativeSession": {
+    "command": [
+      "-p",
+      "/skills",
+      "--output-format",
+      "json"
+    ],
+    "user": {
+      "host": "darwin-arm64",
+      "version": "1.5.13",
+      "plugin": {
+        "name": "git-toolkit",
+        "version": "0.1.0-beta.6",
+        "enabled": true
+      },
+      "scope": "user",
+      "queries": [
+        "agy plugin list --json",
+        "agy -p /skills --output-format json"
+      ],
+      "sessionStatus": "SUCCESS",
+      "modelTurns": 0,
+      "skills": [
+        {
+          "name": "git-toolkit:git-commit",
+          "model_invocable": false
+        },
+        {
+          "name": "git-toolkit:isolating-work-with-git-worktrees",
+          "model_invocable": true
+        },
+        {
+          "name": "git-toolkit:reconciling-git-merges",
+          "model_invocable": true
+        }
+      ]
+    },
+    "project": {
+      "client": "Antigravity CLI",
+      "version": "1.5.13",
+      "machine": "darwin-arm64",
+      "date": "2026-11-20T07:59:27.309Z",
+      "fixture": "Two separate Git repositories. Only A contains .agents/plugins/aw-verification-workspace-scope-proof/.antigravity-plugin/plugin.json. Only A has a direct project Skill control. No user plugin is installed or removed.",
+      "queries": [
+        "agy plugin list --json",
+        "agy -p /skills --output-format json"
+      ],
+      "samples": [
+        {
+          "stage": "A, project bundle present",
+          "nativePluginListMatchCount": 0,
+          "slashReportStatus": "SUCCESS",
+          "modelTurns": 0,
+          "workspaceSkills": [
+            {
+              "name": "aw-verification-workspace-scope-proof:wsp-proof-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-verification-workspace-scope-proof:wsp-proof-ordinary",
+              "model_invocable": true
+            },
+            {
+              "name": "wsp-proof-direct",
+              "model_invocable": true
+            }
+          ],
+          "installedGitCommitNames": [
+            "git-toolkit:git-commit"
+          ]
+        },
+        {
+          "stage": "B, separate Git project",
+          "nativePluginListMatchCount": 0,
+          "slashReportStatus": "SUCCESS",
+          "modelTurns": 0,
+          "workspaceSkills": [],
+          "installedGitCommitNames": [
+            "git-toolkit:git-commit"
+          ]
+        },
+        {
+          "stage": "A, project bundle updated",
+          "nativePluginListMatchCount": 0,
+          "slashReportStatus": "SUCCESS",
+          "modelTurns": 0,
+          "workspaceSkills": [
+            {
+              "name": "aw-verification-workspace-scope-proof:wsp-proof-manual",
+              "model_invocable": false
+            },
+            {
+              "name": "aw-verification-workspace-scope-proof:wsp-proof-updated",
+              "model_invocable": true
+            },
+            {
+              "name": "wsp-proof-direct",
+              "model_invocable": true
+            }
+          ],
+          "installedGitCommitNames": [
+            "git-toolkit:git-commit"
+          ]
+        },
+        {
+          "stage": "A, project bundle removed",
+          "nativePluginListMatchCount": 0,
+          "slashReportStatus": "SUCCESS",
+          "modelTurns": 0,
+          "workspaceSkills": [
+            {
+              "name": "wsp-proof-direct",
+              "model_invocable": true
+            }
+          ],
+          "installedGitCommitNames": [
+            "git-toolkit:git-commit"
+          ]
+        }
+      ]
+    },
+    "projectPackageDirectoryPrefix": {
+      "version": "1.5.13",
+      "host": "darwin-arm64",
+      "manifestName": "workspace-scope-proof",
+      "manifestPath": ".agents/plugins/aw-verification-workspace-scope-proof/.antigravity-plugin/plugin.json",
+      "directoryName": "aw-verification-workspace-scope-proof",
+      "skillName": "wsp-proof-manual",
+      "command": "agy -p /skills --output-format json",
+      "status": "SUCCESS",
+      "modelTurns": 0,
+      "reportedSkills": [
+        {
+          "name": "aw-verification-workspace-scope-proof:wsp-proof-manual",
+          "model_invocable": false
+        }
+      ]
+    },
+    "projectHiddenRequested": {
+      "status": "SUCCESS",
+      "num_turns": 0,
+      "fields": {
+        "user-invocable": false
+      },
+      "skills": [
+        {
+          "name": "aw-qualification-control-proof:control-hidden",
+          "model_invocable": true
+        },
+        {
+          "name": "aw-qualification-control-proof:control-manual",
+          "model_invocable": false
+        },
+        {
+          "name": "aw-qualification-control-proof:control-ordinary",
+          "model_invocable": true
+        }
+      ]
+    }
+  },
+  "publicAwQualification": {
+    "schemaVersion": 1,
+    "date": "2026-11-20T09:37:47.136Z",
+    "host": "darwin-arm64",
+    "baseSourceSha": "c623d4ca83c61d26f15d755162550646c6871df1",
+    "candidateSha256": "67942f8c2e1af6b55387bae6ca6173edd0d8ae9142177a70bac1fdeee23c9718",
+    "fixture": "repository git-toolkit plus a local root and two dependencies with seven Skills",
+    "clientSha256": "3f669d53b6a9807b161c327bf6ce33cdd24ecbf3026edcbb7347c004d1a2d9f2",
+    "client": "1.5.13",
+    "app": "absent",
+    "coReading": "unobserved",
+    "userDelivery": {
+      "level": "public-AW-install-receipt-and-published-package-bytes",
+      "execution": "applied",
+      "skills": [
+        "git-commit",
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges"
+      ],
+      "gaps": []
+    },
+    "projectGitDelivery": {
+      "level": "public-AW-install-receipt-and-published-package-bytes",
+      "execution": "applied",
+      "skills": [
+        "git-commit",
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges"
+      ],
+      "gaps": []
+    },
+    "sessions": {
+      "status": "unverified",
+      "reason": "authentication-session-probe-not-requested"
+    },
+    "firstPublication": [
+      {
+        "plugin": "scope-root",
+        "skill": "scope-manual",
+        "bodySha256": "55157a3dd24500161f51afedf4da7a45e387e0c242ffa8f08163838e44557773",
+        "resourceSha256": "95470cdb105e0766180980fcf41e8932fc636401336714aa4678a8eb8cda3669"
+      },
+      {
+        "plugin": "scope-root",
+        "skill": "scope-ordinary",
+        "bodySha256": "cc00cec4d09fd55053933f05a79a03bcaa2249963bdd20b47b35e36892fff5ce",
+        "resourceSha256": "4baf00c511d5b00587e3f5ef9bcf709a5989fb997116f99fc85eb5abb869dc29"
+      },
+      {
+        "plugin": "scope-root",
+        "skill": "scope-extra",
+        "bodySha256": "a327647608eebe8dbc0c9d415544da33a1b81df6b2fbd3cc9afe12aee230a377",
+        "resourceSha256": "4178cc3853377e9265c5aff65928c860eef6f38d73c97c1e7da0d4ae810ea768"
+      },
+      {
+        "plugin": "scope-dependency-a",
+        "skill": "dependency-a-first",
+        "bodySha256": "a706f0e593f559543b358a352d836e364b9f157648b660db0672688c65a01a67",
+        "resourceSha256": "00735d06140859a9174b8d1abb5ebe8403ee2a60697c85cb81c25992966d16d7"
+      },
+      {
+        "plugin": "scope-dependency-a",
+        "skill": "dependency-a-second",
+        "bodySha256": "29a98a7bedadd0ded311f60a2de41d01eee593e3ca1eaa7f0e3a1ccfc99b4b83",
+        "resourceSha256": "c4f79e7abef982d9f77a6470eae88f13e98bd21ce59850c9c47dce4be91c9f70"
+      },
+      {
+        "plugin": "scope-dependency-b",
+        "skill": "dependency-b-first",
+        "bodySha256": "ee3968825b5ed579560c1c18e32e4b5d933391ab243ef11ff555a95d62cace10",
+        "resourceSha256": "3667491a0d41ad57cda3f4ea90a68797d37c65ee4afb5395b05d328389fe661b"
+      },
+      {
+        "plugin": "scope-dependency-b",
+        "skill": "dependency-b-second",
+        "bodySha256": "d66bedd9b0a61da858e73a12356478fc75738ccda2c6cdcfb6f21022a8e4681d",
+        "resourceSha256": "9713727d8320f8e8ee6c2b0701d1147b5c8ef015955e0fe0b0a4fd9ff01b175e"
+      }
+    ],
+    "updatedPublication": [
+      {
+        "plugin": "scope-root",
+        "skill": "scope-manual",
+        "bodySha256": "c482adb0c0543cf4c723930faabfc6f1165c8acdf4e2d9f5258139230aee4424",
+        "resourceSha256": "1efd2d89d3b7fbb30950338bf178729c9161b713372e88d6492012d2182c5d77"
+      },
+      {
+        "plugin": "scope-root",
+        "skill": "scope-updated",
+        "bodySha256": "a74b84877d704bfd67df48cbca5177011bf97d9ba2ac8d2c90ced12ee2977bfe",
+        "resourceSha256": "571ee8cc0db5a2dd981c4183ae1b75d64d43a9529da9bb149e6025f477aee031"
+      },
+      {
+        "plugin": "scope-root",
+        "skill": "scope-hidden",
+        "bodySha256": "eb90244bfca0711c2aeac29de5c653b9dc6c1114d85d904cb204d1de0983bce7",
+        "resourceSha256": "ab0d4c8310a77a2e4d55489f6c638c7c9ac1e7b2bf8d0fd45ec0ab2ea5fb0558"
+      },
+      {
+        "plugin": "scope-dependency-a",
+        "skill": "dependency-a-first",
+        "bodySha256": "9e6a04182b5b78e5a4c6ca549bfe656835a87962e4348b2d72c1c490bdc06c00",
+        "resourceSha256": "25d3ea6710e94fb8a6e60008c59578fcd97851894e2dc3d40cac90d787002bcd"
+      },
+      {
+        "plugin": "scope-dependency-a",
+        "skill": "dependency-a-second",
+        "bodySha256": "1a7a6e180d78d3e21bd8283b2294b9f78efd33ecfa19742ec5a76935ab565d96",
+        "resourceSha256": "62e88fa32c7d304a9125721fd3c7bfa2470c3de28f85d5531fe8138efc6ffb46"
+      },
+      {
+        "plugin": "scope-dependency-b",
+        "skill": "dependency-b-first",
+        "bodySha256": "0408792a5b067df0502a3206d451a9d9d8606fd25f73623de824a15bd4690697",
+        "resourceSha256": "d25e2f15da9ff4c53c01303b308f92350cf22a92689bb3bd34a8ada9258a1ad0"
+      },
+      {
+        "plugin": "scope-dependency-b",
+        "skill": "dependency-b-second",
+        "bodySha256": "6fe331f94ad5d98b40e934b51d9464e913d7e3c695a49b477815634efe670e37",
+        "resourceSha256": "b2454c9eeae544b1d2eace514db8b2edf30c4df914dc3ee506f14190919e8689"
+      }
+    ],
+    "updateNotices": [
+      {
+        "reasonCode": "invocationControlUnsupported",
+        "skillInvocationControls": [
+          {
+            "feature": "skill.visibility",
+            "values": [
+              "hidden"
+            ],
+            "reasonCode": "invocationControlUnsupported",
+            "product": "cli"
+          }
+        ]
+      }
+    ],
+    "status": "failed",
+    "reason": "aw-plugin-remove-exit-2-invalidOptionValue"
+  },
+  "boundaries": {
+    "explicitInvocation": "unverified",
+    "modelExecution": "not-requested",
+    "app": "unverified",
+    "coReading": "unverified"
+  }
+}

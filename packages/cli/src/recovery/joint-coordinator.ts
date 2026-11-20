@@ -137,7 +137,10 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
       if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = selectedContributions.some((item) =>
         item.root === target.pluginId && item.scope === target.scope) ? 'root' : 'dependency';
       if (target.relation === 'dependency') target.contributions = selectedContributions;
-      if (placement.scope !== target.scope) target.requirementScope = target.scope;
+      if (placement.scope !== target.scope) {
+        target.requirementScope = target.scope;
+        if (target.satisfaction === 'installed' && placement.scope === 'user') target.satisfaction = 'inherited-user';
+      }
     }
   }
   const executed = new Set(receipt.targetResults.map(targetKey));
@@ -626,6 +629,10 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     const nativeTargets = targets.filter((target) => target !== 'generic');
     const batch = isInstallBatch(command);
     const hasSelectedScripts = selected.some((item) => item.plugin.manifest.scripts?.preApply);
+    if (batch && nativeObservationBatch && [...demand.placements, ...selected].every(({ plugin }) => {
+      const scripts = plugin.manifest.scripts;
+      return !scripts?.artifacts?.render && !scripts?.preApply && !scripts?.node?.build;
+    })) nativeObservationBatch.scriptFreePlacement = true;
     const portableGenerations = new Map<string, Promise<void>>();
     const targetGroups: Array<typeof targets> = batch ? [...nativeTargets, ...targets.filter((target) => target === 'generic')].map((target) => [target])
       : [...(nativeTargets.length ? [nativeTargets] : []), ...targets.filter((target) => target === 'generic').map((target) => [target])];

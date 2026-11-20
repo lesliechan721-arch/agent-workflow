@@ -62,6 +62,63 @@ async function piLaunchersFixture(windows: boolean) {
 }
 
 describe('read-only target discovery and production selection', () => {
+  // Peers can share a successful version plus help identity for one image.
+  // A failed identity, another working directory or a replaced image needs a new read.
+  it('shares only confirmed placement capabilities of the same executable', async () => {
+    const ctx = await fixture();
+    const entry = path.join(ctx.env!.PATH!, 'pi');
+    const writeImage = (value: string) => fs.outputFile(entry, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+      Buffer.from(value)]), { mode: 0o755 });
+    await writeImage('first');
+    ctx.placementProbeGroup = { scope: 'user', probes: new Map() };
+    let version = '1.5.0';
+    let help = 'unrelated program';
+    const calls: string[] = [];
+    ctx.runner = async ({ args }) => {
+      calls.push(args[0]!);
+      return { exitCode: 0, stdout: args[0] === '--version' ? version : help, stderr: '' };
+    };
+    expect((await discoverPlatform('pi', ctx)).availability).toBe('unknown');
+    help = 'pi coding agent';
+    expect((await discoverPlatform('pi', ctx)).availability).toBe('available');
+    expect((await discoverPlatform('pi', ctx)).installations[0]?.version).toBe('1.5.0');
+    expect(calls).toEqual(['--version', '--help', '--version', '--help']);
+    version = '1.6.0';
+    expect((await discoverPlatform('pi', { ...ctx, cwd: path.join(ctx.cwd, 'project') })).installations[0]?.version).toBe(version);
+    await writeImage('replacement');
+    expect((await discoverPlatform('pi', ctx)).installations[0]?.version).toBe(version);
+    expect(calls).toHaveLength(8);
+  });
+
+  // The independent phase must start while an earlier read is still pending.
+  // Its replacement evidence remains usable after the older process completes.
+  it('keeps a delayed placement version out of the next independent decision', async () => {
+    const ctx = await fixture();
+    const entry = path.join(ctx.env!.PATH!, 'claude');
+    await fs.outputFile(entry, Buffer.from([0x7f, 0x45, 0x4c, 0x46]), { mode: 0o755 });
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let calls = 0;
+    ctx.runner = async () => {
+      if (++calls === 1) {
+        started.resolve();
+        await finish.promise;
+        return { exitCode: 0, stdout: '2.1.317 (Claude Code)', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '2.1.318 (Claude Code)', stderr: '' };
+    };
+    const old = discoverPlatform('claude', { ...ctx, placementProbeGroup: { scope: 'user', probes: new Map() } });
+    try {
+      await started.promise;
+      const current: ReadContext = { ...ctx, placementProbeGroup: { scope: 'user', probes: new Map() } };
+      expect((await discoverPlatform('claude', current)).installations[0]?.version).toBe('2.1.318');
+      finish.resolve();
+      expect((await old).installations[0]?.version).toBe('2.1.317');
+      expect((await discoverPlatform('claude', current)).installations[0]?.version).toBe('2.1.318');
+      expect(calls).toBe(2);
+    } finally { finish.resolve(); await old; }
+  });
+
   // Test Value Gate: scope reads reuse one identity probe per safe entry while
   // changed namespaces, candidates and new operations obtain fresh evidence.
   it('reuses discovery across scope cwd changes with the same resolved client inputs', async () => {

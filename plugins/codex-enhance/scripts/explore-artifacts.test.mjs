@@ -54,24 +54,39 @@ test('uses batch permissions and always returns the complete owned collection', 
   await assert.rejects(renderArtifactPlan({ ...context({}, 'codex', ['agent']), resources: [] }), /Missing verified bundle resource/);
 });
 
-// Test Value Gate: real declared roles can be projected without exporting Codex models or tools;
-// unavailable Pi consumers produce unmet, and never an execution tool.
-test('offers neutral roles on other hosts and records missing execution consumers', async () => {
+// Test Value Gate: complete role declarations remain available when runtime
+// support is unknown or Pi consumers are missing. Scheduling remains Codex-only.
+test('offers neutral role declarations independently of Codex scheduling', async () => {
   for (const platform of ['claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
-    const plan = await renderArtifactPlan(context({}, platform));
+    const target = context({}, platform);
+    target.platformCapabilities.kinds.agent.status = 'unverified';
+    target.platformCapabilities.features['agent.execution'] = { status: 'unverified', reasonCodes: ['capability-unverified'] };
+    const plan = await renderArtifactPlan(target);
     assert.deepEqual(plan.components.map((item) => item.id), roleIds);
-    assert.deepEqual(plan.unmet.map((item) => [item.id, item.reasonCode]), skillIds.map((id) => [id, 'dependency-unmet']));
+    assert.deepEqual(plan.omitted, skillIds.map((id) => ({ id, kind: 'skill', reason: 'not-offered' })));
+    assert.deepEqual(plan.unmet, []);
     assert.doesNotMatch(JSON.stringify(plan.components), /gpt-6|spawn_agent|registerTool/);
   }
-  const declaration = context({}, 'pi', ['agent']);
-  declaration.platformCapabilities.features['agent.declaration-protocol'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
-  assert.deepEqual((await renderArtifactPlan(declaration)).unmet[0].requiredFeatures,
-    [{ feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }]);
-  const missing = context({}, 'pi', ['agent']);
-  missing.platformCapabilities.kinds.agent = { status: 'unsupported', reasonCodes: ['consumer-missing'], delivery: ['native-package'] };
-  missing.platformCapabilities.features['agent.execution'] = { status: 'unsupported', reasonCodes: ['consumer-missing'], values: [] };
-  const plan = await renderArtifactPlan(missing);
-  assert.deepEqual(plan.components, []);
-  assert.deepEqual(plan.unmet.map((item) => [item.id, item.reasonCode, item.requiredFeatures]), roleIds.map((id) =>
-    [id, 'consumer-missing', [{ feature: 'component.kind.agent' }, { feature: 'agent.execution', values: ['isolated-context'] }]]));
+  const pi = context({}, 'pi', ['agent']);
+  const piWithConsumer = await renderArtifactPlan(pi);
+  const consumerMissing = { status: 'unsupported', reasonCodes: ['consumer-missing'] };
+  pi.platformCapabilities.kinds.agent = { ...consumerMissing, delivery: ['native-extension'] };
+  for (const feature of ['agent.execution', 'agent.prompt-mode', 'agent.declaration-protocol']) {
+    pi.platformCapabilities.features[feature] = consumerMissing;
+  }
+  const piWithoutConsumer = await renderArtifactPlan(pi);
+  assert.deepEqual(piWithoutConsumer, piWithConsumer);
+  assert.deepEqual(piWithoutConsumer.components.map((item) => item.requires.at(-1)),
+    roleIds.map(() => ({ feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] })));
+  delete pi.platformCapabilities.deliveryFeatures;
+  const legacy = await renderArtifactPlan(pi);
+  assert.deepEqual(legacy.unmet.map(({ id }) => id), roleIds);
+  assert.equal(legacy.components.length, 0);
+
+  const noExecution = context();
+  noExecution.platformCapabilities.features['agent.execution'] = { status: 'unverified', reasonCodes: ['capability-unverified'] };
+  const codex = await renderArtifactPlan(noExecution);
+  assert.deepEqual(codex.components.map((item) => item.id), roleIds);
+  assert.deepEqual(codex.unmet.map(({ id, requiredFeatures, reasonCode }) => ({ id, requiredFeatures, reasonCode })),
+    skillIds.map((id) => ({ id, requiredFeatures: [{ feature: 'agent.execution', values: ['isolated-context'] }], reasonCode: 'capability-unverified' })));
 });

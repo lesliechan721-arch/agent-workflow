@@ -54,6 +54,23 @@ describe('Antigravity native copy', () => {
     expect((await item.inspect()).nativePackageContentDigest).toBe(nextDigest);
   });
 
+  // Test Value Gate: the CLI inventory cannot grade a separate App reader
+  // even when both products share the verified personal package copy.
+  it('attributes the personal registration activation to the CLI only', async () => {
+    const item = await fixture();
+    item.binding.consumers.push({ id: 'app', product: 'app', version: null, availability: 'available', reasonCodes: [],
+      entry: { kind: 'directory', configRoot: resolvePlatformConfigRoot('antigravity', item.ctx) } });
+    expect((await item.inspect()).consumers).toMatchObject([
+      { productId: 'agy', activation: 'enabled', load: 'unknown' },
+      { productId: 'app', activation: 'unknown', load: 'unknown' },
+    ]);
+    item.rows.length = 0;
+    expect((await item.inspect()).consumers).toMatchObject([
+      { productId: 'agy', activation: 'disabled', load: 'unknown' },
+      { productId: 'app', activation: 'unknown', load: 'unknown' },
+    ]);
+  });
+
   // Test Value Gate: an AW source marker alone cannot authorize native replacement.
   it.each(['missing-marker', 'foreign-owner', 'weak-owner', 'wrong-physical-identity', 'modified-body', 'extra-data', 'outside-path', 'source-path', 'shared-path'] as const)(
     'retains unconfirmed or shared native data for %s', async (boundary) => {

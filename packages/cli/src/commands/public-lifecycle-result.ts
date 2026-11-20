@@ -7,6 +7,8 @@ import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../out
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
+import { deliveryNoticeMessage, isDeliveryNoticeCode, projectComponentDelivery, projectComponentGap,
+  PREVIOUS_DEPLOYMENT_RETAINED, safeComponentIdentity, type ComponentDelivery } from '../output/component-delivery.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
@@ -37,9 +39,7 @@ export type PublicDeploymentExclusion = Omit<DeploymentExclusion, 'scope' | 'pro
   scope: Scope;
   product: Pick<ProductInstallation, 'id' | 'product' | 'version' | 'availability' | 'reasonCodes'> | null;
 };
-export type PublicComponentGap = ComponentUnmet & { providerPluginId: string; agent: 'generic'; renderScope: Scope };
-
-export interface PublicTargetResult {
+export interface PublicTargetResult extends ComponentDelivery {
   pluginId: string;
   target: string;
   scope: Scope;
@@ -52,12 +52,10 @@ export interface PublicTargetResult {
   relation?: RecoveryTarget['relation'];
   requirementScope?: Scope;
   providerScope?: Scope;
-  satisfaction?: RecoveryTarget['satisfaction'];
   deploymentReceipts?: PublicDeploymentResult[];
   deploymentPlans?: PublicDeploymentPlan[];
   deploymentObservations?: PublicDeploymentObservation[];
   deploymentExclusions?: PublicDeploymentExclusion[];
-  componentGaps?: PublicComponentGap[];
 }
 
 export interface LifecycleData {
@@ -128,11 +126,39 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const publicMessage = sourceMessage && !/[\u3400-\u9fff]/u.test(sourceMessage)
     && !/(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])/u.test(sourceMessage)
     ? safePublicMessage(sourceMessage, code) : undefined;
-  const detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
-  const combinedSubject = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
+  let detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
+  const combinedSubject: NonNullable<Diagnostic['subject']> = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
-  return { code, severity, message: messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
+  if (isDeliveryNoticeCode(code) && code !== PREVIOUS_DEPLOYMENT_RETAINED) {
+    if (detail) detail = { reasonCode: detail.reasonCode };
+    if (combinedSubject.field && safeComponentIdentity(combinedSubject.field) !== combinedSubject.field) delete combinedSubject.field;
+  }
+  return { code, severity, message: isDeliveryNoticeCode(code) ? deliveryNoticeMessage(code, detail?.reasonCode, combinedSubject.field)
+    : messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
+}
+
+export function projectDeploymentNotices(targets: readonly RecoveryTarget[]): Diagnostic[] {
+  const diagnostics = [...skillInvocationDiagnostics(targets)];
+  for (const target of targets) {
+    const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
+    const deployment = (target.deploymentReceipts ?? []).flatMap(({ diagnostics, effects }) =>
+      [...diagnostics, ...effects.flatMap((effect) => effect.diagnostics)]);
+    for (const blocker of target.blockers) {
+      if (isDeliveryNoticeCode(blocker.code)) diagnostics.push(publicDiagnostic(blocker, blocker.subject ?? subject));
+    }
+    for (const notice of deployment) {
+      if (isDeliveryNoticeCode(notice.code)) diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, notice.severity));
+    }
+    for (const notice of target.reasons ?? []) {
+      if (isDeliveryNoticeCode(notice.code) && !deployment.some((entry) => entry.code === notice.code
+        && JSON.stringify(entry.subject ?? subject) === JSON.stringify(notice.subject ?? subject)
+        && entry.detail?.reasonCode === notice.detail?.reasonCode)) {
+        diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, 'warning'));
+      }
+    }
+  }
+  return [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()];
 }
 
 type DeploymentRecoveryContext = { receipt: RecoveryReceipt; target: RecoveryTarget };
@@ -203,7 +229,9 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
     else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
     }
-    else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
+    else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
+      message = `${identity}: Check ${detail.path ? `the previous output at ${JSON.stringify(detail.path)}` : 'the previous output'} in the affected scope before preparing the retry.`;
+    } else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
       message = `${identity}: Automatic cleanup cannot prove exclusive ownership (${detail.reasonCode}). Back up ${detail.path
         ? `the detected item ${JSON.stringify(detail.path)}` : 'the affected host output identified by the inventory scan'} and the related host configuration. ${detail.configKey
         ? `Check ${JSON.stringify(detail.configKey)} and remove that reference only if it still points to this exact item and you confirm it is no longer needed.`
@@ -221,14 +249,8 @@ export function projectTarget(value: RecoveryTarget, receipt?: RecoveryReceipt):
     ...(value.relation ? { relation: value.relation } : {}),
     ...(value.requirementScope ? { requirementScope: value.requirementScope } : {}),
     ...(value.providerScope ? { providerScope: value.providerScope } : {}),
-    ...(value.satisfaction ? { satisfaction: value.satisfaction } : {}),
+    ...projectComponentDelivery(value),
     ...(value.deploymentExclusions ? { deploymentExclusions: value.deploymentExclusions.map(projectDeploymentExclusion) } : {}),
-    ...(value.componentGaps ? { componentGaps: value.componentGaps.map((gap) => ({
-      id: gap.id, kind: gap.kind, providerPluginId: gap.providerPluginId, agent: gap.agent, renderScope: gap.renderScope,
-      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-      reasonCode: gap.reasonCode, requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
-    })) } : {}),
     ...(value.deploymentPlans ? { deploymentPlans: value.deploymentPlans.map(projectDeploymentPlan) } : {}),
     ...(value.deploymentObservations ? { deploymentObservations: value.deploymentObservations.map(projectDeploymentObservation) } : {}),
     ...(value.deploymentReceipts ? { deploymentReceipts: value.deploymentReceipts.map((entry) => projectDeploymentReceipt(entry, receipt ? { receipt, target: value } : undefined)) } : {}) };
@@ -249,10 +271,7 @@ export function projectDeploymentPlan(value: FrozenDeploymentPlan): PublicDeploy
       entry: product.entry ? { ...product.entry } : null })),
     expected: { components: value.expected.components.map((component) => ({ id: component.id, kind: component.kind, name: component.name })),
       omitted: value.expected.omitted.map((component) => ({ id: component.id, kind: component.kind, reason: component.reason })),
-      unmet: value.expected.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
-        ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-        requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-          ...(requirement.values ? { values: [...requirement.values] } : {}) })), reasonCode: gap.reasonCode })) },
+      unmet: value.expected.unmet.map(projectComponentGap) },
     effects: value.effects.map((effect) => ({ id: effect.id, kind: effect.kind, physicalKey: effect.physicalKey,
       ...(effect.activationKey ? { activationKey: effect.activationKey } : {}), componentIds: [...effect.componentIds], destination: effect.destination, destructive: effect.destructive })),
     sharedReferences: value.evidence.sharedReferences };
@@ -301,14 +320,10 @@ export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['depl
   return {
     ...projectDeploymentObservation(value),
     effects: value.effects.map((effect) => ({ id: effect.id, status: effect.status, mutation: effect.mutation,
-      diagnostics: effect.diagnostics.map(project) })),
-    unmet: value.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
-      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-      requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
-      reasonCode: gap.reasonCode, productIds: [...gap.productIds] })),
+      diagnostics: effect.diagnostics.filter(({ code }) => code !== SKILL_INVOCATION_NOTICE).map(project) })),
+    unmet: value.unmet.map((gap) => ({ ...projectComponentGap(gap), productIds: [...gap.productIds] })),
     reload: value.reload,
-    diagnostics: value.diagnostics.map(project),
+    diagnostics: value.diagnostics.filter(({ code }) => code !== SKILL_INVOCATION_NOTICE).map(project),
   };
 }
 
@@ -384,9 +399,9 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const excludedProviders = new Map<string, NextAction>();
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-    diagnostics.push(...target.blockers.map((entry) => publicDiagnostic(entry, subject)));
-    diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
-      .map((entry) => publicDiagnostic(entry, subject, 'warning')));
+    diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) => publicDiagnostic(entry, subject)));
+    diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
+      .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
       excludedProviders.set(`${blocker.pluginId}\0${target.agent}`, { kind: 'command',
         argv: ['aw', 'target', 'include', blocker.pluginId, '--target', target.agent],
@@ -394,13 +409,14 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         requiresConfirmation: true });
     }
   }
-  diagnostics.push(...skillInvocationDiagnostics(receipt.targetResults));
+  diagnostics.push(...projectDeploymentNotices(receipt.targetResults));
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
   const changed = Object.values(data.changes).some((value) => value !== 'none');
   const completedOutput = receipt.targetResults.some((target) => ['applied', 'partial'].includes(target.execution)
     || (receipt.command === 'sync' || receipt.command === 'install') && target.execution === 'no-op'
-    && target.observation === 'verified' && !target.blockers.length && target.satisfaction !== 'excluded' && target.satisfaction !== 'unsupported');
+    && target.observation === 'verified' && !target.blockers.length && target.satisfaction !== 'excluded' && target.satisfaction !== 'unsupported'
+    && target.satisfaction !== 'not-applicable');
   const status = receipt.ok ? 'success' : changed || completedOutput ? 'partial' : 'blocked';
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));

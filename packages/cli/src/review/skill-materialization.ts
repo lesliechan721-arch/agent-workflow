@@ -4,18 +4,17 @@ import fs from 'fs-extra';
 import { computeCanonicalDirectoryDigest } from '@lesliechan721/agent-skill-eval';
 import {
   COMPONENT_KINDS,
-  normalizeStaticPluginComponents,
-  resolveInvocationPolicy,
   type ComponentKind,
   type PlatformCapabilitiesV2,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../generators/local-plugin.js';
 import type { PlatformTarget, PluginMeta, Scope } from '../types.js';
+import type { RenderUnit } from '../platforms/contracts.js';
 import { resolveDeployments } from '../platforms/layout.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { projectPlatform, projectSkillDocument } from '../platforms/projection.js';
-import { artifactValueDigest } from '../utils/artifact-plan.js';
+import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
 import { finalizePlatformSkillProducers } from '../utils/component-command-preparation.js';
@@ -33,6 +32,7 @@ export interface ComponentPreparationBinding {
   outputs: Array<{ path: string; digest: string }>;
   components: Array<{ id: string; kind: ComponentKind; name: string; source: 'static' | 'dynamic' }>;
   omitted: import('@lesliechan721/aw-plugin-core/manifest').ExpectedComponentSet['omitted'];
+  declaredGapIds?: string[];
   unmet: import('@lesliechan721/aw-plugin-core/manifest').ExpectedComponentSet['unmet'];
 }
 
@@ -136,37 +136,45 @@ export async function materializeProfilePluginComponents(options: {
   const preparation: ComponentPreparationBinding[] = [];
   let packageCommandResolver: Awaited<ReturnType<typeof finalizePlatformSkillProducers>>['commandResolver'];
   const skills: Array<{ id: string; name: string; path: string; dynamic: boolean }> = [];
-  for (const unit of resolution.renderUnits) {
-    const kinds = unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
-    if (!kinds.length) continue;
-    const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind, {
-      activationScope: options.scope, portable: options.portable,
-    });
-    const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
-      pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
-      referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
-      sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
-      platform: options.platform, scope: unit.renderScope.kind, cwd: options.cwd, env: options.env,
-    });
-    const platformResourceRoot = path.join(options.plugin.rootDir, options.platform);
-    const staticResourceRoot = await fs.pathExists(platformResourceRoot) ? platformResourceRoot : options.plugin.rootDir;
-    const staticExpected = await normalizeStaticPluginComponents({
-      pluginRoot: options.plugin.rootDir,
-      staticResourceRoot,
-      manifest: options.plugin.manifest, platform: options.platform, capabilities, allowedOutputKinds: kinds,
-    });
-    const prepared = await preparePlatformComponents({
-      ...options, renderScope: unit.renderScope.kind, kinds, capabilities, config, staticExpected,
-      staticResourceRoot,
-      commandEnv: options.env,
-    });
-    const finalized = await finalizePlatformSkillProducers({
-      ...options, renderUnit: unit, prepared,
-      skillWorkRoot: path.join(options.outputRoot, '.prepare-skills', unit.id.replace(/[^a-z0-9]/gu, '')),
-    });
-    if (unit.kinds.includes('skill')) packageCommandResolver = finalized.commandResolver;
-    try {
+  const preparedUnits: Array<{ unit: RenderUnit; capabilities: PlatformCapabilitiesV2;
+    finalized: Awaited<ReturnType<typeof finalizePlatformSkillProducers>> }> = [];
+  try {
+    for (const unit of resolution.renderUnits) {
+      const kinds = unit.output === 'generic' && options.portable && options.kinds ? options.kinds
+        : unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
+      if (!kinds.length) continue;
+      const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind, {
+        activationScope: options.scope, portable: options.portable,
+      });
+      const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
+        pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
+        referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+        platform: options.platform, scope: unit.renderScope.kind, cwd: options.cwd, env: options.env,
+      });
+      const platformResourceRoot = path.join(options.plugin.rootDir, options.platform);
+      const staticResourceRoot = await fs.pathExists(platformResourceRoot) ? platformResourceRoot : options.plugin.rootDir;
+      const grokRoleUnit = options.platform === 'grok' && unit.output === 'supplement' ? preparedUnits.find((entry) =>
+        entry.unit.output === 'package' && artifactValueDigest(entry.unit.renderScope) === artifactValueDigest(unit.renderScope)) : undefined;
+      const prepared = await preparePlatformComponents({
+        ...options, renderScope: unit.renderScope.kind, kinds, capabilities, config,
+        staticResourceRoot, hasInstructionAgentRecipients: grokRoleUnit?.finalized.prepared.expected.components.some(({ kind }) => kind === 'agent'),
+        commandEnv: options.env,
+      });
+      const finalized = await finalizePlatformSkillProducers({
+        ...options, renderUnit: unit, prepared,
+        skillWorkRoot: path.join(options.outputRoot, '.prepare-skills', unit.id.replace(/[^a-z0-9]/gu, '')),
+      });
+      if (unit.kinds.includes('skill')) packageCommandResolver = finalized.commandResolver;
+      preparedUnits.push({ unit, capabilities, finalized });
+    }
+    for (const { unit, capabilities, finalized } of preparedUnits) {
       const current = finalized.prepared;
+      const sameScope = options.platform === 'grok' ? preparedUnits.filter((entry) =>
+        artifactValueDigest(entry.unit.renderScope) === artifactValueDigest(unit.renderScope)) : [];
+      const components = sameScope.length <= 1 ? current.expected.components : mergeExpectedComponentSets(
+        sameScope.map((entry) => entry.finalized.prepared.expected)).components.filter((component) =>
+        unit.output !== 'supplement' || component.kind === 'instruction' || component.kind === 'agent');
       const relativeNativeRoot = `native/${unit.id.replace(/[^a-z0-9]/gu, '')}`;
       const nativeRoot = path.join(options.outputRoot, relativeNativeRoot);
       // Portable generic uses the original Skill name. A namespaced native supplement
@@ -177,9 +185,9 @@ export async function materializeProfilePluginComponents(options: {
         stagingRoot: nativeRoot,
       }, {
         binding, renderUnit: unit, capabilities,
-        components: current.expected.components,
+        components,
         resources: current.resources,
-        policy: resolveInvocationPolicy(options.plugin.manifest, options.platform),
+        policy: finalized.invocationPolicy.policy,
       });
       const outputs = projection && await fs.pathExists(nativeRoot)
         ? [{ path: relativeNativeRoot, digest: await computeCanonicalDirectoryDigest(nativeRoot) }] : [];
@@ -200,6 +208,8 @@ export async function materializeProfilePluginComponents(options: {
         skills.push({ id: component.id, name: component.name, path: destination,
           dynamic: current.expected.sources[component.id] === 'dynamic' });
       }
+      const declaredGapIds = current.expected.unmet.filter((gap) => current.expected.sources[gap.id] === 'static'
+        || current.expected.declaredComponentIds?.includes(gap.componentId ?? gap.id)).map(({ id }) => id);
       preparation.push({
         plugin: options.plugin.manifest.name, platform: options.platform, renderScope: unit.renderScope.kind, profileId: getQualifiedPlatformProfile(options.platform).id,
         capabilitiesDigest: current.evidence.capabilitiesDigest,
@@ -209,10 +219,11 @@ export async function materializeProfilePluginComponents(options: {
         outputs,
         components: current.expected.components.map(({ id, kind, name }) => ({ id, kind, name, source: current.expected.sources[id]! })),
         omitted: current.expected.omitted, unmet: current.expected.unmet,
+        ...(portableGeneric && declaredGapIds.length ? { declaredGapIds } : {}),
       });
-    } finally {
-      await finalized.cleanup();
     }
+  } finally {
+    await Promise.all(preparedUnits.map(({ finalized }) => finalized.cleanup()));
   }
   await fs.remove(path.join(options.outputRoot, '.prepare-skills'));
   await fs.ensureDir(path.join(options.outputRoot, 'skills'));

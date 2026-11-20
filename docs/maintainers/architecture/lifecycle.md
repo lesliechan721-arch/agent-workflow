@@ -46,7 +46,7 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
-`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
+`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
 
 独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。需要扫描多个宿主的现有登记时，读取会等这些位置的写入结束，以免把正在更新的清单当作损坏。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
 
@@ -110,11 +110,13 @@ CLI/TUI 共用 adapter 注册表和发现结果。实际入口、配置根、版
 
 discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻断真实依赖分组，其他平台继续。参数错误、共同强配置损坏、无法取得唯一锁、共同授权缺失和用户中断仍可整体停止。共享发布失败只阻断其消费者，不回滚其他平台成功。
 
-包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实。Grok 许可与 Pi Agents 消费者授权各有自己的门禁。OpenCode 可选运行观测不影响目录交付。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
+包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实，包括 Grok 所需的信任状态。Pi 的执行扩展及 OpenCode 的可选运行观测按各自证据报告。组件缺口保留 `requiredFeatures` 的具体 feature/values、缺口 ID 和可用的 `componentId`，例如缺少 Hook 阻断或一个 Instructions audience。无能力要求的真正未满足项使用空数组。
 
 原生动作回执与后续只读状态分开：Pi Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 
-成功有意空集合在 Review 中明确撤销旧输出，新目标为成功 no-op；全部 unmet 或渲染失败不触发空集卸载。部分 unmet 时，可更新独立支持的组件，但保留旧补足文件，不将本次缺少投影当作作者关闭；此保护不依赖原生包是否存在。取消一个需求不删除仍被引用的共享包或命令绑定。preApply 失败不清旧输出，Grok 同 scope Instructions 渲染失败也不能发布缺正文的 Agent 包。
+完整声明只缺平台能力时，适用组件照常交付，缺口随同结果报告。所有项都跳过时保留需求，完成零项交付。已完成或无适用项的目标在输入、能力和现场证据相同时无需重新写入。配置、版本、能力变化或实际产物漂移会重新求值。真正缺少依赖或资源、renderer 失败、权限拒绝及原生写入失败仍保留未完成与恢复路径。
+
+成功有意空集合在 Review 中明确撤销旧输出，新目标可为成功 no-op。完整的新声明如果明确请求了一个旧入口无法保留的限制，Review 只撤回已证实归 AW 独占、当前作用域的旧入口，例如新版要求无工具但当前适配器不能表达该限制的角色。旧 renderer 只返回 `unmet` 而未提供完整声明时，保留缺少撤回依据的旧项。共享、外来、归属未知以及撤销失败的内容继续受保护，已观察到仍可能生效的旧输出随结果单列，并保留适用的恢复方法。取消需求时保留仍被引用的共享包或命令绑定。preApply 失败时保留旧输出，Grok 同 scope 的 Instructions 渲染失败时停止相关 Agent 包的发布。
 
 结果按本次真实范围汇总：全部完成 success/0；有完成部分、有效部分结果或 confirmed/possible 变更为 partial/4；全部执行前受阻且无业务变更为 blocked/3；执行失败且无有效部分或已知/可能变更为 failed/1。成功保存需求、配置或偏好也是已提交变更。超时或异常后先有限 observe，重试重新 prepare，不盲目重放。
 

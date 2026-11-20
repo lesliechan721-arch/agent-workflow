@@ -12,7 +12,8 @@ import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
   recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
-import { projectSkillInvocationHistory } from './diagnostic-projection.js';
+import { projectComponentDeliveryHistory, projectDeliveryNoticeHistory, projectSkillInvocationHistory } from './diagnostic-projection.js';
+import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
 import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
@@ -51,8 +52,10 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
 ): OperationHistoryRecord {
   const diagnostics: SafeOperationDiagnostic[] = [];
-  const skillDiagnostics = projectSkillInvocationHistory(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []),
-    identity.recordId, 'execute');
+  const componentDiagnostics: SafeOperationDiagnostic[] = [];
+  const notices = projectDeploymentNotices(receipt.targetResults);
+  const advisoryDiagnostics = [...projectSkillInvocationHistory(notices, identity.recordId, 'execute'),
+    ...projectDeliveryNoticeHistory(notices, identity.recordId, 'execute')];
   const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target'], detailLines: string[] = []) => {
     const code = safeDiagnosticCode(rawCode, 'recoveryFailed');
     const id = `${identity.recordId}:diagnostic:${diagnostics.length}`;
@@ -71,22 +74,26 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   for (const result of receipt.commandResults ?? []) {
     for (const error of result.errors) addDiagnostic(error.code);
   }
-  const targets = receipt.targetResults.map((entry): OperationHistoryTarget => {
+  const targets = receipt.targetResults.map((entry, index): OperationHistoryTarget => {
     const target = { pluginId: entry.pluginId, platform: entry.agent, scope: entry.scope };
-    const state = entry.satisfaction === 'unsupported' || entry.satisfaction === 'excluded' ? 'skipped'
+    const state = entry.execution === 'failed' || entry.execution === 'partial' ? 'failed'
+      : entry.satisfaction === 'unsupported' || entry.satisfaction === 'excluded' || entry.satisfaction === 'not-applicable' ? 'skipped'
       : entry.execution === 'not-run' ? 'skipped'
         : entry.blockers.length > 0 || entry.observation !== 'verified' ? 'failed'
           : entry.execution === 'applied' ? 'completed' : entry.execution === 'no-op' ? 'kept' : 'failed';
-    const permissionCodes = !targetWorkNotStarted && receipt.remainingTargets.some((position) => position.pluginId === entry.pluginId
-      && position.agent === entry.agent && position.scope === entry.scope) ? nativePermissionCodes(entry) : [];
+    const remaining = !targetWorkNotStarted && receipt.remainingTargets.some((position) => position.pluginId === entry.pluginId
+      && position.agent === entry.agent && position.scope === entry.scope);
+    const permissionCodes = remaining ? nativePermissionCodes(entry) : [];
     const diagnosticIds = [...new Set([...entry.blockers.map((blocker) => blocker.code), ...permissionCodes])]
       .map((code) => {
         const globalId = targetWorkNotStarted && globalIds.get(code);
         if (globalId) return globalId;
         const details: string[] = [];
         const permission = permissionCodes.includes(code);
-        if (permission || code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
-          details.push(checkStatus);
+        const stale = code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync');
+        const retry = remaining && entry.execution === 'failed' && (entry.observation === 'missing' || entry.content === 'absent');
+        if (remaining || stale) details.push(checkStatus);
+        if (permission || stale || retry) {
           if (permission) details.push('从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
           // Store reviewable commands from structured positions only. Backend prose may contain private data.
           for (const position of recoveryRetryDispositions(receipt, [entry])) {
@@ -105,9 +112,15 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         }
         return addDiagnostic(code, target, details);
       });
-    diagnosticIds.push(...skillDiagnostics.filter((diagnostic) => diagnostic.target?.pluginId === target.pluginId
-      && diagnostic.target.platform === target.platform && diagnostic.target.scope === target.scope).map(({ id }) => id));
+    const advisories = advisoryDiagnostics.filter((diagnostic) => diagnostic.target?.pluginId === target.pluginId
+      && diagnostic.target.platform === target.platform && diagnostic.target.scope === target.scope);
+    const delivery = projectComponentDeliveryHistory(entry, advisories, `${identity.recordId}:${index}`, 'execute',
+      state === 'completed' || state === 'kept' || state === 'skipped' && entry.satisfaction === 'not-applicable' && !entry.blockers.length);
+    componentDiagnostics.push(...delivery.diagnostics);
+    diagnosticIds.push(...[...advisories, ...delivery.diagnostics].map(({ id }) => id));
     return { ...target, state, diagnosticIds,
+      ...(delivery.facts ? { componentDelivery: delivery.facts } : {}),
+      ...(entry.execution === 'partial' && (entry.installedComponentCount ?? 0) > 0 ? { partialDelivery: true } : {}),
       ...(entry.blockers[0] ? { errorCode: safeDiagnosticCode(entry.blockers[0].code, 'recoveryFailed') } : {}) };
   });
   const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
@@ -120,7 +133,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
       code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
       message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale')
         : receipt.unconfirmedSavedState ? '保存后的内容需要重新检查，平台目标尚未执行。' : '批量恢复仍有目标未完成。',
-      diagnosticCount: diagnostics.length + skillDiagnostics.length,
+      diagnosticCount: diagnostics.length + advisoryDiagnostics.length + componentDiagnostics.length,
       effects: {
         configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
         awWrite: receipt.outputsMayHaveChanged ? 'possible' : targetWorkNotStarted ? 'notStarted' : 'notApplicable',
@@ -128,7 +141,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : targetWorkNotStarted ? 'notStarted' : 'unknown',
       },
     },
-    diagnostics: [...diagnostics, ...skillDiagnostics],
+    diagnostics: [...diagnostics, ...componentDiagnostics, ...advisoryDiagnostics],
     targets,
   };
 }

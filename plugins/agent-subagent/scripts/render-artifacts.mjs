@@ -166,10 +166,6 @@ function capabilityGap(context, kind, requirements) {
   return { requiredFeatures: missing, reasonCode: reasonFact?.reasonCodes?.[0] ?? 'capability-unverified' };
 }
 
-function addGap(plan, id, kind, name, gap) {
-  plan.unmet.push({ id, kind, name, ...gap });
-}
-
 export async function readArtifactRenderContext() {
   if (!process.env.AW_PLUGIN_CONTEXT) throw new Error('AW_PLUGIN_CONTEXT is required.');
   return JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
@@ -184,14 +180,14 @@ export async function renderArtifactPlan(context) {
   if (context.allowedOutputKinds.includes('skill')) {
     const id = context.platform === 'claude' ? 'spawn-subagent-claude-skill' : 'spawn-subagent-skill';
     const key = 'spawn-subagent';
-    // This method needs a qualified managed-command and installed-runtime-config
-    // closure before it can offer external execution on a host.
+    // The scheduling method is adapted to these hosts and needs their command
+    // bindings and installed runtime configuration.
     if (!['codex', 'claude'].includes(context.platform)) {
-      addGap(plan, id, 'skill', key, { requiredFeatures: [], reasonCode: 'dependency-unmet' });
+      plan.omitted.push({ id, kind: 'skill', reason: 'not-offered' });
     } else {
       const requirements = [...execution, { feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }];
       const gap = capabilityGap(context, 'skill', requirements);
-      if (gap) addGap(plan, id, 'skill', key, gap);
+      if (gap) plan.unmet.push({ id, kind: 'skill', name: key, ...gap });
       else {
         const config = resolveConfigValues(context, CONFIG_KEYS);
         const sourceRoot = readSkillSourceRoot(context, key);
@@ -228,12 +224,16 @@ export async function renderArtifactPlan(context) {
     }
   }
   if (context.allowedOutputKinds.includes('agent')) {
+    // AW evaluates delivery from the role declaration. Runtime qualification
+    // and Pi extension discovery do not decide whether we supply the prompt.
     const requirements = context.platform === 'pi'
       ? [...execution, { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }] : execution;
+    // Earlier v2 clients reject the whole plan when given a role they cannot project.
+    const legacyGap = context.platformCapabilities.deliveryFeatures === undefined
+      && capabilityGap(context, 'agent', requirements);
     for (const [id, role] of Object.entries(ROLES)) {
-      const gap = capabilityGap(context, 'agent', requirements);
-      if (gap) { addGap(plan, id, 'agent', role.key, gap); continue; }
-      plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));
+      if (legacyGap) plan.unmet.push({ id, kind: 'agent', name: role.key, ...legacyGap });
+      else plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));
     }
   }
   return plan;

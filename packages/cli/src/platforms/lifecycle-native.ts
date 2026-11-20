@@ -27,6 +27,11 @@ export function piProjectRegistrationHidden(binding: DeploymentBinding, observat
     && !observation.diagnostics.some((diagnostic) => ['piNativeObservationUnconfirmed', 'deploymentPostcheckFailed'].includes(diagnostic.code));
 }
 
+export function piProjectEmptyDeliveryObserved(binding: DeploymentBinding, observation: DeploymentObservation): boolean {
+  return piProjectRegistrationHidden(binding, observation) && observation.package === 'absent'
+    && observation.ownership === 'absent' && observation.configuration?.activation === 'absent';
+}
+
 /** Action success does not rewrite the later read-only registration observation. */
 export function piProjectRemovalConfirmed(plan: FrozenDeploymentPlan, receipt: DeploymentReceipt): boolean {
   return receipt.bindingId === plan.binding.id && piProjectRegistrationHidden(plan.binding, receipt.after)

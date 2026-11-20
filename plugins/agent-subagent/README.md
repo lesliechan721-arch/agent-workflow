@@ -11,9 +11,9 @@ aw target set codex
 aw plugin install agent-subagent --scope user
 ```
 
-Codex 支持 user 和 project 安装。共享配置在个人层维护，项目安装复用个人配置。Claude Code 的独立子代理上下文、提示词组合和安装态配置读取仍待验证。
+Codex 支持 user 和 project 安装。共享配置在个人层维护，项目安装复用个人配置。`spawn-subagent` 调度 Skill 为 Codex 和 Claude Code 提供，需要宿主的子代理和提示词能力、AW 安装态配置及对应的受控命令。Claude Code 的这些前置仍待验证，AW 会列出未满足的能力。
 
-Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供通用角色。没有取得受控命令和安装态配置运行闭包资格的平台，调度 Skill 显示依赖未满足。Pi 使用用户已有且启用的兼容角色消费者；本插件只提供声明，不安装或替换执行器、不注册执行工具。`generic` 不提供原生角色。
+AW 会在 Codex、Claude Code、Antigravity、Cursor、Pi、GitHub Copilot CLI 和 Grok Build 安装通用 `subagent` 角色。角色调用沿用宿主的模型与工具配置。Pi 安装时会写入角色文件，调用时需要启用能读取此包的兼容扩展并按 Pi 的要求重新加载。AW 的 OpenCode 安装入口暂不能新增角色，`generic` 只接收通用 Skill，因此这两个目标当前没有可安装的组件。
 
 ## 包含的 Skill
 

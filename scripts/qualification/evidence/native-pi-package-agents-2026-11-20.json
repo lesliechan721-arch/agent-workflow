@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-20",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "osVersion": "26.3.1",
+    "nodeVersion": "24.14.1"
+  },
+  "host": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "1.5.0",
+    "integrity": "sha512-xNDZ5kqowO6Z03FS2gwAkPEGk1ssxVcYKQ6qZId84mFEvwACvvyc2l0vAMOS+c5zvxLRMLBE9r4y44IGYkMJaQ==",
+    "scopes": ["user", "project"],
+    "localRegistration": "aw-packages/aw-verification-review"
+  },
+  "artifact": {
+    "source": "AW source projection with one ordinary Agent",
+    "role": "aw-verification-review-reviewer",
+    "manifestField": "pi.subagents.agents",
+    "directories": ["./agents"],
+    "manifestSha256": "4ba9ad05b6489a97ece97700df549e76ab939cc8c7eaed27bd1465c6d9d1fcb5",
+    "roleSha256": "17c04f201b39ebb0c7b4552b9d73b0cf0be2cbb64444d516f933f3fb7d8fd55e"
+  },
+  "consumers": [
+    {
+      "package": "pi-subagents",
+      "versions": ["0.87.0", "0.89.1"],
+      "userAndProject": {
+        "nativeBareSource": "role-not-discovered",
+        "explicitDotRelativeSource": "role-discovered"
+      },
+      "reference": "https://github.com/nicobailon/pi-subagents/blob/main/src/agents/agents.ts"
+    },
+    {
+      "package": "@tintinweb/pi-subagents",
+      "versions": ["0.22.0", "0.26.1"],
+      "userAndProject": {
+        "nativeBareSource": "role-discovered",
+        "packageAgentsFalse": "role-not-discovered"
+      },
+      "reference": "https://github.com/tintinweb/pi-subagents/blob/master/src/package-resources.ts"
+    }
+  ],
+  "method": [
+    "Register the same projected package with real Pi install and Pi install --local, then confirm the exact entry using Pi list.",
+    "Read each installed role through the corresponding published extension's discovery implementation in an isolated Pi home and workspace.",
+    "For the Nico comparison, change only the temporary source spelling to ./aw-packages/aw-verification-review and restore the original settings after discovery.",
+    "For the Tintin comparison, disable package agents in memory and confirm the installed role is no longer discovered."
+  ],
+  "scopeOfEvidence": "Local native registration, role discovery and the named comparison cases. Full sessions, model calls, role execution and other host or extension versions are unverified."
+}

@@ -7,12 +7,14 @@
 | 客户端 | 精确版本 | 环境与 scope | 固定证据 |
 | --- | --- | --- | --- |
 | Codex、Pi | `0.167.0`、`1.5.0` | 六环境，User / Project | [六环境记录](native-skills-2026-11-12.json) |
+| Pi | `1.5.0` | macOS arm64，User / Project | [两类扩展的包内角色加载与裸路径限制](native-pi-package-agents-2026-11-20.json) |
 | Claude | `2.1.317` | 六环境，User / Project | [管理与有效启用状态](native-claude-skills-2026-11-12.json) |
 | Copilot | `1.0.95` | 六环境，User / Project | [原生管理与 scope](native-copilot-skills-2026-11-12.json) |
 | Grok | `1.0.77` | 四环境，User | [User 记录](native-grok-skills-2026-11-12.json) |
 | Grok | `1.0.77` | 四环境，Project | [Project 记录](native-grok-project-skills-2026-11-13.json) |
 | OpenCode | `2.0.0` | 六环境，User / Project | [管理、消费字节与 scope](native-opencode-skills-2026-11-13.json) |
 | Antigravity | `1.3.4` | 六环境，User | [管理、消费字节与 scope](native-antigravity-user-skills-six-hosts-2026-11-14.json) |
+| Antigravity CLI | `1.5.13` | macOS arm64，User / Project | [会话 Skill 清单与自动候选策略](native-antigravity-cli-skills-1.5.13-darwin-arm64.json) |
 
 [技能调用证据](native-manual-skill-invocation-2026-11-20.json) 记录固定 CLI 的手动入口、自动候选、原生字段及对照。`profiles` 保存本机案例，`hosted` 记录每份托管报告的提交、运行、摘要与实际验证的客户端。需要登录、需要显式挂载插件和只能观察本地协议的情况分别标明。九目标 Catalog 矩阵另行验证同一候选的交付内容。
 
@@ -31,3 +33,4 @@
 - Copilot Project 记录使用临时环境 `COPILOT_ALLOW_ALL=true`，同时批准工具；夹具没有 prompt、工具或模型请求，不将该设置传给用户环境。Darwin 普通进程观察不构成 Provider 或 OS 隔离资格。
 - Grok Project 使用固定版本的精确临时目录信任状态，不授予生产自动信任权限。User 四环境执行过 `uninstall --keep-data`，但持久数据哨兵对照只在单独的 macOS arm64 探针完成。
 - OpenCode POSIX 使用已批准的普通管理观察；Windows 保留实际 Job 回执。Antigravity 六环境 User 记录来自两次原始运行，分别保留来源；Project 有效 scope 与会话 trust 不继承 User 资格。
+- Antigravity `1.5.13` 项目资格复测使用 `node scripts/qualification/native-platform-antigravity-project.mjs --executable <agy 绝对路径> --report <报告文件> --authenticated-skills`。AW 命令使用候选构建、临时 AW home、临时客户端配置与独立 Git 项目；仅只读的 `/skills` 访问既有登录。报告只提取固定项目、个人对照的完整技能名和 `model_invocable`。未请求登录态取证时仍可核对文件交付，报告保留会话未知。App、共读及显式加载正文各自需要独立证据。

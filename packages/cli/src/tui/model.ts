@@ -2143,7 +2143,8 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
 function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraft[] {
   const current = new Map(targets.map((target) => [`${target.pluginId}\0${target.agent}\0${target.scope}`, target]));
   return [...current.values()].flatMap((target): UserIssueDraft[] => {
-    if (target.agent === 'generic' || target.content === 'satisfied' && target.blockers.length === 0) return [];
+    if (target.agent === 'generic' || (target.content === 'satisfied' || target.satisfaction === 'not-applicable')
+      && target.blockers.length === 0) return [];
     const platform = target.agent;
     const entity = { pluginId: target.pluginId, platform, scope: target.scope };
     const consumers = [...new Map((target.contributions ?? []).flatMap((contribution) => {

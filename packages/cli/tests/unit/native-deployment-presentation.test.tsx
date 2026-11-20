@@ -59,6 +59,134 @@ function target(plan: FrozenDeploymentPlan): RecoveryTarget {
 }
 
 describe('native deployment public and TUI consumers', () => {
+  it('keeps zero delivery, installed components, and reader advisories distinct in CLI output and the TUI report', async () => {
+    const pluginId = 'official/agent-lab';
+    const scope = 'user';
+    const base = { pluginId, scope, execution: 'no-op', observation: 'verified', content: 'satisfied',
+      blockers: [], requiredBy: [] } as const;
+    const gap = { id: 'guard', kind: 'hook' as const, providerPluginId: pluginId, renderScope: scope,
+      reasonCode: 'interface-unsupported', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['block'] }] };
+    const pi: RecoveryTarget = { ...base, blockers: [], requiredBy: [], agent: 'pi', delivery: { kind: 'native', platform: 'pi' },
+      satisfaction: 'installed', installedComponentCount: 1, installedComponentIds: ['reviewer'], reasons: [{
+        code: 'piAgentConsumerUnavailable', message: 'Private extension config at /private/test-user/settings.json.',
+        subject: { pluginId, target: 'pi', scope }, detail: { reasonCode: 'piAgentConsumerMissing', path: '/private/test-user/settings.json' },
+      }] };
+    const zero: RecoveryTarget = { ...base, blockers: [], requiredBy: [], agent: 'grok', delivery: { kind: 'native', platform: 'grok' },
+      satisfaction: 'not-applicable', installedComponentCount: 0, installedComponentIds: [], componentGaps: [
+        { ...gap, agent: 'grok' },
+      ] };
+    const agy: RecoveryTarget = { ...base, blockers: [], requiredBy: [], agent: 'antigravity', delivery: { kind: 'native', platform: 'antigravity' },
+      satisfaction: 'installed', installedComponentCount: 1, installedComponentIds: ['commit'], componentGaps: [
+        { ...gap, agent: 'antigravity' },
+      ], reasons: [
+        { code: 'skillInvocationPolicyNotGuaranteed', message: 'Private details.',
+          subject: { pluginId, target: 'antigravity', scope, field: 'skill.unknown' }, detail: { reasonCode: 'invocationControlUnverified',
+            skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnverified', product: 'app' }] } },
+        { code: 'skillInvocationPolicyNotGuaranteed', message: 'Private details.',
+          subject: { pluginId, target: 'antigravity', scope, field: 'skill.commit' }, detail: { reasonCode: 'invocationControlUnsupported',
+            skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported', product: 'cli' }] } },
+        { code: 'skillInvocationPolicyNotGuaranteed', message: 'More private details.',
+          subject: { pluginId, target: 'antigravity', scope, field: 'skill.commit' }, detail: { reasonCode: 'invocationControlDegraded',
+            skillInvocationControls: [{ feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlDegraded', product: 'app' }] } },
+      ] };
+    const receipt = scopedReceipt({ kind: 'recovery', command: 'install', scope, selectors: [pluginId], targets: ['grok', 'pi', 'antigravity'] });
+    receipt.targetResults = [zero, pi, agy];
+    const data: LifecycleData = { request: { plugins: [pluginId], context: scope, scope, targets: ['grok', 'pi', 'antigravity'], targetOrigin: 'argument', mode: 'apply' },
+      confirmation: null, changes: { requirements: 'none', preferences: 'none', config: 'none', sources: 'none', outputs: 'none' },
+      requirements: receipt.intent, targetResults: [], remainingTargets: [], coverage: { scopes: [scope], currentProject: false, otherProjects: 'unobserved' } };
+    const result = receiptResult('plugin.install', data, receipt);
+    expect(result).toMatchObject({ status: 'success', nextActions: [], data: { remainingTargets: [], targetResults: [
+      { target: 'grok', satisfaction: 'not-applicable', installedComponentCount: 0 },
+      { target: 'pi', installedComponentCount: 1, installedComponentIds: ['reviewer'] },
+      { target: 'antigravity', installedComponentCount: 1, installedComponentIds: ['commit'] },
+    ] } });
+    expect(result.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed')).toEqual([expect.objectContaining({
+      subject: { pluginId, target: 'antigravity', scope, field: 'skill.commit' }, detail: { reasonCode: 'invocationControlDegraded', skillInvocationControls: [
+        { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported', product: 'cli' },
+        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlDegraded', product: 'app' },
+      ] },
+    })]);
+    const cli = renderPublicResult(result);
+    expect(cli).toContain('No applicable components');
+    expect(cli).toContain('Installed components: 0');
+    expect(cli).toContain('Skipped component (official/agent-lab / grok / user)');
+    expect(cli).toContain('Pi roles are installed. No compatible role extension was detected.');
+    expect(cli).toContain('Antigravity CLI does not support skill.visibility=hidden');
+    expect(cli).toContain('Antigravity App did not enforce skill.invocation.model=false');
+    expect(cli).not.toContain('/private/test-user');
+
+    const loaded = loadResult();
+    loaded.scopedRecovery = { user: { scope, intent: { state: 'valid' }, selection: { agents: ['grok', 'pi', 'antigravity'], preferences: 'valid' },
+      inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: receipt.targetResults }],
+      errors: [], allSatisfied: true, existingTargets: [pi, agy] } };
+    const statusView = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    try {
+      await statusView.load();
+      expect(statusView.snapshot.scopedInventories.user?.syncTargets).toEqual([]);
+      expect(statusView.getPluginDetailSubject(pluginId)?.placements).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agent: 'grok', satisfaction: 'not-applicable', installedComponentCount: 0, actual: false }),
+        expect.objectContaining({ agent: 'pi', installedComponentCount: 1, actual: true, deliveryNotices: [expect.objectContaining({ code: 'piAgentConsumerUnavailable' })] }),
+      ]));
+    } finally { statusView.dispose(); }
+    const value = controller({ prepareScopedTask: vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request)),
+      executeScopedTask: vi.fn(async () => ({ kind: 'recovery' as const, receipt })) });
+    value.push({ name: 'pluginDetail', pluginId });
+    try {
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 160, rows: 48 }} />);
+      await nextTurn(4); await focusAction(instance, '添加插件…'); await input(instance, '\r', '\r');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('当前平台无适用组件'));
+      expect(instance.lastFrame()).toContain('已安装 0 项');
+      expect(instance.lastFrame()).toContain('Pi 角色已安装');
+      expect(instance.lastFrame()).toContain('Antigravity App');
+      expect(instance.lastFrame()).not.toContain('重试明确失败项');
+      await input(instance, 'd');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('invocationControlDegraded'));
+      expect(instance.lastFrame()).toContain('skill.invocation.model=false');
+    } finally { value.dispose(); }
+
+    const history = new OperationHistoryStore();
+    history.record(projectScopedRecoveryHistory(receipt, { recordId: 'delivery', epoch: 0, operationId: 'install', createdAtMs: 0 }));
+    const report = history.preview('delivery')!.content;
+    expect(report).toContain('Delivery: No applicable components');
+    expect(report).toContain('Installed components: 0');
+    expect(report).toContain('Installed: reviewer');
+    expect(report).toContain('skill.invocation.model=false · invocationControlDegraded · product=app');
+    expect(report).toContain('skill.visibility=hidden · invocationControlUnsupported · product=cli');
+    expect(report).not.toContain('skill.unknown');
+    expect(report).not.toContain('/private/test-user');
+    expect(report).not.toContain('aw plugin sync');
+  });
+
+  it('reports retained output as an error with a local recovery location and a redacted history entry', () => {
+    const failed = target(deployment());
+    const location = '/private/test-user/previous-output';
+    const error: Diagnostic = { code: 'previousDeploymentRetained', severity: 'error', message: 'Previous output could not be withdrawn.',
+      subject: { pluginId: failed.pluginId, target: failed.agent, scope: failed.scope },
+      detail: { reasonCode: 'previousDeploymentRetained', path: location } };
+    failed.blockers = [error];
+    failed.deploymentReceipts![0]!.diagnostics = [error];
+    const receipt = scopedReceipt({ kind: 'recovery', scope: failed.scope, selectors: [failed.pluginId] });
+    receipt.ok = false;
+    receipt.targetResults = [failed];
+    receipt.remainingTargets = [failed];
+    const result = receiptResult('plugin.sync', { request: { plugins: [], context: failed.scope, scope: failed.scope, targets: ['codex'],
+      targetOrigin: 'argument', mode: 'apply' }, confirmation: null,
+    changes: { requirements: 'none', preferences: 'none', config: 'none', sources: 'none', outputs: 'none' },
+    requirements: receipt.intent, targetResults: [], remainingTargets: [], coverage: { scopes: [failed.scope], currentProject: false, otherProjects: 'unobserved' } }, receipt);
+    expect(result.status).toBe('partial');
+    expect(result.diagnostics.filter(({ code }) => code === error.code)).toEqual([expect.objectContaining({ severity: 'error' })]);
+    expect(renderPublicResult(result)).toContain(`Location: ${location}`);
+    expect(result.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual', message: expect.stringContaining(location) }));
+    const history = new OperationHistoryStore();
+    history.record(projectScopedRecoveryHistory(receipt, { recordId: 'retained', epoch: 0, operationId: 'sync', createdAtMs: 0 }));
+    const report = history.preview('retained')!.content;
+    expect(report).toContain('Target state: failed');
+    expect(report).toContain('Previous output was retained');
+    expect(report).not.toContain(location);
+  });
+
   // A host grants permission to the physical dependency; the TUI must retry the declared root in the pending scope.
   it.each(['user', 'project'] as const)('shows the Grok source and a scope-safe recovery action for %s dependencies', (scope) => {
     const agent = 'grok';

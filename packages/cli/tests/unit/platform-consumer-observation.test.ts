@@ -5,6 +5,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { getPlatformCapabilities, getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
+import { piAgentConsumerDiagnostic } from '../../src/platforms/inspection-pi.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
@@ -37,8 +38,8 @@ async function fixture(platform: 'pi' | 'grok', project = false) {
   return { ctx, host, binding, layout, caps, setPiList: (value: string) => { piList = value; } };
 }
 
-async function consumer(root: string, version = '0.22.0') {
-  await fs.outputJson(path.join(root, 'package.json'), { name: '@tintinweb/pi-subagents', version, pi: { extensions: ['./index.ts'] } });
+async function consumer(root: string, version = '0.22.0', name = '@tintinweb/pi-subagents') {
+  await fs.outputJson(path.join(root, 'package.json'), { name, version, pi: { extensions: ['./index.ts'] } });
   await fs.outputFile(path.join(root, 'index.ts'), 'export default function () {}');
 }
 
@@ -356,31 +357,123 @@ describe('public native consumer observation', () => {
     expect(filtered.prerequisites.agentConsumers.configurationEvidence).not.toBe(consumerInstalled.prerequisites.agentConsumers.configurationEvidence);
   });
 
-  // Test Value Gate: actual config and manifests distinguish absence, filtering,
-  // trust and package access without granting unqualified invocation semantics.
-  it('reports complete Pi absence and actual installed version/filter/allowlist facts through capabilities', async () => {
+  // Optional consumer settings control the delivered-role warning. No warning
+  // should claim a role was installed when the package delivered none.
+  it('reports Pi extension absence, filtering and package access after role delivery', async () => {
     const item = await fixture('pi');
-    expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers).toMatchObject({ observation: 'complete', candidates: [] });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['consumer-missing']);
+    const warning = async (ids = ['reviewer']) => piAgentConsumerDiagnostic(item.binding, await inspectDeployment(item.ctx, item.binding), ids);
+    expect(await warning([])).toBeUndefined();
+    expect(await warning()).toMatchObject({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode: 'piAgentConsumerMissing' } });
     const root = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
     await consumer(root);
     await fs.outputJson(item.layout.activationPath, { packages: [{ source: 'npm:@tintinweb/pi-subagents@0.22.0', extensions: [] }] });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['consumer-disabled']);
+    expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
     await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0'] });
-    await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), { name: '@team/example' });
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['different-package'] });
     const denied = await inspectDeployment(item.ctx, item.binding);
     expect(denied.prerequisites.agentConsumers.candidates[0]).toMatchObject({ id: '@tintinweb/pi-subagents', version: '0.22.0',
       enabled: 'yes', trust: 'trusted', packageAccess: 'denied', settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['policy-blocked']);
+    expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentPackageAccessDenied' } });
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['example'] });
-    const allowed = await item.caps();
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({
       scope: { kind: 'user' }, packageAccess: 'allowed', trust: 'trusted',
       settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
-    expect(allowed.kinds.agent).toMatchObject({ status: 'unverified', reasonCodes: ['capability-unverified'] });
+    expect(await warning()).toBeUndefined();
+    const targetSource = path.relative(item.host, item.layout.packageRoot).split(path.sep).join('/');
+    await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0', targetSource] });
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: [targetSource.toUpperCase()] });
+    expect(await warning()).toBeUndefined();
     await consumer(root, '99.0.0');
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({ version: '99.0.0', packageAccess: 'unknown' });
+    expect(await warning()).toBeUndefined();
+  });
+
+  it('uses Pi’s resolved extension location and honors filters when multiple consumers are present', async () => {
+    const item = await fixture('pi');
+    const nico = path.join(item.ctx.cwd, 'legacy-global', 'pi-subagents');
+    const tintin = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(nico, '0.89.1', 'pi-subagents');
+    await consumer(tintin);
+    const nicoSource = 'npm:pi-subagents@0.89.1';
+    const tintinSource = 'npm:@tintinweb/pi-subagents@0.22.0';
+    item.setPiList(`User packages:\n  ${nicoSource} (filtered)\n    ${nico}\n  ${tintinSource}\n    ${tintin}\n`);
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
+    const observe = async (extensions: string[]) => {
+      await fs.outputJson(item.layout.activationPath, { packages: [{ source: nicoSource, extensions }, tintinSource] });
+      return inspectDeployment(item.ctx, item.binding);
+    };
+    const allowed = await observe(['!*.ts', '+./index.ts']);
+    expect(allowed.prerequisites.agentConsumers.candidates).toEqual([
+      expect.objectContaining({ id: 'pi-subagents', enabled: 'yes', packageAccess: 'allowed' }),
+      expect.objectContaining({ id: '@tintinweb/pi-subagents', enabled: 'yes', packageAccess: 'denied' }),
+    ]);
+    expect(piAgentConsumerDiagnostic(item.binding, allowed, ['reviewer'])).toBeUndefined();
+    const blocked = await observe(['*.ts', '+./index.ts', '-index.ts']);
+    expect(piAgentConsumerDiagnostic(item.binding, blocked, ['reviewer'])).toMatchObject({
+      detail: { reasonCode: 'piAgentConsumerUnavailable' },
+    });
+  });
+
+  it.each(['0.87.0', '0.89.1'])('reports known pi-subagents %s incompatibility for a bare AW package source', async (version) => {
+    const item = await fixture('pi');
+    const nico = path.join(item.host, 'npm/node_modules/pi-subagents');
+    const tintin = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(nico, version, 'pi-subagents');
+    await consumer(tintin);
+    const targetSource = path.relative(item.host, item.layout.packageRoot).split(path.sep).join('/');
+    const observe = async (target: string, ...otherSources: string[]) => {
+      await fs.outputJson(item.layout.activationPath, { packages: ['npm:pi-subagents', target, ...otherSources] });
+      return piAgentConsumerDiagnostic(item.binding, await inspectDeployment(item.ctx, item.binding), ['reviewer']);
+    };
+    expect(await observe(targetSource)).toMatchObject({ detail: { reasonCode: 'piAgentPackageSourceUnsupported' } });
+    expect(await observe(`./${targetSource}`)).toBeUndefined();
+    expect(await observe(targetSource, 'npm:@tintinweb/pi-subagents')).toBeUndefined();
+    await consumer(nico, '99.0.0', 'pi-subagents');
+    expect(await observe(targetSource)).toBeUndefined();
+  });
+
+  it('uses trusted Pi Project overrides and checks access to a Project package even with a User consumer', async () => {
+    const item = await fixture('pi', true);
+    const user = path.join(item.host, 'npm/node_modules/pi-subagents');
+    const project = path.join(item.ctx.cwd, '.pi/npm/node_modules/pi-subagents');
+    const trust = path.join(item.host, 'trust.json');
+    await consumer(user, '0.87.0', 'pi-subagents');
+    await consumer(project, '0.87.0', 'pi-subagents');
+    await fs.outputJson(trust, { [await fs.realpath(item.ctx.cwd)]: true });
+    await fs.outputJson(path.join(item.host, 'settings.json'), { packages: ['npm:pi-subagents@0.87.0'] });
+    const observe = async (override: object) => {
+      await fs.outputJson(item.layout.activationPath, { packages: [{ source: 'npm:pi-subagents', ...override }] });
+      return inspectDeployment(item.ctx, item.binding);
+    };
+    const replaced = await observe({ extensions: [] });
+    expect(replaced.prerequisites.agentConsumers.candidates).toEqual([
+      expect.objectContaining({ scope: item.binding.scope, enabled: 'no' }),
+    ]);
+    expect(piAgentConsumerDiagnostic(item.binding, replaced, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
+    const delta = await observe({ autoload: false, extensions: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, delta, ['reviewer'])).toBeUndefined();
+    const excluded = await observe({ autoload: false, extensions: ['!*.ts'] });
+    expect(piAgentConsumerDiagnostic(item.binding, excluded, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
+    await fs.outputJson(trust, { [await fs.realpath(item.ctx.cwd)]: false });
+    const denied = await observe({ extensions: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, denied, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piProjectTrustRequired' } });
+  });
+
+  it('withholds a missing Pi consumer warning when an unknown extension or unreadable settings could affect it', async () => {
+    const item = await fixture('pi');
+    const unknownPackage = path.join(item.ctx.cwd, 'custom-extension');
+    await consumer(unknownPackage, '1.0.0', 'custom-extension');
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot, unknownPackage] });
+    const unknown = await inspectDeployment(item.ctx, item.binding);
+    expect(unknown.prerequisites.agentConsumers).toMatchObject({ observation: 'unknown', candidates: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, unknown, ['reviewer'])).toBeUndefined();
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot] });
+    await fs.outputFile(path.join(item.host, 'subagents.json'), '{');
+    const unreadable = await inspectDeployment(item.ctx, item.binding);
+    expect(unreadable.configuration?.activation).toBe('enabled');
+    expect(unreadable.prerequisites.agentConsumers.observation).toBe('unknown');
+    expect(piAgentConsumerDiagnostic(item.binding, unreadable, ['reviewer'])).toBeUndefined();
   });
 
   it('observes project trust independently and does not fabricate a consumer from a source string', async () => {

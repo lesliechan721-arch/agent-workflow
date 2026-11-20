@@ -242,28 +242,33 @@ describe('native platform lifecycle', () => {
     expect(preparePlatformLifecycle(input).status).toBe('blocked');
   });
 
-  it('writes a supported supplement while retaining an unmet supplement without a package replacement', async () => {
+  it.each(['static', 'legacy-renderer', 'complete-renderer'] as const)('withdraws an unsafe role only with its full declaration (%s)', async (source) => {
     const input = supplementOnlyFixture();
     input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', reasonCode: 'capability-unverified',
       requiredFeatures: [{ feature: 'agent.tools', values: ['allowlist'] }] }];
+    input.expected.sources['role-b'] = source === 'static' ? 'static' : 'dynamic';
+    if (source === 'complete-renderer') input.expected.declaredComponentIds = ['role-a', 'role-b'];
     const plan = prepared(input);
     const ctx = context(input.observation);
     const receipt = await executePlatformLifecycle(ctx, plan);
-    expect(plan.plan.effects).toMatchObject([{ kind: 'write-supplement', componentIds: ['role-a'], destination: path.join(root, 'agents/a.toml') }]);
+    expect(plan.plan.effects[0]).toMatchObject({ kind: 'write-supplement', componentIds: ['role-a'], destination: path.join(root, 'agents/a.toml') });
     expect(ctx.services.writeContribution).toHaveBeenCalledTimes(1);
-    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+    expect(ctx.services.removeOwned).toHaveBeenCalledTimes(source === 'legacy-renderer' ? 0 : 1);
+    expect(receipt.diagnostics.filter(({ code }) => code === 'previousDeploymentRetained')).toEqual(source === 'legacy-renderer'
+      ? [expect.objectContaining({ severity: 'error', detail: { reasonCode: 'previousDeploymentRetained', path: path.join(root, 'agents/b.toml') } })] : []);
     expect(ctx.services.publishPackage).not.toHaveBeenCalled();
     expect(ctx.services.registerMarketplace).not.toHaveBeenCalled();
     expect(ctx.runner).not.toHaveBeenCalled();
     expect(receipt.unmet).toEqual([{ ...input.expected.unmet[0], productIds: [] }]);
   });
 
-  it('keeps supplement-only output when all requested components are unmet', () => {
+  it('keeps supplement-only output when a required dependency is missing', () => {
     const input = supplementOnlyFixture();
     input.expected.components = [];
-    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', requiredFeatures: [], reasonCode: 'capability-unverified' }];
+    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', requiredFeatures: [], reasonCode: 'dependency-unmet' }];
     input.projections = [];
-    expect(preparePlatformLifecycle(input)).toMatchObject({ status: 'blocked', diagnostics: [expect.objectContaining({ code: 'noSupportedComponents' })] });
+    expect(preparePlatformLifecycle(input)).toMatchObject({ status: 'blocked', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformComponentsUnmet' }),
+      expect.objectContaining({ code: 'previousDeploymentRetained' })]) });
   });
 
   it('cleans an intentionally closed supplement-only set without creating or removing a native package', async () => {

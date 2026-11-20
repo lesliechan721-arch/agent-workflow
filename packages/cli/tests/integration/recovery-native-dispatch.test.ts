@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import { runRecovery } from '../../src/recovery/coordinator.js';
+import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -14,6 +14,7 @@ import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
+import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
@@ -105,8 +106,8 @@ async function grokTrustFixture(failProject = false) {
 }
 
 describe('native recovery dispatch', () => {
-  // Confirm both a completed empty rules projection and a real scoped Markdown rule
-  // through the write path, then read status without running the renderer.
+  // Read role-only text from both native package routes, and verify the same
+  // target's rules projection and quiet follow-up status.
   it.each(['user', 'project'] as const)('reports a complete Grok %s dynamic supplement projection ready', async (scope) => {
     installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
     const { env, layout } = getCurrentSourceTestIsolation();
@@ -121,6 +122,9 @@ describe('native recovery dispatch', () => {
       { id: 'demo-skill', name: 'demo', kind: 'skill', content: { files: {
         'SKILL.md': { text: '---\nname: demo\ndescription: Grok qualification fixture.\n---\nDemo Skill.\n' },
       } } },
+      { id: 'demo-agent', name: 'reviewer', kind: 'agent', content: { description: 'Review input.', prompt: 'Read the input.' } },
+      { id: 'demo-role-context', name: 'role-context', kind: 'instruction',
+        content: { title: 'Role Context', content: 'Keep this inside the reviewer role.', coverage: ['plugin-agents'] } },
       ...(scope === 'project' ? [{ id: 'demo-rule', name: 'rule', kind: 'instruction',
         content: { title: 'Rule', content: 'Preserve the project rule.\r\n', coverage: ['main'] } }] : []),
     ];
@@ -172,12 +176,18 @@ describe('native recovery dispatch', () => {
     } else {
       expect(result.status, JSON.stringify(result)).toBe('success');
     }
+    const nativePackage = scope === 'user' ? installed : projectPackage;
+    expect(await fs.readFile(path.join(nativePackage, 'agents/reviewer.md'), 'utf8')).toContain('Keep this inside the reviewer role.');
+    const rules = scope === 'user' ? path.join(host, 'rules') : path.join(cwd, '.grok', 'rules');
+    expect(await fs.pathExists(path.join(rules, 'aw-local-demo-role-context.md'))).toBe(false);
     const rendered = await fs.readFile(trace, 'utf8');
     const read = () => readRecoveryStatus({ context: scope, cwd, env, nativeCliRunner });
     const status = await read();
-    expect(status, JSON.stringify(status)).toMatchObject({ allSatisfied: true, inSync: true, counts: {
-      blocked: 0, unconfirmed: 0, pending: 0, ready: 1,
-    } });
+    expect(status, JSON.stringify(status)).toMatchObject({ allSatisfied: true, inSync: true,
+      counts: { blocked: 0, unconfirmed: 0, pending: 0, ready: 1 },
+      inventory: [{ targetResults: [{ installedComponentIds: expect.arrayContaining(['demo-agent', 'demo-role-context']),
+        installedComponentCount: scope === 'user' ? 3 : 4 }] }],
+    });
     if (scope === 'project') {
       const rule = path.join(cwd, '.grok', 'rules', 'aw-local-demo-rule.md');
       expect(await fs.readFile(rule, 'utf8')).toContain('Preserve the project rule.');
@@ -284,6 +294,242 @@ describe('native recovery dispatch', () => {
     expect(result.ok).toBe(false);
     expect(await fs.readFile(path.join(cwd, '.agents', 'skills', 'demo', 'SKILL.md'), 'utf8')).toBe(content);
     expect(await fs.pathExists(path.join(cwd, '.cursor', 'skills'))).toBe(false);
+  });
+
+  // A renderer-only gap must survive a fresh public status read, beside zero or one real output.
+  it.each([false, true])('converges native and generic renderer gaps with a delivered Skill: %s', async (mixed) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const source = path.join(cwd, 'catalog');
+    const bin = path.join(cwd, 'bin');
+    const env = { ...isolation.env, PATH: bin };
+    await git(cwd, ['init', '--quiet']);
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'cursor-agent.exe' : 'cursor-agent'), 'fixture entry', { mode: 0o755 });
+    const gap = { id: 'before', kind: 'hook', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['notify'] }],
+      reasonCode: 'interface-unsupported' };
+    const skill = { id: 'use-guide', kind: 'skill', name: 'guide', content: { files: {
+      'SKILL.md': { text: '---\nname: guide\ndescription: Read the guide.\n---\nGuide.\n' },
+      'README.md': { text: 'Guide.\n' },
+    } } };
+    await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `
+      import fs from 'node:fs';
+      const { allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+      console.log(JSON.stringify({version: 3, components: allowedOutputKinds.includes('skill') ? ${JSON.stringify(mixed ? [skill] : [])} : [],
+        omitted: [], unmet: allowedOutputKinds.includes('hook') ? [${JSON.stringify(gap)}] : []}));
+    `);
+    await createCatalogSnapshotFixture(source, 'demo', [], 'Renderer gaps.', (manifest) => {
+      manifest.platforms = ['generic', 'cursor'];
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['cursor', 'generic']);
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      if (args.includes('--version')) return { exitCode: 0, stdout: 'Cursor Agent 2026.11.05-86047df', stderr: '' };
+      throw new Error('Unexpected native operation');
+    };
+    const aw = async (...args: string[]) => {
+      const result = await runCliEntry(['plugin', ...args, '--json'], { cwd, env, nativeCliRunner, interactive: false });
+      const value = result.parseJsonStdout<CommandResult>();
+      expect(result.exitCode, JSON.stringify(value)).toBe(0);
+      return value;
+    };
+    const targets = ['cursor', 'generic'].map((target) => expect.objectContaining({ target,
+      satisfaction: mixed ? 'installed' : 'not-applicable', installedComponentCount: mixed ? 1 : 0,
+      installedComponentIds: mixed ? ['use-guide'] : [], componentGaps: [expect.objectContaining(gap)] }));
+    const install = await aw('install', 'local/demo', '--scope', 'project', '--yes');
+    expect(install.data, JSON.stringify(install)).toMatchObject({ remainingTargets: [], targetResults: expect.arrayContaining(targets) });
+    const status = await aw('status', '--context', 'project');
+    expect(status.data, JSON.stringify(status)).toMatchObject({ counts: { pending: 0 }, inSync: true, allSatisfied: true,
+      inventory: [{ targetResults: expect.arrayContaining(targets) }] });
+    const selected = await runPublicPluginStatus([], { targets: ['cursor'], context: 'project', cwd, env }, { nativeCliRunner });
+    expect(selected.data).toMatchObject({ counts: { pending: 0 }, inSync: null, allSatisfied: null });
+    const sync = await aw('sync', 'local/demo', '--context', 'project', '--yes');
+    expect(sync.data, JSON.stringify(sync)).toMatchObject({ remainingTargets: [], changes: { outputs: 'none' },
+      targetResults: expect.arrayContaining(targets) });
+    if (mixed) {
+      const packageHome = path.join(cwd, '.cursor', 'aw-plugins');
+      const [installed] = await fs.readdir(packageHome);
+      await fs.remove(path.join(packageHome, installed!, 'skills', 'guide', 'SKILL.md'));
+      await fs.remove(path.join(cwd, '.agents', 'skills', 'guide'));
+      const lost = await aw('status', '--context', 'project');
+      expect(lost.data, JSON.stringify(lost)).toMatchObject({ counts: { pending: 2 }, allSatisfied: false, inSync: false });
+    } else {
+      const file = path.join(cwd, '.cursor', 'hooks.json');
+      const quote = process.platform === 'win32' ? '"' : "'";
+      const unrelated = { command: 'echo keep' };
+      const command = `aw internal cursor-workspace-open --scope project --project-root ${quote}${cwd}${quote} --plugin-id ${quote}local/demo${quote}`;
+      const hooks = { version: 1, hooks: { workspaceOpen: [unrelated, { command }] } };
+      await fs.outputJson(file, hooks);
+      const retained = await runPublicPluginStatus([], { cwd, env, context: 'project' }, { nativeCliRunner });
+      expect(retained.data).toMatchObject({ allSatisfied: false, inSync: false });
+      expect(retained.diagnostics).toContainEqual(expect.objectContaining({ code: 'previousDeploymentRetained' }));
+      expect(await fs.readJson(file)).toEqual(hooks);
+      await fs.outputJson(file, { version: 1, hooks: { workspaceOpen: [unrelated] } });
+      expect((await aw('status', '--context', 'project')).data).toMatchObject({ allSatisfied: true });
+    }
+  });
+
+  it.each([
+    { scope: 'user', foreignRegistration: false }, { scope: 'project', foreignRegistration: false },
+    { scope: 'project', foreignRegistration: true },
+  ] as const)('validates Pi $scope batch evidence (external registration: $foreignRegistration)', async ({ scope, foreignRegistration }) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const source = path.join(cwd, 'pi-batch-catalog');
+    const bin = path.join(cwd, 'bin');
+    const env = { ...isolation.env, PATH: bin };
+    await git(cwd, ['init', '--quiet']);
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'fixture entry', { mode: 0o755 });
+    await createDependencyCatalogSnapshotFixture(source, [
+      { name: 'guide', configureManifest: (manifest) => { manifest.platforms = ['pi']; } },
+      { name: 'roles', dependencies: ['guide'], configureManifest(manifest) {
+        manifest.platforms = ['pi'];
+        manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review the work.', prompt: 'Check the work.' }] };
+      } },
+    ]);
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['pi']);
+    const userRoot = resolvePlatformConfigRoot('pi', { cwd, env });
+    const root = scope === 'user' ? userRoot : path.join(cwd, '.pi');
+    const settings = path.join(root, 'settings.json');
+    if (scope === 'project') await fs.outputJson(path.join(userRoot, 'settings.json'), { defaultProjectTrust: 'always' });
+    const externalSource = './external-package';
+    if (foreignRegistration) await fs.outputJson(path.join(root, externalSource, 'package.json'), { name: 'external-package', pi: { extensions: [] } });
+    const nativeCliRunner = async ({ args, cwd: nativeCwd }: NativeCliInvocation) => {
+      const reply = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' });
+      if (args.includes('--version')) return reply('1.5.0');
+      if (args.includes('--help')) return reply('Pi coding agent');
+      const current = await fs.readJson(settings, { throws: false }).catch(() => null) ?? {};
+      const packages: string[] = current.packages ?? [];
+      if (args[0] === 'list') return reply(packages.length && (scope === 'user' || nativeCwd === cwd) ? [scope === 'user' ? 'User packages:' : 'Project packages:',
+        ...packages.flatMap((item) => [`  ${item}`, `    ${path.join(root, item)}`]), ''].join('\n') : 'No packages installed.\n');
+      const installedPath = args.at(-1)!;
+      if (args[0] !== 'install' || args.includes('--local') !== (scope === 'project') || !path.isAbsolute(installedPath)) {
+        throw new Error('Unexpected Pi operation');
+      }
+      const registration = path.relative(root, installedPath).split(path.sep).join('/');
+      const sources = [...packages, registration, ...(foreignRegistration ? [externalSource] : [])];
+      await fs.outputJson(settings, { ...current, packages: [...new Set(sources)] });
+      return reply(`Installed ${installedPath}`);
+    };
+
+    const result = await runCliEntry(['plugin', 'install', 'local/guide', 'local/roles', '--scope', scope, '--context', scope, '--yes', '--json'],
+      { cwd, env, nativeCliRunner, interactive: false });
+    const install = result.parseJsonStdout<CommandResult<LifecycleData>>();
+    const guide = path.join(root, 'aw-packages', 'aw-local-guide');
+    const roles = path.join(root, 'aw-packages', 'aw-local-roles');
+    expect(await fs.readJson(path.join(guide, 'package.json'))).toMatchObject({ pi: { extensions: ['./index.mjs'] } });
+    if (foreignRegistration) {
+      expect(result.exitCode, JSON.stringify(install)).toBe(4);
+      expect(install.data).toMatchObject({ remainingTargets: [{ pluginId: 'local/roles', target: 'pi', scope }], targetResults: [
+        { pluginId: 'local/guide', execution: 'applied' }, { pluginId: 'local/roles', blockerCodes: ['operationPlanStale'] },
+      ] });
+      expect(await fs.pathExists(roles)).toBe(false);
+      expect(await fs.readJson(settings)).toMatchObject({ packages: expect.arrayContaining([externalSource]) });
+      return;
+    }
+    expect(result.exitCode, JSON.stringify(install)).toBe(0);
+    expect(install.data).toMatchObject({ remainingTargets: [], targetResults: [
+      { pluginId: 'local/guide', execution: 'applied', observation: 'verified' },
+      { pluginId: 'local/roles', execution: 'applied', observation: 'verified' },
+    ] });
+    expect(install.diagnostics).toContainEqual(expect.objectContaining({ code: 'piAgentConsumerUnavailable',
+      subject: expect.objectContaining({ pluginId: 'local/roles' }), detail: { reasonCode: 'piAgentConsumerMissing' } }));
+    expect(await fs.readdir(path.join(roles, 'agents'))).toHaveLength(1);
+
+    const reviewed = await prepareRecovery('sync', ['local/roles'], { cwd, env, scope, context: scope, yes: true, cliVersion: '1.0.0' }, { nativeCliRunner });
+    try {
+      expect(reviewed.receipt.blockers).toEqual([]);
+      const extension = path.join(guide, 'index.mjs');
+      const changed = 'export default function register(pi) { pi.registerTool({ name: "user-tool" }); }\n';
+      await fs.writeFile(extension, changed);
+      expect(await executeRecovery(reviewed)).toMatchObject({ ok: false, outputsMayHaveChanged: false,
+        blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+      expect(await fs.readFile(extension, 'utf8')).toBe(changed);
+    } finally { await reviewed.context.dispose(); }
+  });
+
+  it('verifies a zero-output Pi Project against current registration and the skipped Hook script', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const source = path.join(cwd, 'pi-catalog');
+    const pluginRoot = path.join(source, 'plugins/demo');
+    const script = path.join(pluginRoot, 'pi/scripts/guard.mjs');
+    const bin = path.join(cwd, 'bin');
+    const env = { ...isolation.env, PATH: bin };
+    await git(cwd, ['init', '--quiet']);
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'fixture entry', { mode: 0o755 });
+    await fs.outputFile(script, 'export {};\n');
+    await createCatalogSnapshotFixture(source, 'demo', [], 'Pi Project Hook.', (manifest) => {
+      manifest.platforms = ['pi'];
+      manifest.extensions = { hooks: [{ id: 'guard', event: 'before_tool', feedback: 'block', command: 'node ./scripts/guard.mjs' }] };
+    });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['pi']);
+    let list = 'No packages installed.\n';
+    let listReadable = true;
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      if (args.includes('--version')) return { exitCode: 0, stdout: 'Pi coding agent 1.5.0', stderr: '' };
+      if (args[0] === 'list') return { exitCode: listReadable ? 0 : 1, stdout: listReadable ? list : '', stderr: '' };
+      throw new Error('A skipped Hook needs no Pi mutation.');
+    };
+    const aw = async (...args: string[]) => {
+      const result = await runCliEntry(['plugin', ...args, '--json'], { cwd, env, nativeCliRunner, interactive: false });
+      return { exitCode: result.exitCode, value: result.parseJsonStdout<CommandResult>() };
+    };
+    const target = { target: 'pi', scope: 'project', satisfaction: 'not-applicable', installedComponentCount: 0,
+      componentGaps: [expect.objectContaining({ kind: 'hook', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['block'] }] })] };
+    const install = await aw('install', 'local/demo', '--scope', 'project', '--yes');
+    expect(install, JSON.stringify(install)).toMatchObject({ exitCode: 0, value: { data: { remainingTargets: [], targetResults: [target] } } });
+    const status = () => aw('status', '--context', 'project');
+    const clean = await status();
+    expect(clean, JSON.stringify(clean)).toMatchObject({ exitCode: 0, value: { data: { counts: { pending: 0 }, allSatisfied: true,
+      inSync: true, inventory: [{ targetResults: [{ ...target, deploymentObservations: [{ after: { registration: 'unknown' } }] }] }] } } });
+    const sync = await aw('sync', 'local/demo', '--context', 'project', '--yes');
+    expect(sync, JSON.stringify(sync)).toMatchObject({ exitCode: 0, value: { data: { remainingTargets: [], changes: { outputs: 'none' } } } });
+
+    listReadable = false;
+    const unreadable = await status();
+    expect(unreadable.exitCode).not.toBe(0);
+    expect(unreadable.value.data).toMatchObject({ allSatisfied: null, inSync: null });
+    listReadable = true;
+    const packageRoot = path.join(cwd, '.pi', 'aw-packages', 'aw-local-demo');
+    list = `Project packages:\n  npm:foreign-source\n    ${packageRoot}\n`;
+    expect((await status()).value.data).toMatchObject({ allSatisfied: null, inSync: null });
+    list = 'No packages installed.\n';
+    await fs.outputJson(path.join(cwd, '.pi', 'settings.json'), { packages: ['./aw-packages/aw-local-demo'] });
+    expect((await status()).value.data).toMatchObject({ allSatisfied: false, inSync: false });
+
+    await fs.outputJson(path.join(cwd, '.pi', 'settings.json'), {});
+    const updateSource = async () => {
+      const catalogPath = path.join(source, 'catalog-manifest.json');
+      const changed = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+      await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries: [await createCatalogManifestV7Entry(changed, pluginRoot)] });
+      await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    };
+    await fs.appendFile(script, '// updated input\n');
+    await updateSource();
+    expect((await status()).value.data).toMatchObject({ allSatisfied: null, inSync: null });
+    expect((await aw('sync', 'local/demo', '--context', 'project', '--yes')).exitCode).toBe(0);
+    expect((await status()).value.data).toMatchObject({ allSatisfied: true, inSync: true });
+    await fs.remove(script);
+    await updateSource();
+    const damaged = await aw('sync', 'local/demo', '--context', 'project', '--yes');
+    expect(damaged.exitCode).not.toBe(0);
+    const afterDamage = await status();
+    expect(afterDamage.exitCode).not.toBe(0);
+    expect(afterDamage.value.data).toMatchObject({ allSatisfied: null, inSync: null,
+      inventory: [{ targetResults: [{ content: 'unknown', satisfaction: 'unknown', blockerCodes: expect.arrayContaining(['componentResourceMissing']) }] }] });
   });
 
   // Test Value Gate: an executed empty set must remain current through read-only status, until its source inputs change.

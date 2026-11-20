@@ -6,11 +6,14 @@ import { flattenStatusTargets, statusTargetActivation, statusTargetIntent,
   statusTargetOwnershipState, statusTargetSharedNative, type StatusScopedTarget,
   type StatusTargetRevision, type StatusV8Payload, type StatusV8PluginSummary } from '../commands/status-v6.js';
 import type { RecoveryTarget } from '../recovery/receipt.js';
+import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
+import { isDeliveryNoticeCode, projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
+import type { Diagnostic } from '../output/public-result.js';
 import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel } from './model.js';
 
 export type InventoryState = 'blocked' | 'unknown' | 'pending' | 'ready';
 
-export interface InventoryTarget {
+export interface InventoryTarget extends ComponentDelivery {
   platform?: PlatformName;
   scope: Scope;
   location: 'scope' | 'sharedUser';
@@ -22,6 +25,7 @@ export interface InventoryTarget {
   delivery?: 'native' | 'agent-skills';
   observation?: 'known' | 'unknown';
   actual?: boolean;
+  deliveryNotices?: Diagnostic[];
 }
 
 export interface InventoryDependency {
@@ -39,7 +43,7 @@ export interface InventoryRoot {
   state: InventoryState;
   targets: InventoryTarget[];
   dependencies: InventoryDependency[];
-  agentResults?: Array<Pick<RecoveryTarget, 'agent' | 'delivery' | 'blockers' | 'reasons' | 'satisfaction' | 'observation' | 'content'>>;
+  agentResults?: Array<Pick<RecoveryTarget, 'agent' | 'delivery' | 'blockers' | 'reasons' | 'observation' | 'content'> & ComponentDelivery>;
   blockers?: Array<{ code: string; message: string }>;
   sourceState?: string;
 }
@@ -109,10 +113,16 @@ export function hasStatusInstallationEvidence(target: StatusScopedTarget): boole
 function targetState(target: RecoveryTarget): InventoryState {
   if (target.blockers.length) return canPreparePortable(target) ? 'pending' : 'blocked';
   if (target.content === 'conflict') return 'blocked';
+  if (target.satisfaction === 'not-applicable') return 'ready';
   if (target.observation === 'missing' || target.content === 'absent'
     || target.content === 'drifted') return 'pending';
   if (target.observation === 'unknown' || target.content === 'unknown') return 'unknown';
   return 'ready';
+}
+
+function targetDeliveryFacts(target: RecoveryTarget): ComponentDelivery & Pick<InventoryTarget, 'deliveryNotices'> {
+  const deliveryNotices = projectDeploymentNotices([target]).filter(({ code }) => isDeliveryNoticeCode(code));
+  return { ...projectComponentDelivery(target), ...(deliveryNotices.length ? { deliveryNotices } : {}) };
 }
 
 function canPreparePortable(target: RecoveryTarget): boolean {
@@ -189,6 +199,7 @@ export function buildScopedInventory(options: {
         scope: target.scope, location: 'scope', state: targetState(target),
         reasonCodes: target.blockers.map((blocker) => blocker.code),
         agent: target.agent, delivery: target.delivery.kind,
+        ...targetDeliveryFacts(target),
         ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
         ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
         ...(target.delivery.kind === 'native' ? {
@@ -199,7 +210,7 @@ export function buildScopedInventory(options: {
         ...(target.delivery.kind === 'agent-skills' ? {
           observation: target.content === 'drifted' || target.observation === 'verified' || target.observation === 'missing'
             ? 'known' as const : 'unknown' as const,
-          actual: target.content === 'satisfied' || target.content === 'drifted',
+          actual: target.satisfaction !== 'not-applicable' && (target.content === 'satisfied' || target.content === 'drifted'),
         } : {}),
       }] : []);
     const observedTargets = nativeTargets.map((target) => targetView(target, 'scope'));
@@ -210,6 +221,9 @@ export function buildScopedInventory(options: {
         current.reasonCodes = [...new Set([...current.reasonCodes, ...target.reasonCodes])];
         current.agent = target.agent;
         current.delivery = target.delivery;
+        Object.assign(current, projectComponentDelivery(target));
+        if (target.deliveryNotices?.length) current.deliveryNotices = target.deliveryNotices;
+        if (target.satisfaction === 'not-applicable') current.actual = false;
       } else observedTargets.push(target);
     }
     const overview = options.dependencyOverviews?.find((entry) => entry.pluginId === root.pluginId);
@@ -245,11 +259,17 @@ export function buildScopedInventory(options: {
         if (target.pluginId !== dependency.pluginId || target.providerScope !== target.scope
           || !target.contributions?.some((entry) => entry.root === root.pluginId && entry.scope === recovery.scope
             && entry.path.at(-1) === dependency.pluginId && entry.path.length > 1)
-          || !root.targetResults.some((consumer) => consumer.agent === target.agent)
-          || targets.some((entry) => entry.agent === target.agent && entry.scope === target.scope)) continue;
+          || !root.targetResults.some((consumer) => consumer.agent === target.agent)) continue;
+        const facts = targetDeliveryFacts(target);
+        const existing = targets.find((entry) => (entry.agent ?? entry.platform) === target.agent && entry.scope === target.scope);
+        if (existing) {
+          Object.assign(existing, facts);
+          continue;
+        }
         targets.push({ ...(target.delivery?.kind === 'native' ? { platform: target.delivery.platform } : {}),
           scope: target.scope, location: target.scope === recovery.scope ? 'scope' : 'sharedUser',
           state: targetState(target), agent: target.agent,
+          ...facts,
           ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
           ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
           ...(target.delivery ? { delivery: target.delivery.kind } : {}),

@@ -24,8 +24,11 @@ const NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS = 100;
 const NATIVE_CLI_PROCESS_GROUP_POLL_MS = 25;
 const NATIVE_CLI_PROCESS_GROUP_VERIFY_MS = 4_000;
 const NATIVE_CLI_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
+const INSTALL_POSIX_MARKER_SCAN_PLATFORMS: readonly NodeJS.Platform[] = [];
+const installPosixMarkerScans = Symbol('installPosixMarkerScans');
 
 export interface NativeCliInvocation {
+  [installPosixMarkerScans]?: true;
   command: string;
   args: string[];
   agentKind?: 'codex' | 'claude';
@@ -168,6 +171,16 @@ function usesDefaultNativeCliBackend(runner: NativeCliRunner): boolean {
   return runner === execFileNativeCliRunner;
 }
 
+export function withInstallNativeMarkerScans(runner: NativeCliRunner): NativeCliRunner {
+  if (!INSTALL_POSIX_MARKER_SCAN_PLATFORMS.includes(process.platform) || !usesDefaultNativeCliBackend(runner)) {
+    return runner;
+  }
+  return retainNativeCliRunnerBackend(
+    (invocation) => runner({ ...invocation, [installPosixMarkerScans]: true }),
+    runner,
+  );
+}
+
 export function setNativeCliRunnerOverrideForTests(
   runner: NativeCliRunner | null,
 ): void {
@@ -297,6 +310,7 @@ interface NativeCliChildProcess {
 
 /** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
 interface ExecFileNativeCliRunnerDependencies {
+  coalescePosixMarkerScans?: boolean;
   execFile?: (
     command: string,
     args: string[],
@@ -638,7 +652,12 @@ export function createExecFileNativeCliRunner(
           child.pid !== undefined
         ) {
           try {
-            processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+            if (observeProcessTreeImpl === observeProcessTree &&
+              (invocation[installPosixMarkerScans] || dependencies.coalescePosixMarkerScans)) {
+              processTreeObservation = observeProcessTree(child.pid, processMarker, { coalescePosixMarkerScans: true });
+            } else {
+              processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+            }
           } catch (error) {
             processTreeAuditPreparationError = new Error(
               'Native CLI cleanup unconfirmed: POSIX process marker lookup failed.',

@@ -188,6 +188,8 @@ export interface DeploymentObservation {
     activation: Activation;
     load: 'observed' | 'not-observed' | 'unknown' | 'not-applicable';
   }>;
+  /** Exact component and reader facts, when the operation already obtained native policy evidence. */
+  skillInvocationPolicies?: Array<{ componentId: string; productId: string; features: FeatureRequirement[] }>;
   components: Array<{ id: string; presence: Presence; reasonCodes: string[] }>;
   nativeIdentity: NativeIdentity | null;
   prerequisites: RuntimePrerequisites;
@@ -265,7 +267,8 @@ export interface QualifiedPlatformProfile {
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
     platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
   /** Native CLI invocation coverage for this host and these activation scopes. */
-  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] };
+  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[];
+    unsupported?: { scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] } };
   agentConsumers: Array<{
     id: string;
     minimumVersion: string;

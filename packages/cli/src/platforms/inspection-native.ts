@@ -74,9 +74,11 @@ async function inspectAntigravityCopy(binding: DeploymentBinding, layout: Deploy
   if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
   result.registration = matches.length ? 'present' : 'absent';
   const row = matches[0];
-  if (!row) { setActivation(result, 'disabled'); return; }
+  const cli = selectNativeProduct(binding.consumers);
+  const consumer = result.consumers.find(({ productId }) => productId === cli?.id);
+  if (!row) { if (consumer) consumer.activation = 'disabled'; return; }
   if (typeof row.enabled !== 'boolean') throw new Error('nativeActivationInvalid');
-  setActivation(result, row.enabled ? 'enabled' : 'disabled');
+  if (consumer) consumer.activation = row.enabled ? 'enabled' : 'disabled';
   const root = layout.physicalIdentity.namespaceRoot;
   const directory = path.join(root, 'plugins', layout.nativeIdentity.packageId);
   if (row.source !== 'antigravity' || row.path !== directory) { result.ownership = 'foreign'; return; }

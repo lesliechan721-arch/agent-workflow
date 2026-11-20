@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import { createPlatformEmptyState, createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, writePlatformEmptyState } from '../../src/utils/platform-empty-state.js';
+import { createPlatformEmptyState, createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformDeliveryGaps, writePlatformEmptyState, type PlatformInputEvidence } from '../../src/utils/platform-empty-state.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
@@ -11,6 +11,27 @@ import type { DeploymentObservation } from '../../src/platforms/contracts.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('native intentional empty currentness', () => {
+  it('rejects a damaged capability receipt that changes one installed Skill into zero', async () => {
+    const { env } = getCurrentSourceTestIsolation();
+    const id = `sha256:${'a'.repeat(64)}`;
+    const input: PlatformInputEvidence = { schemaVersion: 1, kind: 'aw-platform-input', platform: 'cursor', units: [],
+      plugin: { sourceId: 'local', sourceIdentity: id, pluginId: 'local/mixed', version: '1.0.0' },
+      binding: { id, physicalKey: id, scope: { kind: 'user' } } };
+    const gaps = [{ id: 'hook:miss', kind: 'hook' as const, reasonCode: 'delivery-unavailable',
+      requiredFeatures: [{ feature: 'component.kind.hook' }] }];
+    const state = { ...input, kind: 'aw-platform-empty-state' as const, result: 'capability-gaps' as const,
+      gaps, installedComponentIds: ['skill:demo'] };
+    await writePlatformEmptyState({ state, env });
+    expect(await readPlatformDeliveryGaps({ input, env })).toEqual({ gaps, installedComponentIds: ['skill:demo'] });
+    const file = path.join(env.AW_HOME!, 'platforms', 'cursor', 'empty-state', `${id.slice(7)}.json`);
+    const record = await fs.readJson(file);
+    await fs.writeJson(file, { ...record, installedComponentIds: [] });
+    expect(await readPlatformDeliveryGaps({ input, env })).toBeUndefined();
+    delete record.deliveryDigest;
+    await fs.writeJson(file, record);
+    expect(await readPlatformDeliveryGaps({ input, env })).toBeUndefined();
+  });
+
   // Test Value Gate: a different entry or native inventory must not invalidate a package when the actual renderer inputs agree.
   it('keeps observation and discovery metadata from invalidating a dynamic package', async () => {
     const isolation = getCurrentSourceTestIsolation();

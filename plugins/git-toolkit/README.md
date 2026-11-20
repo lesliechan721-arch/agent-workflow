@@ -11,7 +11,7 @@ aw target set codex claude
 aw plugin install git-toolkit --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build。`generic` 交付通用 Skills。安装结果按目标说明实际交付和适用的调用提示。
 
 ## 包含的 Skill
 
@@ -36,6 +36,8 @@ $git-commit 只提交这次修复涉及的文件，不要动 index 里其它内�
 ```
 
 提交示例使用 Codex 的调用方式。Claude Code 使用 `/git-toolkit:git-commit`，Pi 使用 `/skill:git-commit`，OpenCode 使用 `@git-commit`，Grok Build 使用 `/git-commit`。worktree 和 merge 技能仍可由支持自动调用的客户端按任务启用。
+
+在 Antigravity CLI 中，User 安装使用 `/git-toolkit:git-commit`。Project 安装使用目录前缀，形如 `/aw-<来源 ID>-git-toolkit:git-commit`。在安装所在的项目运行 `/skills` 查找完整名称。若同一 Skill 在两个范围都已安装，会话清单显示当前项目采用的入口。
 
 `generic` 交付三个技能的完整文件。是否能保证 `git-commit` 只在用户显式选择时调用，由读取这些文件的客户端决定。AW 会在安装结果中提示这一限制。
 

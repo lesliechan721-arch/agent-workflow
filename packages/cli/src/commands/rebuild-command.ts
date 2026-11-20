@@ -663,6 +663,7 @@ async function assertClaudeVersion(options: {
   if (!options.platforms.includes('claude')) return;
   const failures = [];
   const result = await probeAgentVersion('claude', {
+    cache: false,
     cwd: options.cwd,
     env: options.env,
     runner: options.runtime.nativeCliRunner,

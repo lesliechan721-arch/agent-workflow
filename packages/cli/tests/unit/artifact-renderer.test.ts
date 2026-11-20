@@ -179,7 +179,7 @@ describe('complete platform component preparation', () => {
     }) })).rejects.toThrow('componentIdentityConflict');
   });
 
-  it('keeps all-unmet distinct from intentional empty and rejects invalid or unsupported output', async () => {
+  it('preserves declared restricted roles separately from a renderer gap and rejects invalid output', async () => {
     const item = await plugin();
     const facts = capabilities();
     facts.features['agent.tools'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
@@ -188,14 +188,34 @@ describe('complete platform component preparation', () => {
     }) });
     expect(unmet.empty).toBe('unmet');
     expect(unmet.expected.unmet[0]!.requiredFeatures).toEqual([{ feature: 'agent.tools', values: ['none'] }]);
+    expect(unmet.expected.declaredComponentIds ?? []).toEqual([]);
+    const restricted = { id: 'restricted', kind: 'agent', name: 'restricted', content: { description: 'Read', prompt: 'Check.', tools: [] } };
+    const supplied = await prepare(item, { kinds: ['agent'], capabilities: facts, runner: renderer(() => ({ ...empty, components: [restricted] })) });
+    expect(supplied.expected).toMatchObject({ components: [], declaredComponentIds: ['restricted'], unmet: [{ id: 'restricted',
+      requiredFeatures: [{ feature: 'agent.tools', values: ['none'] }] }] });
     for (const plan of [
       { ...empty, unexpected: true },
-      { ...empty, components: [{ id: 'bad', kind: 'agent', name: 'bad', content: { description: 'Bad', prompt: 'Check.', tools: [] } }] },
       { ...empty, components: [skill()] },
       { ...empty, unmet: [{ id: 'bad', kind: 'agent', requiredFeatures: [], reasonCode: 'interface-unsupported' }] },
     ]) {
       await expect(prepare(item, { kinds: ['agent'], capabilities: facts, runner: renderer(() => plan) })).rejects.toThrow();
     }
+  });
+
+  it('checks required files even for a Hook skipped by the target mapper', async () => {
+    const item = await plugin();
+    item.manifest.artifacts!.sourceDirs = ['./scripts'];
+    await fs.ensureDir(path.join(item.rootDir, 'scripts'));
+    const facts = capabilities();
+    facts.deliveryFeatures = [];
+    const hook = { id: 'notice', name: 'notice', kind: 'hook',
+      content: { dialect: 'common', event: 'session_start', feedback: 'notify', command: 'node ./scripts/notice.mjs' } };
+    const render = () => prepare(item, { kinds: ['hook'], capabilities: facts, runner: renderer(() => ({ ...empty, components: [hook] })) });
+    await expect(render()).rejects.toThrow();
+    await fs.writeFile(path.join(item.rootDir, 'scripts/notice.mjs'), 'console.log("{}");');
+    const result = await render();
+    expect(result.expected).toMatchObject({ components: [], declaredComponentIds: ['notice'], unmet: [{ id: 'notice' }] });
+    expect(result.resources.bundleFiles).toEqual([]);
   });
 
   it('redacts short sensitive values from schema diagnostics', async () => {

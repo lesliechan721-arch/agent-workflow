@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { computeTreeDigest } from '../build/build-cache.mjs';
 import { prepareEnvironment } from './native-platform-runtime.mjs';
-import { commandLabel, observePortableWrites, observeProcesses, readNativePackages, readSkillOutputs } from './plugin-install-latency-observation.mjs';
+import { commandLabel, observePortableWrites, observeProcesses, readCodexRoleDigests, readNativePackages, readSkillOutputs } from './plugin-install-latency-observation.mjs';
 
 const run = promisify(execFile);
 const sourceId = 'official';
@@ -35,7 +35,7 @@ const usage = `Usage: node scripts/qualification/plugin-install-latency.mjs --bu
   --catalog <local snapshot directory> --target <target>... --plugin <plugin>... [--output <JSON file>]
   [--entry tui|cli] [--declarations populated|empty] [--source <id=local snapshot directory>...]
   [--build-revision <commit>] [--expected-active-digest <sha256:digest>]
-  [--expected-build-digest <sha256:digest>]
+  [--expected-build-digest <sha256:digest>] [--sandbox-root <new isolated directory>]
 
 Repeat --plugin and --target for a batch. Bare plugin names select the official
 source from --catalog. Use source/name for another local snapshot from --source.
@@ -47,6 +47,9 @@ checked before loading the build. The expected Active digest binds --catalog.
 Target clients are discovered on PATH. The report is written to stdout
 when --output is omitted. A measured blocked or partial receipt is reported
 in JSON. Exit 1 indicates a qualification runner error.
+Use --sandbox-root to compare generated files at the same path across runs.
+Its basename must begin with aw-install-latency- and it must not already exist.
+The launcher creates and removes only its own directory.
 
 Targets: ${targets.join(', ')}
 `;
@@ -67,6 +70,7 @@ function readOptions(args) {
       output: { type: 'string' },
       'expected-active-digest': { type: 'string' },
       'expected-build-digest': { type: 'string' },
+      'sandbox-root': { type: 'string' },
     },
   });
   if (values.help) return null;
@@ -108,6 +112,10 @@ function readOptions(args) {
   if (buildRevision !== undefined && !/^(?:[\da-f]{40}|[\da-f]{64})$/u.test(buildRevision)) {
     throw new Error('--build-revision must be a full Git commit ID.');
   }
+  const sandboxRoot = values['sandbox-root'] && path.resolve(values['sandbox-root']);
+  if (sandboxRoot && !path.basename(sandboxRoot).startsWith('aw-install-latency-')) {
+    throw new Error('--sandbox-root must begin with aw-install-latency-.');
+  }
   return {
     buildRoot: path.resolve(values['build-root']),
     buildRevision,
@@ -118,6 +126,7 @@ function readOptions(args) {
     declarations: values.declarations,
     expectedActiveDigest,
     expectedBuildDigest,
+    sandboxRoot,
     output: values.output ? path.resolve(values.output) : null,
   };
 }
@@ -177,7 +186,7 @@ async function sample(input, env, project) {
     execute: stageEvidence(), discovery: stageEvidence() };
   const report = {
     schemaVersion: 1,
-    host: { platform: process.platform, arch: process.arch, nodeVersion: process.version,
+    host: { platform: process.platform, arch: process.arch, release: os.release(), cpu: os.cpus()[0]?.model, nodeVersion: process.version,
       availableParallelism: os.availableParallelism(), loadAverage: os.loadavg(), freeMemoryBytes: os.freemem() },
     referenceFixtureRevision,
     target: measuredTargets[0],
@@ -247,14 +256,15 @@ async function sample(input, env, project) {
       { createCliExecutionContext }, { createConsoleTuiV4Controller },
       { getDefaultNativeCliRunner, retainNativeCliRunnerBackend }, { discoverPlatform },
       { syncCatalogSourceGeneration }, { readCatalogGenerationState }, { readCliPackageInfo },
-      { catalogPathProviderInternal }, { catalogGitProviderInternal },
+      { catalogPathProviderInternal }, { catalogGitProviderInternal }, { installConcurrencyLimits },
     ] = await Promise.all([
       fromBuild('commands/runtime.js'), fromBuild('tui/controller-runtime.js'),
       fromBuild('utils/native-cli.js'), fromBuild('platforms/discovery.js'),
       fromBuild('utils/catalog-generation-service.js'), fromBuild('utils/catalog-generation-state.js'),
       fromBuild('utils/local-marketplace.js'), fromBuild('utils/path-catalog-provider.js'),
-      fromBuild('utils/git-catalog-provider.js'),
+      fromBuild('utils/git-catalog-provider.js'), fromBuild('recovery/install-concurrency.js'),
     ]);
+    report.effectiveInstallConcurrency = installConcurrencyLimits();
     report.buildVersion = (await readCliPackageInfo()).version;
     const catalogs = {};
     report.sources = {};
@@ -345,7 +355,10 @@ async function sample(input, env, project) {
           onSpawn(child) {
             const label = commandLabel(invocation);
             spawnedProcess = evidence.processes.findLast((call) => call.pid === child.pid);
-            if (spawnedProcess) spawnedProcess.nativeLabel = label;
+            if (spawnedProcess) {
+              spawnedProcess.nativeLabel = label;
+              spawnedProcess.nativeAgent = invocation.agentKind ?? null;
+            }
             evidence.nativeCalls++;
             evidence.commands[label] = (evidence.commands[label] ?? 0) + 1;
             invocation.onSpawn?.(child);
@@ -446,6 +459,7 @@ async function sample(input, env, project) {
     };
     report.skillOutputs = await readSkillOutputs(catalogs,
       [...new Set([...selectors, ...report.result.targets.map((target) => target.pluginId)])], isolatedRoot);
+    if (measuredTargets.includes('codex')) report.installedRoleDigests = await readCodexRoleDigests(env.CODEX_HOME);
     report.nativePackages = await readNativePackages(measuredReceipt.targetResults ?? measuredReceipt.data?.targetResults ?? [], isolatedRoot);
     if (!stages.review.transportScans) throw new Error('No complete Active transport digest was observed during Review.');
     if ([stages.review, stages.execute].some((stage) => Object.values(stage.providerCalls).some(Boolean))) {
@@ -495,8 +509,15 @@ async function main() {
     process.stdout.write(usage);
     return;
   }
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-latency-')));
+  let directory = input.sandboxRoot;
+  if (directory) {
+    directory = path.join(await fs.realpath(path.dirname(directory)), path.basename(directory));
+    await fs.mkdir(directory, { mode: 0o700 });
+  } else {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-latency-'));
+  }
   try {
+    const root = await fs.realpath(directory);
     const env = await prepareEnvironment(root);
     delete env.CI;
     env.TERM = 'xterm-256color';
@@ -516,7 +537,7 @@ async function main() {
       process.exitCode = 1;
     }
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(directory, { recursive: true, force: true });
   }
 }
 

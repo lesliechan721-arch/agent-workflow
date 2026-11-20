@@ -56,6 +56,7 @@ flowchart TD
 - **观测与内容事实状态（RecoveryTarget）**：
   - `observation`：为现场观测事实枚举（`'verified' | 'missing' | 'unknown'`）；
   - `content`：为现场内容匹配事实枚举（`'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown'`）。两者均为**机器状态事实，绝非内容签名或哈希摘要**。
+  - `satisfaction: 'not-applicable'` 表示只有能力缺口且实际安装数为 0 的目标已收敛。可以同时有 `content: 'satisfied'`，因此按目前可执行的工作计为 ready。实际安装和继承关系仍由独立的 `installed`、`inherited-user` 表达。
 - **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
 - **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。清单错误保留稳定细分原因、安全位置和相关 scope；坏 header 只提供诊断线索，不授予 owner 权限。已证明独立的错误不传播到无关目标，不能证明无关时保留对应覆盖缺口；共享位置和真实依赖的影响仍传播。重复用户文件错误合并，不能丢失作用范围。
 - **精确选择**：先解析完整必要依赖、provider、共享位置和碰撞关系，再对所选插件/target 观察。显式选择依赖时 inventory 包含该依赖及 requiredBy、需求和提供者 scope，不把它提升为 Intent root。无过滤查询仍按直接根聚合。
@@ -80,11 +81,11 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。status 核对 AW 归属和实际文件字节。摘要过期且已确认旧产物时显示待同步。记录缺失、损坏或文件无法核对时保留 unknown。重新 sync 可重建记录。Codex 只在 Project 生成角色时，核对参与渲染的范围。若同一轮也生成过有意为空的包，则另核对现有空结果记录的包单元和实际缺席。
 
-成功有意空集合使用既有 platforms 命名空间内可重建的空结果 receipt。它绑定精确 binding/scope、全部 render units 与可只读复算的来源、资源、配置和派生能力结论；不是安装或删除凭证。缺失、损坏或过期时提示重新准备。匹配 receipt 后仍检查实际包、注册、激活与补足，不能掩盖撤销失败或 foreign 残留。它不使用包含 staging 或旧现场的操作 fingerprint。
+成功有意为空的原生集合，以及经确认只包含能力缺口的零产物结果，使用既有 platforms 命名空间内可重建的证据。零产物 receipt 绑定精确 binding/scope、全部 render units 和可只读复算的来源、资源、配置、派生能力。交付证据保留本次能力缺口及实际交付组件。缺失、损坏或过期时仍需重新准备。匹配证据后继续检查实际包、登记、激活与补足，按实际情况报告撤销失败或 foreign 残留。删除权限由独立的现场归属证据决定。
 
 空结果的写入与状态读取都接受已确认的原生登记缺失、目录包缺失且登记不适用，或当前 scope 独立引用已撤销。接口未报告 activation 时不伪造 disabled，也不因该字段 unknown 拒绝这些缺席事实；Project 继承的 enabled 不代表独立项目引用。User 原生 enabled 不能因本地条目缺项而被认作空结果，foreign/unknown 归属与残留补足继续阻止确认。
 
-generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有准备成功、无 unmet 且明确有意为空时，才可在匹配证据及现场条件下报告成功空集合。全部 unmet 保留旧 Skill；混合集合可以写入独立的可支持 Skill，但保留受缺口影响的旧输出并报告 partial，不能由候选列表为空推导删除权限或 satisfied。
+generic 的准备 generation 同样保留来源绑定中的完整 `unmet`。匹配当前证据、现场没有未处理的输出且缺口仅来自平台能力时，可以确认零产物就绪。混合集合按已确认的 Skill 成品和能力缺口显示交付结果。受影响的旧 Skill 按声明和归属保护处理，仍有旧残留或其他未满足项时按实际结果待处理。候选列表为空本身不授予删除权限。
 
 ## 3. 现场证据、共享引用与 scope
 

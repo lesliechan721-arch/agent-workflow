@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
@@ -39,7 +40,15 @@ export function selectNativeProduct(products: readonly ProductInstallation[]): P
   const usable = (product: ProductInstallation): boolean => product.availability === 'available' && product.entry?.kind === 'cli';
   return products.find((product) => product.product === 'cli' && usable(product)) ?? products.find(usable);
 }
+const SHARED_NATIVE_PROBE_PLATFORMS: readonly NodeJS.Platform[] = [];
+export const supportsSharedNativeProbe = SHARED_NATIVE_PROBE_PLATFORMS.includes(process.platform);
+export interface PlacementProbeGroup {
+  scope: 'user' | 'project';
+  probes: Map<string, { runner: ReadContext['runner']; signal: ReadContext['signal']; result: Promise<string | null> }>;
+}
 export interface ReadContext {
+  /** Lent only to initial resolutions of a single placement group, before rendering. */
+  placementProbeGroup?: PlacementProbeGroup;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -153,6 +162,60 @@ async function probe(ctx: ReadContext, command: string, args: string[]): Promise
   }
   return `${result.stdout}\n${result.stderr}`;
 }
+/** Script launchers can select another program without changing their own file. */
+async function nativeImageIdentity(command: string, os: NodeJS.Platform): Promise<string[] | undefined> {
+  if (!path.isAbsolute(command)) return undefined;
+  const real = await fs.realpath(command);
+  if (os !== 'win32') await fs.access(real, constants.X_OK);
+  const file = await open(real, 'r');
+  try {
+    const header = Buffer.alloc(4);
+    const [{ bytesRead }, stat] = await Promise.all([file.read(header, 0, 4, 0), file.stat({ bigint: true })]);
+    // PE, ELF and Mach-O (including universal binaries).
+    const known = os === 'win32' ? header.readUInt16BE() === 0x4d5a
+      : os === 'linux' ? header.readUInt32BE() === 0x7f454c46
+      : ['feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca'].includes(header.toString('hex'));
+    if (bytesRead !== 4 || !stat.isFile() || !known) return undefined;
+    return [real, stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs, stat.mode].map(String);
+  } finally { await file.close(); }
+}
+
+async function placementVersion(ctx: ReadContext, platform: PlatformTarget, product: ProductInstallation,
+  command: string, args: string[], read: () => Promise<string | null>): Promise<string | null> {
+  const group = ctx.placementProbeGroup;
+  // The complete version/identity decision is the shareable result. A Node
+  // entry or shim retains its independent probe until its final target is known.
+  if (!group || args.length !== 1 || args[0] !== '--version'
+    || !['claude', 'pi', 'antigravity', 'codex'].includes(platform)) return read();
+  const host = ctx.platform ?? process.platform;
+  let image: string[] | undefined;
+  try { image = await nativeImageIdentity(command, host); }
+  catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
+  if (!image) return read();
+  ctx.signal?.throwIfAborted();
+  const key = JSON.stringify([platform, product.id, image, command, args, group.scope, ctx.cwd,
+    Object.entries(ctx.env ?? process.env).sort(([a], [b]) => a.localeCompare(b)), host,
+    ctx.arch ?? process.arch, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS]);
+  const previous = group.probes.get(key);
+  if (previous && previous.runner === ctx.runner && previous.signal === ctx.signal) {
+    let version: string | null = null;
+    try { version = await previous.result; }
+    catch (error) { rethrowFatalError(error); }
+    ctx.signal?.throwIfAborted();
+    if (version && platformVersionSupported(platform, version)) return version;
+  }
+  const entry = { runner: ctx.runner, signal: ctx.signal, result: read() };
+  group.probes.set(key, entry);
+  try {
+    const version = await entry.result;
+    ctx.signal?.throwIfAborted();
+    if (!platformVersionSupported(platform, version) && group.probes.get(key) === entry) group.probes.delete(key);
+    return version;
+  } catch (error) {
+    if (group.probes.get(key) === entry) group.probes.delete(key);
+    throw error;
+  }
+}
 async function present(file: string): Promise<boolean> {
   try { return (await fs.stat(file)).isFile(); }
   catch (error) {
@@ -234,18 +297,22 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
-      const versionOutput = await probe(ctx, invocation.command, invocation.args);
-      if (!profile.identity.test(versionOutput)
-        && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
-        const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
-        if (!profile.identity.test(help)) {
-          product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');
+      const readVersion = async (): Promise<string | null> => {
+        const versionOutput = await probe(ctx, invocation.command, invocation.args);
+        if (!profile.identity.test(versionOutput)
+          && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
+          const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
+          if (!profile.identity.test(help)) {
+            product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');
+          }
         }
-      }
-      const version = platform === 'cursor' ? versionOutput.match(/\b(\d{4}\.\d{2}\.\d{2}-[a-z0-9]+)\b/u)?.[1] ?? null
-        : extractStrictSemVerTokenFromVersionOutput(platform === 'opencode'
-          ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ')
-          : platform === 'copilot' ? versionOutput.replace(/^GitHub Copilot CLI ([^\s]+)\.\r?$/gmu, 'GitHub Copilot CLI $1') : versionOutput);
+        return platform === 'cursor' ? versionOutput.match(/\b(\d{4}\.\d{2}\.\d{2}-[a-z0-9]+)\b/u)?.[1] ?? null
+          : extractStrictSemVerTokenFromVersionOutput(platform === 'opencode'
+            ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ')
+            : platform === 'copilot' ? versionOutput.replace(/^GitHub Copilot CLI ([^\s]+)\.\r?$/gmu, 'GitHub Copilot CLI $1') : versionOutput);
+      };
+      const version = ctx.placementProbeGroup
+        ? await placementVersion(ctx, platform, product, invocation.command, invocation.args, readVersion) : await readVersion();
       product.version = version;
       if (!version) {
         product.reasonCodes = ['clientVersionUnknown'];
@@ -304,9 +371,17 @@ async function discoverCodex(ctx: ReadContext): Promise<DiscoveryResult> {
     const entry: HostEntry = { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot('codex', ctx) };
     const product = installation('codex', candidate.manager.kind === 'app' ? 'app' : 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
-      const output = await probe(ctx, candidate.manager.command, [...candidate.manager.argsPrefix, '--version']);
-      const version = extractStrictSemVerTokenFromVersionOutput(output);
-      if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) throw new Error('clientIdentityUnconfirmed');
+      const args = [...candidate.manager.argsPrefix, '--version'];
+      const readVersion = async () => {
+        const output = await probe(ctx, candidate.manager.command, args);
+        const version = extractStrictSemVerTokenFromVersionOutput(output);
+        if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) {
+          throw new Error('clientIdentityUnconfirmed');
+        }
+        return version;
+      };
+      const version = ctx.placementProbeGroup
+        ? await placementVersion(ctx, 'codex', product, candidate.manager.command, args, readVersion) : await readVersion();
       product.version = version;
       product.availability = platformVersionSupported('codex', version) ? 'available' : 'unsupported';
       product.reasonCodes = product.availability === 'available' ? [] : ['clientVersionUnsupported'];

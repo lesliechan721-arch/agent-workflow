@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { NativeCliError } from '../utils/native-cli.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import type { OwnedComponent } from '../utils/ownership.js';
@@ -24,12 +25,18 @@ export interface PlatformDriverState {
   readonly packageComponent: OwnedComponent | null;
   readonly bundle: ProjectionResult['bundle'];
   readonly contributions: PreparedContribution[];
+  readonly retainedPaths: string[];
   readonly removals: Array<{ effectId: string; component: OwnedComponent }>;
 }
 
 export function lifecycleDiagnostic(binding: DeploymentBinding, code: string, message: string): Diagnostic {
   return { code, severity: 'error', message,
     subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } };
+}
+function retainedOutput(binding: DeploymentBinding, location: string): Diagnostic {
+  return { ...lifecycleDiagnostic(binding, 'previousDeploymentRetained',
+    'Previous output at this location was retained and may still be active. Check its owner and the plugin declaration before retrying.'),
+    detail: { reasonCode: 'previousDeploymentRetained', path: location } };
 }
 function componentPath(component: OwnedComponent): string | null {
   return 'path' in component ? component.path : null;
@@ -72,6 +79,12 @@ function exactScope(binding: DeploymentBinding, component: OwnedComponent): bool
   return component.identity.scope === binding.scope.kind;
 }
 
+export function hasCompleteDeliveryDeclaration(expected: LifecyclePrepareInput['expected']): boolean {
+  return expected.unmet.every((gap) => isDeliveryCapabilityGap(gap) && (expected.sources[gap.id] === 'static'
+    || expected.declaredComponentIds?.includes(gap.componentId ?? gap.id)
+    || expected.components.some((component) => component.id === gap.componentId)));
+}
+
 /** Selects fixed route operations from observed facts. It performs no I/O. */
 export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareResult<PlatformDriverState> {
   const { binding, observation, evidence, expected, operation } = input;
@@ -83,8 +96,13 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   if (observation.physicalKey !== binding.physicalKey) {
     return blocked('deploymentEvidenceMismatch', 'The observation does not belong to this deployment. Prepare the operation again.');
   }
-  if (!removing && !expected.components.length && expected.unmet.length) {
-    return blocked('noSupportedComponents', 'No requested component can be installed. Existing output was kept.');
+  if (!removing && !expected.components.length && expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap))) {
+    const residual = evidence.ownership.filter((slot) => slot.state !== 'absent').map((slot) =>
+      contributionDestination(slot.component) ?? evidence.layout.activationPath);
+    if (observation.registration === 'present') residual.push(evidence.layout.activationPath);
+    return { status: 'blocked', diagnostics: [lifecycleDiagnostic(binding, 'platformComponentsUnmet',
+      'A required component could not be prepared. Check its requirements and retry.'),
+    ...[...new Set(residual)].map((location) => retainedOutput(binding, location))] };
   }
   const bundles = input.projections.flatMap((projection) => projection.bundle ? [projection.bundle] : []);
   if (bundles.length > 1) return blocked('shared-projection-conflict', 'This deployment has conflicting package projections. Existing output was kept.');
@@ -132,7 +150,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     return id;
   };
   const state: PlatformDriverState = { before: observation, identity, product,
-    packageComponent: packageSlot?.component ?? null, bundle: bundles[0] ?? null, contributions: [], removals: [] };
+    packageComponent: packageSlot?.component ?? null, bundle: bundles[0] ?? null, contributions: [], removals: [], retainedPaths: [] };
   const retainedGaps: LifecyclePrepareInput['expected']['unmet'] = [];
   const ids = input.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components.map((component) => component.id));
   const independentContribution = (contribution: HostContribution): boolean => binding.platform === 'codex'
@@ -152,7 +170,23 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   const revokeActivation = !inheritedClaudeProject
     && observation.consumers.some((consumer) => consumer.activation === 'enabled' || consumer.activation === 'unknown');
   const hasReferences = inheritedClaudeProject || evidence.sharedReferences !== 'none';
-  const empty = !expected.components.length && !expected.unmet.length;
+  const complete = hasCompleteDeliveryDeclaration(expected);
+  // Preserve destinations whose previous use cannot be safely withdrawn. Independent
+  // contributions still run and the receipt identifies each observed residual.
+  if (!removing && expected.unmet.length) {
+    for (const slot of slots.filter((slot) => slot.state !== 'absent')) {
+      const replaced = allContributions.some((contribution) => matchesContribution(slot.component, contribution)
+        && (!retainPackage || independentContribution(contribution)));
+      const kept = slot === packageSlot ? retainPackage || !state.bundle && (hasReferences || observation.ownership !== 'aw' || !complete)
+        : !replaced && (!complete || retainPackage || !exactScope(binding, slot.component)
+          || !['present', 'partial'].includes(slot.state));
+      if (kept) state.retainedPaths.push(contributionDestination(slot.component) ?? evidence.layout.activationPath);
+    }
+    if (!state.bundle && observation.registration === 'present' && (!complete || hasReferences || observation.ownership !== 'aw')) {
+      state.retainedPaths.push(identity?.sourceLocation ?? evidence.layout.activationPath);
+    }
+  }
+  const empty = !expected.components.length && complete && !retainPackage;
   if (removing || empty) {
     // Scope-local entries are revoked before any package or native registration.
     if (nativeRoute(binding.route) && identity && observation.registration !== 'absent'
@@ -216,8 +250,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       && (observation.ownership === 'aw' || observation.ownership === 'shared')) {
       // A valid supplement-only set withdraws this binding's previous package.
       // It does not install or register an empty native source.
-      if (revokeActivation) add('deactivate', evidence.layout.activationPath, [], true);
-      if (!hasReferences && observation.ownership === 'aw') add('unregister', identity.sourceLocation, [], true);
+      if (complete && revokeActivation) add('deactivate', evidence.layout.activationPath, [], true);
+      if (complete && !hasReferences && observation.ownership === 'aw') add('unregister', identity.sourceLocation, [], true);
     }
     for (const contribution of allContributions) {
       if (retainPackage && !independentContribution(contribution)) continue;
@@ -235,12 +269,12 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       if (slot === packageSlot || !['present', 'partial'].includes(slot.state) || !exactScope(binding, slot.component)) continue;
       // Missing contributions in an unmet set can still be required. Preserve
       // them even when this deployment has no native package to retain.
-      if (retainPackage || expected.unmet.length) continue;
+      if (retainPackage || !complete) continue;
       const destination = contributionDestination(slot.component);
       if (!destination || allContributions.some((item) => matchesContribution(slot.component, item))) continue;
       state.removals.push({ effectId: add('remove-owned', destination, [], true, slot.component.identity.artifactKey, slot.physicalKey), component: slot.component });
     }
-    if (!retainPackage && !state.bundle && !hasReferences && packageSlot && ['present', 'partial'].includes(packageSlot.state)
+    if (complete && !retainPackage && !state.bundle && !hasReferences && packageSlot && ['present', 'partial'].includes(packageSlot.state)
       && observation.ownership === 'aw') {
       state.removals.push({ effectId: add('remove-owned', evidence.layout.packageRoot, [], true), component: packageSlot.component });
     }
@@ -258,7 +292,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   const { binding } = plan;
   const receipt: DeploymentReceipt = { bindingId: binding.id, effects: [], after: state.before,
     unmet: plan.expected.unmet.map((gap) => ({ ...gap, productIds: binding.consumers.map((item) => item.id) })),
-    reload: 'none', diagnostics: [] };
+    reload: 'none', diagnostics: plan.projections.flatMap((projection) => projection.diagnostics) };
+  receipt.diagnostics.push(...[...new Set(state.retainedPaths)].map((location) => retainedOutput(binding, location)));
   let cleanupFailure: Diagnostic | undefined;
   const recordCleanupFailure = (error: unknown) => {
     if (!(error instanceof NativeCliError && error.cleanupError) && readSafeOperationError(error)?.code !== 'processCleanupUnconfirmed') return;

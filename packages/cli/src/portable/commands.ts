@@ -402,7 +402,7 @@ export async function materializePortableSkillsToDirectory(options: {
     env: options.env,
   });
   const materialized = await materializePortableSkillsFromCatalog({
-    ...options,
+    ...options, includeComponentGaps: options.allowUnmet,
     scope,
     configSnapshot,
     catalogOperationContext,

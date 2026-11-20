@@ -1,7 +1,9 @@
 import path from 'node:path';
 import { canonicalizePathThroughExistingAncestor, resolveAwHome, resolveUserHome } from '../utils/state-paths.js';
+import { SKILL_OWNER_MARKER } from '../utils/ownership.js';
+import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { canonicalNamespaceRoot, getPhysicalKey, identityDigest } from './identity.js';
-import { resolvePlatformConfigRoot } from './discovery.js';
+import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
 import type { ComponentKind, DeploymentBinding, InstallRoute, NativeIdentity, PhysicalIdentity, PluginIdentity, ReadContext, RenderUnit, Resolution, ResolveRequest, ScopeRef } from './contracts.js';
 
 const ALL_KINDS: ComponentKind[] = ['skill', 'mcp', 'agent', 'hook', 'instruction'];
@@ -88,6 +90,10 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
       namespaceRoot = scope.kind === 'user' ? path.join(hostRoot, 'plugins') : path.join(scopeRoot, '.agents', 'plugins');
       packageRoot = path.join(namespaceRoot, resourceKey);
       activationPath = namespaceRoot;
+      // Check the declared directory chain before canonicalization can follow
+      // a project link into another project's or the user's plugin store.
+      await assertSafeFileMutationPath({ filePath: path.join(packageRoot, SKILL_OWNER_MARKER),
+        allowedRoot: scope.kind === 'user' ? hostRoot : scopeRoot, label: 'Antigravity plugin directory' });
       break;
     case 'opencode-directory':
       namespaceRoot = scope.kind === 'user' ? path.join(hostRoot, 'plugins') : path.join(scopeRoot, '.opencode', 'plugins');
@@ -142,12 +148,19 @@ export async function resolveDeployments(ctx: ReadContext, request: ResolveReque
     ? { kind: 'project', projectRoot: await canonicalNamespaceRoot(request.scope.projectRoot) } : { kind: 'user' } };
   const result: Resolution = { bindings: [], renderUnits: [], exclusions: [], diagnostics: [] };
   const bindings = new Map<string, DeploymentBinding>();
+  const userAntigravityCli = request.discovery.platform === 'antigravity' && request.scope.kind === 'user'
+    ? selectNativeProduct(request.discovery.installations) : undefined;
   for (const product of request.discovery.installations) {
     if (!['available', 'notApplicable'].includes(product.availability) || !product.entry) {
       result.exclusions.push({ productId: product.id, reasonCode: product.reasonCodes[0] ?? 'client-missing' }); continue;
     }
+    // App and CLI use the same personal store. The CLI owns registration
+    // when it is available and the App reads the resulting copy.
+    const sharedAntigravityUserStore = userAntigravityCli?.entry?.kind === 'cli' && product.entry.kind === 'directory'
+      && product.entry.configRoot === userAntigravityCli.entry.configRoot;
     const binding: DeploymentBinding = { id: '', plugin: request.plugin, platform: request.discovery.platform, scope: request.scope,
-      route: getInstallRoute(request.discovery.platform, request.scope, product), consumers: [product], physicalKey: '', activationKey: '', renderUnitIds: [] };
+      route: getInstallRoute(request.discovery.platform, request.scope, sharedAntigravityUserStore ? userAntigravityCli : product),
+      consumers: [product], physicalKey: '', activationKey: '', renderUnitIds: [] };
     let layout: DeploymentLayout;
     try { layout = await getDeploymentLayout(ctx, binding); } catch {
       result.exclusions.push({ productId: product.id, reasonCode: 'deploymentLayoutUnconfirmed' });

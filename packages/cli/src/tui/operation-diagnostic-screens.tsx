@@ -100,6 +100,12 @@ function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine
       target.diagnosticIds.includes(diagnostic.id));
     lines.push(
       { title: `目标 · ${targetLabel(target)}`, meta: target.state },
+      ...(target.partialDelivery ? [{ title: '部分完成', meta: '已验证部分输出' }] : []),
+      ...(target.componentDelivery?.notApplicable ? [{ title: '当前平台无适用组件' }]
+        : target.componentDelivery?.withNotices ? [{ title: '已安装 · 有提示' }] : []),
+      ...(target.componentDelivery?.installedComponentCount === undefined ? []
+        : [{ title: `已安装 ${target.componentDelivery.installedComponentCount} 项` }]),
+      ...(target.componentDelivery?.installedComponentIds?.length ? [{ title: `已安装组件 ${target.componentDelivery.installedComponentIds.join('、')}` }] : []),
       ...(target.errorCode ? [{ title: '目标代码', meta: target.errorCode }] : []),
       ...(target.effects ? effectLines(target.effects) : []),
       ...targetDiagnostics.flatMap((diagnostic) => [

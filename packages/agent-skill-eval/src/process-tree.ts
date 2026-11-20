@@ -27,6 +27,8 @@ const PROCESS_TREE_MARKER_INTERVAL_MS = 1_000;
 const PROCESS_TREE_TERMINATION_GRACE_MS = 250;
 const PROCESS_TREE_TERMINATION_SETTLE_MS = 50;
 const PROCESS_TREE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const MARKER_SCAN_COLLECTION_MS = 2;
+const MARKER_SCAN_MIN_SHARED_BUDGET_MS = 20;
 
 interface ProcessEntry {
   ppid: number;
@@ -97,6 +99,8 @@ interface PosixMarkerScan {
 export interface ProcessTreeDependencies {
   platform?: NodeJS.Platform;
   markerEnvironmentVariable?: string;
+  /** Coalesce newly requested marker scans for native install cleanup. */
+  coalescePosixMarkerScans?: boolean;
   /** Continuously verify markers without requiring all descendants to share a process group. */
   enforceProcessMarker?: boolean;
   /** Enforce the custom provider contract, including continuous marker verification. */
@@ -193,6 +197,7 @@ interface ObservationState {
   platform: NodeJS.Platform;
   marker?: string;
   markerEnvironmentVariable: string;
+  coalescePosixMarkerScans: boolean;
   lease?: ProcessTreeInspectionLease;
   dependencies: ProcessTreeDependencies;
   root?: ProcessIdentity;
@@ -518,6 +523,74 @@ function readPosixMarkerOutput(
     execFileImpl,
     timeoutMs,
   );
+}
+
+interface PendingMarkerScan {
+  expiresAt: number;
+  receive(lookup: ProcessCommandPromise): void;
+}
+
+// All members of a batch use the same execution backend, inherited process
+// view, ps arguments, and output limit. Only requests waiting to launch are kept.
+const pendingMarkerScans = new WeakMap<NonNullable<ProcessTreeDependencies['execFile']>, PendingMarkerScan[]>();
+
+function readObservationMarkerOutput(state: ObservationState, timeoutMs: number): ProcessCommandPromise {
+  const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
+  if (!state.coalescePosixMarkerScans || timeoutMs < MARKER_SCAN_MIN_SHARED_BUDGET_MS) {
+    return readPosixMarkerOutput(execFileImpl, timeoutMs);
+  }
+  const requestedAt = Date.now();
+  const expiresAt = performance.now() + timeoutMs;
+  const query: ProcessQueryDiagnostic = {
+    kind: 'marker', startedAt: requestedAt, deadline: requestedAt + timeoutMs,
+    callbackState: 'not-called', completion: 'pending',
+  };
+  const pending = new Promise<ProcessCommandResult>((resolve) => {
+    const expire = (): void => {
+      if (query.completion !== 'pending') return;
+      query.settledAt = Date.now();
+      query.completion = 'deadline';
+      query.failureReason = 'deadline-exceeded';
+      resolve({ output: null, failure: commandFailure('deadline-exceeded'), query: { ...query } });
+    };
+    const timer = setTimeout(expire, timeoutMs);
+    timer.unref();
+    const request: PendingMarkerScan = {
+      expiresAt,
+      receive(lookup) {
+        if (query.completion !== 'pending') return;
+        query.startedAt = lookup.query.startedAt;
+        query.callbackState = 'pending';
+        void lookup.then((result) => {
+          clearTimeout(timer);
+          if (query.completion !== 'pending') return;
+          if (performance.now() >= expiresAt) {
+            expire();
+            return;
+          }
+          Object.assign(query, result.query, { deadline: requestedAt + timeoutMs });
+          resolve({ ...result, query: { ...query } });
+        });
+      },
+    };
+    const waiting = pendingMarkerScans.get(execFileImpl);
+    if (waiting) {
+      waiting.push(request);
+      return;
+    }
+    const batch = [request];
+    pendingMarkerScans.set(execFileImpl, batch);
+    setTimeout(() => {
+      pendingMarkerScans.delete(execFileImpl);
+      const now = performance.now();
+      const live = batch.filter((member) => member.expiresAt > now);
+      if (live.length === 0) return;
+      const remaining = Math.ceil(Math.max(...live.map((member) => member.expiresAt - now)));
+      const lookup = readPosixMarkerOutput(execFileImpl, remaining);
+      for (const member of live) member.receive(lookup);
+    }, MARKER_SCAN_COLLECTION_MS);
+  });
+  return Object.assign(pending, { query });
 }
 
 async function confirmDarwinMarkers(
@@ -1067,7 +1140,7 @@ async function acceptPosixSnapshot(
     const remaining = markerConfirmationDeadline - Date.now();
     snapshot.markerLookupAttempts += 1;
     const confirmation: ProcessCommandResult = remaining > 0
-      ? await readPosixMarkerOutput(state.dependencies.execFile ?? defaultExecFile, remaining)
+      ? await readObservationMarkerOutput(state, remaining)
       : { output: null, failure: commandFailure('deadline-exceeded') };
     if (confirmation.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(confirmation.query);
     if (confirmation.output === null) {
@@ -1559,13 +1632,12 @@ async function readImmediatePosixSnapshot(
   const startedAt = Date.now();
   const deadline = startedAt + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
   const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
-  // A shared query may have captured processes before this termination stage.
-  // Start this stage's own atomic query immediately; retain earlier deliveries
-  // as observation evidence without using them as completion or cleanup facts.
+  // A sampler query may have captured processes before this termination stage.
+  // Take a new atomic read, eligible to share only with requests waiting to launch.
   const remaining = deadline - Date.now();
   const lookup = state.marker === undefined
     ? readPosixIdentityTable(execFileImpl, Math.max(1, remaining))
-    : readPosixMarkerOutput(execFileImpl, Math.max(1, remaining));
+    : readObservationMarkerOutput(state, Math.max(1, remaining));
   let timer: ReturnType<typeof setTimeout> | undefined;
   let result: ProcessCommandResult;
   try {
@@ -1624,19 +1696,7 @@ async function readImmediatePosixSnapshot(
     state.diagnostics[1] = diagnostic;
     return undefined;
   }
-  const markerScan = state.marker === undefined ? undefined : parsePosixMarkerScan(result.output);
-  const markerPids = markerScan && state.marker !== undefined
-    ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
-    : new Set<number>();
-  const snapshot: PosixProcessSnapshot = {
-    table: markerScan?.table ?? parsePosixProcessTable(result.output),
-    markerPids,
-    unreadableMarkerPids: unreadableMarkerPids(markerScan, state.platform, markerPids),
-    markerLookupSucceeded: true,
-    markerScanStartedAt: startedAt,
-    ...queryMetadata,
-    confirmedUnmarkedPids: new Set(),
-  };
+  const snapshot = successfulPosixSnapshot(state, result.output, queryMetadata);
   await acceptPosixSnapshot(state, snapshot, stage, deadline);
   if (Date.now() >= deadline) {
     const diagnostic = {
@@ -1650,6 +1710,26 @@ async function readImmediatePosixSnapshot(
   // Keep only the first failure and the latest cleanup scan, even if inspection recovers.
   if (state.failure) state.diagnostics[1] = posixDiagnostic(state, snapshot, stage, 'cleanup-snapshot');
   return snapshot;
+}
+
+function successfulPosixSnapshot(
+  state: ObservationState,
+  output: string,
+  queryMetadata: Pick<PosixProcessSnapshot, 'snapshotStartedAt' | 'snapshotDeadline' | 'markerLookupAttempts' | 'queries'>,
+): PosixProcessSnapshot {
+  const markerScan = state.marker === undefined ? undefined : parsePosixMarkerScan(output);
+  const markerPids = markerScan && state.marker !== undefined
+    ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
+    : new Set<number>();
+  return {
+    table: markerScan?.table ?? parsePosixProcessTable(output),
+    markerPids,
+    unreadableMarkerPids: unreadableMarkerPids(markerScan, state.platform, markerPids),
+    markerLookupSucceeded: true,
+    markerScanStartedAt: queryMetadata.snapshotStartedAt,
+    ...queryMetadata,
+    confirmedUnmarkedPids: new Set(),
+  };
 }
 
 function createProcessTreeObservation(
@@ -1679,12 +1759,18 @@ function createProcessTreeObservation(
       }
     },
   };
+  const platform = dependencies.platform ?? process.platform;
+  const periodic = dependencies.enforceProcessMarker === true ||
+    dependencies.enforceCooperativeProcessGroup === true;
   const state: ObservationState = {
     pid,
-    platform: dependencies.platform ?? process.platform,
+    platform,
     marker,
     markerEnvironmentVariable:
       dependencies.markerEnvironmentVariable ?? DEFAULT_PROCESS_MARKER_ENV,
+    coalescePosixMarkerScans: dependencies.coalescePosixMarkerScans === true &&
+      marker !== undefined && !periodic && lease === undefined &&
+      (platform === 'darwin' || platform === 'linux'),
     lease,
     dependencies,
     rootDiscoveryPending: true,
@@ -1707,9 +1793,22 @@ function createProcessTreeObservation(
     });
     return observation;
   }
+  if (state.coalescePosixMarkerScans) {
+    const requestedAt = Date.now();
+    const timeoutMs = posixCommandTimeout(state.platform);
+    state.initialLookup = readObservationMarkerOutput(state, timeoutMs).then(async (result) => {
+      if (state.disposed || result.output === null) return;
+      const snapshot = successfulPosixSnapshot(state, result.output, {
+        snapshotStartedAt: requestedAt,
+        snapshotDeadline: requestedAt + timeoutMs,
+        markerLookupAttempts: 1,
+        queries: result.query ? [result.query] : [],
+      });
+      await acceptPosixSnapshot(state, snapshot, 'observation');
+    });
+    return observation;
+  }
   const sampler = getPosixProcessSampler(execFileImpl, state.platform);
-  const periodic = dependencies.enforceProcessMarker === true ||
-    dependencies.enforceCooperativeProcessGroup === true;
   if (periodic) {
     state.sampler = sampler;
     sampler.states.add(state);
