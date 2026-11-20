@@ -14,7 +14,7 @@
 | OpenCode | `2.0.0` | 六环境，User / Project | [管理、消费字节与 scope](native-opencode-skills-2026-11-13.json) |
 | Antigravity | `1.3.4` | 六环境，User | [管理、消费字节与 scope](native-antigravity-user-skills-six-hosts-2026-11-14.json) |
 
-[技能调用证据](native-manual-skill-invocation-2026-11-20.json) 单独记录固定 CLI 的手动入口、自动候选、原生字段及对应的对照。各条目保存本机实际范围、探针及证据层级，含需要登录或只能核对本地协议的边界。九目标 Catalog 矩阵和各系统托管资格分别生成对应候选的报告。
+[技能调用证据](native-manual-skill-invocation-2026-11-20.json) 记录固定 CLI 的手动入口、自动候选、原生字段及对照。`profiles` 保存本机案例，`hosted` 记录每份托管报告的提交、运行、摘要与实际验证的客户端。需要登录、需要显式挂载插件和只能观察本地协议的情况分别标明。九目标 Catalog 矩阵另行验证同一候选的交付内容。
 
 六环境指 Linux、macOS、Windows 的 x64 / arm64。Grok 四环境指 Linux x64 / arm64、macOS arm64、Windows x64；缺少官方分发的另外两环境排除，不记通过。
 

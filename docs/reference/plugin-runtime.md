@@ -248,7 +248,7 @@ Agent、Instructions、MCP 和静态声明见[Manifest](manifest-and-config.md#2
 
 Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。protocol=null 或所需反馈没有映射时不能声明 supported。协议定义与真实客户端资格分别判断；旧事件校验入口也消费此 registry，不能维护不同 allowlist。
 
-三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 SKILL.md；宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
+三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
 
 unmet 的 requiredFeatures 保留具体缺失值及 componentId。例如 before_tool 只支持 notify 而要求 block，缺口为 {feature:'hook.common.before_tool',values:['block']}。Instructions 要求 main/plugin-agents 而只支持 main，则成功组件只含 main，关联缺口只含 plugin-agents。模型、工具限制与阻断不能静默删去。依赖或配置缺口可用空 requiredFeatures，能力缺口不能借此隐藏。reasonCode 必须与当前能力依据或登记的配置/依赖原因一致。
 

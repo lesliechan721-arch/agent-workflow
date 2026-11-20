@@ -1,19 +1,20 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
 import { runCli } from '../../src/index.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import type { PluginMeta } from '../../src/types.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import * as platformRegistry from '../../src/platforms/registry.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime, createNativeDependencyCatalog, replaceCatalogSourcesConfig } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-it.each(['supported', 'partly qualified', 'write failed', 'hard gap'] as const)(
+it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed', 'hard gap'] as const)(
   'reports invocation limitations only for delivered Skills with a %s native target', async (native) => {
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
@@ -41,6 +42,20 @@ it.each(['supported', 'partly qualified', 'write failed', 'hard gap'] as const)(
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     await writePreferences({ scope: 'user', cwd, env }, { ...createEmptyPreferences(), targets: ['codex', 'generic'] });
     const runtime = await createCodexNativeTestRuntime(isolation);
+    if (native === 'mixed Codex readers') {
+      const adapters = new Map(platformRegistry.getAgentPluginAdapters().map((adapter) => [adapter.platform, adapter]));
+      const discovery = vi.spyOn(platformRegistry, 'getAgentPluginAdapter').mockImplementation((platform) => {
+        const adapter = adapters.get(platform)!;
+        if (platform !== 'codex') return adapter;
+        return { ...adapter, async discover(context) {
+          const result = await adapter.discover(context);
+          const cli = result.installations.find(({ product, availability }) => product === 'cli' && availability === 'available');
+          if (!cli) throw new Error('Missing the controlled Codex CLI reader.');
+          return { ...result, installations: [cli, { ...cli, id: 'codex-desktop', product: 'app' }] };
+        } };
+      });
+      onTestFinished(() => discovery.mockRestore());
+    }
     const capture = createCapturedCliIo();
     const code = await runCli(['plugin', 'install', 'team/git-tools', '--scope', 'user', '--target', 'codex', '--target', 'generic', '--yes', '--json'], {
       cwd, env, io: capture.io, interactive: false,
@@ -52,19 +67,34 @@ it.each(['supported', 'partly qualified', 'write failed', 'hard gap'] as const)(
     expect(code, capture.readStdout()).toBe(partial ? 4 : 0);
     expect(receipt.status).toBe(partial ? 'partial' : 'success');
     const warnings = receipt.diagnostics.filter((item: { code: string }) => item.code === 'skillInvocationPolicyNotGuaranteed');
-    expect(warnings).toHaveLength(native === 'partly qualified' || native === 'hard gap' ? 2 : 1);
-    expect(warnings).toContainEqual(expect.objectContaining({ severity: 'warning', detail: { reasonCode: 'noBoundExecutor' },
+    expect(warnings).toHaveLength(native === 'supported' || native === 'write failed' ? 1 : 2);
+    expect(warnings).toContainEqual(expect.objectContaining({ severity: 'warning', detail: expect.objectContaining({ reasonCode: 'noBoundExecutor' }),
       subject: { pluginId: 'team/git-tools', scope: 'user', target: 'generic', field: 'skill.commit' } }));
     if (native === 'partly qualified' || native === 'hard gap') {
       const warning = warnings.find((item: { subject: { target: string } }) => item.subject.target === 'codex');
-      expect(warning).toMatchObject({ severity: 'warning', subject: { field: 'skill.commit' } });
+      expect(warning).toMatchObject({ severity: 'warning', subject: { field: 'skill.commit' }, detail: {
+        skillInvocationControls: expect.arrayContaining([expect.objectContaining({ feature: 'skill.visibility', values: ['hidden'] })]),
+      } });
       expect(warning.message).toContain('skill.visibility=hidden');
       expect(warning.message).not.toContain('skill.invocation.model');
+    }
+    if (native === 'mixed Codex readers') {
+      const notice = warnings.find((item: { subject: { target: string } }) => item.subject.target === 'codex');
+      expect(notice.message).toContain('skill.invocation.model=false for the Codex desktop app');
+      expect(notice.detail.skillInvocationControls).toEqual(expect.arrayContaining([
+        { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnverified' },
+        { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnverified' },
+        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+      ]));
     }
     const skillRoots = [path.join(env.HOME!, '.agents', 'skills')];
     if (native !== 'write failed') {
       const [plugin, marketplace] = [...runtime.installed][0]!.split('@');
       skillRoots.push(path.join(env.CODEX_HOME!, 'plugins/cache', marketplace!, plugin!, '1.0.0', 'skills'));
+    }
+    if (native === 'mixed Codex readers') {
+      await expect(fs.readFile(path.join(skillRoots[1]!, 'commit', 'agents', 'openai.yaml'), 'utf8'))
+        .resolves.toContain('allow_implicit_invocation: false');
     }
     for (const root of skillRoots) {
       for (const name of names) expect(await fs.pathExists(path.join(root, name, 'SKILL.md'))).toBe(true);

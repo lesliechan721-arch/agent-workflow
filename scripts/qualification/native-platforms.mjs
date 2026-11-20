@@ -64,7 +64,10 @@ export function aggregateQualificationStatus(statuses) {
   return required.every(status => status === 'passed') ? 'passed' : 'unverified';
 }
 
-export function requiredUserPublicChecks(platform) {
+export function requiredPublicChecks(platform, scope) {
+  if (scope === 'project') {
+    return ['claude', 'pi', 'opencode'].includes(platform) ? [`public-${platform}-manual-skill`] : [];
+  }
   return [`public-${platform}-manual-skill`, ...(platform === 'grok' ? [] : ['public-shipped-git-toolkit-install'])];
 }
 
@@ -420,10 +423,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
       });
       if (options.publicAw) {
         await qualifyPublicAw(ctx);
-        if (scope === 'user') {
-          for (const id of requiredUserPublicChecks(platform)) {
-            if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
-          }
+        for (const id of requiredPublicChecks(platform, scope)) {
+          if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
         }
       }
       else {
@@ -465,7 +466,7 @@ export async function run(options) {
     acceptancePolicy: { id: options['public-aw'] ? 'public-status-and-native-scope-v2' : 'management-content-scope-v1',
       required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup',
         ...(options['public-aw'] ? ['public-status', 'public-negative-scope-and-permission-cases'] : []),
-        ...(options['public-aw'] ? ['public-user-manual-skill-policy'] : []),
+        ...(options['public-aw'] ? ['public-manual-skill-policy-by-scope'] : []),
         ...(codexBehaviorRequested ? ['codex-manual-skill-and-native-role-resolution'] : []),
         ...(mixedPublicAwRequested ? ['mixed-native-aw-install-and-readback'] : [])],
       nonBlocking: ['skill-loading', 'model-adoption'],
@@ -494,7 +495,7 @@ export async function run(options) {
         ? 'client-windows-job-download-bounded-child'
         : 'client-verified-observed-download-bounded-child-not-os-containment' },
     uncovered: [...(options['public-aw'] ? [] : ['public-aw-install-end-to-end']),
-      ...(options['public-aw'] ? ['invocation-controls-outside-tested-user-scenarios'] : ['skill-invocation-controls']),
+      ...(options['public-aw'] ? ['invocation-controls-outside-tested-scenarios'] : ['skill-invocation-controls']),
       ...(codexBehaviorRequested ? ['agents-execution-outside-three-codex-user-roles'] : ['agents-execution']),
       ...(grokPublicRequested ? ['grok-user-same-source-refresh-with-host-authorization-denied'] : []),
       'external-model-invocation', 'mcp-execution', 'hook-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',

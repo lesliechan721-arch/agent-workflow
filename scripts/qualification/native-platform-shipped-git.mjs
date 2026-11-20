@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
+import invocationEvidence from './evidence/native-manual-skill-invocation-2026-11-20.json' with { type: 'json' };
 
 const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('yaml');
 
@@ -62,17 +63,26 @@ export async function qualifyShippedGitInstall(ctx) {
   assert.equal(result.data.allSatisfied, true);
   const required = ['git-commit', ...ordinaryGitSkills];
   const notices = result.diagnostics.filter(item => item.code === 'skillInvocationPolicyNotGuaranteed');
-  if (ctx.platform === 'generic') {
+  const desktopReader = target.deploymentPlans?.some(plan => plan.products.some(
+    reader => reader.product === 'app' && reader.availability === 'available'));
+  // Independently captured installed-session observations determine which User
+  // clients may claim the policy, including when a client could not be acquired.
+  const host = `${process.platform}-${process.arch}`;
+  const policyObservation = invocationEvidence.hosted.user.reports[host]?.userPolicy[ctx.platform];
+  const expectedWarning = desktopReader || (ctx.platform !== 'codex' && policyObservation !== 'installed-entry');
+  if (expectedWarning) {
     assert.equal(notices.length, 1);
     const [notice] = notices;
     assert.equal(notice.severity, 'warning');
-    assert.deepEqual(notice.subject, { pluginId: gitPluginId, target: 'generic', scope: 'user', field: 'skill.git-commit' });
-    assert.equal(notice.detail.reasonCode, 'noBoundExecutor');
+    assert.deepEqual(notice.subject, { pluginId: gitPluginId, target: ctx.platform, scope: 'user', field: 'skill.git-commit' });
+    assert.equal(notice.detail.reasonCode, ctx.platform === 'generic' ? 'noBoundExecutor' : 'invocationControlUnverified');
+    assert(notice.detail.skillInvocationControls.some(control => control.feature === 'skill.invocation.model' && control.values.includes('false')));
+  } else assert.deepEqual(notices, []);
+  if (ctx.platform === 'generic') {
     assert.deepEqual(target.componentGaps ?? [], []);
     await assertPublishedGitSkills('generic', path.join(ctx.env.HOME, '.agents', 'skills'), required);
-    return { level: 'public-AW-install-and-portable-writer-readback', execution: target.execution, skills: required, notice };
+    return { level: 'public-AW-install-and-portable-writer-readback', execution: target.execution, skills: required, notice: notices[0] };
   }
-  assert.deepEqual(notices, []);
   const expected = target.deploymentPlans.flatMap(plan => plan.expected.components).map(component => component.name).sort();
   assert.deepEqual(expected, required);
   const gaps = target.deploymentPlans.flatMap(plan => plan.expected.unmet);
@@ -86,5 +96,6 @@ export async function qualifyShippedGitInstall(ctx) {
   assert(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`),
     'Published native package must be inside this isolated fixture.');
   await assertPublishedGitSkills(ctx.platform, path.join(location, 'skills'), required);
-  return { level: 'public-AW-install-receipt-and-published-package-bytes', execution: target.execution, skills: expected, gaps };
+  return { level: 'public-AW-install-receipt-and-published-package-bytes', execution: target.execution, skills: expected, gaps,
+    ...(notices[0] ? { notice: notices[0] } : {}) };
 }

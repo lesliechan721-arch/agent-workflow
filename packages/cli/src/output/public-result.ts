@@ -2,7 +2,7 @@ import { describeNativeToolClosure, type NativeToolChange } from '../utils/nativ
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
-import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
+import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
 
@@ -19,7 +19,7 @@ export interface Diagnostic {
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
-  detail?: { reasonCode: string; path?: string; configKey?: string };
+  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }
@@ -180,13 +180,15 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   const confirmation = data.confirmation as Confirmation | null | undefined;
   if (confirmation?.required) for (const effect of confirmation.effects) lines.push(`Effect: ${effect.message}`);
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
-  for (const diagnostic of result.diagnostics.filter((entry) => entry.detail)) {
+  for (const diagnostic of result.diagnostics) {
+    const { detail } = diagnostic;
+    if (!detail) continue;
     if (diagnostic.code === SKILL_INVOCATION_NOTICE) {
       const position = [diagnostic.subject?.pluginId, diagnostic.subject?.target, diagnostic.subject?.scope].filter(Boolean).join(' / ');
       lines.push(`Warning · ${position} · ${diagnostic.message}`);
+      if (verbose) lines.push(`  Reason: ${detail.reasonCode}`);
       continue;
     }
-    const detail = diagnostic.detail!;
     lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
     if (detail.path) lines.push(`  Location: ${detail.path}`);
     if (detail.configKey) lines.push(`  Config key: ${detail.configKey}`);

@@ -485,5 +485,223 @@
         "status": "success"
       }
     }
+  },
+  "hosted": {
+    "sourceSha": "7c7158db4a208668c7b8c75972dac5fcb5572bdc",
+    "user": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661758960",
+      "versions": {
+        "codex": "0.167.0",
+        "claude": "2.1.317",
+        "pi": "1.5.0",
+        "opencode": "2.0.0",
+        "grok": "1.0.77",
+        "copilot": "1.0.95"
+      },
+      "reports": {
+        "darwin-arm64": {
+          "runner": "macos-15",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "46228e9ddd8cb81761cdb9c7f80d4e792de227af7b0ea00d9c93817e7428aced",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "darwin-x64": {
+          "runner": "macos-15-intel",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "a1863ca63c6e09c2c19afdd9356f4e1f3f93d01c33b066b3fbbfd16b7624134d",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "linux-arm64": {
+          "runner": "ubuntu-24.04-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "d5fa5560a79ddd770f8cf610a009d5ba02d1f1dc5c02af51eb765ee78f638435",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "linux-x64": {
+          "runner": "ubuntu-24.04",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "64e9582297bbe75c544759d6b08bab309911381f8ddc39f3793cb128b9b89ad0",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "win32-arm64": {
+          "runner": "windows-11-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "7f134443a9c857af7f03dd1a7ec70a35a9c756378e2eca73b3fb60cc60ce8e92",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "win32-x64": {
+          "runner": "windows-2025",
+          "status": "failed",
+          "attempt": "1",
+          "reportSha256": "d32612ae87ba27b218c652d5588f5abfa1f95e7b4fb39dab05a72a3fcd669fea",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode"
+          ]
+        }
+      },
+      "qualification": "Only a passed public manual-policy check on the named client and host is listed. A different client can fail the same run. Copilot used a plugin directory selected from native registration."
+    },
+    "antigravityUser": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661799102",
+      "version": "1.3.4",
+      "reports": {
+        "darwin-arm64": {
+          "runner": "macos-15",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "0136a66a2b6719e5d2fd8e55033416d4c3f79cf97c9302bf19a9ef8ff1099c61",
+          "publicChecksPassed": 20
+        },
+        "darwin-x64": {
+          "runner": "macos-15-intel",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "f56316e6dae3dde5f85f484d56dc37b7002c9f6e8f9ab2b14c19017cd66cb8a7",
+          "publicChecksPassed": 20
+        },
+        "linux-arm64": {
+          "runner": "ubuntu-24.04-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "ebff61be9c824fa100a7fbced7e585dd755620d10af3063c9c2655ec3ac6bfd2",
+          "publicChecksPassed": 20
+        },
+        "linux-x64": {
+          "runner": "ubuntu-24.04",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "dc45945cb1bdd41610424417ea105775b38161b63faefb110643429854bafc34",
+          "publicChecksPassed": 20
+        },
+        "win32-arm64": {
+          "runner": "windows-11-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "9eaf4e4b3d06aa584143065f3baa4af6cf9a9ff0c6a270fc87a282cc87e58b10",
+          "publicChecksPassed": 20
+        },
+        "win32-x64": {
+          "runner": "windows-2025",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "a6a1c3ee8271b77e43ae346376395b785fbd69fd4e0c60febac853ac0880b60f",
+          "publicChecksPassed": 20
+        }
+      },
+      "observed": [
+        "real public User install with three shipped git-toolkit Skills",
+        "effective native inventory and consumer bytes",
+        "boolean policy field validation",
+        "update and remove"
+      ],
+      "manualCommandVisibility": "unverified",
+      "automaticCandidate": "unverified"
+    },
+    "cursorLinux": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661758960",
+      "runner": "ubuntu-24.04",
+      "status": "failed",
+      "attempt": "1",
+      "reportSha256": "97d3d729d153e6c88fb17aa042afdce75b7d5129f31eddff01c9bff2d4503a69",
+      "host": "linux-x64",
+      "version": "2026.11.05-86047df",
+      "clientStatus": "observed",
+      "scope": [
+        "user",
+        "project"
+      ],
+      "observed": [
+        "workspaceOpen",
+        "slash selection with body",
+        "ordinary prompt without body",
+        "client policy sent to server",
+        "update and remove"
+      ],
+      "serverEnforcement": "unverified",
+      "reportBoundary": "The Cursor fixture was observed. The separate Antigravity Project inventory check failed in this interface report."
+    }
   }
 }

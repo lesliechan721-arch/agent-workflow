@@ -12,34 +12,38 @@ const PROFILE_BASELINES: Record<PlatformId, string> = {
 const CODEX_CLI_FEATURES = {
   'agent.execution': ['isolated-context'],
   'agent.prompt-mode': ['host-default'],
-  'skill.invocation.manual': ['true'],
-  'skill.invocation.model': ['true', 'false'],
-  'skill.visibility': ['visible'],
   'skill.runtime-config': ['aw.installed-runtime-config.v2'],
 };
 
 const MANUAL_SKILL_EVIDENCE = 'scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json';
+const CODEX_INVOCATION_CONTRACT = 'https://developers.openai.com/codex/skills';
+const SKILL_HOSTS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
+const CURSOR_SKILL_HOSTS = ['linux-x64', 'darwin-arm64'];
+const GROK_SKILL_HOSTS = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64'];
+const LOCAL_INVOCATION_HOSTS = ['darwin-arm64'];
+const PI_USER_INVOCATION_HOSTS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-arm64'];
 interface SkillCliProfile {
   version: string;
   evidence: string;
-  invocation?: { scopes: Scope[]; model: Array<'true' | 'false'> };
+  invocation?: { hosts: Partial<Record<Scope, readonly string[]>>; model: Array<'true' | 'false'>; minimumVersion?: string };
 }
 const SKILL_CLI_PROFILES: Partial<Record<PlatformId, SkillCliProfile>> = {
-  codex: { version: '0.167.0', evidence: 'scripts/qualification/evidence/native-skills-2026-11-12.json' },
+  codex: { version: '0.167.0', evidence: 'scripts/qualification/evidence/native-skills-2026-11-12.json',
+    invocation: { hosts: { user: SKILL_HOSTS, project: SKILL_HOSTS }, model: ['false', 'true'], minimumVersion: PROFILE_BASELINES.codex } },
   claude: { version: '2.1.317', evidence: 'scripts/qualification/evidence/native-claude-skills-2026-11-12.json',
-    invocation: { scopes: ['user', 'project'], model: ['false'] } },
-  antigravity: { version: '1.3.4', evidence: 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json',
-    invocation: { scopes: ['user'], model: ['false'] } },
+    invocation: { hosts: { user: SKILL_HOSTS, project: LOCAL_INVOCATION_HOSTS }, model: ['false'] } },
+  // Antigravity parses the policy. Its authenticated session menu and automatic candidates are unverified.
+  antigravity: { version: '1.3.4', evidence: 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json' },
   cursor: { version: '2026.11.05-86047df', evidence: MANUAL_SKILL_EVIDENCE,
-    invocation: { scopes: ['user', 'project'], model: ['false'] } },
-  copilot: { version: '1.0.95', evidence: 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json',
-    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+    invocation: { hosts: { user: CURSOR_SKILL_HOSTS, project: CURSOR_SKILL_HOSTS }, model: ['false'] } },
+  // The Copilot ACP probe required an explicit --plugin-dir beyond ordinary AW installation.
+  copilot: { version: '1.0.95', evidence: 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json' },
   pi: { version: '1.5.0', evidence: 'scripts/qualification/evidence/native-skills-2026-11-12.json',
-    invocation: { scopes: ['user', 'project'], model: ['false', 'true'] } },
+    invocation: { hosts: { user: PI_USER_INVOCATION_HOSTS, project: LOCAL_INVOCATION_HOSTS }, model: ['false', 'true'] } },
   opencode: { version: '2.0.0', evidence: 'scripts/qualification/evidence/native-opencode-skills-2026-11-13.json',
-    invocation: { scopes: ['user', 'project'], model: ['false', 'true'] } },
+    invocation: { hosts: { user: SKILL_HOSTS, project: LOCAL_INVOCATION_HOSTS }, model: ['false', 'true'] } },
   grok: { version: '1.0.77', evidence: 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json',
-    invocation: { scopes: ['user', 'project'], model: ['false'] } },
+    invocation: { hosts: { user: GROK_SKILL_HOSTS }, model: ['false'] } },
 };
 /** Fixed qualification evidence, not a promise inferred from the installed version. */
 export function getQualifiedPlatformProfile(platform: PlatformId, host: { platform?: NodeJS.Platform; arch?: NodeJS.Architecture } = {}): QualifiedPlatformProfile {
@@ -64,10 +68,9 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   const skillCli = SKILL_CLI_PROFILES[platform];
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
-  const qualifiedSkillHosts = platform === 'cursor' ? ['darwin-arm64'] : platform === 'grok'
-    ? ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64']
-    : ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
-  const qualifiedSkillHost = qualifiedSkillHosts.includes(`${hostPlatform}-${hostArch}`);
+  const hostId = `${hostPlatform}-${hostArch}`;
+  const qualifiedSkillHosts = platform === 'cursor' ? CURSOR_SKILL_HOSTS : platform === 'grok' ? GROK_SKILL_HOSTS : SKILL_HOSTS;
+  const qualifiedSkillHost = qualifiedSkillHosts.includes(hostId);
   if (skillCli && qualifiedSkillHost) {
     const skillVersion = skillCli.version;
     profile.id += `:${hostPlatform}-${hostArch}-cli-${skillVersion}-skills`;
@@ -88,19 +91,23 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     });
   }
   if (platform === 'codex' && qualifiedSkillHost) {
-    // Role TOML, installed config and Skill invocation policy use the same CLI boundary.
+    // Role TOML and installed config remain available through a qualified CLI.
     profile.id += ':cli-subagents';
     kinds.agent = { ...kinds.agent, status: 'supported', reasonCodes: [] };
     for (const [feature, values] of Object.entries(CODEX_CLI_FEATURES)) {
       features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
     }
   }
-  if (skillCli?.invocation && qualifiedSkillHost) {
+  if (skillCli?.invocation) {
     const invocation = skillCli.invocation;
-    profile.id += `:manual-cli-${skillCli.version}`;
-    profile.skillInvocation = { reference: MANUAL_SKILL_EVIDENCE, minimumVersion: skillCli.version, scopes: invocation.scopes,
-      features: [{ feature: 'skill.invocation.manual', values: ['true'] }, { feature: 'skill.visibility', values: ['visible'] },
-        { feature: 'skill.invocation.model', values: invocation.model }] };
+    const scopes = (['user', 'project'] as const).filter((scope) => invocation.hosts[scope]?.includes(hostId));
+    if (scopes.length) {
+      profile.id += `:manual-cli-${skillCli.version}`;
+      profile.skillInvocation = { reference: platform === 'codex' ? CODEX_INVOCATION_CONTRACT : MANUAL_SKILL_EVIDENCE,
+        minimumVersion: invocation.minimumVersion ?? skillCli.version, scopes,
+        features: [{ feature: 'skill.invocation.manual', values: ['true'] }, { feature: 'skill.visibility', values: ['visible'] },
+          { feature: 'skill.invocation.model', values: invocation.model }] };
+    }
   }
   return profile;
 }

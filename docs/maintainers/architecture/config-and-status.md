@@ -197,6 +197,7 @@ sequenceDiagram
 - **配置写入结果**：领域内部 Config Mutation Receipt v7 经 CLI 显式投影到统一结果的 data，存储版本不变。
   - 普通保存先通过 schema 和引用预检，再提交用户文档；按请求另行准备既有输出刷新。
   - `configWrite` 精确报告 `notStarted`、`failed`、`succeeded`，独立 apply 不重复保存。
+  - 应用配置时，已交付 Skill 的调用限制沿用安装和同步的警告，保留插件、目标、作用域和 Skill 身份。部分完成时仍报告已交付 Skill 的警告。
   - **已保存配置绝不回滚**：一旦原子提交完成，无论后续的平台发现、依赖解析、renderer 或 preApply 抛出何种异常，**已提交的配置文档绝不被撤销**。回执以 `partial` 或 `unavailable` 报告，并附带安全恢复指引（如 `aw plugin sync`）。
   - 状态检查与预览不运行 preApply。
   - JSON stdout 仅输出一个安全回执，敏感值不进入 argv、诊断或 Review。

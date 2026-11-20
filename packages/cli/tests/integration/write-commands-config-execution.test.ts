@@ -55,6 +55,106 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
+  // Test Value Gate: a config refresh must report the same installation limits as
+  // install for Skills it actually delivers, including repairs of missing files.
+  it('reports manual Skill invocation limits when configuration refreshes generic output', async () => {
+    const { env, layout: { fixtureCwd: cwd } } = getCurrentSourceTestIsolation();
+    const source = path.join(cwd, 'manual-skill-config-source');
+    await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `import fs from 'node:fs';
+const { values: { mode } } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8')).config;
+const skill = (name, policy) => ({ id: name, kind: 'skill', name, content: { files: {
+  'SKILL.md': { text: '---\\nname: ' + name + '\\ndescription: Fixture skill.\\n' + policy + '---\\nMode: ' + mode + '\\n' },
+  'README.md': { text: 'Fixture skill.\\n' }
+} } });
+const manual = skill('manual', 'user-invocable: true\\ndisable-model-invocation: true\\n');
+const gap = { id: 'ordinary', kind: 'skill', name: 'ordinary', reasonCode: 'interface-unsupported',
+  requiredFeatures: [{ feature: 'skill.execution', values: ['isolated-context'] }] };
+const partial = mode === 'partial';
+console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [],
+  components: partial ? [manual] : [skill('ordinary', ''), manual] }));
+`);
+    await createCatalogSnapshotFixture(source, 'demo', [], 'Fixture plugin.\n', (manifest) => {
+      manifest.platforms = ['generic'];
+      manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'safe' } } };
+      manifest.artifacts = { configKeys: ['mode'] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    });
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: source }] },
+    expectedDigest: (await readCatalogSourcesConfigSnapshot(env)).digest, env });
+    const runJson = async (args: string[]) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd, env, io: output.io, interactive: false,
+      });
+      return { exitCode, payload: JSON.parse(output.readStdout()) };
+    };
+    const invocationNotice = {
+      code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
+      subject: { pluginId: 'team/demo', target: 'generic', scope: 'user', field: 'skill.manual' },
+      detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: expect.arrayContaining([
+        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'noBoundExecutor' },
+      ]) },
+    };
+    const invocationNotices = (result: Awaited<ReturnType<typeof runJson>>) =>
+      result.payload.diagnostics.filter(({ code }: { code: string }) => code === invocationNotice.code);
+    const skillPath = path.join(env.HOME!, '.agents', 'skills', 'manual', 'SKILL.md');
+    expect(await runJson(['target', 'set', 'generic'])).toMatchObject({ exitCode: 0 });
+    const installed = await runJson(['plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--target', 'generic', '--yes']);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { status: 'success', diagnostics: [invocationNotice] } });
+
+    const original = await fs.readFile(skillPath);
+    await fs.move(path.dirname(skillPath), path.join(cwd, 'moved-manual-skill'));
+    const applied = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
+    expect(await fs.readFile(skillPath)).toEqual(original);
+    expect(applied).toMatchObject({ exitCode: 0, payload: { status: 'success',
+      data: { configWrite: 'notStarted', apply: { state: 'succeeded' } }, diagnostics: [invocationNotice] } });
+
+    const setArgs = ['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"fast"', '--platform', 'generic', '--apply', '--yes'];
+    const set = await runJson(setArgs);
+    expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: fast');
+    expect(set).toMatchObject({ exitCode: 0, payload: { status: 'success',
+      data: { configWrite: 'succeeded', apply: { state: 'succeeded' } } } });
+    expect(invocationNotices(set)).toMatchObject([invocationNotice]);
+    const unchanged = await runJson(setArgs);
+    expect(unchanged).toMatchObject({ exitCode: 0, payload: {
+      status: 'success', data: { apply: { state: 'skipped', reason: 'noConfigChange' } },
+    } });
+    expect(invocationNotices(unchanged)).toEqual([]);
+
+    const projectSkill = path.join(cwd, '.agents', 'skills', 'manual', 'SKILL.md');
+    const projectNotice = { ...invocationNotice, subject: { ...invocationNotice.subject, scope: 'project' } };
+    const projectInstall = await runJson(['plugin', 'install', 'team/demo', '--scope', 'project', '--target', 'generic', '--yes']);
+    expect(projectInstall).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(invocationNotices(projectInstall)).toMatchObject([projectNotice]);
+    const current = await fs.readFile(skillPath);
+    expect(await fs.readFile(projectSkill)).toEqual(current);
+    await fs.remove(path.dirname(skillPath));
+    await fs.remove(path.dirname(projectSkill));
+    const projectApplyArgs = ['plugin', 'config', 'apply', 'team/demo', '--context', 'project', '--target', 'generic', '--yes'];
+    const jointApply = await runJson(projectApplyArgs);
+    expect(jointApply).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(invocationNotices(jointApply)).toHaveLength(2);
+    expect(invocationNotices(jointApply)).toEqual(expect.arrayContaining([
+      expect.objectContaining(invocationNotice), expect.objectContaining(projectNotice),
+    ]));
+    expect(await fs.readFile(skillPath)).toEqual(current);
+    expect(await fs.readFile(projectSkill)).toEqual(current);
+
+    const saveOnly = await runJson(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user',
+      '--value-json', '"partial"', '--platform', 'generic']);
+    expect(saveOnly).toMatchObject({ exitCode: 0, payload: { data: { apply: { state: 'skipped', reason: 'notRequested' } } } });
+    expect(invocationNotices(saveOnly)).toEqual([]);
+    const ordinaryPath = path.join(path.dirname(path.dirname(skillPath)), 'ordinary', 'SKILL.md');
+    const ordinary = await fs.readFile(ordinaryPath);
+    const partial = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
+    expect(partial).toMatchObject({ exitCode: 4, payload: { status: 'partial' } });
+    expect(invocationNotices(partial), JSON.stringify(partial)).toMatchObject([invocationNotice]);
+    expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: partial');
+    expect(await fs.readFile(ordinaryPath)).toEqual(ordinary);
+    expect(await fs.readFile(projectSkill)).toEqual(current);
+  }, 30_000);
+
   it('keeps sensitive config input out of argv and preserves stdin bytes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'sensitive-config-input-source');

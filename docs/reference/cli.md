@@ -61,7 +61,17 @@ type Diagnostic = {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
-  detail?: { reasonCode: string; path?: string; configKey?: string };
+  detail?: {
+    reasonCode: string;
+    path?: string;
+    configKey?: string;
+    skillInvocationControls?: Array<{
+      feature: 'skill.invocation.manual' | 'skill.invocation.model' | 'skill.visibility';
+      values?: Array<'true' | 'false' | 'visible' | 'hidden'>;
+      reasonCode: 'noBoundExecutor' | 'invocationControlUnsupported' | 'invocationControlUnverified';
+      product?: 'app';
+    }>;
+  };
   subject?: {
     pluginId?: string;
     sourceId?: string;
@@ -90,7 +100,7 @@ type Confirmation = {
 - `command` 是已解析的稳定命令 ID，例如 `plugin.install`、`source.sync`、`dev.catalog.publish.apply`；无法识别命令时为 null，不把任意输入回显成命令 ID。
 - `data` 始终是对象。不同业务有明确的类型；列表通常使用 `items`。请求尚未完成归一化、且未执行业务变更时，允许使用严格的空对象 `{}`，即使命令 ID 已经识别。已完成的空列表才输出 `[]`，不能用它替代尚未取得的事实。
 - `status` 描述这次调用是否完成；`data` 描述插件、来源、配置等业务事实。插件尚未就绪不等于 status 查询执行失败。
-- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 仅包含可信细分 reasonCode、本次恢复所需的安全文件位置 path 和配置键 configKey；不回显配置值、凭据、原生 stderr 或异常栈。subject 仍承载相关插件、来源、target 与 scope。
+- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey 或 Skill 调用控制。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
 - 业务对象自身的 schemaVersion、Manifest schema 和配置定义版本位于相应 data 内，与顶层输出协议版本分别管理。
 - data 使用显式投影，不直接 JSON.stringify 内部 backend、Error、renderer context 或整个服务对象。单次请求内部的锁、进程句柄和授权对象不属于输出协议。
 
@@ -177,7 +187,7 @@ type LifecycleData = {
 };
 ```
 
-若已安装的 Skill 声明手动调用或可见性规则，而实际目标不能保证其中的要求，回执会在 `diagnostics` 中给出 `skillInvocationPolicyNotGuaranteed` 警告，关联插件、技能、平台与作用域。终端和 TUI 在结果中显示该提示。只有这类提示时，状态为 `success`，退出码为 `0`，目标无需重试。
+安装、同步、重建或配置应用交付 Skill 后，如果该位置无法保证声明的显式调用、模型自动调用或可见性要求，`diagnostics` 按实际插件、Skill、平台和范围给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 给出每项未能保证的控制、声明值与原因，区分未绑定执行客户端、客户端不支持和能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。CLI 文本和 TUI 结果显示同一事实。警告本身不影响成功状态或退出码，也不会使已交付目标进入重试。遇到其他失败时，仍报告实际未完成项。
 
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 

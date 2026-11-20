@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
-import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
@@ -394,10 +394,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         requiresConfirmation: true });
     }
   }
-  for (const { skill, platform, pluginId, scope, reasonCode, message } of skillInvocationNotices(receipt.targetResults)) {
-    diagnostics.push(publicDiagnostic({ code: SKILL_INVOCATION_NOTICE, message, detail: { reasonCode } },
-      { pluginId, target: platform, scope, field: `skill.${skill}` }, 'warning'));
-  }
+  diagnostics.push(...skillInvocationDiagnostics(receipt.targetResults));
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
   const changed = Object.values(data.changes).some((value) => value !== 'none');

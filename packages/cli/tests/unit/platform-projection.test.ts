@@ -136,11 +136,11 @@ describe('platform projection', () => {
   });
 
   it('rejects escaped Skill paths and mapped native-name collisions without writing outside staging', async () => {
-    const { input, ctx, root } = await fixture('claude', [skill]);
+    const { input, ctx, root } = await fixture('claude', [skill, agent]);
     input.components = [{ ...skill, content: { files: { ...skill.content.files, '../escape': { text: 'unsafe' } } } }];
     await expect(projectPlatform(ctx, input)).rejects.toThrow(/Invalid/u);
     expect(await fs.pathExists(path.join(root, 'escape'))).toBe(false);
-    input.components = [skill, { ...skill, id: 'second', name: 'CHECK' }];
+    input.components = [agent, { ...agent, id: 'second', name: 'REVIEW' }];
     await expect(projectPlatform(ctx, input)).rejects.toThrow('platformProjectionNameConflict');
   });
 

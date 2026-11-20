@@ -247,6 +247,9 @@ export function getComponentFeatureRequirements(component: PluginComponent, opti
       const text = options.skillText ?? (skillFile && 'text' in skillFile ? skillFile.text : undefined);
       if (text !== undefined) {
         const metadata = parseSkillFrontmatter(text);
+        if (metadata.name !== component.name) {
+          throw new Error(`Invalid SKILL.md frontmatter.name ${JSON.stringify(metadata.name)} for Skill component ${JSON.stringify(component.id)}. Expected ${JSON.stringify(component.name)}.`);
+        }
         if (Object.hasOwn(metadata, 'user-invocable')) {
           const manual = metadataBoolean(metadata['user-invocable']);
           require('skill.invocation.manual', [String(manual)]);

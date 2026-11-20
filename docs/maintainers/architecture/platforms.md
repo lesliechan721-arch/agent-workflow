@@ -36,19 +36,19 @@ Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开�
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 每次发现先在当前用户注册的 Main 包中查找 `OpenAI.Codex`，存在候选时核对开始菜单的精确 `<PackageFamilyName>!App`、架构和路径链，再做有界搜索。包查询失败时仍查开始菜单，有对应家族则报告发现不完整。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
-手动 Skill 与普通 Skill 使用相同的交付路径。目标能识别作者声明的调用策略时，AW 写入该宿主实际读取的字段。缺少执行接口或相应取值的证据时，AW 保留正文和资源，在已安装目标的结果中提示具体限制。当前各客户端的接口与实测范围如下。[固定版本取证](../../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
+手动 Skill 与普通 Skill 使用同一交付路径。AW 交付完整正文和资源，并写入宿主定义的调用字段。安装回执按实际产品、激活范围和入口判断哪条限制已验证。多个客户端读取同一份文件时，只有所有可用读者都具备相应资格，AW 才能确认该限制。未验证的控制在成功提示中逐项列出，其他技能继续更新。[固定版本取证](../../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
 
-| 客户端 | 显式入口与自动调用控制 | 实测范围 |
+| 客户端 | 显式入口与自动调用控制 | 资格与安装提示 |
 | --- | --- | --- |
-| Codex CLI | 用户选择 Skill，`agents/openai.yaml` 的 `policy.allow_implicit_invocation` 控制隐式调用 | 原生技能列表、隐式清单和显式正文 |
-| Claude Code CLI | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 2.1.317 的用户命令列表、模型上下文及普通技能对照 |
-| Pi CLI | `/skill:技能名`，原生 frontmatter 禁止自动调用 | 1.5.0 的显式正文、模型技能列表、个人及项目隔离 |
-| OpenCode CLI | `@技能名`，V2 注册时设置 `autoinvoke: false` | 2.0.0 的原生注册、显式附件正文及作用域 |
-| Copilot CLI | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 1.0.95 的个人 marketplace 技能。离线 ACP 显式加载已登记的插件目录后，实测显式正文、自动清单及模型按名调用被拒 |
-| Grok Build CLI | `/技能名`，原生 frontmatter 禁止自动调用 | 1.0.77 的个人已安装插件、显式正文和模型候选清单 |
-| Antigravity CLI | User 插件的原生 frontmatter 可声明 `disable-model-invocation` | 1.3.4 的真实安装、旧包更新、消费字节和布尔字段解析。登录后的会话行为尚未实测 |
-| Cursor CLI | `/技能名`，客户端将插件的 `disableModelInvocation` 传给服务 | macOS arm64 的 `2026.11.05-86047df`，两个 scope 的菜单、正文及协议字段。远端模型执行尚未实测 |
-| generic | 文件中保留调用意图 | AW 写入通用目录，读取该目录的客户端决定是否执行策略 |
+| Codex | 用户选择 Skill，`agents/openai.yaml` 的 `allow_implicit_invocation` 控制隐式调用 | 0.167.0 CLI 的 User 在六个宿主验证了显式正文和自动候选。Project 使用同一加载器和独立激活，接口最低版本为 0.155.0。桌面 App 与 CLI 共读时提示 App 的验证缺口 |
+| Claude Code | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 2.1.317 的会话命令列表与模型上下文可核对两项行为。按有记录的宿主和 scope 判断 |
+| Pi | `/skill:技能名`，原生 frontmatter 禁止自动调用 | 1.5.0 的显式正文、自动候选和安装范围均有独立检查 |
+| OpenCode | `@技能名`，V2 注册时写入 `autoinvoke: false` | 2.0.0 的原生登记、显式附件正文及作用域可独立检查 |
+| Copilot CLI | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 1.0.95 的离线 ACP 需要显式挂载已登记的插件才能观察到手动入口。安装时提示默认会话的验证缺口 |
+| Grok Build | `/技能名`，原生 frontmatter 禁止自动调用 | 1.0.77 的 User 已验证显式正文和普通模型候选。Project 安装提示作用域的验证缺口 |
+| Antigravity CLI | User 插件保留原生 `disable-model-invocation` 布尔字段 | 1.3.4 的六宿主都验证了公开安装、更新、实际副本以及布尔字段解析。安装时提示登录后会话的调用行为仍待验证 |
+| Cursor CLI | `/技能名`，客户端将 `disableModelInvocation` 传给服务 | `2026.11.05-86047df` 在 Linux x64 和 macOS arm64 的 User、Project 均核对了菜单、显式正文和发送的策略。服务端模型与桌面 App 尚未实测 |
+| generic | 通用文件以 `metadata` 保留作者的调用意图 | Skill 全部交付。安装提示说明该目录没有绑定实施调用限制的客户端 |
 
 Codex 子代理安装使用普通 Skill 的 CLI 接口门槛及 Linux、macOS、Windows 的 x64/arm64 范围。User 和 Project 支持独立上下文、宿主默认提示词组合、角色 TOML 和 AW 安装态配置读取。角色文件和角色名采用 `aw-<source>-<plugin>-<role>`，随包生成的调度 Skill 引用这个实际名称。子代理开关和会话实际使用由 Codex 决定。
 

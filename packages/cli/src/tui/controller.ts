@@ -11,6 +11,7 @@ import type {
   CatalogGenerationSyncResult,
   CatalogSourceImpact,
   CommandProducerResult,
+  ConfigApplyResult,
   DependencyScopeOverride,
   PlatformName,
   PlatformTarget,
@@ -49,6 +50,9 @@ import type {
   RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
 import { buildRebuildReceiptJson, requestedIntentAction } from '../output/command-receipt.js';
+import type { Diagnostic } from '../output/public-result.js';
+import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { buildOperationResultModel } from '../commands/operation-planner.js';
 import { buildOperationReviewProjection } from './operation-review-planner.js';
 import {
@@ -734,6 +738,7 @@ export interface OperationResultSummary {
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
+  configDiagnostics?: Diagnostic[];
   configApplySkippedReason?: 'invalidConfig';
   configScope?: Scope;
   configPlatform?: PlatformTarget;
@@ -1366,6 +1371,9 @@ function sanitizeOperationSummary(
     ...(summary.messages ? { messages: summary.messages.map(text) } : {}),
     ...(summary.changes ? { changes: summary.changes.map(text) } : {}),
     ...(summary.warnings ? { warnings: summary.warnings.map(text) } : {}),
+    ...(summary.configDiagnostics ? { configDiagnostics: summary.configDiagnostics.map((diagnostic) => ({
+      ...diagnostic, message: text(diagnostic.message),
+    })) } : {}),
     ...(summary.recoveryActions ? { recoveryActions: summary.recoveryActions.map(text) } : {}),
     ...(summary.commandResults ? { commandResults: summary.commandResults.map((result) => ({
       ...result,
@@ -1990,7 +1998,19 @@ export class TuiController {
         projected.sensitiveValues ?? [],
       ));
     }
-    const diagnosticIds = projected.diagnostics.map((diagnostic) => diagnostic.id);
+    const configDiagnostics = 'summary' in result ? result.summary?.configDiagnostics : undefined;
+    const diagnostics = [...projected.diagnostics, ...skillInvocationNotices(configDiagnostics ?? [])
+      .map(({ pluginId, platform, scope, skill, reasonCode, controls, message }, index): SafeOperationDiagnostic => ({
+        id: `${recordId}:config-invocation:${index}`,
+        code: SKILL_INVOCATION_NOTICE,
+        stage: 'apply',
+        safeMessage: message,
+        target: { pluginId, platform, scope },
+        causes: [],
+        detailLines: [`skill.${skill} · ${reasonCode}`, ...controls.map((control) =>
+          `${describeSkillInvocationControl(control)} · ${control.reasonCode}`)],
+      }))];
+    const diagnosticIds = diagnostics.map((diagnostic) => diagnostic.id);
     Object.assign(result, { operationRecordId: recordId, diagnosticIds, effects: projected.effects });
     if ('summary' in result && result.summary) {
       result.summary.diagnosticIds = diagnosticIds;
@@ -2019,10 +2039,10 @@ export class TuiController {
         message,
         ...('operationKind' in result && result.operationKind ? { operationKind: result.operationKind } : {}),
         ...('pluginId' in result && result.pluginId ? { pluginId: result.pluginId } : {}),
-        diagnosticCount: projected.diagnostics.length,
+        diagnosticCount: diagnostics.length,
         effects: projected.effects,
       },
-      diagnostics: projected.diagnostics,
+      diagnostics,
       targets: 'summary' in result && result.summary
         ? structuredClone((result.summary.targets ?? []).map((target) => ({
             ...target,
@@ -5134,20 +5154,21 @@ export class TuiController {
             || Array.isArray((execution as { groups?: unknown }).groups)
               && ((execution as ConfigSaveBatchExecutionResult).groups
                 .some((group) => group.configSaved)));
+        const configRetryReportedDelivery = ticket.intent.kind === 'configSave' && ticket.intent.retryApply
+          && configApplyDiagnostics(execution).length > 0;
         if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
-          || ticket.intent.kind === 'configReset')
-          && configCommitted) {
+          || ticket.intent.kind === 'configReset') && (configCommitted || configRetryReportedDelivery)) {
           const baseSummary = operationResultSummary(ticket.intent, execution);
           const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
           const summary: OperationResultSummary = {
             ...baseSummary,
             code: 'operationPartial',
-            message: '设置已保存，但最终状态无法刷新。',
+            message: configCommitted ? '设置已保存，但最终状态无法刷新。' : '部分插件内容已就绪，但最终状态无法刷新。',
             elapsedMs,
             messages: [
               ...this.#progress.messages,
               ...(baseSummary.messages ?? []),
-              '状态刷新失败。配置写入已经提交；请稍后刷新状态。',
+              configCommitted ? '状态刷新失败。配置写入已经提交；请稍后刷新状态。' : '请稍后刷新状态。',
             ].slice(-8).map((message) => sanitizeDiagnosticText(
               message,
               [],
@@ -5442,6 +5463,7 @@ export class TuiController {
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
         && configWrite === 'succeeded') {
         const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
+        const configDiagnostics = configApplyDiagnostics(error);
         const summary: OperationResultSummary = {
           code: 'operationPartial',
           message: ticket.intent.kind === 'configReset'
@@ -5455,6 +5477,7 @@ export class TuiController {
                 : '设置已保存，但后续步骤未完成。',
           pluginId: ticket.intent.pluginId,
           configScope: 'user', configPlatform: ticket.intent.platform, configContext: ticket.intent.context ?? 'user',
+          ...(configDiagnostics.length ? { configDiagnostics } : {}),
           ...(ticket.intent.kind === 'configSave' && ticket.intent.apply
             ? { configApplyRetryAvailable: true } : {}),
           elapsedMs,
@@ -5672,6 +5695,11 @@ export class TuiController {
     this.#phase = 'disposed';
     this.#listeners.clear();
   }
+}
+
+function configApplyDiagnostics(execution: unknown): Diagnostic[] {
+  if (!execution || typeof execution !== 'object') return [];
+  return (execution as { apply?: ConfigApplyResult }).apply?.diagnostics ?? [];
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
@@ -6056,6 +6084,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
   }
   if (intent.kind === 'configSaveBatch') {
     const batch = execution as ConfigSaveBatchExecutionResult;
+    const configDiagnostics = batch.groups.flatMap((group) => configApplyDiagnostics(group.execution));
     const savedCount = batch.groups.filter((group) => group.configSaved).length;
     const failedCount = batch.groups.filter((group) => group.status === 'failed').length;
     const retryScopes = batch.groups.filter((group) =>
@@ -6097,6 +6126,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         applyStatus: group.applyStatus,
         ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
       })),
+      ...(configDiagnostics.length ? { configDiagnostics } : {}),
       commandResults: batch.groups.flatMap((group) => group.execution
         && typeof group.execution === 'object'
         ? ((group.execution as { apply?: { commandResults?: CommandProducerResult[] } }).apply?.commandResults ?? [])
@@ -6118,6 +6148,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     };
   }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+    const configDiagnostics = configApplyDiagnostics(execution);
     const rawApply = typeof execution === 'object' && execution !== null
       && typeof (execution as { apply?: unknown }).apply === 'object'
       && (execution as { apply?: unknown }).apply !== null
@@ -6209,6 +6240,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           }
         : {}),
       ...(targets.length > 0 ? { configTargets: targets } : {}),
+      ...(configDiagnostics.length ? { configDiagnostics } : {}),
       ...(commandResults.length > 0 ? { commandResults,
         recoveryActions: [...new Set(commandResults.flatMap((result) => result.recoveryActions))] } : {}),
     };

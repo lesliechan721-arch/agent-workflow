@@ -264,7 +264,7 @@ export interface QualifiedPlatformProfile {
   /** Recorded scope limits apply to both runtime and authoring kind views. */
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
     platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
-  /** Native CLI contract on qualified Skill delivery routes. The reference distinguishes observed host cells. */
+  /** Native CLI invocation coverage for this host and these activation scopes. */
   skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] };
   agentConsumers: Array<{
     id: string;

@@ -84,6 +84,7 @@ import {
 } from './components.js';
 import {
   safeDiagnosticCode,
+  sanitizeDiagnosticDetailText,
   sanitizeDiagnosticText,
   type DiagnosticSummaryViewModel,
 } from './diagnostics.js';
@@ -129,7 +130,8 @@ import {
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
 import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
-import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
+import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE,
+  type SkillInvocationControl, type SkillInvocationNoticeReason } from '../utils/skill-invocation-warning.js';
 import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines, componentGapLines } from './deployment-view.js';
 import { inventoryRecoveryActions, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
@@ -166,7 +168,8 @@ import {
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
-import { isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets, recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets, recoverySummaryErrors,
+  type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
@@ -381,19 +384,41 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   return [...new Set(lines)].join('\n');
 }
 
-function skillInvocationResultLines(receipt: RecoveryReceipt, technical = false): string[] {
-  return skillInvocationNotices(receipt.targetResults).map(({ skill, pluginId, platform, scope, reasonCode }) => {
-    const explanation = reasonCode === 'noBoundExecutor' ? '通用输出没有绑定执行客户端，无法保证声明的调用限制。'
-      : reasonCode === 'invocationControlUnsupported' ? '该客户端无法实施声明的调用限制。'
-        : '尚未验证该客户端能否实施声明的调用限制。';
-    return `! ${pluginId} · ${agentLabel(platform)} · ${scopeLabel(scope)} · ${skill} 已安装。${explanation}${technical
-      ? ` [${SKILL_INVOCATION_NOTICE} · ${reasonCode}]` : ''}`;
+const skillInvocationExplanations: Record<SkillInvocationNoticeReason | 'app', string> = {
+  noBoundExecutor: '通用输出没有绑定执行客户端，无法保证',
+  invocationControlUnsupported: '该客户端不支持',
+  invocationControlUnverified: '尚未验证该客户端能否保证',
+  app: '尚未验证 Codex 桌面 App 能否保证',
+};
+
+function skillInvocationControlLabel({ feature, values }: SkillInvocationControl): string {
+  if (feature === 'skill.invocation.manual' || feature === 'skill.invocation.model') {
+    const invocation = feature === 'skill.invocation.manual' ? '用户显式调用' : '模型自动调用';
+    return values?.length ? values.map((value) => `${value === 'true' ? '允许' : '禁止'}${invocation}`).join('、') : invocation;
+  }
+  return values?.length ? values.map((value) => `${value === 'visible' ? '显示' : '隐藏'} Skill`).join('、') : 'Skill 可见性';
+}
+
+function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], technical = false): string[] {
+  return skillInvocationNotices(diagnostics).flatMap(({ skill, pluginId, platform, scope, reasonCode, controls, message }) => {
+    const position = `! ${pluginId} · ${agentLabel(platform)} · ${scopeLabel(scope)} · ${skill} 已安装。`;
+    if (!controls.length) {
+      return [`${position}${skillInvocationExplanations[reasonCode]}声明的调用限制。`, `  ${sanitizeDiagnosticDetailText(message)}`,
+        ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`] : [])];
+    }
+    const explanations = Object.entries(skillInvocationExplanations).flatMap(([reason, explanation]) => {
+      const affected = controls.filter((control) => (control.product ?? control.reasonCode) === reason).map(skillInvocationControlLabel);
+      return affected.length ? [`${explanation}「${affected.join('、')}」。`] : [];
+    });
+    return [`${position}${explanations.join('')}`,
+      ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`, ...controls.map((control) =>
+        `  ${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product ? ' · Codex 桌面 App' : ''}`)] : [])];
   });
 }
 
 function scopedResultSummary(receipt: RecoveryReceipt): string {
   return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope),
-    ...skillInvocationResultLines(receipt),
+    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? [])),
     ...recoveryTargetLines(receipt, true),
     ...(receipt.unconfirmedSavedState === 'intent' ? ['插件清单写入后的内容需要重新检查。']
       : receipt.declarationChanged ? ['插件清单已保存。'] : []),
@@ -472,7 +497,7 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     `配置变更：${receipt.configChanged ? '是' : '无'}`,
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
     ...diagnostics,
-    ...skillInvocationResultLines(receipt, true),
+    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []), true),
     ...receipt.targetResults.flatMap((target) => (target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
       .map((reason) => `${reason.code} · ${reason.message}`)),
     ...(isRecoveryReviewStaleBeforeExecution(receipt) ? ['本次未执行，需要重新准备。'] : []),
@@ -2772,7 +2797,8 @@ export function ConsoleAppV4(props: {
     || Boolean(route.name === 'portableBlocker' && plugin)
     || Boolean(route.name === 'configUnavailable' && plugin)
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
-      && snapshot.result.operationKind === 'portableInstall'));
+      && (snapshot.result.operationKind === 'portableInstall'
+        || ('summary' in snapshot.result && snapshot.result.summary?.configDiagnostics?.length))));
   const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst && isCharacterInputMode(route, searchFocus)
     || route.name === 'operationReportPreview' && reportSaveMode;
   const canOpenHelp = !tooSmall && !characterInput && !preparationRunning;
@@ -10198,6 +10224,19 @@ export function ConsoleAppV4(props: {
     const resultStatus = blocked ? 'error' : partial ? 'warning' : 'success';
     const resultTargets: ResultTarget[] = configOperation ? resultSummary?.configTargets ?? resultSummary?.targets ?? []
       : resultSummary?.targets ?? [];
+    const configInvocationLines = skillInvocationResultLines(resultSummary?.configDiagnostics ?? [], showTechnical);
+    const configInvocationRows = configInvocationLines.flatMap((line) => wrapDisplayText(line, size.columns - 6))
+      .map((line, index) => <Text key={`config-skill:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>);
+    const configGroupRows = resultSummary?.configGroups?.map((group) => {
+      const status = !group.configSaved ? 'error' as const
+        : group.applyStatus === 'failed' ? 'warning' as const : 'success' as const;
+      const outcome = !group.configSaved ? '保存失败'
+        : group.applyStatus === 'failed' ? '已保存 · 应用失败'
+          : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
+            : '已保存';
+      return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
+        description={group.errorCode} meta={outcome} status={status} compact />;
+    }) ?? [];
     const commandResults = resultSummary?.commandResults ?? [];
     const retainedCommandPackage = (result: typeof commandResults[number]): boolean =>
       result.producer.kind === 'package' && (resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall');
@@ -10216,8 +10255,16 @@ export function ConsoleAppV4(props: {
         : target.state === 'skipped' ? 1 : target.relation === 'requested' ? 2 : 3;
       return priority(left) - priority(right);
     });
+    const targetResultRows = prioritizedTargets.map((target) => {
+      const state = operationTargetStateLabel(target.state);
+      const relation = target.relation === 'requested' ? '你选择的插件'
+        : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined;
+      return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)}
+        description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
+    });
+    const generalResultRows = [...configInvocationRows, ...configGroupRows, ...targetResultRows, ...commandResultRows];
     const baseResultPaginationTotal = Math.max(
-      resultTargets.length + commandResults.length,
+      generalResultRows.length,
       taskSummary?.rootResults.reduce((count, root) =>
         count + 1 + (taskSummary.requestedTargets.filter((target) =>
           target.pluginId === root.pluginId).length), 0) ?? 0,
@@ -10301,6 +10348,7 @@ export function ConsoleAppV4(props: {
     ].join('\n') : '当前结果已变化。请返回结果摘要。' : [
       ...(taskOperation && splitTaskReview ? splitTaskLines(splitTaskReview) : []),
       resultSummary?.message ?? (blocked ? result.message : '操作结果'),
+      ...configInvocationLines,
       ...(resultSummary?.messages ?? []).map(productResultMessage),
       ...(resultSummary?.changes ?? []),
       ...(resultSummary?.warnings ?? []),
@@ -10374,19 +10422,11 @@ export function ConsoleAppV4(props: {
     const resultActionViewport = actionViewport(actions, true, focus, scrollOffset,
       currentActionViewportLineBudget);
     const resultTargetLimit = Math.max(1, prefixRowLimit(
-      [...prioritizedTargets, ...commandResults].map(() => policy.mode === 'compact' ? 1 : 2),
+      generalResultRows.map(() => policy.mode === 'compact' ? 1 : 2),
       pageActionBudget() - 3 - resultActionViewport.limit - resultExtraRows,
     ));
-    const resultTargetPage = pagedItems(prioritizedTargets.length + commandResults.length, resultTargetLimit);
-    const resultTargetOffset = resultTargetPage.offset;
-    const visibleResultTargets = prioritizedTargets.slice(
-      resultTargetOffset,
-      resultTargetOffset + resultTargetLimit,
-    );
-    const visibleCommandResultRows = commandResultRows.slice(
-      Math.max(0, resultTargetOffset - prioritizedTargets.length),
-      Math.max(0, resultTargetOffset + resultTargetLimit - prioritizedTargets.length),
-    );
+    const resultTargetPage = pagedItems(generalResultRows.length, resultTargetLimit);
+    const visibleResultRows = generalResultRows.slice(resultTargetPage.offset, resultTargetPage.offset + resultTargetLimit);
     const portableTechnicalSummary = showTechnical;
     const portableRows = visiblePortablePairs.map((pair) => {
       const status = blocked || pair.state !== 'verified' ? 'warning' as const : 'success' as const;
@@ -10428,16 +10468,6 @@ export function ConsoleAppV4(props: {
           : resultSummary?.resetDisposition === 'quarantinedDirectory'
             ? `设置路径是目录；已隔离为 ${resultSummary.quarantineBasename ?? '安全隔离目录'}`
             : undefined;
-    const configGroupRows = resultSummary?.configGroups?.map((group) => {
-      const status = !group.configSaved ? 'error' as const
-        : group.applyStatus === 'failed' ? 'warning' as const : 'success' as const;
-      const outcome = !group.configSaved ? '保存失败'
-        : group.applyStatus === 'failed' ? '已保存 · 应用失败'
-          : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
-            : '已保存';
-      return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
-        description={group.errorCode} meta={outcome} status={status} compact />;
-    }) ?? [];
     const taskRootResults = taskSummary?.rootResults ?? [];
     const blockedTaskTargets = new Map((taskSummary?.blockedTargets ?? []).map((entry) => [
       [entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0'), entry,
@@ -10534,7 +10564,7 @@ export function ConsoleAppV4(props: {
     const locationResultRows = [...(taskOperation ? taskLocationRows : batchLocationResultRows), ...commandResultRows];
     const combinedResultRows = [...pluginResultRows, ...locationResultRows];
     const actualResultRows = taskOperation || batchOperation ? combinedResultRows.length
-      : portableOperation ? prioritizedPortablePairs.length : prioritizedTargets.length + commandResults.length;
+      : portableOperation ? prioritizedPortablePairs.length : generalResultRows.length;
     const actualResultPageRows = taskOperation || batchOperation ? taskResultLimit
       : portableOperation ? portableSkillLimit : resultTargetLimit;
     if (!portableResultDetailOpen && actualResultRows > actualResultPageRows) {
@@ -10550,7 +10580,7 @@ export function ConsoleAppV4(props: {
       visibleLocationStart,
       visibleLocationStart + remainingResultRows,
     );
-    if (taskOperation || batchOperation || resultTargets.length > resultTargetLimit
+    if (taskOperation || batchOperation || resultTargetPage.pageCount > 1
       || prioritizedPortablePairs.length > portableSkillLimit) {
       help = '←→ 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
@@ -10602,7 +10632,29 @@ export function ConsoleAppV4(props: {
       {!portableResultDetailOpen && portableSkillPage.pageCount > 1
         ? <Pager page={portableSkillPage.page} pageCount={portableSkillPage.pageCount} columns={size.columns - 2} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'} meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{visibleCommandResultRows}{resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page} pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column">
+      <ResultCard status={resultStatus}
+        title={blockedDependencyFailure ? '依赖安装没有完成'
+          : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'
+            : sourceOperation ? '来源配置写入已完成'
+              : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成'
+                : resultSummary?.message ?? '状态已变化，请重新确认'}
+        meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>
+        {resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}
+        {visibleResultRows}
+        {resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page}
+          pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}
+        {partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped')
+          ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}
+        {configOperation && partial && !invalidConfigResult
+          ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}
+        {resultSummary?.elapsedMs !== undefined
+          ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}
+        {visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`}
+          title={productResultMessage(message)} status="muted" compact />)}
+      </ResultCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
+    </Box>;
   } else if (route.name === 'pluginContent' && plugin) {
     const overview = props.controller.getPluginContentOverview(plugin.pluginId);
     const contentState = props.controller.getPluginContentState(plugin.pluginId);

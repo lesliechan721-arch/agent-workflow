@@ -113,7 +113,9 @@ describe('native deployment public and TUI consumers', () => {
       reasons: ['commit', 'inspect'].map((skill) => ({
         code, message: `${skill} was installed without a bound executor.`,
         subject: { pluginId: providerId, target: 'generic', scope, field: `skill.${skill}` },
-        detail: { reasonCode: 'noBoundExecutor' },
+        detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: [{ reasonCode: 'noBoundExecutor' as const,
+          ...(skill === 'commit' ? { feature: 'skill.invocation.manual', values: ['true'] }
+            : { feature: 'skill.invocation.model', values: ['false'] }) }] },
       })),
     });
     const prepare = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
@@ -121,15 +123,27 @@ describe('native deployment public and TUI consumers', () => {
       const receipt = scopedReceipt({ kind: 'recovery', command: 'install', scope: 'user', selectors: [pluginId] });
       const user = generic('user');
       const project = generic('project');
-      const sibling: RecoveryTarget = { pluginId, agent: 'claude', scope: 'project', delivery: { kind: 'native', platform: 'claude' },
+      const sibling: RecoveryTarget = { pluginId, agent: 'codex', scope: 'project', delivery: { kind: 'native', platform: 'codex' },
         execution: failed ? 'failed' : 'applied', observation: failed ? 'missing' : 'verified',
         blockers: failed ? [{ code: 'writeFailed', message: 'Write did not complete.' }] : [], requiredBy: [],
         reasons: [...user.reasons ?? [], ...(!failed ? [{
           code, message: 'Installed Skill "diagnose". Invocation control is unverified.',
-          subject: { pluginId, target: 'claude', scope: 'project' as const, field: 'skill.diagnose' },
+          subject: { pluginId, target: 'codex', scope: 'project' as const, field: 'skill.diagnose' },
           detail: { reasonCode: 'invocationControlUnverified' },
+        }, {
+          code, message: 'Installed Skill "review". Visibility is unsupported and model invocation is unverified.',
+          subject: { pluginId, target: 'codex', scope: 'project' as const, field: 'skill.review' },
+          detail: { reasonCode: 'invocationControlUnverified', skillInvocationControls: [
+            { reasonCode: 'invocationControlUnsupported' as const, feature: 'skill.visibility', values: ['hidden'] },
+            { reasonCode: 'invocationControlUnverified' as const, feature: 'skill.invocation.model', values: ['true'], product: 'app' as const },
+          ] },
         }] : [])],
       };
+      const nativeNotice = sibling.reasons?.find((reason) => reason.subject?.field === 'skill.review');
+      if (nativeNotice) {
+        const nativeReceipt = target(deployment()).deploymentReceipts![0]!;
+        sibling.deploymentReceipts = [{ ...nativeReceipt, diagnostics: [{ ...nativeNotice, severity: 'warning' }] }];
+      }
       receipt.targetResults = [user, project, sibling];
       receipt.ok = !failed;
       receipt.remainingTargets = failed ? [sibling] : [];
@@ -137,7 +151,7 @@ describe('native deployment public and TUI consumers', () => {
     });
     const value = controller({ prepareScopedTask: prepare, executeScopedTask: execute });
     value.push({ name: 'pluginDetail', pluginId });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 140, rows: 40 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 160, rows: 40 }} />);
     await nextTurn(4);
     await focusAction(instance, '添加插件…');
     await input(instance, '\r', '\r');
@@ -152,13 +166,28 @@ describe('native deployment public and TUI consumers', () => {
     expect(frame).toContain('所有项目 · commit 已安装');
     expect(frame).toContain('当前项目 · commit 已安装');
     expect(frame).toContain('通用输出没有绑定执行客户端');
-    expect(frame).not.toMatch(/Claude Code.+commit 已安装/u);
+    expect(frame).toMatch(/commit 已安装。[^\n]*允许用户显式调用/u);
+    expect(frame).toMatch(/inspect 已安装。[^\n]*禁止模型自动调用/u);
+    expect(frame).not.toMatch(/Codex.+commit 已安装/u);
     if (failed) {
       expect(frame).toContain('执行失败');
       expect(frame).not.toContain('diagnose 已安装');
     } else {
       expect(frame).not.toContain('重试明确失败项');
-      expect(frame).toContain('Claude Code · 当前项目 · diagnose 已安装。尚未验证该客户端');
+      expect(frame).toContain('Codex · 当前项目 · diagnose 已安装。尚未验证该客户端');
+      expect(frame).toContain('Invocation control is unverified.');
+      expect(frame).toContain('不支持「隐藏 Skill」');
+      expect(frame).toContain('尚未验证 Codex 桌面 App 能否保证「允许模型自动调用」');
+      expect(frame).not.toContain('Installed Skill "review".');
+    }
+    await input(instance, 'd');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('skill.invocation.manual=true'));
+    expect(instance.lastFrame()).toContain('skill.invocation.model=false');
+    expect(instance.lastFrame()).toContain('noBoundExecutor');
+    if (!failed) {
+      expect(instance.lastFrame()).toContain('skill.visibility=hidden · invocationControlUnsupported');
+      expect(instance.lastFrame()).toContain('skill.invocation.model=true · invocationControlUnverified · Codex 桌面 App');
+      expect(instance.lastFrame()).not.toContain('Installed Skill "review".');
     }
     value.dispose();
   });

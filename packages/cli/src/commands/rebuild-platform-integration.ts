@@ -1015,14 +1015,25 @@ export class PlatformRebuildSession {
             for (const unitId of plan.binding.renderUnitIds) {
               const unit = preparedUnits.get(unitId);
               if (!unit?.finalized.skills.length) continue;
-              const capabilities = adapter.capabilities({ binding: plan.binding, renderUnit: unit.unit,
-                observation: after, profile: getQualifiedPlatformProfile(input.platform) });
+              const capabilityInput = { binding: plan.binding, renderUnit: unit.unit,
+                observation: after, profile: getQualifiedPlatformProfile(input.platform) };
+              const capabilities = adapter.capabilities(capabilityInput);
+              const cliReaders = unit.unit.consumers.filter(({ product }) => product === 'cli');
+              // Only attribute a shared package's limitation to Desktop if the same
+              // check passes for its CLI readers and an App reader was observed.
+              const codexCliCapabilities = plan.binding.platform === 'codex'
+                && cliReaders.some(({ availability }) => availability === 'available')
+                && unit.unit.consumers.some(({ product, availability }) => product === 'app' && availability === 'available')
+                && unit.unit.consumers.every(({ product, availability, entry }) => product === 'app'
+                  || product === 'cli' && availability === 'available' && entry?.kind === 'cli')
+                ? adapter.capabilities({ ...capabilityInput, renderUnit: { ...unit.unit, consumers: cliReaders } }) : undefined;
               for (const skill of unit.finalized.skills) {
                 if (!packageIds.has(skill.componentId) || !delivered.has(skill.componentId)) continue;
                 const component = unit.prepared.expected.components.find((item) => item.id === skill.componentId)!;
                 const requested = getComponentFeatureRequirements(component, { skillText: skill.tree.files['SKILL.md']!.toString('utf8') });
                 const warning = skillInvocationWarning(component.name, requested,
-                  { pluginId: plan.binding.plugin.pluginId, target: plan.binding.platform, scope: plan.binding.scope.kind }, capabilities);
+                  { pluginId: plan.binding.plugin.pluginId, target: plan.binding.platform, scope: plan.binding.scope.kind },
+                  capabilities, codexCliCapabilities);
                 if (warning) receipt.diagnostics.push(warning);
               }
             }

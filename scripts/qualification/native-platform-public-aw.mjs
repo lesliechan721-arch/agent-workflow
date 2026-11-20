@@ -291,7 +291,8 @@ async function grokStatusFiles(ctx) {
 
 // These products have a manual-policy contract to verify on each supported
 // host. Reuse its real public installation and the fixed CLI acquired for this run.
-function publicManualProbe(platform) {
+function publicManualProbe(platform, scope) {
+  if (scope !== 'user' && !(scope === 'project' && ['claude', 'pi', 'opencode'].includes(platform))) return null;
   if (platform === 'codex') return './native-platform-codex-behavior.mjs';
   if (platform === 'claude' || platform === 'antigravity') return './native-platform-claude-antigravity-manual.mjs';
   if (platform === 'pi' || platform === 'opencode') return './native-platform-pi-opencode-manual.mjs';
@@ -308,7 +309,7 @@ export async function writePublicFixtureRevision(ctx, plugin, revision, platform
     if (revision === 3) await fs.rm(path.join(plugin, 'skills'), { recursive: true, force: true });
     else await fs.mkdir(skillPath, { recursive: true });
     const projected = `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\nFixture body revision ${revision}.\n`;
-    const manual = ctx.scope === 'user' && platforms.length === 1 && publicManualProbe(ctx.platform);
+    const manual = platforms.length === 1 && publicManualProbe(ctx.platform, ctx.scope);
     const fields = 'user-invocable: true\ndisable-model-invocation: true';
     const withFields = value => projected.replace('\n---\n', `\n${value}\n---\n`);
     const body = manual ? withFields(fields) : projected;
@@ -506,7 +507,7 @@ export async function qualifyPublicAw(ctx) {
   if (ctx.scope === 'user') await ctx.check('public-install-neutral-status', () => status({ cwd: ctx.neutral }));
   await ctx.observe('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
   await ctx.observe('public-install-neutral-skill-observation', () => readSkills(ctx, ctx.neutral, 1, ctx.scope === 'user'));
-  const manualProbe = ctx.scope === 'user' && publicManualProbe(ctx.platform);
+  const manualProbe = publicManualProbe(ctx.platform, ctx.scope);
   if (manualProbe) {
     const probe = await import(manualProbe);
     if (ctx.platform === 'codex') await probe.qualifyPublicCodexManualSkill(ctx);

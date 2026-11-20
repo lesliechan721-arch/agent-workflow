@@ -20,10 +20,10 @@ const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('ya
 const userTargets = {
   codex: { version: '0.167.0', manual: true },
   claude: { version: '2.1.317', manual: true },
-  antigravity: { version: '1.3.4', manual: true },
+  antigravity: { version: '1.3.4', manual: false },
   pi: { version: '1.5.0', manual: true },
   opencode: { version: '2.0.0', manual: true },
-  copilot: { version: '1.0.95', manual: true },
+  copilot: { version: '1.0.95', manual: false },
   grok: { version: '1.0.77', manual: true },
   generic: { version: null, manual: false },
   cursor: { version: '2026.11.05-86047df', manual: true },

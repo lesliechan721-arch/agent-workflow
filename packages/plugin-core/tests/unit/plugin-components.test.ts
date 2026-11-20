@@ -69,6 +69,11 @@ describe('platform component contract', () => {
     expect(() => assertPlan(plan([sourceSkill]))).toThrow(/outside declared inputs/u);
     for (const file of ['../escape', '/host/file', 'scripts/aw-runtime-config.mjs', '.aw-runtime-config.json']) expect(() => assertPlan(plan([{ ...skill, content: { files: { ...skill.content.files, [file]: { text: 'bad' } } } }]))).toThrow();
   });
+  it('rejects an inline Skill name that differs from its component name', () => {
+    expect(() => assertPlan(plan([{ ...skill, name: 'renamed' }]))).toThrow(
+      /SKILL\.md frontmatter\.name "check".*component "new-skill".*"renamed"/u,
+    );
+  });
   it('checks registered values and treats missing features as unsupported', () => {
     const profile = capabilities(); delete profile.features['mcp.transport'];
     expect(getUnmetFeatureRequirements([{ feature: 'mcp.transport', values: ['sse'] }], profile)).toEqual([{ feature: 'mcp.transport', values: ['sse'] }]);
@@ -138,6 +143,11 @@ describe('platform component contract', () => {
     expect(() => assertPlatformComponentPlan(plan([skill]), { platform: 'codex', allowedOutputKinds: ['skill'], platformCapabilities: profile, staticComponents: result.components })).toThrow(/duplicate component name/u);
     await fs.symlink('/tmp', path.join(root, 'skills/check/escape'));
     await expect(normalizeStaticPluginComponents({ pluginRoot: root, manifest, platform: 'codex', capabilities: profile })).rejects.toThrow(/ordinary/u);
+    await fs.unlink(path.join(root, 'skills/check/escape'));
+    await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), skillText.replace('name: check', 'name: renamed'));
+    await expect(normalizeStaticPluginComponents({ pluginRoot: root, manifest, platform: 'codex', capabilities: profile })).rejects.toThrow(
+      /SKILL\.md frontmatter\.name "renamed".*component "skill:check".*"check"/u,
+    );
   });
 });
 function context(): PlatformRenderContextV2 {

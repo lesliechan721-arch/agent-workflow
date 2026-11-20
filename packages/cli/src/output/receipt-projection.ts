@@ -116,6 +116,7 @@ function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): Recor
   if ('error' in value && value.error) { data.error = issue(record(value.error)); diagnostics.push(diagnostic(value.error)); }
   if ('errors' in value && value.errors) { data.errors = value.errors.map((entry) => issue(record(entry))); diagnostics.push(...value.errors.map((entry) => diagnostic(entry))); }
   if (value.commandResults) data.commandResults = commandResults(value.commandResults, diagnostics);
+  diagnostics.push(...(value.diagnostics ?? []));
   return data;
 }
 function sourceImpact(value: RecordValue): RecordValue {

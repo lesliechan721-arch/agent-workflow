@@ -16,6 +16,7 @@ import type {
   SourceIdentity,
   TrackedHookGroupIdentity,
 } from '@lesliechan721/aw-plugin-core/manifest';
+import type { Diagnostic } from './output/public-result.js';
 
 export type ArtifactSurface =
   | { kind: 'platform'; name: PlatformTarget }
@@ -364,7 +365,7 @@ export interface ConfigApplyError {
   message: string;
 }
 
-export type ConfigApplyResult =
+export type ConfigApplyResult = { diagnostics?: Diagnostic[] } & (
   | {
       state: 'skipped';
       reason: 'notRequested' | 'noConfigChange' | 'noEffectiveConfigChange' | 'noVisibleTarget';
@@ -393,7 +394,7 @@ export type ConfigApplyResult =
       targetResults: ConfigApplyTargetResult[];
       errors?: ConfigApplyError[];
       commandResults?: CommandProducerResult[];
-    };
+    });
 
 export interface ConfigFieldEntry {
   key: string;

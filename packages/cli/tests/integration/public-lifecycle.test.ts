@@ -119,6 +119,8 @@ describe('public plugin lifecycle', () => {
     expect(installed.exitCode, installed.stdout + installed.stderr).toBe(0);
     expect(installed.stdout.match(/Warning · team\/demo \/ generic \/ project/gu)).toHaveLength(1);
     expect(installed.stdout).toContain('no bound host');
+    expect(installed.stdout).toContain('skill.invocation.manual=true');
+    expect(installed.stdout).toContain('skill.invocation.model=false');
     expect(installed.stderr).not.toContain('skillInvocationPolicyNotGuaranteed');
     await expect(fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).resolves.toContain('Use demo.');
 
@@ -130,7 +132,11 @@ describe('public plugin lifecycle', () => {
       nextActions: [] });
     expect(receipt.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed')).toEqual([
       expect.objectContaining({ severity: 'warning', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project', field: 'skill.demo' },
-        detail: { reasonCode: 'noBoundExecutor' } }),
+        detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: expect.arrayContaining([
+          { feature: 'skill.invocation.manual', values: ['true'], reasonCode: 'noBoundExecutor' },
+          { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'noBoundExecutor' },
+          { feature: 'skill.visibility', values: ['visible'], reasonCode: 'noBoundExecutor' },
+        ]) } }),
     ]);
   });
 

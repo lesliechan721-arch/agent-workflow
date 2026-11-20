@@ -11,6 +11,7 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, ConfigReadOptions } from '../../src/tui/model.js';
+import { skillInvocationWarning } from '../../src/utils/skill-invocation-warning.js';
 
 import { chooseConfigProfile, chooseConfigSave, openConfigSave } from '../helpers/tui-console-app-input.js';
 
@@ -288,5 +289,52 @@ describe('TUI config save batch result', () => {
     expect(instance.lastFrame()).toContain('已保存 · 应用失败');
     await input(instance, '\r'); await nextTurn(5);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'user', platform: 'claude', retryApply: true, updates: {}, removeKeys: [] });
+  });
+
+  it('pages config apply notices and retains exact controls in compact technical details', async () => {
+    const location = { pluginId, target: 'generic', scope: 'project' } as const;
+    const warnings = Array.from({ length: 8 }, (_, index) => skillInvocationWarning(`skill-${index}`, [
+      { feature: 'skill.invocation.model', values: ['false'] },
+    ], location)!);
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async (intent) => evidence(intent)),
+      executeIntent: vi.fn(async () => ({ status: 'succeeded', groups: [
+        { scope: 'user', status: 'succeeded', configSaved: true, applyRequested: true, applyStatus: 'succeeded', execution: {
+          configWrite: 'succeeded', overallState: 'succeeded',
+          apply: { state: 'succeeded', targetResults: [], diagnostics: [...warnings, warnings[0]!] },
+        } },
+      ] })),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({ kind: 'configSaveBatch', pluginId, apply: true, groups: [
+      { scope: 'user', updates: { mode: 'updated' } },
+    ] });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await value.executeOperation(review.reviewToken);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('设置已保存并应用'));
+    expect(instance.lastFrame()).toContain('当前项目 · skill-0 已安装');
+    expect(instance.lastFrame()).not.toContain('重试应用');
+
+    const collectPages = async (): Promise<string> => {
+      const frames = [instance.lastFrame()!];
+      for (let i = 0; i < 30; i += 1) {
+        await input(instance, '\u001b[C');
+        const frame = instance.lastFrame()!;
+        if (frames.at(-1) === frame) break;
+        frames.push(frame);
+      }
+      return frames.join('\n');
+    };
+    const summary = await collectPages();
+    expect(summary).toContain('禁止模型自动调用');
+    expect(summary).toContain('skill-7 已安装');
+    expect(summary.match(/skill-0 已安装/gu)).toHaveLength(1);
+    await input(instance, 'd');
+    const details = await collectPages();
+    expect(details).toContain('skill.invocation.model=false');
+    expect(details).toContain('noBoundExecutor');
+    expect(details).toContain('skill-7 已安装');
+    value.dispose();
   });
 });

@@ -83,11 +83,19 @@ afterEach(async () => {
 describe('portable materializer', () => {
   it.each(['codex', 'opencode', 'claude', 'generic'] as const)('keeps the %s manual policy and ordinary sibling within strict export', async (platform) => {
     const root = await tempRoot('aw-portable-invocation-');
-    const plugin = await pluginFixture(root, { ...baseManifest('invocation'), platforms: [platform] });
+    const plugin = await pluginFixture(root, { ...baseManifest('invocation-policy-regression'), platforms: [platform] });
+    if (platform === 'generic') {
+      // The logical Skill name is valid even when a namespaced install path would exceed 64 characters.
+      plugin.sourceId = 'a'.repeat(32);
+      plugin.pluginId = `${plugin.sourceId}/${plugin.manifest.name}`;
+    }
     await writeSkill(plugin.rootDir, 'manual');
     await writeSkill(plugin.rootDir, 'ordinary');
+    const body = '\nRun explicitly with [the payload](assets/runtime.bin).\n';
+    const payload = Buffer.from([0, 255, 1]);
     await fs.outputFile(path.join(plugin.rootDir, 'skills/manual/SKILL.md'),
-      '---\nname: manual\ndescription: Explicit operation.\nuser-invocable: true\ndisable-model-invocation: true\n---\nRun explicitly.\n');
+      `---\nname: manual\ndescription: Explicit operation.\nuser-invocable: true\ndisable-model-invocation: true\n---${body}`);
+    await fs.outputFile(path.join(plugin.rootDir, 'skills/manual/assets/runtime.bin'), payload);
     const result = await materializePortableSkills({
       platform, plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home') },
@@ -95,18 +103,20 @@ describe('portable materializer', () => {
     try {
       expect(result.candidates.map((entry) => entry.name)).toEqual(['manual', 'ordinary']);
       expect(result.preparation.flatMap((unit) => unit.unmet)).toEqual([]);
+      const text = await fs.readFile(path.join(result.rootDir, 'skills/manual/SKILL.md'), 'utf8');
+      const frontmatter = YAML.parse(text.split('---')[1]!);
+      expect(frontmatter.name).toBe('manual');
+      expect(text.slice(text.lastIndexOf('---') + 3)).toBe(body);
+      await expect(fs.readFile(path.join(result.rootDir, 'skills/manual/assets/runtime.bin'))).resolves.toEqual(payload);
       if (platform === 'codex') {
         expect(await fs.readFile(path.join(result.rootDir, 'skills/manual/agents/openai.yaml'), 'utf8'))
           .toContain('allow_implicit_invocation: false');
       } else if (platform === 'opencode') {
-        const text = await fs.readFile(path.join(result.rootDir, 'skills/manual/SKILL.md'), 'utf8');
-        expect(YAML.parse(text.split('---')[1]!).metadata['opencode/autoinvoke']).toBe('false');
+        expect(frontmatter.metadata['opencode/autoinvoke']).toBe('false');
       } else {
-        const text = await fs.readFile(path.join(result.rootDir, 'skills/manual/SKILL.md'), 'utf8');
-        expect(YAML.parse(text.split('---')[1]!).metadata).toMatchObject({
+        expect(frontmatter.metadata).toMatchObject({
           'skill.invocation.manual': 'true', 'skill.invocation.model': 'false', 'skill.visibility': 'visible',
         });
-        expect(text.slice(text.lastIndexOf('---') + 3)).toBe('\nRun explicitly.\n');
       }
     } finally {
       await result.cleanup();

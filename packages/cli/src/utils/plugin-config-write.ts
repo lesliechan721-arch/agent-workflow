@@ -10,6 +10,7 @@ import type {
 import { selectPluginConfigProfile, NATIVE_PLATFORM_TARGETS, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { readScopedRecoveryStatus } from '../recovery/status.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
+import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
 import {
   CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION,
   type CommandProducerResult,
@@ -1382,6 +1383,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       const errors: ConfigApplyError[] = [...discoveryErrors, ...receipt.blockers, ...receipt.errors].map((error) => ({
         stage: 'stage' in error ? error.stage as ConfigApplyError['stage'] : 'apply', code: error.code, message: error.message,
       }));
+      const diagnostics = skillInvocationDiagnostics(receipt.targetResults);
       const apply: ConfigApplyResult = {
         state: ok ? 'succeeded' : 'partial',
         targetResults: [...receipt.targetResults.filter((target) => target.satisfaction !== 'unsupported' && target.satisfaction !== 'excluded').map((target): ConfigApplyTargetResult => ({
@@ -1398,6 +1400,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
         }))],
         commandResults: receipt.commandResults,
         ...(errors.length ? { errors } : {}),
+        ...(diagnostics.length ? { diagnostics } : {}),
       };
       if (interruption) throw new ConfigApplyInterruptedError(interruption, apply, options.rebuildRuntime?.signal);
       return { configWrite: 'notStarted', overallState: ok ? 'succeeded' : 'partial', apply,
