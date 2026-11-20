@@ -7,18 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { computeTreeDigest } from '../build/build-cache.mjs';
 import { acquireClient, processManagementInfo, repoRoot } from './native-platform-runtime.mjs';
+import { cloudCatalog as frozenCatalog } from './plugin-install-latency-catalog.mjs';
 import { verifySample } from './plugin-install-latency-matrix.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
 const packages = ['agent-skill-eval', 'cli', 'plugin-core'];
 const buildArtifactRoots = packages.flatMap((name) => [`packages/${name}/dist`, `packages/${name}/package.json`]);
-const frozenCatalog = {
-  sourceRevision: 'c4f82300e5805501210d9ccec450a85ad1b21062',
-  sourceTree: '8bf2da902945ccdf9024d143bd36bb4536df04a9',
-  activeDigest: 'sha256:af14b402662c99e2f6fac595c4b736f6c17f9d89881e3c28d4c2badc85e12471',
-  manifestDigest: 'sha256:b9c2ed0265546392fad4298f73727d0fbb15c5f1e6c8969e7654db8e9409796c',
-};
 const nativeClients = ['codex', 'pi', 'claude'];
 const batch = {
   targets: ['claude', 'pi', 'codex', 'generic'],
