@@ -2,6 +2,7 @@ import { describeNativeToolClosure, type NativeToolChange } from '../utils/nativ
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
+import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
@@ -84,13 +85,21 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
     if (field.storedValue !== undefined && field.storedSourceLayer) lines.push(`  stored=${field.storedSourceLayer} ${display(field.storedValue)}`);
   }
   else if (configFields && typeof configFields === 'object') for (const [key, field] of Object.entries(configFields as Record<string, { type?: string; title?: string; sensitive?: boolean; required?: boolean }>)) lines.push(`${key}: ${field.type ?? 'value'}${field.required ? ' (required)' : ''}${field.sensitive ? ' (sensitive)' : ''}${field.title ? ` — ${field.title}` : ''}`);
-  const apply = data.apply as { state?: string; reason?: string; targetResults?: Array<{
-    state: string; partialDelivery?: true; target: { platform: string; scope: string };
-  }> } | undefined;
+  const apply = data.apply as {
+    state?: string; reason?: string;
+    targetResults?: Pick<ConfigApplyTargetResult, 'target' | 'state' | 'partialDelivery' | 'errorCode'>[];
+    commandResults?: Array<Pick<CommandProducerResult, 'producer' | 'state'> & { blockerCodes?: string[] }>;
+  } | undefined;
   if (apply) {
     lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`);
-    for (const target of apply.targetResults ?? []) {
-      lines.push(`${target.target.platform}/${target.target.scope}: ${target.state}${target.partialDelivery ? ' (some outputs verified)' : ''}`);
+    for (const { target, state, partialDelivery, errorCode } of apply.targetResults ?? []) {
+      const position = `${target.pluginId ?? target.pluginName} ${target.platform}/${target.scope}`;
+      lines.push(`${position}: ${state}${partialDelivery ? ' (some outputs verified)' : ''}${errorCode ? ` [${errorCode}]` : ''}`);
+    }
+    for (const { producer, state, blockerCodes } of apply.commandResults ?? []) {
+      const position = [producer.platform, producer.scope].filter(Boolean).join('/');
+      const name = `${producer.sourceId}/${producer.pluginName} ${producer.kind}:${producer.key}`;
+      lines.push(`${name} ${position}: ${state}${blockerCodes?.length ? ` [${blockerCodes.join(', ')}]` : ''}`);
     }
   }
 

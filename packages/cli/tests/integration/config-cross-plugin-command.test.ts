@@ -24,6 +24,8 @@ import { createTuiControllerDependencies } from '../../src/tui/controller-runtim
 import { TuiController, type OperationIntent } from '../../src/tui/controller.js';
 import type { PluginConfigWriteReceipt } from '../../src/utils/plugin-config-write.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
+import { createNoopReporter, type CommandEvent } from '../../src/output/reporter.js';
+import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 
 function isClaudeInvocation(invocation: NativeCliInvocation): boolean {
   return path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '') === 'claude'
@@ -107,6 +109,7 @@ async function createCommandPackageReferenceFixture(options: {
   packagePlatforms?: Array<'codex' | 'claude'>;
   initialSelection?: 'final' | 'next';
   providerModelControl?: boolean;
+  delayProviderRender?: boolean;
 } = {}) {
   const platforms: Array<'codex' | 'claude'> = options.mixedScopes ? ['claude'] : options.withClaude ? ['codex', 'claude'] : ['codex'];
   const isolation = getCurrentSourceTestIsolation();
@@ -118,6 +121,7 @@ async function createCommandPackageReferenceFixture(options: {
   const scripts = path.join(cwd, 'package-pre-apply.jsonl');
   const packageToChange = path.join(cwd, 'package-to-change.json');
   const fail = path.join(cwd, 'provider-render-fails');
+  const renderGate = path.join(cwd, 'delay-provider-render');
   const packageKeys = options.mixedScopes ? ['personal', 'workspace'] : ['personal', 'uninstalled'];
   const commandEntries = (options.twoBindings ? ['first', 'second'] : ['run'])
     .map((key) => ({ key, runner: 'node', entry: 'tool.mjs', args: [], cwd: 'resource' }));
@@ -139,6 +143,10 @@ async function createCommandPackageReferenceFixture(options: {
       "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
       `const name=${JSON.stringify(name)};`,
       `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
+      ...(options.delayProviderRender && name === 'provider' ? [
+        `const gate=${JSON.stringify(renderGate)};`,
+        "if(fs.existsSync(gate)){fs.writeFileSync(gate+'.started','running');await new Promise(resolve=>setTimeout(resolve,4000));fs.writeFileSync(gate+'.finished','finished');}",
+      ] : []),
       `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,surface:c.surface,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
       `if(c.surface==='agent-plugin'){const files={'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n'${skillConfig},'README.md':'# Fixture\\n'};console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name${skillRequirement},content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));}else{`,
       `const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected${options.mixedScopes ? ',scope:c.scope' : ''}})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:${JSON.stringify(commandEntries)}});`,
@@ -191,9 +199,10 @@ async function createCommandPackageReferenceFixture(options: {
   const claude = options.withClaude ? await createClaudeNativeTestRuntime(isolation) : undefined;
   const runner = (invocation: NativeCliInvocation) => claude && isClaudeInvocation(invocation)
     ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
-  const run = async (args: string[], signal?: AbortSignal) => {
+  const run = async (args: string[], signal?: AbortSignal, onEvent?: (event: CommandEvent) => void) => {
     const output = createCapturedCliIo();
-    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner, signal });
+    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner, signal,
+      ...(onEvent ? { reporter: { ...createNoopReporter(), event: onEvent } } : {}) });
     return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
   };
   expect(await run(['target', 'set', ...platforms])).toMatchObject({ exitCode: 0 });
@@ -218,7 +227,7 @@ async function createCommandPackageReferenceFixture(options: {
   expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0 });
   const resource = (await packages()).packages.find((entry) => entry.producer.sourceId === 'team')!.resourceRoot;
   const config = path.join(resource, 'config.json');
-  return { cwd, env, renders, scripts, fail, source, run, setSelected, packages, resource, config, dependencies, packageToChange };
+  return { cwd, env, renders, scripts, fail, renderGate, source, run, setSelected, packages, resource, config, dependencies, packageToChange };
 }
 
 describe('cross-plugin public config apply', () => {
@@ -526,12 +535,26 @@ describe('cross-plugin public config apply', () => {
     });
     const { run, setSelected, config, cwd, env, source } =
       await createCommandPackageReferenceFixture({ initialSelection: 'next', providerModelControl: true });
-    const install = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    execFileSync('git', ['init', '-q'], { cwd });
+    const install = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--context', 'user', '--yes']);
     expect(install.exitCode, JSON.stringify(install.payload.diagnostics)).toBe(0);
     await setSelected('final');
     const configStore = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'consumer', scope: 'user', cwd, env });
     const storeBefore = await fs.readFile(configStore);
-    const args = ['plugin', 'config', 'apply', 'team/consumer', '--context', 'user', '--yes'];
+    const request = ['plugin', 'config', 'apply', 'consumer', '--context', 'project'];
+    const review = await run(request);
+    expect(review).toMatchObject({ exitCode: 3, payload: { status: 'blocked',
+      data: { confirmation: { required: true, provided: false, effects: expect.arrayContaining([
+        expect.objectContaining({ code: 'replaceSharedOutput', impact: 'shared',
+          subject: { pluginId: 'team/consumer', scope: 'user' } }),
+      ]) } },
+    } });
+    const expectedIdentity = {
+      plugin: 'consumer', pluginId: 'team/consumer', sourceId: 'team',
+      context: { context: 'project', projectRoot: await fs.realpath(cwd) },
+      confirmation: { ...review.payload.data.confirmation, provided: true },
+    };
+    const args = [...request, '--yes'];
     const stopped = new AbortController();
     const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage').mockImplementationOnce(async () => {
       process.emit('SIGINT', 'SIGINT');
@@ -556,11 +579,15 @@ describe('cross-plugin public config apply', () => {
         const interrupted = await run(args, signal);
         expect(interrupted).toMatchObject({ exitCode, payload: {
           command: 'plugin.config.apply',
-          data: { configWrite: 'notStarted', apply: {
+          data: { ...expectedIdentity, configWrite: 'notStarted', apply: {
             state: 'partial',
             targetResults: expect.arrayContaining([
-              expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/provider' }), state: 'completed' }),
-              expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/consumer' }), state: 'failed' }),
+              expect.objectContaining({ target: expect.objectContaining({
+                pluginId: 'team/provider', platform: 'codex', scope: 'user',
+              }), state: 'completed' }),
+              expect.objectContaining({ target: expect.objectContaining({
+                pluginId: 'team/consumer', platform: 'codex', scope: 'user',
+              }), state: 'failed' }),
             ]),
             commandResults: expect.arrayContaining([
               expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'failed' }),
@@ -576,6 +603,7 @@ describe('cross-plugin public config apply', () => {
             }),
           ]),
         } });
+        expect(interrupted.payload.data.confirmation).toEqual(expectedIdentity.confirmation);
       }
       expect(commits).toHaveBeenCalledTimes(3);
       expect(await fs.readJson(config)).toEqual({ selected: 'next' });
@@ -583,11 +611,59 @@ describe('cross-plugin public config apply', () => {
     } finally { commits.mockRestore(); }
     const recovered = await run(args);
     expect(recovered).toMatchObject({ exitCode: 0, payload: { data: {
-      configWrite: 'notStarted', apply: { state: 'succeeded' },
+      ...expectedIdentity, configWrite: 'notStarted', apply: { state: 'succeeded' },
     } } });
     expect(await fs.readJson(config)).toEqual({ selected: 'final' });
     expect(await fs.readFile(configStore)).toEqual(storeBefore);
   }, 60_000);
+
+  it('reports interruption before standalone apply confirms effects and stops a preparing renderer', async () => {
+    const { run, cwd, env, renderGate } = await createCommandPackageReferenceFixture({ delayProviderRender: true });
+    execFileSync('git', ['init', '-q'], { cwd });
+    expect(await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--context', 'user', '--yes']))
+      .toMatchObject({ exitCode: 0 });
+    const args = ['plugin', 'config', 'apply', 'consumer', '--context', 'project', '--target', 'codex', '--yes'];
+    const expected = { status: 'failed', data: {
+      plugin: 'consumer', context: { context: 'project', projectRoot: await fs.realpath(cwd) },
+      configWrite: 'notStarted', confirmation: null,
+    }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationInterrupted' })]) };
+    const lockHeld = Promise.withResolvers<void>();
+    const releaseLock = Promise.withResolvers<void>();
+    const holder = withAwHomeMutationLock({ env, action: async () => {
+      lockHeld.resolve();
+      await releaseLock.promise;
+    } });
+    try {
+      await lockHeld.promise;
+      const waiting = await run(args, undefined, (event) => {
+        if (event.type === 'command:start') process.emit('SIGTERM', 'SIGTERM');
+      });
+      expect(waiting).toMatchObject({ exitCode: 143, payload: expected });
+      expect(waiting.payload.data).not.toHaveProperty('pluginId');
+      expect(waiting.payload.data).not.toHaveProperty('sourceId');
+      expect(waiting.payload.data).not.toHaveProperty('apply');
+    } finally {
+      releaseLock.resolve();
+      await holder;
+    }
+    await fs.outputFile(renderGate, '');
+    const applying = run(args);
+    try {
+      await vi.waitFor(async () => expect(await fs.pathExists(`${renderGate}.started`)).toBe(true), { timeout: 8000 });
+      process.emit('SIGINT', 'SIGINT');
+      const stopped = await applying;
+      expect(stopped).toMatchObject({ exitCode: 130, payload: {
+        ...expected, data: { ...expected.data, pluginId: 'team/consumer', sourceId: 'team' },
+      } });
+      expect(stopped.payload.data).not.toHaveProperty('apply');
+      expect(await fs.pathExists(`${renderGate}.finished`)).toBe(false);
+      const released = await withAwHomeMutationLock({ env, signal: AbortSignal.timeout(3000), action: async () => true });
+      expect(released).toBe(true);
+    } finally {
+      await fs.remove(renderGate);
+      await applying;
+    }
+  }, 30_000);
 
   it('keeps the committed group and delivered targets when direct TUI batch apply is interrupted', async () => {
     const { run, config, cwd, env, dependencies } =

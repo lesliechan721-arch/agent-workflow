@@ -5,6 +5,36 @@ import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/p
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('identifies each plugin and command package on a shared config apply location', () => {
+    const target = (pluginName: string) => ({ pluginId: `team/${pluginName}`, pluginName, platform: 'codex', scope: 'user' });
+    const result = projectReceipt('plugin.config.apply', {
+      ok: false, overallState: 'partial', configWrite: 'notStarted',
+      apply: {
+        state: 'partial',
+        targetResults: [
+          { target: target('provider'), action: 'refresh', state: 'completed' },
+          { target: target('consumer'), action: 'refresh', state: 'failed', partialDelivery: true, errorCode: 'platformComponentsUnmet' },
+          { target: target('later'), action: 'refresh', state: 'skipped', errorCode: 'dependencyFailed' },
+        ],
+        commandResults: [{
+          producer: { sourceId: 'team', pluginName: 'consumer', kind: 'package', key: 'personal', scope: 'user' },
+          state: 'failed', commandIds: [], removedCommandIds: [],
+          errors: [{ code: 'processCleanupUnconfirmed', message: 'Process cleanup could not be confirmed.' }],
+        }, {
+          producer: { sourceId: 'team', pluginName: 'provider', kind: 'package', key: 'personal', scope: 'project' },
+          state: 'completed', commandIds: [], removedCommandIds: [], errors: [],
+        }],
+      },
+    });
+    expect(renderPublicResult(result).split('\n')).toEqual(expect.arrayContaining([
+      'team/provider codex/user: completed',
+      'team/consumer codex/user: failed (some outputs verified) [platformComponentsUnmet]',
+      'team/later codex/user: skipped [dependencyFailed]',
+      'team/consumer package:personal user: failed [processCleanupUnconfirmed]',
+      'team/provider package:personal project: completed',
+    ]));
+  });
+
   it('shows each nested status target and marks only the scope with a confirmed disablement', () => {
     const pluginId = 'team/demo';
     const result = commandResult('plugin.status', { inventory: [{ pluginId, targetResults: [

@@ -1,7 +1,7 @@
 import type { AwSelfCheckResult, AwSelfDescribeResult, PluginRequirementsResult } from '../commands/aw-capabilities.js';
 import type { CatalogSourceMutationReceipt } from '../commands/catalog-source.js';
 import type { CatalogGenerationStatusEntry } from '../utils/catalog-generation-service.js';
-import type { CatalogGenerationSyncResult, ConfigApplyResult, CommandProducerResult, CatalogSourceImpact } from '../types.js';
+import type { CatalogGenerationSyncResult, ConfigApplyResult, ConfigApplyTargetResult, CommandProducerResult, CatalogSourceImpact, PlatformTarget, Scope } from '../types.js';
 import type { CatalogStoreStatusResult, CatalogStorePruneResult } from '../commands/catalog-store.js';
 import type { ReviewInspectionReceipt } from '../commands/review-inspection.js';
 import type { ReviewPreparationV1 } from '../commands/review-preparation.js';
@@ -12,8 +12,8 @@ import type { CatalogDevActivateReceipt, CatalogDevStatusReceipt, CatalogDevDeac
 import type { CommandManagementResult } from '../commands/managed-commands.js';
 import type { PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import type { PortableMaterializeReceipt } from '../portable/commands.js';
-import type { RecoveryReceipt } from '../recovery/receipt.js';
-import { projectTarget } from '../commands/public-lifecycle-result.js';
+import { recoveryRootDisposition, type RecoveryReceipt } from '../recovery/receipt.js';
+import { projectTarget, recoverySyncAction } from '../commands/public-lifecycle-result.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
 
 type RecordValue = Record<string, unknown>;
@@ -119,6 +119,46 @@ function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): Recor
   if (value.commandResults) data.commandResults = commandResults(value.commandResults, diagnostics);
   diagnostics.push(...(value.diagnostics ?? []));
   return data;
+}
+
+function configDeploymentRetryActions(apply: ConfigApplyResult | undefined): NextAction[] {
+  if (!apply) return [];
+  const groups = new Map<string, { pluginId: string; agent: PlatformTarget; scopes: Record<Scope, ConfigApplyTargetResult[]> }>();
+  for (const entry of apply.targetResults) {
+    const { pluginId, platform, scope } = entry.target;
+    if (!pluginId) continue;
+    const key = JSON.stringify([pluginId, platform]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { pluginId, agent: platform, scopes: { user: [], project: [] } };
+      groups.set(key, group);
+    }
+    group.scopes[scope].push(entry);
+  }
+  const pending = (entry: ConfigApplyTargetResult): boolean => entry.state === 'failed' || (entry.state === 'skipped' && Boolean(entry.errorCode));
+  const preserved = (entry: ConfigApplyTargetResult): boolean => entry.state === 'completed' || entry.partialDelivery === true;
+  const canSync = (entries: ConfigApplyTargetResult[]): boolean => entries.some(pending)
+    && !entries.some((entry) => preserved(entry) || entry.relation === 'dependency');
+  const actions: NextAction[] = [];
+  for (const { pluginId, agent, scopes } of groups.values()) {
+    const bothPending = canSync(scopes.user) && canSync(scopes.project);
+    const userMayBeVisited = scopes.user.some(preserved) || apply.reviewedUserRoots === null || apply.reviewedUserRoots?.includes(pluginId) === true;
+    for (const scope of ['user', 'project'] as const) {
+      const entries = scopes[scope];
+      if (!entries.some(pending)) continue;
+      if (entries.some((entry) => entry.partialDelivery)) {
+        actions.push({ kind: 'manual', message: `Inspect the verified and unfinished outputs for ${pluginId} (${agent}/${scope}) before preparing a new apply.` });
+      } else if (entries.some((entry) => entry.state === 'completed')) {
+        continue;
+      } else if (entries.some((entry) => entry.relation === 'dependency')) {
+        actions.push({ kind: 'manual', message: `Identify the declared root that requires ${pluginId} (${agent}/${scope}) and review the affected location in the TUI.` });
+      } else if (!bothPending || scope === 'project') {
+        actions.push(recoverySyncAction(recoveryRootDisposition({ pluginId, agent, scope }, bothPending, userMayBeVisited),
+          'Repair the affected deployment target after reviewing its diagnostics.'));
+      }
+    }
+  }
+  return actions;
 }
 function sourceImpact(value: RecordValue): RecordValue {
   const data = pick(value, ['impactSchemaVersion', 'inventorySchemaVersion', 'sourceId', 'inventoryComplete', 'primaryChange', 'references', 'affectedReferences', 'changes', 'errors']);
@@ -482,23 +522,16 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
     }
     if (command.startsWith('plugin.config.')) {
       const apply = record(r.apply);
+      const packageActions = new Map<string, NextAction>();
       for (const entry of list(apply.commandResults)) {
         const identity = record(entry.producer);
         if (entry.state !== 'completed' && identity.kind === 'package' && typeof identity.sourceId === 'string'
           && typeof identity.pluginName === 'string' && typeof identity.key === 'string' && (identity.scope === 'user' || identity.scope === 'project')) {
-          result.nextActions.push({ kind: 'command', argv: ['aw', 'command', 'package', 'sync', `${identity.sourceId}/${identity.pluginName}`, identity.key, '--scope', identity.scope], reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
+          const argv = ['aw', 'command', 'package', 'sync', `${identity.sourceId}/${identity.pluginName}`, identity.key, '--scope', identity.scope];
+          packageActions.set(JSON.stringify(argv), { kind: 'command', argv, reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
         }
       }
-      for (const { target, state, errorCode, partialDelivery } of (r.apply as ConfigApplyResult | undefined)?.targetResults ?? []) {
-        if (state !== 'completed' && (state !== 'skipped' || errorCode) && target.pluginId) {
-          if (partialDelivery) {
-            result.nextActions.push({ kind: 'manual', message: `Inspect the verified and unfinished outputs for ${target.pluginId} (${target.platform}/${target.scope}) before preparing a new apply.` });
-            continue;
-          }
-          result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform],
-            reason: 'Repair the affected deployment target after reviewing its diagnostics.', requiresConfirmation: true });
-        }
-      }
+      result.nextActions.push(...packageActions.values(), ...configDeploymentRetryActions(r.apply as ConfigApplyResult | undefined));
     }
     if (command === 'source.status' || command === 'source.sync') for (const entry of diagnostics) if (entry.subject?.sourceId) result.nextActions.push({ kind: 'command', argv: ['aw', 'source', 'status', entry.subject.sourceId], reason: 'Inspect the selected source before retrying a source change.', requiresConfirmation: false });
     if (!result.nextActions.length) result.nextActions.push({ kind: 'manual', message: status === 'partial' ? 'Review completed and incomplete results before retrying the operation.' : 'Resolve the reported diagnostics before retrying the operation.' });

@@ -1279,6 +1279,7 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
     context,
     cwd: options.cwd,
     env: options.env,
+    signal: options.rebuildRuntime?.signal,
     cliVersion: version,
     existingOnly: true,
     ...(exactTargets ? { exactTargets } : {}),
@@ -1416,6 +1417,8 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
           action: 'refresh',
           state: target.execution === 'applied' || target.execution === 'no-op' ? 'completed'
             : target.execution === 'not-run' ? 'skipped' : 'failed',
+          ...(target.relation === 'root' ? { relation: 'requested' } : target.relation === 'dependency' ? { relation: 'dependency' } : {}),
+          ...(target.requiredBy.length ? { requiredBy: target.requiredBy } : {}),
           ...(configApplyHasPartialDelivery(target) ? { partialDelivery: true } : {}),
           ...(target.blockers.length ? { errorCode: target.blockers[0]!.code,
             message: target.blockers.map((item) => item.message).join(' ') } : {}),
@@ -1424,6 +1427,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
           message: 'The inactive legacy output was preserved. Configuration apply does not create an activation.',
         }))],
         commandResults: receipt.commandResults,
+        ...(receipt.reviewedUserRoots !== undefined ? { reviewedUserRoots: receipt.reviewedUserRoots } : {}),
         ...(errors.length ? { errors } : {}),
         ...(diagnostics.length ? { diagnostics } : {}),
       };

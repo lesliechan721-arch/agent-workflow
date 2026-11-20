@@ -367,7 +367,11 @@ export interface ConfigApplyError {
   message: string;
 }
 
-export type ConfigApplyResult = { diagnostics?: Diagnostic[] } & (
+export type ConfigApplyResult = {
+  diagnostics?: Diagnostic[];
+  /** Existing User declarations observed while preparing a Project recovery. */
+  reviewedUserRoots?: readonly string[] | null;
+} & (
   | {
       state: 'skipped';
       reason: 'notRequested' | 'noConfigChange' | 'noEffectiveConfigChange' | 'noVisibleTarget';

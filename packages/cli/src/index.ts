@@ -108,6 +108,7 @@ import type {
   PlatformTarget,
   Scope,
 } from './types.js';
+import { recoveryInterruptionCode } from './recovery/interruption.js';
 import { materializePortableSkillsToDirectory, PortableCommandError } from './portable/commands.js';
 import {
   createReviewInspectionFailure,
@@ -777,7 +778,6 @@ function writeConfigApplyNotice(
     plugin: string;
     overallState: RebuildReceiptOverallState;
     apply: import('./types.js').ConfigApplyResult;
-    otherProjectsMayRequireSync: boolean;
     warnings: string[];
   },
 ): void {
@@ -2640,26 +2640,48 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('config:apply', rawOptions);
       const work = await configContext(context, rawOptions, true);
       const targets = rawOptions.target?.map((target) => normalizeWriteRequest(() => parsePlatformTargetValue(target)));
+      let resolved: { plugin: string; pluginId: string; sourceId: string } | undefined;
+      let confirmed: Confirmation | undefined;
       const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(context, selector,
         async ({ plugin, pluginId, source }, awHomeMutationToken) => {
+          const identity = { plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId };
+          resolved = identity;
           const confirmation = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, targets, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, rebuildRuntime: context });
-          return { confirmation, ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
+          confirmed = confirmation;
+          const applied = await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
-            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
-          command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
-          context: work,
-        }; }, true)).catch((error: unknown) => {
-          if (!(error instanceof ConfigApplyInterruptedError)) throw error;
-          writeConfigMutationFailure('config:apply', selector, rawOptions.json === true, error);
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+          });
+          return { ...applied, ...identity, confirmation, context: work };
+        }, true)).catch((error: unknown) => {
+          // The Catalog lease rejects normal returns after an abort, so project the receipt after cleanup.
+          if (error instanceof ConfigApplyInterruptedError && resolved && confirmed) {
+            const { code, message } = configMutationFailure(error, context.env, context.cwd);
+            return { ...resolved, confirmation: confirmed, context: work,
+              configWrite: error.configWrite, overallState: 'partial' as const,
+              apply: error.apply, errors: [{ code, message }] };
+          }
+          const code = recoveryInterruptionCode(error, context.signal);
+          if (!code) throw error;
+          if (!resolved) parsePluginId(selector);
+          const message = code === 'processCleanupUnconfirmed' ? 'Process cleanup could not be confirmed.'
+            : 'The command was interrupted before configuration apply completed.';
+          return { ...(resolved ?? { plugin: selector }), confirmation: confirmed ?? null,
+            context: work, configWrite: 'notStarted' as const,
+            overallState: 'failed' as const, errors: [{ code, message }] };
         });
-      if (!receipt) return;
       const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
       else {
-        writeLine(io.stdout, `配置应用：${result.ok ? '完成' : '部分失败'}。`);
-        writeConfigApplyNotice(io.stderr, { ...result, warnings: [] });
+        const outcome = result.ok ? '完成' : result.overallState === 'partial' ? '部分失败' : '失败';
+        writeLine(io.stdout, `配置应用：${outcome}。`);
+        if ('apply' in result && result.apply) {
+          writeConfigApplyNotice(io.stderr, { ...result, apply: result.apply, warnings: [] });
+        } else if ('errors' in result) {
+          for (const error of result.errors ?? []) writeLine(io.stderr, error.message);
+        }
       }
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
