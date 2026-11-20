@@ -1147,7 +1147,7 @@ async function acceptPosixSnapshot(
 ): Promise<boolean> {
   // This disposition applies only to this observation's confirmed null candidates.
   // Keep their marker rows and known identities for later, independent cleanup.
-  const originalIdentityAbsentPids = new Set<number>();
+  const confirmedAbsentPids = new Set<number>();
   const markerConfirmationDeadline = confirmationDeadline(snapshot, state.platform, deadline);
   const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
     const recordCleanup = stage !== 'observation' && usesLinuxProcfs(state);
@@ -1180,7 +1180,7 @@ async function acceptPosixSnapshot(
     }
   }
   const needsConfirmation = (pid: number): boolean => {
-    if (originalIdentityAbsentPids.has(pid)) return false;
+    if (confirmedAbsentPids.has(pid)) return false;
     const entry = snapshot.table.get(pid);
     if (pid === state.pid && state.root && entry?.startTime !== state.root.startTime) return false;
     return entry !== undefined && !entry.state?.startsWith('Z')
@@ -1301,9 +1301,11 @@ async function acceptPosixSnapshot(
     if (strictProcfs && !inspectLeasedProcfsTable()) return false;
     if (state.platform === 'linux' && stage === 'observation' && !state.failure
       && (!state.lease || validateLeaseSnapshot(snapshot, state.lease, stage) === undefined)) {
-      const candidates = unreadablePids.filter((pid) =>
-        snapshot.unreadableMarkerPids.has(pid) && needsConfirmation(pid)
-        && snapshot.table.get(pid)?.startTime === originalEntries.get(pid)?.startTime);
+      // A full procfs recheck can sample another short-lived child after the
+      // first one exits. Verify the identities the recheck actually found.
+      const candidates = [...snapshot.unreadableMarkerPids].filter(pid => needsConfirmation(pid)
+        && (strictProcfs ? !snapshot.replacementPids?.has(pid)
+          : originalEntries.get(pid)?.startTime === snapshot.table.get(pid)?.startTime));
       if (candidates.length > 0) {
         const queryStartedAt = Date.now();
         const identityRemaining = markerConfirmationDeadline - queryStartedAt;
@@ -1329,12 +1331,12 @@ async function acceptPosixSnapshot(
           retainGroupDepartures(trustedTable);
         }
         for (const pid of candidates) {
-          const startTime = originalEntries.get(pid)!.startTime;
+          const startTime = snapshot.table.get(pid)!.startTime;
           const current = trustedTable?.get(pid);
           const result = trustedTable === undefined ? 'unknown'
             : current === undefined ? 'absent'
               : current.startTime === startTime ? 'present' : 'unknown';
-          if (result === 'absent') originalIdentityAbsentPids.add(pid);
+          if (result === 'absent') confirmedAbsentPids.add(pid);
           try {
             state.dependencies.onLinuxMarkerIdentityConfirmation?.({
               rootPid: state.pid, pid, startTime, phase: 'post-marker-confirmation',
@@ -1406,12 +1408,12 @@ async function acceptPosixSnapshot(
   }
   const rootEntry = snapshot.table.get(state.pid);
   let confirmedUnmarkedRoot = snapshot.confirmedUnmarkedPids.has(state.pid)
-    && !originalIdentityAbsentPids.has(state.pid);
+    && !confirmedAbsentPids.has(state.pid);
   if (
     state.marker !== undefined &&
     rootEntry !== undefined &&
     !rootEntry.state?.startsWith('Z') &&
-    !originalIdentityAbsentPids.has(state.pid) &&
+    !confirmedAbsentPids.has(state.pid) &&
     (state.root === undefined || state.root.startTime === rootEntry.startTime) &&
     !snapshot.markerPids.has(state.pid)
   ) {
@@ -1506,17 +1508,17 @@ async function acceptPosixSnapshot(
         !snapshot.table.get(identity.pid)?.state?.startsWith('Z'),
     );
     const markerlessKnownPids = liveKnownIdentities
-      .filter((identity) => !originalIdentityAbsentPids.has(identity.pid) && !snapshot.markerPids.has(identity.pid))
+      .filter((identity) => !confirmedAbsentPids.has(identity.pid) && !snapshot.markerPids.has(identity.pid))
       .map((identity) => identity.pid);
     const markerlessConfirmedPids = [...snapshot.confirmedUnmarkedPids].filter((pid) => {
       const entry = snapshot.table.get(pid);
-      return entry && !originalIdentityAbsentPids.has(pid)
+      return entry && !confirmedAbsentPids.has(pid)
         && !entry.state?.startsWith('Z') && !snapshot.markerPids.has(pid);
     });
     const markerlessInitialGroupPids: number[] = [];
     if (state.rootPgid !== undefined && !groupLeaderWasReused(state, snapshot.table)) {
       for (const [pid, entry] of snapshot.table) {
-        if (entry.pgid !== state.rootPgid || entry.state?.startsWith('Z') || originalIdentityAbsentPids.has(pid)) continue;
+        if (entry.pgid !== state.rootPgid || entry.state?.startsWith('Z') || confirmedAbsentPids.has(pid)) continue;
         if (pid !== state.pid && !snapshot.markerPids.has(pid)) {
           markerlessInitialGroupPids.push(pid);
         }

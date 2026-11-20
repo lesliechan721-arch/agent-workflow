@@ -466,11 +466,12 @@ it.skipIf(process.platform !== 'linux').each([
   try {
     let scans = 0;
     f.sample(query => {
-      if (query === 'identity') return [];
+      const detached: LeasedRow = [f.child, '20', f.child, marker, 'S', f.root];
+      if (query === 'identity') return scans === 2 ? [detached] : [];
       const root: LeasedRow = [f.root, '10', f.root, true];
       switch (++scans) {
         case 1: return [root, [104, '30', f.root, null]];
-        case 2: return [root, [f.child, '20', f.child, marker, 'S', f.root]];
+        case 2: return [root, detached];
         default: return [];
       }
     });
@@ -485,7 +486,9 @@ it.skipIf(process.platform !== 'linux').each([
       ]),
     });
     expect(f.kill.mock.calls.every(([pid]) => Math.abs(pid) === f.root)).toBe(true);
-    expect(f.confirmation).not.toHaveBeenCalled();
+    if (stage === 'observation' && marker === null) {
+      expect(f.confirmation).toHaveBeenCalledWith(expect.objectContaining({ pid: f.child, result: 'present' }));
+    } else expect(f.confirmation).not.toHaveBeenCalled();
   } finally { await f.close(); vi.useRealTimers(); }
 });
 
@@ -564,7 +567,8 @@ it.skipIf(process.platform !== 'linux')('revalidates group and individual signal
 // A live candidate can change while its marker is read. Its original identity
 // and the sentinel decide which evidence may exempt this one observation.
 it.skipIf(process.platform !== 'linux').each([
-  'exit', 'zombie', 'initial-negative', 'marker-negative', 'still-unreadable', 'post-identity-absent', 'sentinel-lost', 'new-unreadable',
+  'exit', 'zombie', 'initial-negative', 'marker-negative', 'still-unreadable', 'post-identity-absent', 'sentinel-lost',
+  'new-unreadable', 'new-exited', 'replacement-unreadable',
 ] as const)('checks the leased Linux candidate when the confirmation reports %s', async outcome => {
   vi.useFakeTimers();
   const f = await leasedLinuxFixture();
@@ -580,7 +584,9 @@ it.skipIf(process.platform !== 'linux').each([
       if (outcome === 'initial-negative') return [root];
       if (outcome === 'exit' || (outcome === 'post-identity-absent' && query === 'identity')) return [root];
       if (outcome === 'sentinel-lost') { f.loseSentinel(); return [root]; }
-      if (outcome === 'new-unreadable') return [root, [104, '30', f.root, null]];
+      if (outcome === 'new-exited' && query === 'identity') return [root];
+      if (outcome === 'new-unreadable' || outcome === 'new-exited') return [root, [104, '30', f.root, null]];
+      if (outcome === 'replacement-unreadable') return query === 'marker' ? [root, [f.child, '31', f.root, null]] : [root];
       if (outcome === 'marker-negative') child[3] = false;
       if (outcome === 'zombie') child[4] = 'Z';
       return [root, child];
@@ -590,10 +596,16 @@ it.skipIf(process.platform !== 'linux').each([
     const reasons = f.observation.diagnostics.map(d => d.reason);
     if (outcome === 'initial-negative' || outcome === 'marker-negative') expect(reasons).toEqual(['initial-group-marker-missing']);
     else if (outcome === 'sentinel-lost') expect(reasons).toContain('inspection-lease-invalid');
-    else if (outcome === 'still-unreadable' || outcome === 'new-unreadable') expect(reasons).toEqual(['process-marker-unreadable']);
+    else if (['still-unreadable', 'new-unreadable', 'replacement-unreadable'].includes(outcome)) {
+      expect(reasons).toEqual(['process-marker-unreadable']);
+    }
     else expect(reasons).toEqual([]);
     if (outcome === 'post-identity-absent' || outcome === 'still-unreadable') {
       expect(f.confirmation.mock.calls.map(([event]) => event.result)).toEqual([outcome === 'still-unreadable' ? 'present' : 'absent']);
+    } else if (outcome === 'new-unreadable' || outcome === 'new-exited') {
+      expect(f.confirmation.mock.calls.map(([event]) => [event.pid, event.startTime, event.result])).toEqual([
+        [104, '30', outcome === 'new-unreadable' ? 'present' : 'absent'],
+      ]);
     } else expect(f.confirmation).not.toHaveBeenCalled();
     expect(f.kill).not.toHaveBeenCalled();
   } finally { await f.close(); vi.useRealTimers(); }
