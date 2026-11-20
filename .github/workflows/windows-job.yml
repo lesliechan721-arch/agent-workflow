@@ -15,10 +15,6 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: windows-job-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   candidate:
     name: Windows Job / fixed-toolchain candidate
