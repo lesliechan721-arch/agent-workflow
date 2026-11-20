@@ -357,6 +357,9 @@ async function observePublicComponentSuites(ctx) {
       try {
         await ctx.check('public-components-' + scope + '-' + suite, async () => {
           const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
+            ...(ctx.platform === 'copilot' && process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true'
+              && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+              ? { traceEntry: ctx.launcher.prefix[0] ?? ctx.launcher.executable } : {}),
             ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
           if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
           assert.equal(result.status, 'passed', result.reason);

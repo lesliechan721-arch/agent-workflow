@@ -66,6 +66,21 @@ export async function prepareEnvironment(root) {
   return env;
 }
 
+export async function readManagedTrace(file) {
+  if (!file) return undefined;
+  const records = [];
+  try {
+    if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
+    const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
+    if (lines.length > 256) return { state: 'over-limit', records };
+    for (const line of lines) {
+      try { records.push(JSON.parse(line)); }
+      catch { return { state: 'partial-or-invalid-jsonl', records }; }
+    }
+    return { state: 'captured', records };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
+}
+
 export const fixedClientVersion = platform => platform === 'antigravity' ? '1.3.4' : clients[platform].version;
 
 export function usesAntigravityAgentObservation(args, options, host = process, hosted = process.env.GITHUB_ACTIONS) {

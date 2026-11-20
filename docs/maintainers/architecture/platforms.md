@@ -128,7 +128,7 @@ Antigravity Project 使用 `.agents/plugins/<pluginName>/`，因此两个范围�
 
 每个配对原生动作后，AW 只在配置完全等于固定版本预期变换时窄恢复此前的全局、全部项目与其他插件字段，并更新本次快照；失败时也只接受未改变或已知变换，遇到 stale 不覆盖外部修改。重装后再核对实际原生副本与本次冻结投影的完整摘要，原生退出 0、版本或登记存在均不能替代字节检查。失败保留 AW 源包和已核验的激活规则，以 partial/unknown 及 `nativeInstallContentPostcheckFailed` 等诊断给出恢复；不回滚包、不删除未知数据、不新建恢复 ledger，也不为其他项目新增信任。用户须先保留或处理本地数据、修复弱 owner 或安装现场，再在同一工作区显式运行许可恢复命令。
 
-Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`。项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，后续路径须为与本次 AW marketplace 精确一致的绝对路径。`plugin list --json` 可能显示尚未发布的本地 marketplace 候选。若该条目报告 `source: live`、`enabled: false`，`installedFrom` 精确匹配已确认的 marketplace，包路径确实缺席，且适用的用户、项目共享和项目本地配置都没有该插件条目，则登记判为缺席。禁用条目若已有包或配置中有显式记录，保留其登记和激活事实。来源缺失或相关配置不可读时保持未知，来源不符时保护外来内容。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`。项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，后续路径须为与本次 AW marketplace 精确一致的绝对路径。`plugin list --json` 可能显示尚未发布的本地 marketplace 候选。若该条目报告 `source: live`、`enabled: false`，`installedFrom` 精确匹配已确认的 marketplace，包路径确实缺席，且适用的用户、项目共享和项目本地配置都没有该插件条目，则登记判为缺席。禁用条目若已有包或配置中有显式记录，保留其登记和激活事实。来源缺失或相关配置不可读时保持未知，来源不符时保护外来内容。Windows 上，同一只读快照的 marketplace list 若因超时退出且已确认进程清理，可再运行一次同样的清单。每次执行的期限均为 5 秒。同一快照中的插件共享最终结果，持续失败时归属保持未知，已知的外来或共享归属继续保留。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
 

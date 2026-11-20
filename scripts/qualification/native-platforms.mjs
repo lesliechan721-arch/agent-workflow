@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
+  acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
@@ -136,21 +136,6 @@ export function readPublicAwEnvelope(stdout, expectedStatus) {
   const value = JSON.parse(stdout);
   if (value?.schemaVersion !== 2 || value.status !== expectedStatus) throw new Error('public-aw-unexpected-envelope');
   return value;
-}
-
-async function readManagedTrace(file) {
-  if (!file) return undefined;
-  const records = [];
-  try {
-    if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
-    const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
-    if (lines.length > 256) return { state: 'over-limit', records };
-    for (const line of lines) {
-      try { records.push(JSON.parse(line)); }
-      catch { return { state: 'partial-or-invalid-jsonl', records }; }
-    }
-    return { state: 'captured', records };
-  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
 }
 
 // Project only fixed stage names and times from this fixture's own debug log.

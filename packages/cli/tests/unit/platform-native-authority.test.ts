@@ -5,6 +5,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { inspectDeployment } from '../../src/platforms/inspection.js';
+import { inspectCopilotMarketplaceSource } from '../../src/platforms/inspection-native.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createNativeQuerySession, queryNativeDeployment, withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
@@ -246,6 +247,41 @@ describe('native deployment state authority', () => {
     expect(observed.consumers[0]?.activation).toBe('enabled');
     expect(observed.ownership).toBe('unknown');
   });
+
+  // A Windows Copilot marketplace read can time out beside a healthy plugin
+  // list. Sibling inspections must share bounded, fresh marketplace evidence.
+  it.each(['healthy', 'canonical after timeout', 'foreign after timeout', 'persistent timeout', 'cleanup failed', 'exit 124', 'cancelled'] as const)(
+    'preserves Windows Copilot marketplace evidence on %s', async (scenario) => {
+      const item = await fixture('copilot');
+      const product = item.binding.consumers[0]!;
+      const binding = { ...item.binding, consumers: [{ ...product, entry: { kind: 'cli' as const,
+        executable: path.join(item.ctx.cwd, 'npm-loader.js'), configRoot: item.host } }] };
+      let reads = 0;
+      const controller = new AbortController();
+      const runner = async (invocation: NativeCliInvocation) => {
+        if (invocation.args.includes('marketplace')) {
+          reads++;
+          if (scenario === 'exit 124') return { exitCode: 124, stdout: '', stderr: '' };
+          if (scenario === 'cancelled') controller.abort();
+          if (scenario === 'persistent timeout' || reads === 1 && scenario !== 'healthy') {
+            throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '',
+              ...(scenario === 'cleanup failed' ? { cleanupError: new Error('unconfirmed') } : {}) });
+          }
+        }
+        return item.ctx.runner!(invocation);
+      };
+      item.native.marketplace = scenario === 'foreign after timeout' ? 'foreign' : 'canonical';
+      await withNativeObservationBatch({ runner, signal: controller.signal }, async (batch) => {
+        const ctx = { ...item.ctx, ...batch, platform: 'win32' as const };
+        const read = () => inspectCopilotMarketplaceSource(ctx, binding, item.layout.marketplaceName!, item.layout.marketplaceRoot!);
+        const observed = Promise.all([read(), read()]);
+        if (scenario === 'foreign after timeout') await expect(observed).resolves.toEqual(['foreign', 'foreign']);
+        else if (scenario === 'healthy' || scenario === 'canonical after timeout') await expect(observed).resolves.toEqual(['canonical', 'canonical']);
+        else if (scenario === 'cancelled') await expect(observed).rejects.toMatchObject({ name: 'AbortError' });
+        else await expect(observed).rejects.toMatchObject({ reason: scenario === 'exit 124' ? 'exit' : 'timeout' });
+      });
+      expect(reads).toBe(['canonical after timeout', 'foreign after timeout', 'persistent timeout'].includes(scenario) ? 2 : 1);
+    });
 
   // Test Value Gate: a native identity with an absent source cannot authorize shared package removal.
   it.each(['claude', 'copilot'] as const)('keeps %s ownership unknown when the native source is absent', async (platform) => {

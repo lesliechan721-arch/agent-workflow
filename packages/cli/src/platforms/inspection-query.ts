@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
-import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, runNativeCliChecked, type NativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, NativeCliError, runNativeCliChecked, type NativeCliRunner } from '../utils/native-cli.js';
 import { installationInvocation, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
@@ -101,7 +101,18 @@ export async function queryNativeDeployment(ctx: ReadContext, binding: Deploymen
       command: invocation.command, args: invocation.args,
       env: Object.entries(invocation.env ?? process.env).sort(([a], [b]) => a.localeCompare(b)),
       host: ctx.platform ?? process.platform, arch: ctx.arch ?? process.arch, observeNative: ctx.observeNative === true });
-    return await session.read(key, ctx, read);
+    return await session.read(key, ctx, async () => {
+      try { return await read(); }
+      catch (error) {
+        ctx.signal?.throwIfAborted();
+        // On Windows even this local read occasionally times out on a healthy
+        // Copilot. Share one fresh attempt with the whole read-only snapshot.
+        if ((ctx.platform ?? process.platform) !== 'win32' || binding.route !== 'copilot-marketplace'
+          || queryArgs.length !== 4 || queryArgs.join(' ') !== 'plugin marketplace list --json'
+          || !(error instanceof NativeCliError) || error.reason !== 'timeout' || error.name === 'AbortError' || error.cleanupError) throw error;
+        return read();
+      }
+    });
   } finally {
     await neutral?.dispose();
   }

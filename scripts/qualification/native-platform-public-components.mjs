@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { qualifyCatalog, qualifyProjectDependencies } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
+import { prepareEnvironment, readManagedTrace, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 
 export const componentPlatforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
@@ -480,7 +480,7 @@ async function matrix(ctx, report) {
 }
 
 
-export async function runComponentQualification({ platform, scope, clientPath, suite = 'matrix', catalog }) {
+export async function runComponentQualification({ platform, scope, clientPath, traceEntry, suite = 'matrix', catalog }) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
   assert(['matrix', 'pi-seven', 'candidate', 'frozen', 'project-inheritance'].includes(suite) || pairPrerequisites.has(suite));
   if (suite === 'project-inheritance') assert.equal(scope, 'project');
@@ -548,7 +548,19 @@ export async function runComponentQualification({ platform, scope, clientPath, s
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
     async function result(args, cwd = project, trustRetry) {
-      const response = await executePublicAw({ executable: process.execPath, prefix }, [...args, '--json'], { cwd, env, timeoutMs: 180000 });
+      // Trace the first real discovery in this fresh home. A later probe could
+      // succeed and lose the reason target selection originally failed.
+      const trace = traceEntry && args[0] === 'target' && args[1] === 'set';
+      const traceFile = trace ? path.join(root, 'target-discovery.jsonl') : undefined;
+      const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+        AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+        AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
+      const launcher = { executable: process.execPath, prefix: trace
+        ? ['--import', new URL('./native-platform-managed-trace.mjs', import.meta.url).href, ...prefix] : prefix };
+      const response = await executePublicAw(launcher, [...args, '--json'],
+        { cwd, env: commandEnv, timeoutMs: 180000 }).finally(async () => {
+        if (trace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
+      });
       assert(!response.cancelled && !response.timedOut && response.terminationReason === 'complete', args.join(' '));
       const value = JSON.parse(response.stdout);
       assert.equal(value.schemaVersion, 2);
