@@ -10665,8 +10665,8 @@ export function ConsoleAppV4(props: {
           pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}
         {partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped')
           ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}
-        {configOperation && partial && !invalidConfigResult
-          ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}
+        {configOperation && partial && !invalidConfigResult && configRetries.length > 0
+          ? <Callout status="warning" title="恢复指引" description="选择“重试应用”可以重新审阅未完成的平台。" /> : null}
         {resultSummary?.elapsedMs !== undefined
           ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}
         {visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`}

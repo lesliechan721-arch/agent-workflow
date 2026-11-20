@@ -23,6 +23,7 @@ import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController, type OperationIntent } from '../../src/tui/controller.js';
 import type { PluginConfigWriteReceipt } from '../../src/utils/plugin-config-write.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 
 function isClaudeInvocation(invocation: NativeCliInvocation): boolean {
   return path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '') === 'claude'
@@ -105,6 +106,7 @@ async function createCommandPackageReferenceFixture(options: {
   twoBindings?: boolean;
   packagePlatforms?: Array<'codex' | 'claude'>;
   initialSelection?: 'final' | 'next';
+  providerModelControl?: boolean;
 } = {}) {
   const platforms: Array<'codex' | 'claude'> = options.mixedScopes ? ['claude'] : options.withClaude ? ['codex', 'claude'] : ['codex'];
   const isolation = getCurrentSourceTestIsolation();
@@ -122,6 +124,9 @@ async function createCommandPackageReferenceFixture(options: {
   for (const name of ['provider', 'consumer']) {
     const root = path.join(sourceRoot, 'plugins', name);
     const usesHelper = options.preApplyPackageChange === 'chmod' && name === 'consumer';
+    const skillRequirement = options.providerModelControl && name === 'provider'
+      ? ",requires:[{feature:'skill.invocation.model',values:['false']}]" : '';
+    const skillConfig = skillRequirement ? " + JSON.stringify(c.config.values)" : '';
     await fs.outputFile(path.join(root, 'commands/tool.mjs'), usesHelper
       ? "import {execFileSync} from 'node:child_process'; import {fileURLToPath} from 'node:url'; execFileSync(fileURLToPath(new URL('./helper', import.meta.url)));"
       : 'console.log("fixture");\n');
@@ -135,7 +140,7 @@ async function createCommandPackageReferenceFixture(options: {
       `const name=${JSON.stringify(name)};`,
       `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
       `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,surface:c.surface,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
-      "if(c.surface==='agent-plugin'){const files={'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n','README.md':'# Fixture\\n'};console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));}else{",
+      `if(c.surface==='agent-plugin'){const files={'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n'${skillConfig},'README.md':'# Fixture\\n'};console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name${skillRequirement},content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));}else{`,
       `const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected${options.mixedScopes ? ',scope:c.scope' : ''}})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:${JSON.stringify(commandEntries)}});`,
       'console.log(JSON.stringify({version:2,artifacts}));}',
     ].join('\n'));
@@ -508,6 +513,80 @@ describe('cross-plugin public config apply', () => {
         expect(applied.payload.diagnostics).toContainEqual(expect.objectContaining({ code: 'processCleanupUnconfirmed' }));
       }
     } finally { commits.mockRestore(); }
+  }, 60_000);
+
+  it('retains the standalone apply receipt after interruption and can recover', async () => {
+    const qualifiedProfile = vi.mocked(getQualifiedPlatformProfile).getMockImplementation()!;
+    vi.mocked(getQualifiedPlatformProfile).mockImplementation((platform, host) => {
+      const profile = qualifiedProfile(platform, host);
+      if (platform === 'codex') profile.features['skill.invocation.model'] = {
+        status: 'unverified', reasonCodes: ['capability-unverified'],
+      };
+      return profile;
+    });
+    const { run, setSelected, config, cwd, env, source } =
+      await createCommandPackageReferenceFixture({ initialSelection: 'next', providerModelControl: true });
+    const install = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(install.exitCode, JSON.stringify(install.payload.diagnostics)).toBe(0);
+    await setSelected('final');
+    const configStore = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'consumer', scope: 'user', cwd, env });
+    const storeBefore = await fs.readFile(configStore);
+    const args = ['plugin', 'config', 'apply', 'team/consumer', '--context', 'user', '--yes'];
+    const stopped = new AbortController();
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage').mockImplementationOnce(async () => {
+      process.emit('SIGINT', 'SIGINT');
+      throw new DOMException('Interrupted', 'AbortError');
+    }).mockImplementationOnce(async () => {
+      process.emit('SIGTERM', 'SIGTERM');
+      throw new DOMException('Interrupted', 'AbortError');
+    }).mockImplementationOnce(async () => {
+      stopped.abort(new DOMException('Interrupted', 'AbortError'));
+      throw Object.assign(new Error('Unconfirmed process cleanup'), { code: 'pluginProcessCleanupFailed' });
+    });
+    try {
+      for (const { signal, exitCode, code, setting } of [
+        { signal: undefined, exitCode: 130, code: 'operationInterrupted', setting: 'ctrl-c' },
+        { signal: undefined, exitCode: 143, code: 'operationInterrupted', setting: 'terminate' },
+        { signal: stopped.signal, exitCode: 1, code: 'processCleanupUnconfirmed', setting: 'cleanup' },
+      ]) {
+        await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
+          logicalIdentity: source.logicalIdentity, pluginName: 'provider', scope: 'user', cwd, env,
+          values: { registry: [{ key: 'final' }, { key: 'next' }, { key: setting }] },
+        });
+        const interrupted = await run(args, signal);
+        expect(interrupted).toMatchObject({ exitCode, payload: {
+          command: 'plugin.config.apply',
+          data: { configWrite: 'notStarted', apply: {
+            state: 'partial',
+            targetResults: expect.arrayContaining([
+              expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/provider' }), state: 'completed' }),
+              expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/consumer' }), state: 'failed' }),
+            ]),
+            commandResults: expect.arrayContaining([
+              expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'failed' }),
+            ]),
+          } },
+          diagnostics: expect.arrayContaining([
+            expect.objectContaining({ code }),
+            expect.objectContaining({ code: 'skillInvocationPolicyNotGuaranteed',
+              subject: { pluginId: 'team/provider', target: 'codex', scope: 'user', field: 'skill.provider' },
+              detail: { reasonCode: 'invocationControlUnverified', skillInvocationControls: [
+                { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified' },
+              ] },
+            }),
+          ]),
+        } });
+      }
+      expect(commits).toHaveBeenCalledTimes(3);
+      expect(await fs.readJson(config)).toEqual({ selected: 'next' });
+      expect(await fs.readFile(configStore)).toEqual(storeBefore);
+    } finally { commits.mockRestore(); }
+    const recovered = await run(args);
+    expect(recovered).toMatchObject({ exitCode: 0, payload: { data: {
+      configWrite: 'notStarted', apply: { state: 'succeeded' },
+    } } });
+    expect(await fs.readJson(config)).toEqual({ selected: 'final' });
+    expect(await fs.readFile(configStore)).toEqual(storeBefore);
   }, 60_000);
 
   it('keeps the committed group and delivered targets when direct TUI batch apply is interrupted', async () => {

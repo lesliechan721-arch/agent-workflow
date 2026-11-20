@@ -1927,16 +1927,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const parsed = parsePluginId(selector);
     return withAwHomeMutationLock({
       env: context.env,
+      signal: context.signal,
       action: async (awHomeMutationToken) => {
         const catalogOperationContext = await resolveCatalogOperationContext({
           ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
           env: context.env,
+          signal: context.signal,
         });
         return withResolvedCatalogPlugin({
           selector,
           cliVersion: resolveCliVersion(),
           operationContext: catalogOperationContext,
           env: context.env,
+          signal: context.signal,
           consume: (resolution) => consume(
             resolution,
             awHomeMutationToken,
@@ -2646,7 +2649,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
           command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
           context: work,
-        }; }, true));
+        }; }, true)).catch((error: unknown) => {
+          if (!(error instanceof ConfigApplyInterruptedError)) throw error;
+          writeConfigMutationFailure('config:apply', selector, rawOptions.json === true, error);
+        });
+      if (!receipt) return;
       const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
@@ -2941,10 +2948,14 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
   const resolvedCommand = resolveRegisteredCommand(program, awArgs);
   const selected = resolvedCommand.command;
   const id = selected && selected !== program ? commandId(selected) : null;
-  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync',
+  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync', 'plugin.config.apply',
     'dev.plugin.create', 'dev.plugin.validate', 'dev.plugin.remove', 'dev.plugin.status',
     'dev.skill.create', 'dev.skill.validate'].includes(id ?? '');
-  if (controlledInterrupt) { commandOptions.interruption = interruption; commandOptions.signal = interruption.signal; }
+  if (controlledInterrupt) {
+    commandOptions.interruption = interruption;
+    commandOptions.signal = id === 'plugin.config.apply' && options.signal
+      ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal;
+  }
   if (id === 'command.run' && !presentation.help) return runManagedCommandCli(['run', ...argv.slice(resolvedCommand.index + 1)], { ...context, interactive: false }, { cliEntry: fileURLToPath(import.meta.url), cliVersion: resolveCliVersion() });
   let confirmation: Confirmation | null = null;
   const emit = (result: CommandResult<object>, invalid = false): number => {

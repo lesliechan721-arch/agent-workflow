@@ -21,7 +21,7 @@ import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type PreparedPlatformComponents } from '../utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from '../utils/component-command-preparation.js';
-import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, writeOwnedTextFile,
+import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, renderOwnedTextFile, writeOwnedTextFile,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
 import type { CleanupResult } from '../utils/ownership.js';
 import { createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
@@ -109,6 +109,30 @@ function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentO
     && ['enabled', 'not-applicable'].includes(requiredDeploymentActivation(binding, after, requireIndependentActivation))
     && (binding.route !== 'cursor-workspace-hook' || after.workspaceOpen === 'present')
     && (binding.route !== 'claude-marketplace' || after.scopeRegistration === undefined || after.scopeRegistration === 'present');
+}
+
+function componentSupplementFiles(plan: FrozenDeploymentPlan): HostContribution[] {
+  return plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
+    unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
+    .filter((contribution) => contribution.kind === 'owned-file'));
+}
+
+export function nativeDeploymentHasVerifiedComponentWrite(plan: FrozenDeploymentPlan, receipt: DeploymentReceipt): boolean {
+  const { after, effects, unmet } = receipt;
+  if (receipt.bindingId !== plan.binding.id || after.physicalKey !== plan.binding.physicalKey) return false;
+  const delivered = after.components.filter(({ id, presence, reasonCodes }) => presence === 'present' && !reasonCodes.length
+    && !unmet.some((gap) => (gap.componentId ?? gap.id) === id));
+  if (!delivered.length) return false;
+
+  const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
+  const supplementFiles = componentSupplementFiles(plan);
+  return plan.effects.some((effect) => {
+    if (!effects.some(({ id, status, mutation }) => id === effect.id && status === 'applied' && mutation === 'confirmed')) return false;
+    const deliversComponents = effect.kind === 'publish-package'
+      ? !plan.evidence.retainPackage && bundle && packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest, true)
+      : effect.kind === 'write-supplement' && supplementFiles.some((file) => file.destination === effect.destination);
+    return deliversComponents && effect.componentIds.some((id) => delivered.some((component) => component.id === id));
+  });
 }
 
 function recheckCopilotMarketplaceTimeout(receipt: DeploymentReceipt, fresh: DeploymentObservation): void {
@@ -343,7 +367,10 @@ export class PlatformRebuildSession {
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
     sourceId: string; sourceIdentity: string; assertStable(): Promise<void>;
-    acceptMarketplaceRegistration(): Promise<void>; rebase(): Promise<DeploymentObservation> }>();
+    acceptMarketplaceRegistration(): Promise<void>;
+    rebase(writtenFiles?: ReadonlyMap<string, { digest: string; componentIds: string[] }>): Promise<{
+      observation: DeploymentObservation; verifiedSupplementIds: string[];
+    }> }>();
   private readonly requestedOperations = new Map<string, TargetInput>();
   private readonly marketplaceTargets = new Set<DesiredTarget>();
   private marketplaceCandidatesFrozen = false;
@@ -826,7 +853,7 @@ export class PlatformRebuildSession {
           // registration. The reviewed package, references and bytes stay frozen.
           mutableBaseline = current;
         },
-        rebase: async () => {
+        rebase: async (writtenFiles) => {
           const reads = parallelNativeReads
             ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
           if (reads?.[0].status === 'rejected') throw reads[0].reason;
@@ -839,7 +866,16 @@ export class PlatformRebuildSession {
           if (reads?.[1].status === 'rejected') throw reads[1].reason;
           const mutable = reads?.[1].status === 'fulfilled' ? reads[1].value : await currentMutable();
           mutableBaseline = mutable;
-          return mutable.observation;
+          // The same rebase already hashes the exact paths. Match the owner's
+          // header and the desired bytes without opening each file again.
+          const verifiedSupplementIds = writtenFiles?.size ? components.flatMap((component, index) => {
+            if (component.kind !== 'owned-text-file') return [];
+            const written = writtenFiles.get(component.path);
+            const observed = mutable.paths[index];
+            return written && observed && typeof observed === 'object' && 'digest' in observed && observed.digest === written.digest
+              ? written.componentIds : [];
+          }) : [];
+          return { observation: mutable.observation, verifiedSupplementIds };
         } });
       const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
@@ -980,9 +1016,7 @@ export class PlatformRebuildSession {
           const receipt = receipts.find((entry) => entry.bindingId === plan.binding.id);
           if (!receipt || options?.deliveredSkillsOnly && plan.evidence.retainPackage) continue;
           const after = options?.refresh ? await adapter.inspect(ctx, plan.binding) : receipt.after;
-          const supplementFiles = plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
-            unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
-            .filter((contribution) => contribution.kind === 'owned-file'));
+          const supplementFiles = componentSupplementFiles(plan);
           const supplementIds = new Set(supplementFiles.flatMap((contribution) => contribution.componentIds));
           if (!options?.deliveredSkillsOnly) {
             const supplements = await inspectStaticSupplements(ctx, plan.binding,
@@ -1090,6 +1124,8 @@ export class PlatformRebuildSession {
         cleanupResults.length = 0;
         const receipts: DeploymentReceipt[] = [...blockedReceipts];
         for (const prepared of deployments) {
+          const supplementFiles = componentSupplementFiles(prepared.plan);
+          const writtenFiles = new Map<string, { digest: string; componentIds: string[] }>();
           const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
             .some((resolution) => resolution.state === 'failed' || resolution.state === 'unmet'));
           let receipt: DeploymentReceipt;
@@ -1133,7 +1169,12 @@ export class PlatformRebuildSession {
               await requireWritable(component, this.ownership);
               if (component.kind === 'owned-directory') return publishDirectory(contribution.stagingPath, component);
               if (component.kind === 'owned-text-file') {
-                await writeOwnedTextFile({ ...component, content: await fs.readFile(contribution.stagingPath, 'utf8') });
+                const content = await fs.readFile(contribution.stagingPath, 'utf8');
+                await writeOwnedTextFile({ ...component, content });
+                if (supplementFiles.includes(contribution)) {
+                  writtenFiles.set(component.path, { componentIds: contribution.componentIds,
+                    digest: crypto.createHash('sha256').update(renderOwnedTextFile(content, component.identity)).digest('hex') });
+                }
               } else if (component.kind === 'shared-config' && component.locator.kind === 'cursor-workspace-hook') {
                 const locator = component.locator;
                 const value = await jsonObject(locator.hooksPath);
@@ -1189,7 +1230,13 @@ export class PlatformRebuildSession {
           try {
             if (receipt.effects.some((effect) => effect.mutation !== 'none')) {
               for (const [bindingId, check] of this.mutableChecks) if (check.physicalKey === prepared.plan.binding.physicalKey) {
-                const fresh = await check.rebase();
+                const { observation: fresh, verifiedSupplementIds } = await check.rebase(bindingId === receipt.bindingId ? writtenFiles : undefined);
+                if (verifiedSupplementIds.length) {
+                  receipt.after.components = [
+                    ...receipt.after.components.filter(({ id }) => !verifiedSupplementIds.includes(id)),
+                    ...verifiedSupplementIds.map((id) => ({ id, presence: 'present' as const, reasonCodes: [] })),
+                  ];
+                }
                 if (bindingId === receipt.bindingId && prepared.plan.binding.route === 'copilot-marketplace'
                   && publication?.mutation === 'confirmed') {
                   recheckCopilotMarketplaceTimeout(receipt, fresh);

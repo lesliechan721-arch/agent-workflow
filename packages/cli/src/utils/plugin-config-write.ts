@@ -8,6 +8,7 @@ import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
+import { nativeDeploymentHasVerifiedComponentWrite } from '../commands/rebuild-platform-integration.js';
 import { selectPluginConfigProfile, NATIVE_PLATFORM_TARGETS, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { readScopedRecoveryStatus } from '../recovery/status.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
@@ -1344,7 +1345,14 @@ export class ConfigApplyInterruptedError extends Error {
 
 function configApplyHasPartialDelivery(target: RecoveryTarget): boolean {
   if (target.execution !== 'partial') return false;
-  if (skillInvocationDiagnostics([target]).length > 0) return true;
+  if (skillInvocationDiagnostics([target]).some(({ subject }) => subject?.pluginId === target.pluginId
+    && subject.target === target.agent && subject.scope === target.scope)) return true;
+  if (target.delivery?.kind === 'native') {
+    return target.deploymentReceipts?.some((receipt) => {
+      const plan = target.deploymentPlans?.find(({ binding }) => binding.id === receipt.bindingId);
+      return plan && nativeDeploymentHasVerifiedComponentWrite(plan, receipt);
+    }) ?? false;
+  }
   if (target.delivery?.kind !== 'agent-skills' || !Array.isArray(target.backend)) return false;
   return target.backend.some((entry: unknown) => {
     if (!entry || typeof entry !== 'object') return false;

@@ -107,7 +107,8 @@ vi.mock('../../src/utils/catalog-generation-service.js', async (importOriginal) 
   activateCatalogSourceGeneration: runtimeMocks.activateCatalogSourceGeneration,
 }));
 
-vi.mock('../../src/utils/plugin-config-write.js', () => ({
+vi.mock('../../src/utils/plugin-config-write.js', async (importOriginal) => ({
+  ConfigApplyInterruptedError: (await importOriginal<typeof import('../../src/utils/plugin-config-write.js')>()).ConfigApplyInterruptedError,
   applyPluginConfigWrite: runtimeMocks.applyPluginConfigWrite,
   applyPluginConfig: runtimeMocks.applyPluginConfig,
   preparePluginConfigApply: runtimeMocks.preparePluginConfigApply,
