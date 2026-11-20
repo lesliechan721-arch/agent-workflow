@@ -223,14 +223,16 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       effectiveComponents: resources.map(({ kind, row }) => `${kind}:${String(row.name)}`).sort() });
     // Only the installed version of an observed User plugin moves with its
     // package. The scope retains the complete registration identity and order.
-    if (!projectRoot && inventory?.status === 'installed' && plugin.scope === 'user' && typeof inventory.version === 'string'
-      && within(path.join(hostRoot, 'installed-plugins'), plugin.path)) {
+    const registeredUser = inventory?.status === 'installed' && plugin.scope === 'user' && typeof inventory.version === 'string'
+      && within(path.join(hostRoot, 'installed-plugins'), plugin.path);
+    if (!projectRoot && registeredUser) {
       scopedList[list.indexOf(inventory)] = { ...inventory, version: null };
     }
-    // Grok reports this file pointer for a plugin's hooks. Other hook formats
-    // (including global commands) remain part of the frozen scope.
+    // A Project can show the registered User package until its namesake is
+    // published. Only the exact plugin hook pointer follows the visible source.
     const packageRoot = path.normalize(plugin.path);
-    const packageHooks = plugin.scope === binding.scope.kind ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
+    const packageHooks = plugin.scope === binding.scope.kind || registeredUser
+      ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
     if (packageHooks.length === 1) hookPackages.set(packageHooks[0], { sourceRoot: packageRoot, key: packageRoot });
     // Only uniquely named rows with explicit plugin provenance can move with
     // this package. Keep ambiguous or unbound rows frozen in full.

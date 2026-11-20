@@ -30,6 +30,7 @@ const specs = [
 const pairPrerequisites = new Map([
   ['pi-pair', 'single-instruction'],
   ['grok-hook-pair', 'single-hook'],
+  ['grok-user-hook-pair', 'single-hook'],
   ['grok-rule-pair', 'single-instruction'],
 ]);
 
@@ -279,6 +280,24 @@ async function piPair(ctx, report, inputs, install, status, sync) {
   Object.assign(report.pair, { registered, filesAfterSync: before, syncOutputs: again.data.changes.outputs });
 }
 
+async function readGrokHook(ctx, name, scope, directory) {
+  const inspection = JSON.parse(await runGrokCommand(ctx.env, ctx.project, ['inspect', '--json']));
+  const plugins = inspection.plugins.filter(plugin => plugin.name === name);
+  assert.equal(plugins.length, 1);
+  assert.equal(plugins[0].scope, scope);
+  assert.equal(plugins[0].enabled, true);
+  assert.equal(path.relative(directory, plugins[0].path), '');
+  const hooks = inspection.hooks.filter(hook => hook.source?.plugin_name === name);
+  assert.equal(hooks.length, 1);
+  assert.equal(hooks[0].source.type, 'plugin');
+  assert.equal(hooks[0].event, '(plugin)');
+  assert.equal(hooks[0].hookType, 'file');
+  assert.equal(hooks[0].matcher, null);
+  assert.equal(path.relative(directory, hooks[0].source.path), '');
+  assert.equal(path.relative(directory, hooks[0].target), path.join('hooks', 'hooks.json'));
+  return readInstalled(ctx, hooks[0].target, token('hook', 1));
+}
+
 async function matrix(ctx, report) {
   const { aw, platform, scope } = ctx;
   const workspace = path.join(ctx.root, 'workspace');
@@ -305,6 +324,15 @@ async function matrix(ctx, report) {
   if (report.suite === 'pi-seven' || prerequisite) {
     // Grok must accept its own prerequisite's Hook or rule before publishing the role.
     // The Pi scenario replays the seven independent roots of its original batch.
+    let personalHook;
+    if (report.suite === 'grok-user-hook-pair') {
+      const personal = await aw(['plugin', 'install', ...ids, '--scope', 'user', '--context', 'user', '--target', 'grok', '--yes']);
+      const personalSource = nativePackage(targetOf(personal, { ...ctx, scope: 'user' }, ids[0]));
+      const workspace = path.join(ctx.env.AW_HOME, 'runtime', 'user');
+      const rows = JSON.parse(await runGrokCommand(ctx.env, workspace, ['plugin', 'list', '--json']));
+      const registration = grokUserRegistration(rows, ctx.env, prerequisite, personalSource);
+      personalHook = await readGrokHook(ctx, prerequisite, 'user', registration.path);
+    }
     const installed = await install(ids);
     assert.deepEqual(installed.data.remainingTargets, []);
     assert.deepEqual(installed.data.requirements.roots.toSorted(), ids.toSorted());
@@ -322,6 +350,13 @@ async function matrix(ctx, report) {
     assert.deepEqual(await fingerprints(ctx.root, files), before);
     report.batch = { roots: ids, installStatus: installed.status, syncOutputs: unchanged.data.changes.outputs };
     if (prerequisite) report.batch.filesAfterSync = before;
+    if (personalHook) {
+      const directory = nativePackage(targetOf(installed, ctx, ids[0]));
+      const projectHook = await readGrokHook(ctx, prerequisite, 'project', directory);
+      assert.equal(projectHook.sha256, personalHook.sha256);
+      assert.equal(sha256(await fs.readFile(path.join(ctx.root, personalHook.path))), personalHook.sha256);
+      report.batch.hooks = { personal: personalHook, project: projectHook };
+    }
     return;
   }
   // A target with only missing capability starts in a genuinely empty scope.
@@ -537,7 +572,8 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       const value = JSON.parse(response.stdout);
       assert.equal(value.schemaVersion, 2);
       const outcome = { exitCode: response.exitCode, value, stderr: response.stderr };
-      const userCommand = scope === 'user' || suite === 'project-inheritance' && args[args.indexOf('--context') + 1] === 'user';
+      const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)
+        && args[args.indexOf('--context') + 1] === 'user';
       if (platform === 'grok' && userCommand && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
         && value.status === 'partial' && response.exitCode === 4) {
         const retry = trustRetry ?? { roots: value.data.request.plugins, authorized: new Set() };

@@ -21,7 +21,7 @@ import { runCliEntry } from '../helpers/cli-entry.js';
 import type { CommandResult } from '../../src/output/public-result.js';
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 
-async function grokTrustFixture(failProject = false) {
+async function grokTrustFixture({ failProject = false, baseHook = false } = {}) {
   installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
@@ -47,6 +47,7 @@ async function grokTrustFixture(failProject = false) {
       manifest.skills = './skills';
       delete manifest.extensions;
       if (failProject && name === 'base') manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
+      if (baseHook && name === 'base') manifest.extensions = { hooks: [{ id: 'start', event: 'session_start', feedback: 'notify', command: 'true' }] };
     },
   })));
   const config = await readCatalogSourcesConfigSnapshot(env);
@@ -108,9 +109,12 @@ async function grokTrustFixture(failProject = false) {
 describe('native recovery dispatch', () => {
   // Grok reports just the winning package of each name in the project. The
   // first publication can hide its exact User provider while other writes stay observable.
-  it.each(['unchanged', 'foreign registration', 'edited User source', 'edited User copy', 'edited Project copy', 'reordered sources'] as const)(
+  it.each(['unchanged', 'owned hook', 'foreign hook', 'reordered hooks', 'unmapped User hook', 'foreign registration',
+    'edited User source', 'edited User copy', 'edited Project copy', 'reordered sources'] as const)(
     'rechecks a hidden Grok User provider with %s', async (change) => {
-      const { cwd, env, aw, trustAndRetry, runner, registered } = await grokTrustFixture();
+      const { cwd, env, aw, trustAndRetry, runner, registered } = await grokTrustFixture({
+        baseHook: ['owned hook', 'foreign hook', 'reordered hooks'].includes(change),
+      });
       const first = await aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user', '--target', 'grok']);
       const second = await trustAndRetry(first, 'base', 'bundle');
       expect((await trustAndRetry(second, 'bundle', 'bundle')).status).toBe('success');
@@ -134,6 +138,20 @@ describe('native recovery dispatch', () => {
             plugin.path = candidate;
             plugin.scope = 'project';
           }
+          if (plugin.name === 'base') {
+            const file = path.join(plugin.path, 'hooks', 'hooks.json');
+            const reported = await fs.pathExists(file) || change === 'unmapped User hook' && plugin.scope === 'user';
+            snapshot.hooks = reported ? [{ event: '(plugin)', hookType: 'file', target: file, matcher: null,
+              source: { type: 'plugin', plugin_name: plugin.name, path: plugin.path } }] : [];
+            if (change === 'foreign hook' && plugin.scope === 'user') {
+              snapshot.hooks.push({ ...snapshot.hooks[0], target: path.join(cwd, 'manual-hook.json') });
+            }
+            if (change === 'reordered hooks') {
+              snapshot.hooks.push({ event: 'session_start', hookType: 'command', target: 'echo manual', matcher: null,
+                source: { type: 'project', path: path.join(cwd, '.grok', 'hooks') } });
+              if (firstCompleted) snapshot.hooks.reverse();
+            }
+          }
         }
         if (firstCompleted && change.startsWith('edited') && !injected) {
           await fs.appendFile(edited, 'External edit.\n');
@@ -147,7 +165,7 @@ describe('native recovery dispatch', () => {
         { nativeCliRunner, onInstallProgress: ({ completed }) => { if (completed === 1) firstCompleted = true; } });
       expect(promoted.targetResults.find((target) => target.pluginId === 'local/base' && target.scope === 'project')?.execution).toBe('applied');
       const next = promoted.targetResults.find((target) => target.pluginId === 'local/bundle' && target.scope === 'project');
-      if (change === 'unchanged') {
+      if (change === 'unchanged' || change === 'owned hook') {
         expect(next?.execution).toBe('applied');
         expect(await fs.readFile(path.join(base.path, 'skills/base/SKILL.md'), 'utf8')).toBe(original);
       } else {
@@ -628,7 +646,7 @@ describe('native recovery dispatch', () => {
   });
 
   it('keeps Grok User trust and one Project retry after the Project preApply independently fails', async () => {
-    const { cwd, env, aw, projectScript } = await grokTrustFixture(true);
+    const { cwd, env, aw, projectScript } = await grokTrustFixture({ failProject: true });
     for (const scope of ['user', 'project'] as const) await writeIntentFixture({ cwd, env, scope },
       { roots: [{ pluginId: 'local/base' }], targets: ['grok'] });
     const result = await aw(['aw', 'plugin', 'sync', 'local/base', '--context', 'project', '--target', 'grok']);
