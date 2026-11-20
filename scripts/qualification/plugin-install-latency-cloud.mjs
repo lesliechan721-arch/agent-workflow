@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const exec = promisify(execFile);
 const packages = ['agent-skill-eval', 'cli', 'plugin-core'];
 const buildArtifactRoots = packages.flatMap((name) => [`packages/${name}/dist`, `packages/${name}/package.json`]);
-const coreSchemas = 'packages/plugin-core/schemas';
+const runtimeResources = ['packages/plugin-core/schemas', 'packages/cli/authoring/assets'];
 const nativeClients = ['codex', 'pi', 'claude'];
 const batch = {
   targets: ['claude', 'pi', 'codex', 'generic'],
@@ -61,16 +61,12 @@ async function readSelectors() {
   }));
 }
 
-async function describeBuild(buildRoot, identity, selectorOverrides = {}) {
-  return { ...identity, buildRoot, readCap: 4, selectorOverrides,
-    runtimeSchemaDigest: `sha256:${await computeTreeDigest(buildRoot, [coreSchemas])}`,
-    artifactDigest: `sha256:${await computeTreeDigest(buildRoot, buildArtifactRoots)}` };
-}
-
 // Each arm uses the same complete build and installed dependencies. Change only
 // its private copies of the source selectors and their emitted declarations.
 async function makeArm(root, identity, definitions, enabled) {
-  for (const relative of [...buildArtifactRoots, coreSchemas]) {
+  // The source checkout's runtime config reader takes priority over its emitted
+  // copy. Keeping that sidecar in every arm makes the installed bytes comparable.
+  for (const relative of [...buildArtifactRoots, ...runtimeResources]) {
     await fs.cp(path.join(repoRoot, relative), path.join(root, relative), { recursive: true, verbatimSymlinks: true });
   }
   for (const modules of ['node_modules', ...packages.map(name => `packages/${name}/node_modules`)]) {
@@ -88,7 +84,9 @@ async function makeArm(root, identity, definitions, enabled) {
       overrides[relative] = hash(changed);
     }
   }
-  return describeBuild(root, identity, overrides);
+  return { ...identity, buildRoot: root, readCap: 4, selectorOverrides: overrides,
+    runtimeResourcesDigest: `sha256:${await computeTreeDigest(root, runtimeResources)}`,
+    artifactDigest: `sha256:${await computeTreeDigest(root, buildArtifactRoots)}` };
 }
 
 async function runPrivate(script, args, log, env = process.env) {
@@ -187,9 +185,9 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
     const revision = await gitRevision('HEAD');
     if (process.env.EXPECTED_SOURCE_SHA && process.env.EXPECTED_SOURCE_SHA !== revision) throw new Error('unexpected-source-commit');
     const identity = { revision, sourceTree: await gitRevision('HEAD^{tree}') };
-    const baseline = definitions.some(({ platforms }) => platforms.includes(process.platform))
-      ? await makeArm(path.join(scratch, 'baseline'), identity, definitions, [])
-      : await describeBuild(repoRoot, identity);
+    const baseline = await makeArm(path.join(scratch, 'baseline'), identity, definitions, []);
+    const checkoutResourcesDigest = `sha256:${await computeTreeDigest(repoRoot, runtimeResources)}`;
+    if (baseline.runtimeResourcesDigest !== checkoutResourcesDigest) throw new Error('baseline-runtime-resources-mismatch');
 
     phase = 'acquisition';
     const clientVersions = {};
@@ -233,7 +231,7 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
     const variants = plan.markerScans ? { query: ['query'], scan: ['scan'], combined: ['query', 'scan'] } : { query: ['query'] };
     for (const [name, enabled] of Object.entries(variants)) {
       const arm = await makeArm(path.join(scratch, name), identity, definitions, enabled);
-      if (arm.runtimeSchemaDigest !== baseline.runtimeSchemaDigest) throw new Error('variant-runtime-schema-mismatch');
+      if (arm.runtimeResourcesDigest !== baseline.runtimeResourcesDigest) throw new Error('variant-runtime-resources-mismatch');
       plan.arms[name] = arm;
     }
     const input = path.join(scratch, 'input.json');
