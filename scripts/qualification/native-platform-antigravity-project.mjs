@@ -10,11 +10,11 @@ import { parseArgs } from 'node:util';
 import { antigravitySkillQuery, parseAntigravitySkillInventory } from './native-platform-antigravity-management.mjs';
 import { addOfficialCatalog, gitPluginId, ordinaryGitSkills, qualifyShippedGitInstall } from './native-platform-shipped-git.mjs';
 import { preparePublicClientPath } from './native-platform-public-aw.mjs';
-import { executePublicAw } from './native-platform-public-process.mjs';
+import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 import { candidateFiles, execute, prepareEnvironment, repoRoot, sha256 } from './native-platform-runtime.mjs';
 
 const version = '1.5.13';
-const awEntry = path.join(repoRoot, 'packages/cli/dist/index.js');
+const awLauncher = publicAwNodeLauncher(path.join(repoRoot, 'packages/cli/dist/index.js'));
 const nativeManifest = '.antigravity-plugin/plugin.json';
 const source = 'project-proof';
 const rootName = 'scope-root';
@@ -101,7 +101,7 @@ async function runQualification(executable, authenticatedSkills, report) {
       else delete sessionEnv[name];
     }
     const run = async (launcher, args, cwd, env, label) => {
-      const isAw = launcher.prefix[0] === awEntry;
+      const isAw = launcher === awLauncher;
       const invoke = isAw ? executePublicAw : execute;
       const result = await invoke(launcher, args, { cwd, env, stdin: '', timeoutMs: isAw ? 180_000 : 60_000 })
         .catch((error) => { throw new Error(`${label}-process-${error.result?.terminationReason ?? 'unconfirmed'}`); });
@@ -119,7 +119,7 @@ async function runQualification(executable, authenticatedSkills, report) {
       return result.stdout;
     };
     const aw = async (args, cwd = a) => {
-      const result = JSON.parse(await run({ executable: process.execPath, prefix: [awEntry] }, [...args, '--json'], cwd, env,
+      const result = JSON.parse(await run(awLauncher, [...args, '--json'], cwd, env,
         'aw-' + args.slice(0, args[0] === 'dev' ? 3 : 2).join('-')));
       assert.equal(result.status, 'success');
       return result;

@@ -7,9 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
+import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { qualifyCatalog, qualifyProjectDependencies } from './native-platform-public-catalog.mjs';
-import { executePublicAw } from './native-platform-public-process.mjs';
+import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 import { prepareEnvironment, readManagedTrace, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 
@@ -182,36 +182,12 @@ function fingerprints(root, files) {
   }));
 }
 
-async function runGrokCommand(env, cwd, args) {
-  const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
-  const { bin, package: packageName } = clients.grok;
-  let command = bin;
-  if (process.platform === 'win32') {
-    const { resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
-    const launcher = await resolveWindowsNpmCommand({ command: bin, binName: bin, packageName, cwd, env });
-    command = launcher.command;
-    args = [...launcher.argsPrefix, ...args];
-  }
-  const result = await runNativeCli({ command, args, cwd, env, timeoutMs: 60_000 });
-  assert.equal(result.exitCode, 0, result.stderr);
-  return result.stdout;
-}
-
 async function grokUserRefresh(ctx, report, spec, observed, sync) {
   const id = source + '/' + spec.name;
   const awPackage = nativePackage(targetOf(observed, ctx, id));
   const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
   const native = async (args, cwd = workspace) => JSON.parse(await runGrokCommand(ctx.env, cwd, args));
-  const registration = async () => {
-    const rows = (await native(['plugin', 'list', '--json'])).filter(row => row.name === spec.name);
-    assert.equal(rows.length, 1);
-    const [row] = rows;
-    assert.equal(row.status, 'installed');
-    assert.equal(path.relative(awPackage, row.source), '');
-    assert.match(row.repo_key, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
-    assert.equal(path.relative(path.join(ctx.env.GROK_HOME, 'installed-plugins', row.repo_key), row.path), '');
-    return { key: row.repo_key, path: row.path, source: row.source };
-  };
+  const registration = async () => grokUserRegistration(await native(['plugin', 'list', '--json']), ctx.env, spec.name, awPackage);
   const trust = async allowed => {
     // Only the qualification owns this empty Grok home. Give the calling
     // project the opposite decision to detect accidental trust inheritance.
@@ -542,9 +518,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     await fs.mkdir(project);
     assertCommand(await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', project], { cwd: root, env }));
     const dependencies = new Map();
-    const prefix = [cli];
     if (process.platform === 'linux') {
-      prefix.unshift('--import', new URL('./native-platform-component-plugin-marker.mjs', import.meta.url).href);
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
     async function result(args, cwd = project, trustRetry) {
@@ -555,9 +529,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
-      const launcher = { executable: process.execPath, prefix: trace
-        ? ['--import', new URL('./native-platform-managed-trace.mjs', import.meta.url).href, ...prefix] : prefix };
-      const response = await executePublicAw(launcher, [...args, '--json'],
+      const response = await executePublicAw(publicAwNodeLauncher(cli, trace), [...args, '--json'],
         { cwd, env: commandEnv, timeoutMs: 180000 }).finally(async () => {
         if (trace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
       });

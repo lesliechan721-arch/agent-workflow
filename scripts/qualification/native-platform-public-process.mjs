@@ -5,6 +5,14 @@ import { createProcessQueryTimingDiagnostic } from './native-platform-process-qu
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
+// Only the public AW entry needs to carry the outer lease across its private
+// renderer/preApply environment. Ordinary native clients use their own launchers.
+export function publicAwNodeLauncher(entry, trace = false) {
+  const preload = process.platform === 'linux' ? './native-platform-public-plugin-marker.mjs'
+    : trace ? './native-platform-managed-trace.mjs' : undefined;
+  return { executable: process.execPath, prefix: [...(preload ? ['--import', new URL(preload, import.meta.url).href] : []), entry] };
+}
+
 // AW manages independent native-command groups. This is a compatibility
 // observation, not a cooperative custom provider or OS containment guarantee.
 export async function executePublicAw(launcher, args, options, processTree = {}) {

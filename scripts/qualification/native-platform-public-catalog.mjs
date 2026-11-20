@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
-import { nativePath, readInstalled, targetOf, nativePackage, checkSettled } from './native-platform-public-state.mjs';
+import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
@@ -11,6 +11,22 @@ const roleSkills = { 'agent-subagent': { subagent: 'spawn-subagent/assets/task-i
     'codex-advisor': 'codex-advisor/assets/advisor-instructions.md' } };
 export const shippedRoles = Object.fromEntries(Object.entries(roleSkills).map(([plugin, roles]) => [plugin, Object.keys(roles).sort()]));
 export const rolePlatform = platform => !['generic', 'opencode'].includes(platform);
+
+async function readGrokPersonalCopies(ctx, providers) {
+  const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
+  const rows = JSON.parse(await runGrokCommand(ctx.env, workspace, ['plugin', 'list', '--json']));
+  const installedRoot = await fs.realpath(path.join(ctx.env.GROK_HOME, 'installed-plugins'));
+  const copies = [];
+  for (const { id, source, skills, files } of providers) {
+    const registration = grokUserRegistration(rows, ctx.env, id.split('/')[1], source);
+    const directory = await fs.realpath(registration.path);
+    assert.equal(path.relative(installedRoot, directory), registration.key);
+    const actual = await Promise.all(skills.map(name => readInstalled(ctx, nativePath(ctx, { id }, 'skill', directory, name), name)));
+    assert.deepEqual(actual.map(file => file.sha256), files.map(file => file.sha256));
+    copies.push({ pluginId: id, key: registration.key, files: actual });
+  }
+  return copies;
+}
 
 // Install across scopes before any explicit Project request for either dependency.
 // A green receipt alone cannot detect a second native package shadowing User.
@@ -28,16 +44,16 @@ export async function qualifyProjectDependencies(ctx, report) {
   const install = (id, scope) => ctx.aw(['plugin', 'install', id, '--scope', scope, '--context', scope, '--target', ctx.platform, '--yes']);
   const user = { ...ctx, scope: 'user' };
   const personal = await install(skills, 'user');
-  const personalFiles = [];
+  const providers = [];
   for (const [id, expected] of [[content, ['agent-content']], [skills,
     ['audit-agent-skill-evals', 'author-agent-skill', 'review-agent-skill', 'simplify-agent-skill']]]) {
     const target = targetOf(personal, user, id);
     const directory = ctx.platform === 'antigravity' ? path.join(ctx.env.HOME, '.gemini/config/plugins', id.split('/')[1]) : nativePackage(target);
-    for (const name of expected) {
-      const file = nativePath(user, { id }, 'skill', directory, name);
-      personalFiles.push(await readInstalled(ctx, file, name));
-    }
+    const files = await Promise.all(expected.map(name => readInstalled(ctx, nativePath(user, { id }, 'skill', directory, name), name)));
+    providers.push({ id, source: directory, skills: expected, files });
   }
+  const personalFiles = providers.flatMap(provider => provider.files);
+  const grokPersonal = ctx.platform === 'grok' ? await readGrokPersonalCopies(user, providers) : undefined;
   const project = await install(root, 'project');
   const rootTarget = targetOf(project, ctx, root);
   assert.equal(rootTarget.execution, 'applied');
@@ -71,6 +87,34 @@ export async function qualifyProjectDependencies(ctx, report) {
   report.inheritance = { userRoot: skills, projectRoot: root, personalFiles, projectFiles, rootFiles,
     providers: providerRows.map(({ pluginId, providerScope }) => ({ pluginId, providerScope })),
     inSync: status.data.inSync, sync: sync.data.targetResults.map(({ pluginId, execution }) => ({ pluginId, execution })) };
+  if (grokPersonal) {
+    // A Project publication hides the matching User source. Retirement reveals it again.
+    const explicit = await ctx.aw(['plugin', 'install', content, skills, '--scope', 'project', '--context', 'project', '--target', 'grok', '--yes']);
+    const copies = [];
+    for (const { id, skills: names, files } of providers) {
+      const target = targetOf(explicit, ctx, id);
+      assert.equal(target.execution, 'applied');
+      const directory = nativePackage(target);
+      assert.equal(path.dirname(directory), path.join(publicRoot, 'plugins'));
+      const installed = await Promise.all(names.map(name => readInstalled(ctx, nativePath(ctx, { id }, 'skill', directory, name), name)));
+      assert.deepEqual(installed.map(file => file.sha256), files.map(file => file.sha256));
+      copies.push({ directory, files: installed });
+    }
+    assert.deepEqual(await readGrokPersonalCopies(user, providers), grokPersonal);
+    await ctx.aw(['plugin', 'remove', content, skills, '--only', 'requirements', '--scope', 'project', '--context', 'project', '--yes']);
+    for (const file of copies.flatMap(copy => copy.files)) assert.equal(sha256(await fs.readFile(path.join(ctx.root, file.path))), file.sha256);
+    const pending = await ctx.aw(['plugin', 'status', root, '--context', 'project']);
+    assert.deepEqual(pending.diagnostics.filter(item => item.code === 'projectSkillDuplicatePending').map(item => item.subject.pluginId).sort(), [content, skills].sort());
+    const cleaned = await ctx.aw(['plugin', 'sync', '--context', 'project', '--target', 'grok', '--yes']);
+    assert.deepEqual(cleaned.data.remainingTargets, []);
+    for (const copy of copies) await assert.rejects(fs.stat(copy.directory), { code: 'ENOENT' });
+    for (const file of [...personalFiles, ...rootFiles]) assert.equal(sha256(await fs.readFile(path.join(ctx.root, file.path))), file.sha256);
+    assert.deepEqual(await readGrokPersonalCopies(user, providers), grokPersonal);
+    checkSettled(await ctx.aw(['plugin', 'status', '--context', 'project']));
+    report.inheritance.grokUserCopies = grokPersonal;
+    report.inheritance.explicitProjectBatch = copies.flatMap(copy => copy.files);
+    report.inheritance.retiredProjectDependencies = [content, skills];
+  }
 }
 
 export async function qualifyCatalog(ctx, report, catalog, frozen) {

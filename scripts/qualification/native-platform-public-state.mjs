@@ -16,6 +16,32 @@ export async function writeGrokFixtureFolderDecisions(env, entries) {
   await fs.writeFile(path.join(env.GROK_HOME, 'trusted_folders.toml'), tables.join('\n'));
 }
 
+export async function runGrokCommand(env, cwd, args) {
+  const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+  const { bin, package: packageName } = clients.grok;
+  let command = bin;
+  if (process.platform === 'win32') {
+    const { resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
+    const launcher = await resolveWindowsNpmCommand({ command: bin, binName: bin, packageName, cwd, env });
+    command = launcher.command;
+    args = [...launcher.argsPrefix, ...args];
+  }
+  const result = await runNativeCli({ command, args, cwd, env, timeoutMs: 60_000 });
+  assert.equal(result.exitCode, 0, result.stderr);
+  return result.stdout;
+}
+
+export function grokUserRegistration(rows, env, name, awPackage) {
+  const matches = rows.filter(row => row.name === name);
+  assert.equal(matches.length, 1);
+  const [row] = matches;
+  assert.equal(row.status, 'installed');
+  assert.equal(path.relative(awPackage, row.source), '');
+  assert.match(row.repo_key, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
+  assert.equal(path.relative(path.join(env.GROK_HOME, 'installed-plugins', row.repo_key), row.path), '');
+  return { key: row.repo_key, path: row.path, source: row.source };
+}
+
 const directoryRegistration = ctx => ctx.platform === 'opencode' || ctx.platform === 'grok' && ctx.scope === 'project';
 
 export function expectedOpenCodeObservation(result, ctx, pluginId) {

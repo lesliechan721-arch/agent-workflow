@@ -59,12 +59,12 @@ test('injects only the current public marker into each qualification script call
   assert.equal(await unchanged(invocation, unchangedOptions), result);
 });
 
-// Exercise the component preload with a real isolated renderer. The outer
+// Exercise the public AW launcher with a real isolated renderer. The outer
 // observer and the renderer must each retain their own exact launch marker.
-test('supervises a Linux component renderer across its private environment', {
+test('supervises a Linux public AW renderer across its private environment', {
   skip: process.platform !== 'linux', timeout: 20_000,
 }, async (t) => {
-  const { executePublicAw } = await import('./native-platform-public-process.mjs');
+  const { executePublicAw, publicAwNodeLauncher } = await import('./native-platform-public-process.mjs');
   const { prepareEnvironment } = await import('./native-platform-runtime.mjs');
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-marker-'));
   t.after(() => fs.rm(cwd, { recursive: true, force: true }));
@@ -89,11 +89,18 @@ test('supervises a Linux component renderer across its private environment', {
       cwd, env}, {timeoutMs:5000});
     process.exitCode = run.exitCode ?? 1;
   `);
-  const preload = new URL('./native-platform-component-plugin-marker.mjs', import.meta.url);
-  const result = await executePublicAw({ executable: process.execPath, prefix: ['--import', preload.href, launcher] },
-    [script], { cwd, env: { ...await prepareEnvironment(cwd), PRIVATE_PARENT_VALUE: 'fixture' }, timeoutMs: 10_000 });
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.terminationReason, 'complete');
+  const env = { ...await prepareEnvironment(cwd), PRIVATE_PARENT_VALUE: 'fixture' };
+  const traceFile = path.join(cwd, 'managed.jsonl');
+  for (const trace of [false, true]) {
+    const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+      AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+      AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([process.execPath]) } : env;
+    const result = await executePublicAw(publicAwNodeLauncher(launcher, trace), [script], { cwd, env: commandEnv, timeoutMs: 10_000 });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.terminationReason, 'complete');
+  }
+  const records = (await fs.readFile(traceFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(records.filter(row => row.role === 'plugin-script').map(row => row.phase), ['start', 'spawn', 'finish']);
 });
 
 test('retains plugin errors and projects bounded snapshot timing without secrets', async () => {
@@ -448,6 +455,9 @@ test('does not install by default and requires every hosted guard', async (t) =>
     AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: path.join(root, 'trace.jsonl') };
   assert.deepEqual(managedTraceConfiguration(valid, 'linux'), { entries: [entry], client: 'codex', file: valid.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE });
   assert.equal(managedTraceConfiguration({ ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi' }, 'win32').client, 'pi');
+  const antigravity = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'antigravity' };
+  assert.equal(managedTraceConfiguration(antigravity, 'win32').client, 'antigravity');
+  assert.equal(managedTraceConfiguration(antigravity, 'linux'), undefined);
   for (const name of Object.keys(valid)) {
     const missing = { ...valid }; delete missing[name]; assert.equal(managedTraceConfiguration(missing, 'linux'), undefined);
   }

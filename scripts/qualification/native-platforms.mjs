@@ -2,13 +2,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
   acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
-import { executePublicAw } from './native-platform-public-process.mjs';
+import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 
 const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]';
 class Unverified extends Error {}
@@ -312,10 +312,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const start = performance.now();
         const jobTiming = () => ({ startedAt, returnedAt: new Date().toISOString(), elapsedMs: performance.now() - start, timeoutMs });
         try {
-          result = await executePublicAw({ executable: process.execPath, prefix: [
-            ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
-            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
-          { cwd, env: commandEnv, timeoutMs });
+          result = await executePublicAw(publicAwNodeLauncher(path.join(repoRoot, 'packages/cli/dist/index.js'), trace),
+            [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])], { cwd, env: commandEnv, timeoutMs });
         } catch (error) {
           const nativeManagedTrace = await readManagedTrace(traceFile);
           report.commands.push(redactScope({ aw: args, cwd, processFailure: error?.message,
