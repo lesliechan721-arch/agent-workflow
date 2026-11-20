@@ -511,15 +511,26 @@ describe('native platform lifecycle', () => {
     expect(ctx.runner).toHaveBeenCalledTimes(1);
   });
 
-  it('stops stale plans before any writer or native command', async () => {
+  it.each([false, 'deploymentPathsChanged', 'read error', 'cleanup error'] as const)('stops stale plans before writing and reports the verified reason (%s)', async (failure) => {
     const input = fixture();
     const ctx = context(input.observation);
-    vi.mocked(ctx.services.verifyEvidence).mockResolvedValue(false);
+    const verify = vi.mocked(ctx.services.verifyEvidence);
+    if (failure === 'read error') verify.mockRejectedValue(new Error('private file details'));
+    else if (failure === 'cleanup error') verify.mockRejectedValue(Object.assign(new Error('private cleanup details'), {
+      operationDiagnostic: { code: 'processCleanupUnconfirmed', safeMessage: 'Process cleanup could not be confirmed.' },
+    }));
+    else verify.mockResolvedValue(failure);
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
     expect(ctx.services.publishPackage).not.toHaveBeenCalled();
     expect(ctx.runner).not.toHaveBeenCalled();
-    expect(receipt.diagnostics[0]?.code).toBe('operationPlanStale');
-    expect(receipt.effects.every((effect) => effect.mutation === 'none')).toBe(true);
+    const [diagnostic] = receipt.diagnostics;
+    expect(diagnostic?.code).toBe(failure === 'cleanup error' ? 'processCleanupUnconfirmed' : 'operationPlanStale');
+    const reasonCode = failure === 'read error' ? 'deploymentEvidenceReadFailed' : failure === 'deploymentPathsChanged' ? failure : undefined;
+    expect(diagnostic?.detail).toEqual(reasonCode ? { reasonCode } : undefined);
+    expect(receipt.effects.length).toBeGreaterThan(0);
+    expect(receipt.effects.every((effect) => effect.status === 'blocked' && effect.mutation === 'none' && effect.diagnostics[0] === diagnostic)).toBe(true);
+    expect(receipt.after.registration).toBe(failure === 'cleanup error' ? 'unknown' : input.observation.registration);
+    expect(JSON.stringify(receipt)).not.toMatch(/private (file|cleanup) details/u);
   });
 
   it('ensures a matching package and activation without writing again', async () => {

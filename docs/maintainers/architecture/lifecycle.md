@@ -15,6 +15,8 @@
 公开命令、模式组合、确认和输出字段的完整合同见 [CLI 参考](../../reference/cli.md)。CLI 始终非交互；TUI 保留 Review。公共结果通过 `status/data/diagnostics/nextActions` 输出，生命周期将内部 intent/agent 投影为 requirements/target，保留执行、观察、内容三轴与实际变化。内部回执和业务存储格式保持独立。
 所有强配置在现有 AW_HOME mutation lock 下原子提交。Review 冻结两份声明、偏好、来源、配置与输出证据，执行锁内重读；stale 不写。依赖提供者失败阻止相关消费者，独立目标继续。共享 Native 包体及 activation 分别观察和报告，不扫描历史项目，不把共享刷新说成更新了其它项目的独立包。
 
+平台 adapter 在执行第一个写入动作前复核部署证据。如果在此处发现变化，部署回执的 `operationPlanStale.detail.reasonCode` 标出证据类别，包括客户端发现、部署观察、共享引用、路径、市场或其它安装输入。读取失败时记录 `deploymentEvidenceReadFailed`。子进程清理无法确认时优先记录 `processCleanupUnconfirmed`。
+
 恢复回执继续逐目标报告 execution、observation、content，以及声明、偏好、配置、输出四类变化。部分完成、unknown、blocked 和 failed 不报全部成功。status 严格只读，不运行 renderer、preApply 或来源刷新；coverage 明确用户与当前项目范围，未选 targets 时有需求不等于已满足。cleanup、reinstall、source sync 或新版本始终保留至少一个可用恢复路径。
 
 ## Ownership 与删除权限

@@ -326,11 +326,14 @@ export interface MutationOutcome {
   /** Exact Pi 1.5 Project remove acknowledgment, valid only for this action. */
   unregisterConfirmed?: true;
 }
+export type DeploymentEvidenceChangeReason = 'deploymentInputsChanged' | 'clientDiscoveryChanged'
+  | 'deploymentObservationChanged' | 'deploymentReferencesChanged' | 'deploymentPathsChanged'
+  | 'marketplaceChanged' | 'deploymentEvidenceReadFailed';
 export interface MutationContext extends ReadContext {
   /** Operation-local receipts for native actions on a shared registration. */
   nativeEffects?: Map<string, Promise<MutationOutcome>>;
   services: {
-    verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean>;
+    verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean | DeploymentEvidenceChangeReason>;
     publishPackage(binding: DeploymentBinding, bundle: NonNullable<ProjectionResult['bundle']>, destination: string,
       component: import('../utils/ownership.js').OwnedComponent): Promise<MutationOutcome>;
     writeContribution(binding: DeploymentBinding, contribution: HostContribution,

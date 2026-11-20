@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
-import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
+import type { DeploymentBinding, DeploymentEvidenceChangeReason, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
   GrokOrderEntry, PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
 import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGroup } from '../platforms/discovery.js';
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
@@ -881,9 +881,10 @@ export class PlatformRebuildSession {
     const plans: FrozenDeploymentPlan[] = [];
     const blockedReceipts: DeploymentReceipt[] = [];
     const cleanupResults: CleanupResult[] = [];
-    const checks = new Map<string, (batch?: NativeObservationBatch) => Promise<boolean>>();
+    type BindingEvidenceCheck = (batch?: NativeObservationBatch) => Promise<true | DeploymentEvidenceChangeReason>;
+    const checks = new Map<string, BindingEvidenceCheck>();
     const shadowedUsers = new Map<string, GrokShadowedUser>();
-    let initialDiscoveryCheck: (() => Promise<boolean>) | undefined;
+    let initialDiscoveryCheck: BindingEvidenceCheck | undefined;
     const priorProducers = new Map<string, ProducerIdentity[]>();
     const priorResourceRoots = new Map<string, string[]>();
     const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
@@ -1182,14 +1183,20 @@ export class PlatformRebuildSession {
           nativeSources: normalizedBefore } };
         return artifactValueDigest({ ...current, observation }) === artifactValueDigest({ ...mutableBaseline, observation: baselineObservation });
       };
-      const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
-        if (!parallelNativeReads) return await fingerprint(discovery) === initial
-          && await matchesAfterGrokPublications(await currentMutable(batch));
-        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable(batch)]);
-        if (immutableRead.status === 'rejected') throw immutableRead.reason;
-        if (immutableRead.value !== initial) return false;
-        if (mutableRead.status === 'rejected') throw mutableRead.reason;
-        return matchesMutable(mutableRead.value);
+      const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): ReturnType<BindingEvidenceCheck> => {
+        const reads = parallelNativeReads ? await Promise.allSettled([fingerprintParts(discovery), currentMutable(batch)]) : null;
+        if (reads?.[0].status === 'rejected') throw reads[0].reason;
+        const parts = reads?.[0].status === 'fulfilled' ? reads[0].value : await fingerprintParts(discovery);
+        if (artifactValueDigest(parts) !== initial) {
+          return artifactValueDigest(parts.discovery) !== artifactValueDigest(initialParts.discovery)
+            ? 'clientDiscoveryChanged' : 'deploymentInputsChanged';
+        }
+        if (reads?.[1].status === 'rejected') throw reads[1].reason;
+        const current = reads?.[1].status === 'fulfilled' ? reads[1].value : await currentMutable(batch);
+        if (parallelNativeReads ? matchesMutable(current) : await matchesAfterGrokPublications(current)) return true;
+        if (current.references !== mutableBaseline.references) return 'deploymentReferencesChanged';
+        if (artifactValueDigest(current.paths) !== artifactValueDigest(mutableBaseline.paths)) return 'deploymentPathsChanged';
+        return 'deploymentObservationChanged';
       };
       checks.set(entry.binding.id, (batch) => check(undefined, batch));
       if (resolution.bindings.length === 1 && entry.binding.route === 'pi-package') {
@@ -1199,7 +1206,7 @@ export class PlatformRebuildSession {
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
         assertStable: async () => {
-          if (!await checks.get(entry.binding.id)!()) throw new Error('operationPlanStale: deployment evidence changed before source registration.');
+          if (await checks.get(entry.binding.id)!() !== true) throw new Error('operationPlanStale: deployment evidence changed before source registration.');
         },
         acceptMarketplaceRegistration: async () => {
           const current = await currentMutable();
@@ -1335,8 +1342,8 @@ export class PlatformRebuildSession {
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
     let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
-    const verifyChecks = async (selected: Iterable<(batch?: NativeObservationBatch) => Promise<boolean>>, batch?: NativeObservationBatch): Promise<void> => {
-      for (const check of selected) if (!await check(batch)) throw new Error('operationPlanStale: deployment evidence changed.');
+    const verifyChecks = async (selected: Iterable<BindingEvidenceCheck>, batch?: NativeObservationBatch): Promise<void> => {
+      for (const check of selected) if (await check(batch) !== true) throw new Error('operationPlanStale: deployment evidence changed.');
       for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
     };
     const verify = (batch?: NativeObservationBatch): Promise<void> => verifyChecks(checks.values(), batch);
@@ -1568,7 +1575,10 @@ export class PlatformRebuildSession {
             verifyEvidence: async (plan) => {
               const verified = verifiedPlan === plan;
               verifiedPlan = undefined;
-              return verified || await checks.get(plan.binding.id)!() && await this.verifyMarketplace(plan);
+              if (verified) return true;
+              const evidence = await checks.get(plan.binding.id)!();
+              if (evidence !== true) return evidence;
+              return await this.verifyMarketplace(plan) || 'marketplaceChanged';
             },
             publishPackage: async (_binding, bundle, _destination, component) => {
               if (!('path' in component) || component.path !== _destination) throw new Error('deploymentDestinationMismatch');

@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
@@ -9,7 +10,7 @@ import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS, MINIMUM_AGENT_VERSIONS } from '
 import { discoverCodexExecutables, rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { extractStrictSemVerTokenFromVersionOutput } from '../utils/agent-version.js';
 import { compareStrictSemVer } from '../utils/manifest.js';
-import { NativeCliError, runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
+import { NATIVE_CLI_TIMEOUT_ENV, NativeCliError, runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
 import { getCodexHome, getClaudeHome, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
 import { resolveWindowsNpmCommand } from '../utils/windows-npm-shim.js';
 import { assertTestReadablePath } from '../utils/test-path-fence.js';
@@ -386,6 +387,7 @@ function result(platform: PlatformTarget, installations: ProductInstallation[], 
 async function discoverCodex(ctx: ReadContext): Promise<DiscoveryResult> {
   const found = await discoverCodexExecutables({ ...ctx, queryRunner: ctx.runner });
   const products: ProductInstallation[] = [];
+  let retryVersionOnTimeout = (ctx.platform ?? os.platform()) === 'win32' && (ctx.arch ?? os.arch()) === 'arm64';
   for (const candidate of found.candidates) {
     const executable = candidate.manager.argsPrefix[0] ?? candidate.manager.command;
     const entry: HostEntry = { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot('codex', ctx) };
@@ -393,7 +395,16 @@ async function discoverCodex(ctx: ReadContext): Promise<DiscoveryResult> {
     try {
       const args = [...candidate.manager.argsPrefix, '--version'];
       const readVersion = async () => {
-        const output = await probe(ctx, candidate.manager.command, args);
+        let output: string;
+        try {
+          output = await probe(ctx, candidate.manager.command, args);
+        } catch (error) {
+          if (!retryVersionOnTimeout || !(error instanceof NativeCliError) || error.reason !== 'timeout'
+            || error.name === 'AbortError' || error.cleanupError
+            || readEnvironmentValue(ctx.env ?? process.env, NATIVE_CLI_TIMEOUT_ENV, 'win32') !== undefined) throw error;
+          retryVersionOnTimeout = false;
+          output = await probe(ctx, candidate.manager.command, args);
+        }
         const version = extractStrictSemVerTokenFromVersionOutput(output);
         if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) {
           throw new Error('clientIdentityUnconfirmed');

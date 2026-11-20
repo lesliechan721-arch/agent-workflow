@@ -5,7 +5,7 @@ import { NativeCliError } from '../utils/native-cli.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import type { OwnedComponent } from '../utils/ownership.js';
 import type {
-  DeploymentBinding, DeploymentObservation, DeploymentReceipt, Diagnostic,
+  DeploymentBinding, DeploymentEvidenceChangeReason, DeploymentObservation, DeploymentReceipt, Diagnostic,
   FrozenDeploymentPlan, HostContribution, LifecyclePrepareInput, MutationContext,
   NativeIdentity, PlannedEffect, PreparedDeployment, PrepareResult, ProductInstallation,
   ProjectionResult,
@@ -318,11 +318,15 @@ export async function executePlatformLifecycle(ctx: MutationContext,
         'The final deployment state could not be observed. Check status before retrying.'));
     }
   };
-  let evidenceValid = false;
-  try { evidenceValid = await ctx.services.verifyEvidence(plan); } catch (error) { recordCleanupFailure(error); }
-  if (!evidenceValid) {
+  let evidence: boolean | DeploymentEvidenceChangeReason;
+  try { evidence = await ctx.services.verifyEvidence(plan); }
+  catch (error) { recordCleanupFailure(error); evidence = 'deploymentEvidenceReadFailed'; }
+  if (evidence !== true) {
     const diagnostic = cleanupFailure ?? lifecycleDiagnostic(binding, 'operationPlanStale', 'The deployment evidence changed. Prepare and confirm a new operation.');
-    if (!cleanupFailure) receipt.diagnostics.push(diagnostic);
+    if (!cleanupFailure) {
+      if (typeof evidence === 'string') diagnostic.detail = { reasonCode: evidence };
+      receipt.diagnostics.push(diagnostic);
+    }
     receipt.effects = plan.effects.map((effect) => ({ id: effect.id, status: 'blocked', mutation: 'none', diagnostics: [diagnostic] }));
     receipt.after = await observe();
     return receipt;

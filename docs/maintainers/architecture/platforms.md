@@ -47,6 +47,8 @@ Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境取�
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 每次发现先在当前用户注册的 Main 包中查找 `OpenAI.Codex`，存在候选时核对开始菜单的精确 `<PackageFamilyName>!App`、架构和路径链，再做有界搜索。包查询失败时仍查开始菜单，有对应家族则报告发现不完整。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
+Windows arm64 的 Codex 平台发现中，固定 5 秒的 `--version` 超时且已确认进程清理时，同一入口可再探测一次。每轮发现最多重试一次，每次仍为 5 秒。已配置 `AW_NATIVE_CLI_TIMEOUT_MS`、取消或清理未确认时沿用单次执行规则。重新取得的结果仍需通过身份和最低版本核验，持续失败的产品面保持未知。
+
 手动 Skill 与普通 Skill 使用同一交付路径。AW 交付完整正文和资源，并写入宿主定义的调用字段。多个客户端读取同一份文件时，逐个判断资格及适用限制。安装提示按[CLI 诊断合同](../../reference/cli.md#4-业务-payload-的边界)生成。Antigravity 仅提示实际读者已知不支持的控制或可靠证据观察到的策略降级。缺少会话实测时保持未知资格，安装回执省略该提示。[固定版本取证](../../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
 
 | 客户端 | 显式入口与自动调用控制 | 资格与安装提示 |

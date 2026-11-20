@@ -254,6 +254,44 @@ describe('read-only target discovery and production selection', () => {
     expect(versions).toBe(1);
   });
 
+  // Test Value Gate: a Windows arm64 Codex discovery can spend only one retry, keeping independent candidates separate.
+  it.each(['timeout', 'explicit timeout', 'x64', 'cancelled', 'cleanup unconfirmed'] as const)('bounds independent Codex version probes after %s', async (scenario) => {
+    const ctx = await fixture();
+    const first = path.join(ctx.cwd, 'first', 'codex.EXE');
+    const second = path.join(ctx.cwd, 'second', 'codex.EXE');
+    await fs.outputFile(first, 'first controlled entry');
+    await fs.outputFile(second, 'second controlled entry');
+    const env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', CODEX_HOME: 'C:\\Users\\qualification\\.codex',
+      PATH: [path.dirname(first), path.dirname(second)].join(';'), PATHEXT: '.EXE', SystemRoot: path.join(ctx.cwd, 'system'),
+      AW_NATIVE_CLI_TIMEOUT_MS: scenario === 'explicit timeout' ? '1000' : undefined };
+    const attempts: Array<{ entry: string; timeoutMs?: number }> = [];
+    const abort = new AbortController();
+    const discovered = await discoverPlatform('codex', { ...ctx, platform: 'win32', arch: scenario === 'x64' ? 'x64' : 'arm64', env, signal: abort.signal,
+      runner: async (invocation) => {
+        if (invocation.args[0] !== '--version') return { exitCode: 0, stdout: '[]', stderr: '' };
+        const entry = path.basename(path.dirname(invocation.command));
+        attempts.push({ entry, timeoutMs: invocation.timeoutMs });
+        if (entry === 'first' && attempts.length === 2) return { exitCode: 0, stdout: 'codex-cli 0.167.0', stderr: '' };
+        if (scenario === 'cancelled') abort.abort();
+        throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout',
+          cleanupError: scenario === 'cleanup unconfirmed' ? new Error('process cleanup unconfirmed') : undefined });
+      },
+    }).then(({ installations }) => ({ products: installations.map(({ availability, version }) => ({ availability, version })) }),
+      (error: unknown) => ({ error: error instanceof NativeCliError && error.cleanupError ? 'cleanup unconfirmed'
+        : error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'unexpected' }));
+    const unknown = { availability: 'unknown', version: null };
+    if (scenario === 'timeout') {
+      expect(attempts).toEqual(['first', 'first', 'second'].map((entry) => ({ entry, timeoutMs: 5_000 })));
+      expect(discovered).toEqual({ products: [{ availability: 'available', version: '0.167.0' }, unknown] });
+    } else if (scenario === 'explicit timeout' || scenario === 'x64') {
+      expect(attempts).toEqual(['first', 'second'].map((entry) => ({ entry, timeoutMs: 5_000 })));
+      expect(discovered).toEqual({ products: [unknown, unknown] });
+    } else {
+      expect(attempts).toEqual([{ entry: 'first', timeoutMs: 5_000 }]);
+      expect(discovered).toEqual({ error: scenario });
+    }
+  });
+
   // Test Value Gate: a same-name executable is not sufficient product identity.
   it('does not accept an unrelated same-name executable with a plausible version', async () => {
     const ctx = await fixture(); await executable(ctx, 'copilot');
