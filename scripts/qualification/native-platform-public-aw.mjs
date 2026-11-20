@@ -356,10 +356,12 @@ async function observePublicComponentSuites(ctx, publicClientEntry) {
     for (const suite of suites) {
       try {
         await ctx.check('public-components-' + scope + '-' + suite, async () => {
+          const trace = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true'
+            && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+          const traceEntry = trace && (['copilot', 'antigravity'].includes(ctx.platform) ? ctx.launcher.prefix[0] ?? publicClientEntry
+            : ctx.platform === 'codex' && scope === 'project' && suite === 'candidate' ? publicClientEntry : undefined);
           const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
-            ...(['copilot', 'antigravity'].includes(ctx.platform) && process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true'
-              && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
-              ? { traceEntry: ctx.launcher.prefix[0] ?? publicClientEntry } : {}),
+            ...(traceEntry ? { traceEntry } : {}),
             ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
           if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
           assert.equal(result.status, 'passed', result.reason);

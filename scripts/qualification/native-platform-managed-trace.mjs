@@ -3,6 +3,26 @@ import path from 'node:path';
 
 const PUBLIC_MARKER = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 const UUID = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/giu;
+const componentTraceMode = 'codex-component-install';
+const powerShellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'];
+const matchesArgs = (args, expected) => args.length === expected.length && expected.every((arg, index) => args[index] === arg);
+
+function codexComponentCategory(args) {
+  if (matchesArgs(args, ['--version'])) return 'codex-version';
+  if (matchesArgs(args, ['plugin', 'marketplace', 'list', '--json'])) return 'codex-marketplace-list';
+  if (args.length === 5 && args[4] === '--json' && matchesArgs(args.slice(0, 3), ['plugin', 'list', '--marketplace'])) {
+    return 'codex-plugin-list';
+  }
+}
+
+function observeCompletion(base, invocation, finish) {
+  let pending;
+  try { pending = base(invocation); }
+  catch (error) { finish(error, true); throw error; }
+  try { Promise.prototype.then.call(pending, (result) => finish(result, false), (error) => finish(error, true)); }
+  catch { /* Keep the original Promise even if completion cannot be observed. */ }
+  return pending;
+}
 
 function canonicalFile(file) {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
@@ -74,7 +94,7 @@ function mixedNativeTraceFilter() {
 }
 
 export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform,
-  nextOperationId }) {
+  nextOperationId, mode }) {
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
   function sameFile(file, target) {
     if (file === target && typeof file === 'string') return true;
@@ -96,6 +116,8 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
   const sharedProviderTiming = Boolean(queryEntry) && env.AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING === '1';
+  const componentTrace = mode === componentTraceMode && client === 'codex' && platform === 'win32';
+  const componentSamples = new Map();
   const mixedFilter = client === 'claude-pi' ? mixedNativeTraceFilter() : undefined;
   let operationId = 0;
   let unmatchedCount = 0;
@@ -105,13 +127,19 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
     let registryList;
     let markers;
     let querySample;
+    let componentCategory;
     try {
       const commandFile = canonicalFile(invocation.command);
       const firstArgument = Array.isArray(invocation.args) ? invocation.args[0] : undefined;
       const argumentFile = canonicalFile(firstArgument);
       const direct = matchesTarget(commandFile);
       const prefixed = !direct && matchesTarget(argumentFile);
-      if ((direct || prefixed) && Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string')) {
+      const validArgs = Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string');
+      if (componentTrace) {
+        if (validArgs && (direct || prefixed)) componentCategory = codexComponentCategory(prefixed ? invocation.args.slice(1) : invocation.args);
+        if (validArgs && invocation.args.length === 5 && matchesArgs(invocation.args.slice(0, 4), powerShellArgs)
+          && sameFile(commandFile, queryEntry)) componentCategory = 'windows-system-powershell';
+      } else if ((direct || prefixed) && validArgs) {
         const args = prefixed ? invocation.args.slice(1) : invocation.args;
         const nativeOperation = mixedFilter?.(args, prefixed);
         if (!mixedFilter || nativeOperation) {
@@ -132,13 +160,36 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
         const unmatched = { phase: 'unmatched', commandAbsolute: absolute(invocation.command), commandResolved: Boolean(commandFile),
           firstArgumentAbsolute: absolute(firstArgument), firstArgumentResolved: Boolean(argumentFile),
           commandCaseInsensitiveMatch: insensitiveMatch(commandFile), argumentCaseInsensitiveMatch: insensitiveMatch(argumentFile),
-          argumentsAreStrings: Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string') };
+          argumentsAreStrings: validArgs };
         if (queryEntry && sameFile(commandFile, queryEntry)) querySample = {
           unmatched, startTime: new Date().toISOString(), startedAt: performance.now(),
         };
         else emit(unmatched);
       }
     } catch { /* Invalid diagnostic input leaves the real runner unchanged. */ }
+    if (componentCategory) {
+      const count = componentSamples.get(componentCategory) ?? 0;
+      if (count >= (componentCategory === 'windows-system-powershell' ? 64 : 24)) return base(invocation);
+      componentSamples.set(componentCategory, count + 1);
+      const start = performance.now();
+      return observeCompletion(base, invocation, (value, threw) => {
+        try {
+          const exitCode = Number.isSafeInteger(value?.exitCode) ? value.exitCode : null;
+          const reason = value?.name === 'NativeCliError' && ['timeout', 'aborted', 'exit'].includes(value.reason)
+            ? value.reason : undefined;
+          const errorCode = value?.operationDiagnostic?.code;
+          const causeCode = value?.operationDiagnostic?.cause?.code;
+          emit({ phase: 'finish', category: componentCategory, elapsedMs: performance.now() - start, threw, exitCode,
+            ...(!threw || reason ? { timedOut: reason === 'timeout' } : {}),
+            ...(value?.cleanupError ? { cleanupUnconfirmed: true } : ((!threw || reason) && exitCode !== 250
+              ? { cleanupUnconfirmed: false } : {})),
+            ...(reason ? { reason } : {}),
+            ...(['nativeCliTimedOut', 'nativeCliFailed', 'nativeCliExecutableMissing'].includes(errorCode) ? { errorCode } : {}),
+            ...(['ENOENT', 'EACCES', 'EPERM'].includes(causeCode) ? { causeCode } : {}),
+          });
+        } catch { /* A trace failure cannot change the command outcome. */ }
+      });
+    }
     if (!details) {
       if (!querySample) return base(invocation);
       // One completed sample replaces its unmatched row. No argv, environment
@@ -149,12 +200,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
           threw, exitCode: typeof value?.exitCode === 'number' ? value.exitCode : null }); }
         catch { /* Diagnostics cannot replace the original result or error. */ }
       };
-      let pending;
-      try { pending = base(invocation); }
-      catch (error) { finish(error, true); throw error; }
-      try { Promise.prototype.then.call(pending, (result) => finish(result, false), (error) => finish(error, true)); }
-      catch { /* Keep the original Promise even if completion cannot be observed. */ }
-      return pending;
+      return observeCompletion(base, invocation, finish);
     }
     function record(phase, value, threw = false) {
       try {
@@ -280,9 +326,12 @@ export function managedTraceConfiguration(env = process.env, platform = process.
     if (!traceRequested(env, platform)) return undefined;
     const entries = JSON.parse(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES);
     const file = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
+    const client = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT;
+    const mode = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE;
+    if (mode !== undefined && (mode !== componentTraceMode || client !== 'codex' || platform !== 'win32')) return undefined;
     if (!Array.isArray(entries) || !entries.length || !entries.every((entry) => canonicalFile(entry))
       || typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
-    return { entries, file, client: env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT };
+    return { entries, file, client, ...(mode ? { mode } : {}) };
   } catch { return undefined; }
 }
 
@@ -296,14 +345,15 @@ async function installFromEnvironment() {
   writer.emit({ phase: 'installation', state: 'loading-runner' });
   try {
     const native = await import('../../packages/cli/dist/src/utils/native-cli.js');
-    const scripts = await import('../../packages/cli/dist/src/utils/plugin-scripts.js');
     const base = native.getDefaultNativeCliRunner();
     let operationId = 0;
     const diagnosticOptions = { ...configuration, env: process.env, emit: writer.emit, nextOperationId: () => ++operationId };
     const wrapper = createManagedTraceRunner(base, diagnosticOptions);
-    const pluginRunner = scripts.defaultPluginProcessRunner;
-    const pluginRun = pluginRunner.run;
-    pluginRunner.run = createManagedPluginTraceRunner((invocation, options) => pluginRun.call(pluginRunner, invocation, options), diagnosticOptions);
+    if (configuration.mode !== componentTraceMode) {
+      const { defaultPluginProcessRunner: pluginRunner } = await import('../../packages/cli/dist/src/utils/plugin-scripts.js');
+      const pluginRun = pluginRunner.run;
+      pluginRunner.run = createManagedPluginTraceRunner((invocation, options) => pluginRun.call(pluginRunner, invocation, options), diagnosticOptions);
+    }
     native.setNativeCliRunnerOverrideForTests(native.retainNativeCliRunnerBackend(wrapper, base));
     writer.emit({ phase: 'installation', state: 'installed' });
     process.once('exit', () => {

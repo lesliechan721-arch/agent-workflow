@@ -198,6 +198,52 @@ test('samples completed Windows Codex PowerShell queries in the eight unmatched 
   assert(!JSON.stringify(records).includes('private-encoded-command'));
 });
 
+// The component trace file must never receive invocation or result payloads.
+test('records only completed Codex component command facts and preserves the original results', async (t) => {
+  const { root, entry, other } = await fixture(t);
+  const system = path.join(root, 'private-system');
+  const command = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await fs.mkdir(path.dirname(command), { recursive: true });
+  await fs.writeFile(command, 'fixture');
+  const shellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', 'private-script'];
+  const records = [];
+  const success = Object.freeze({ exitCode: 0, stdout: 'private-output', stderr: 'private-stderr' });
+  const timeout = Object.assign(new Error('private-error'), { name: 'NativeCliError', reason: 'timeout', exitCode: 124,
+    cleanupError: new Error('private-cleanup-error'), operationDiagnostic: { code: 'nativeCliTimedOut', safeMessage: 'private-message' } });
+  const original = Promise.resolve(success);
+  const originalError = Promise.reject(timeout);
+  let calls = 0;
+  const wrapped = createManagedTraceRunner(invocation => {
+    calls++;
+    assert.equal(invocation.env.SECRET, 'private-environment');
+    return invocation.command === command ? originalError : original;
+  }, { entries: [entry], client: 'codex', platform: 'win32', env: { SystemRoot: system },
+    mode: 'codex-component-install', emit: record => records.push(record) });
+  const env = { SECRET: 'private-environment' };
+  assert.equal(wrapped({ command: entry, args: ['--version'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'list', '--marketplace', 'private-market', '--json'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'marketplace', 'list', '--json'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: command, args: shellArgs, env }), originalError);
+  await assert.rejects(originalError, error => error === timeout);
+  assert.equal(wrapped({ command: other, args: ['--version'], env }), original);
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'add', 'private-selector'], env }), original);
+  await original;
+  assert.equal(calls, 6);
+  assert.deepEqual(records.map(({ elapsedMs, ...record }) => record), [
+    ...['codex-version', 'codex-plugin-list', 'codex-marketplace-list'].map(category => ({ phase: 'finish', category,
+      threw: false, exitCode: 0, timedOut: false, cleanupUnconfirmed: false })),
+    { phase: 'finish', category: 'windows-system-powershell', threw: true, exitCode: 124, timedOut: true,
+      cleanupUnconfirmed: true, reason: 'timeout', errorCode: 'nativeCliTimedOut' },
+  ]);
+  assert(records.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0));
+  assert(!JSON.stringify(records).includes('private-'));
+  for (let index = 0; index < 70; index++) await assert.rejects(wrapped({ command, args: shellArgs, env }));
+  assert.equal(records.filter(row => row.category === 'windows-system-powershell').length, 64);
+});
+
 // Test Value Gate: private diagnostics retain the invocation fields, including
 // stdin exchange and cancellation, and return/reject the original native objects.
 test('preserves native invocation fields and returns the same successful or nonzero result', async (t) => {

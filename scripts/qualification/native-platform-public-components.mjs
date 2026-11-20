@@ -36,6 +36,22 @@ const pairPrerequisites = new Map([
 const componentCommands = new Set(['target.set', 'source.add', 'source.sync', 'dev.catalog.create', 'dev.catalog.build',
   'dev.plugin.create', 'plugin.install', 'plugin.remove', 'plugin.status', 'plugin.sync']);
 const rows = (value, limit) => Array.isArray(value) ? value.slice(0, limit) : [];
+const receiptCodes = new Set(['commandFailed', 'operationInterrupted', 'operationPlanStale', 'operationReviewStale',
+  'platformPreparationFailed', 'platformExecutionFailed', 'platformMutationFailed', 'platformComponentsUnmet',
+  'processCleanupUnconfirmed', 'pluginProcessCleanupFailed', 'nativeCliExecutableMissing', 'nativeCliFailed', 'nativeCliTimedOut',
+  'nativeObservationFailed', 'nativeObservationUnconfirmed',
+  'preApplyExecutableMissing', 'preApplyInputFailed', 'preApplyStartFailed', 'preApplyTimedOut', 'preApplyExited']);
+// A few existing reasons distinguish stale checks and cleanup failures without publishing free-form messages.
+const receiptReasons = new Set(['operationPlanStale: client discovery changed after the ordinary observation.',
+  'operationPlanStale: deployment evidence changed after the ordinary observation.',
+  'operationPlanStale: deployment evidence changed before source registration.',
+  'operationPlanStale: deployment evidence changed during source registration.',
+  'operationPlanStale: deployment evidence changed.',
+  'The deployment evidence changed. Prepare and confirm a new operation.',
+  'Process cleanup could not be confirmed.',
+  'Process cleanup could not be confirmed. Check the client before retrying.',
+  'Process cleanup could not be confirmed. Check status before retrying.',
+  'The preApply process cleanup could not be confirmed.']);
 
 function failedComponentCommand(args, dependencies) {
   const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
@@ -49,6 +65,64 @@ function failedComponentCommand(args, dependencies) {
     && /^[a-z\d][a-z\d_.-]*\/[a-z\d][a-z\d_.-]*$/iu.test(id)).slice(0, 16);
   return { command: componentCommands.has(command) ? command : 'unknown',
     ...fields, ...(pluginIds.length ? { pluginIds } : {}) };
+}
+
+function awProcessCompleted(result) {
+  return result && !result.cancelled && !result.timedOut && !result.maxBufferExceeded && !result.signal
+    && result.terminationReason === 'complete';
+}
+
+function awCommandCompleted(result) {
+  return awProcessCompleted(result) && [0, 1, 2, 3, 4].includes(result.exitCode);
+}
+
+function retainedReceipt(result) {
+  // Cleanup can fail after the child has written its final JSON. The receipt
+  // describes AW's result and never upgrades the outer process failure.
+  if (!awProcessCompleted(result) || ![0, 1, 2, 3, 4, 250].includes(result.exitCode) || result.stdoutTruncated
+    || typeof result.stdout !== 'string' || result.stdout.length > 2 * 1024 * 1024) return undefined;
+  try { return JSON.parse(result.stdout); }
+  catch { return undefined; }
+}
+
+function receiptDiagnostics(value) {
+  const facts = rows(value, 64).filter(item => receiptCodes.has(item?.code)).slice(0, 8).map(item => ({
+    code: item.code, ...(['error', 'warning', 'info'].includes(item.severity) ? { severity: item.severity } : {}),
+    ...(receiptCodes.has(item.detail?.reasonCode) ? { reasonCode: item.detail.reasonCode } : {}),
+    ...(receiptReasons.has(item.message) ? { reason: item.message } : {}),
+  }));
+  return facts.length ? { diagnostics: facts } : {};
+}
+
+function componentReceiptEvidence(value, command, platform) {
+  if (value?.schemaVersion !== 2 || command.command === 'unknown' || value.command !== command.command
+    || !['success', 'blocked', 'partial', 'failed'].includes(value.status)) return {};
+  const installScope = command.command === 'plugin.install' ? command.scope : undefined;
+  const targets = rows(value.data?.targetResults, 64).filter(target => command.pluginIds?.includes(target?.pluginId)
+    && target.target === platform && ['user', 'project'].includes(target.scope)
+    && (!installScope || target.scope === installScope)).slice(0, 16).map(target => {
+    const diagnostics = rows(target.deploymentReceipts, 8).flatMap(receipt => rows(receipt?.diagnostics, 8));
+    return { pluginId: target.pluginId, target: platform, scope: target.scope,
+      ...(['not-run', 'no-op', 'applied', 'partial', 'failed'].includes(target.execution) ? { execution: target.execution } : {}),
+      blockerCodes: rows(target.blockerCodes, 16).filter(code => receiptCodes.has(code)), ...receiptDiagnostics(diagnostics) };
+  });
+  return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics), ...(targets.length ? { targets } : {}) } };
+}
+
+async function readCodexComponentTrace(file) {
+  const { state, records } = await readManagedTrace(file);
+  const installation = records.filter(row => ['loading-runner', 'installed', 'runner-install-failed', 'configuration-rejected'].includes(row?.state)
+    && row.phase === 'installation').at(-1)?.state;
+  return { state, ...(installation ? { installation } : {}), records: records.filter(row => row?.phase === 'finish'
+    && ['codex-version', 'codex-plugin-list', 'codex-marketplace-list', 'windows-system-powershell'].includes(row.category)
+    && Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0 && typeof row.threw === 'boolean'
+    && (row.exitCode === null || Number.isSafeInteger(row.exitCode))).map(row => ({
+    category: row.category, elapsedMs: row.elapsedMs, threw: row.threw, exitCode: row.exitCode,
+    ...Object.fromEntries(['timedOut', 'cleanupUnconfirmed'].filter(field => typeof row[field] === 'boolean').map(field => [field, row[field]])),
+    ...(['timeout', 'aborted', 'exit'].includes(row.reason) ? { reason: row.reason } : {}),
+    ...(['nativeCliTimedOut', 'nativeCliFailed', 'nativeCliExecutableMissing'].includes(row.errorCode) ? { errorCode: row.errorCode } : {}),
+    ...(['ENOENT', 'EACCES', 'EPERM'].includes(row.causeCode) ? { causeCode: row.causeCode } : {}),
+  })) };
 }
 
 // These snapshots carry identities, states and timing metadata. Select their
@@ -627,37 +701,52 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     if (process.platform === 'linux') {
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
+    let installTraceIndex = 0;
     async function result(args, cwd = project, trustRetry) {
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
-      const trace = traceEntry && args[0] === 'target' && args[1] === 'set';
-      const traceFile = trace ? path.join(root, 'target-discovery.jsonl') : undefined;
+      const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && args[0] === 'target' && args[1] === 'set';
+      const installTrace = traceEntry && platform === 'codex' && scope === 'project' && suite === 'candidate'
+        && args[0] === 'plugin' && args[1] === 'install';
+      const trace = Boolean(discoveryTrace || installTrace);
+      const traceFile = discoveryTrace ? path.join(root, 'target-discovery.jsonl')
+        : installTrace ? path.join(root, `candidate-install-${++installTraceIndex}.jsonl`) : undefined;
       const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+        ...(installTrace ? { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: 'codex-component-install' } : {}),
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
       let response;
       let value;
+      let failure;
       let stage = 'execute';
+      const recordFailure = (stage, kind, error, receipt) => {
+        const command = failedComponentCommand(args, dependencies);
+        failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
+          ...componentReceiptEvidence(receipt, command, platform) };
+        const failures = report.commandFailures ??= [];
+        if (failures.length < 16) failures.push(failure);
+        else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
+      };
       try {
         response = await executeAw(publicAwNodeLauncher(cli, trace), [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 180000 });
         // A Windows Job failure can return 250 even after AW has printed a receipt.
         // Only AW's public exit codes carry command results in this suite.
-        assert(!response.cancelled && !response.timedOut && !response.maxBufferExceeded && !response.signal
-          && [0, 1, 2, 3, 4].includes(response.exitCode) && response.terminationReason === 'complete', 'Public AW process did not complete');
+        assert(awCommandCompleted(response), 'Public AW process did not complete');
         stage = 'response';
         value = JSON.parse(response.stdout);
         assert.equal(value?.schemaVersion, 2);
+        if (response.exitCode !== 0 || value.status !== 'success') recordFailure('command', 'public-aw-failed', undefined, value);
       } catch (error) {
-        const command = failedComponentCommand(args, dependencies);
         const kind = stage === 'response' ? 'invalid-public-receipt'
           : error?.name === 'ProviderProcessCleanupError' ? 'ProviderProcessCleanupError' : 'process-failed';
-        (report.commandFailures ??= []).push({ ...command, stage, error: kind, ...componentProcessEvidence(error, response) });
-        publicAwFailures.set(error, `${command.command} ${stage} failed (${kind})`);
+        recordFailure(stage, kind, error, retainedReceipt(error?.result ?? response));
+        publicAwFailures.set(error, `${failure.command} ${stage} failed (${kind})`);
         throw error;
       } finally {
-        if (trace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
+        if (discoveryTrace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
+        if (installTrace && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readCodexComponentTrace(traceFile);
       }
-      const outcome = { exitCode: response.exitCode, value, stderr: response.stderr };
+      const outcome = { exitCode: response.exitCode, value, failure };
       const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)
         && args[args.indexOf('--context') + 1] === 'user';
       if (platform === 'grok' && userCommand && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
@@ -688,13 +777,13 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       return outcome;
     }
     async function aw(args, cwd) {
-      const { exitCode, value, stderr } = await result(args, cwd);
-      if (exitCode) report.failedCommand = { command: value.command, exitCode, status: value.status,
-        remainingTargets: value.data.remainingTargets, targets: value.data.targetResults?.map(target => ({
-          pluginId: target.pluginId, target: target.target, scope: target.scope, execution: target.execution, blockerCodes: target.blockerCodes,
-          gaps: target.componentGaps, installed: target.installedComponentIds })) };
-      assert.equal(exitCode, 0, args.join(' ') + ' ' + JSON.stringify({ diagnostics: value.diagnostics, stderr: stderr.slice(-2000) }));
-      assert.equal(value.status, 'success', args.join(' '));
+      const { exitCode, value, failure } = await result(args, cwd);
+      if (exitCode !== 0 || value.status !== 'success') {
+        const reason = `${failure.command} failed (exit ${exitCode})`;
+        const error = new Error(reason);
+        publicAwFailures.set(error, reason);
+        throw error;
+      }
       return value;
     }
     if (platform === 'codex' && scope === 'project')

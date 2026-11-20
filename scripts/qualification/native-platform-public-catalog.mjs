@@ -149,14 +149,17 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
   const ids = roots.map(plugin => catalogId + '/' + plugin);
   const request = ['plugin', 'install', ...ids, '--scope', ctx.scope, '--target', ctx.platform, '--yes'];
   const installation = await ctx.result(request);
-  report.install = { exitCode: installation.exitCode, status: installation.value.status,
-    targets: installation.value.data.targetResults?.map(target => ({ pluginId: target.pluginId, execution: target.execution,
-      blockerCodes: target.blockerCodes, gaps: target.componentGaps, plans: (target.deploymentPlans ?? []).map(plan => ({
-        expected: plan.expected, actual: target.deploymentReceipts?.find(r => r.bindingId === plan.bindingId)?.after.components })) })) };
+  const expectsFrozenFailure = frozen && ctx.platform !== 'codex';
+  report.install = { exitCode: installation.exitCode, ...(installation.failure && !expectsFrozenFailure ? installation.failure.awReceipt : {
+    status: installation.value.status, targets: installation.value.data.targetResults?.map(target => ({ pluginId: target.pluginId,
+      execution: target.execution, blockerCodes: target.blockerCodes, gaps: target.componentGaps,
+      plans: (target.deploymentPlans ?? []).map(plan => ({
+        expected: plan.expected, actual: target.deploymentReceipts?.find(r => r.bindingId === plan.bindingId)?.after.components })) })),
+  }) };
   const observation = await ctx.result(['plugin', 'status', '--context', ctx.scope]);
-  if (!frozen || ctx.platform === 'codex') {
-    assert.equal(installation.exitCode, 0, JSON.stringify(installation.value.diagnostics));
-    assert.equal(observation.exitCode, 0, JSON.stringify(observation.value.diagnostics));
+  if (!expectsFrozenFailure) {
+    assert.equal(installation.exitCode, 0, 'Shipped role plugin installation failed.');
+    assert.equal(observation.exitCode, 0, 'Shipped role plugin status failed.');
     checkSettled(observation.value);
   } else {
     assert.equal(metadata.release.state, 'published');
