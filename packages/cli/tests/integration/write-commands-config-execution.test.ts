@@ -33,8 +33,7 @@ import type { PluginMeta } from '../../src/types.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
-import type { DebugLogger } from '../../src/output/model.js';
-import { CatalogLeaseEscapeError, withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
+import type { CommandEvent } from '../../src/output/model.js';
 
 import {
   syncWriteCommand,
@@ -51,88 +50,94 @@ import {
   writeDynamicRoleRenderer,
 } from '../helpers/write-command-fixture.js';
 
-describe('five namespaced write commands', () => {
-  beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
-    await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
-  });
-
-  // Test Value Gate: a config refresh must report the same installation limits as
-  // install for Skills it actually delivers, including repairs of missing files.
-  it('reports manual Skill invocation limits when configuration refreshes generic output', async () => {
-    const { env, layout: { fixtureCwd: cwd } } = getCurrentSourceTestIsolation();
-    const source = path.join(cwd, 'manual-skill-config-source');
-    await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `import fs from 'node:fs';
+async function prepareManualSkillConfigFixture(test: TestContext, mode: 'static' | 'dynamic') {
+  const timing = createCommandTestTiming(test);
+  const { env, layout: { fixtureCwd: cwd } } = getCurrentSourceTestIsolation();
+  const source = path.join(cwd, 'manual-skill-config-source');
+  const policy = 'user-invocable: true\ndisable-model-invocation: true\n';
+  await timing.measure('fixture', 'manual-skill-catalog', async () => {
+    if (mode === 'static') {
+      await fs.outputFile(path.join(source, 'plugins/demo/skills/manual/SKILL.md'),
+        `---\nname: manual\ndescription: Fixture skill.\n${policy}---\nFixture skill.\n`);
+    } else {
+      await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `import fs from 'node:fs';
 const { values: { mode } } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8')).config;
 const skill = (name, policy) => ({ id: name, kind: 'skill', name, content: { files: {
   'SKILL.md': { text: '---\\nname: ' + name + '\\ndescription: Fixture skill.\\n' + policy + '---\\nMode: ' + mode + '\\n' },
   'README.md': { text: 'Fixture skill.\\n' }
 } } });
-const manual = skill('manual', 'user-invocable: true\\ndisable-model-invocation: true\\n');
+const manual = skill('manual', ${JSON.stringify(policy)});
 const gap = { id: 'ordinary', kind: 'skill', name: 'ordinary', reasonCode: 'interface-unsupported',
   requiredFeatures: [{ feature: 'skill.execution', values: ['isolated-context'] }] };
 const partial = mode === 'partial';
 console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [],
   components: partial ? [manual] : [skill('ordinary', ''), manual] }));
 `);
+    }
     await createCatalogSnapshotFixture(source, 'demo', [], 'Fixture plugin.\n', (manifest) => {
       manifest.platforms = ['generic'];
       manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'safe' } } };
-      manifest.artifacts = { configKeys: ['mode'] };
-      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      if (mode === 'static') {
+        manifest.skills = './skills';
+      } else {
+        manifest.artifacts = { configKeys: ['mode'] };
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      }
     });
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: source }] },
     expectedDigest: (await readCatalogSourcesConfigSnapshot(env)).digest, env });
-    const readCancellation = new AbortController();
-    await expect(withResolvedCatalogPlugin({
-      selector: 'team/demo', cliVersion: '1.0.0', env, signal: readCancellation.signal,
-      consume: ({ pluginId }) => {
-        readCancellation.abort();
-        return { pluginId };
-      },
-    })).rejects.toMatchObject({ name: 'AbortError' });
-    const completionCancellation = new AbortController();
-    await expect(withResolvedCatalogPlugin({
-      selector: 'team/demo', cliVersion: '1.0.0', env, signal: completionCancellation.signal,
-      retainCompletedResultOnAbort: true,
-      consume: ({ plugin }) => {
-        completionCancellation.abort();
-        return { output: plugin.rootDir };
-      },
-    })).rejects.toBeInstanceOf(CatalogLeaseEscapeError);
-    const runJson = async (args: string[], debugLogger?: DebugLogger) => {
+    await writePreferences({ scope: 'user', cwd, env }, {
+      ...createEmptyPreferences(), targets: ['generic'],
+    });
+  });
+  const runJson = (args: string[], onEvent?: (event: CommandEvent) => void) =>
+    timing.measure('command', args.slice(0, args[1] === 'config' ? 3 : 2).join(' '), async (sequence) => {
       const output = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
-        cwd, env, io: output.io, interactive: false, debugLogger,
+        cwd, env, io: output.io, interactive: false,
+        debugLogger: { log(event) {
+          timing.commandEvent(sequence, event);
+          onEvent?.(event);
+        } },
       });
       return { exitCode, payload: JSON.parse(output.readStdout()) };
-    };
-    const invocationNotice = {
-      code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
-      subject: { pluginId: 'team/demo', target: 'generic', scope: 'user', field: 'skill.manual' },
-      detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: expect.arrayContaining([
-        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'noBoundExecutor' },
-      ]) },
-    };
-    const invocationNotices = (result: Awaited<ReturnType<typeof runJson>>) =>
-      result.payload.diagnostics.filter(({ code }: { code: string }) => code === invocationNotice.code);
-    const skillPath = path.join(env.HOME!, '.agents', 'skills', 'manual', 'SKILL.md');
-    expect(await runJson(['target', 'set', 'generic'])).toMatchObject({ exitCode: 0 });
-    const installed = await runJson(['plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--target', 'generic', '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { status: 'success', diagnostics: [invocationNotice] } });
+    });
+  const invocationNotice = {
+    code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
+    subject: { pluginId: 'team/demo', target: 'generic', scope: 'user', field: 'skill.manual' },
+    detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: expect.arrayContaining([
+      { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'noBoundExecutor' },
+    ]) },
+  };
+  const invocationNotices = (result: Awaited<ReturnType<typeof runJson>>) =>
+    result.payload.diagnostics.filter(({ code }: { code: string }) => code === invocationNotice.code);
+  const skillPath = path.join(env.HOME!, '.agents', 'skills', 'manual', 'SKILL.md');
+  const install = (scope: 'user' | 'project') =>
+    runJson(['plugin', 'install', 'team/demo', '--scope', scope, '--context', scope, '--target', 'generic', '--yes']);
+  return { cwd, skillPath, install, runJson, invocationNotice, invocationNotices };
+}
 
+describe('five namespaced write commands', () => {
+  beforeEach(async () => {
+    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+    await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
+  });
+
+  // Test Value Gate: a final signal must preserve a real Skill repair and its verified receipt.
+  it('keeps the verified generic Skill repair when configuration apply receives a final signal', async (test) => {
+    const { cwd, skillPath, install, runJson, invocationNotice } = await prepareManualSkillConfigFixture(test, 'static');
+    const installed = await install('user');
+    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { status: 'success', diagnostics: [invocationNotice] } });
     const original = await fs.readFile(skillPath);
     await fs.move(path.dirname(skillPath), path.join(cwd, 'moved-manual-skill'));
     let interruptedAfterStatus = false;
-    const applied = await runJson(['plugin', 'config', 'apply', 'demo', '--context', 'user', '--target', 'generic', '--yes'], {
-      log(event) {
-        if (!interruptedAfterStatus && event.type === 'performance:stage'
-          && event.data?.name === 'recovery.status' && event.data.phase === 'success') {
-          interruptedAfterStatus = true;
-          process.emit('SIGINT', 'SIGINT');
-        }
-      },
+    const applied = await runJson(['plugin', 'config', 'apply', 'demo', '--context', 'user', '--target', 'generic', '--yes'], (event) => {
+      if (!interruptedAfterStatus && event.type === 'performance:stage'
+        && event.data?.name === 'recovery.status' && event.data.phase === 'success') {
+        interruptedAfterStatus = true;
+        process.emit('SIGINT', 'SIGINT');
+      }
     });
     expect(await fs.readFile(skillPath)).toEqual(original);
     expect(interruptedAfterStatus).toBe(true);
@@ -144,7 +149,13 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
         }] } },
       diagnostics: expect.arrayContaining([expect.objectContaining(invocationNotice),
         expect.objectContaining({ code: 'operationInterrupted' })]) } });
+  }, 30_000);
 
+  // Test Value Gate: config changes must report delivered Skills and preserve a sibling when only part of a target can refresh.
+  it('reports invocation limits for Skills delivered by config changes and partial apply', async (test) => {
+    const { skillPath, install, runJson, invocationNotice, invocationNotices } = await prepareManualSkillConfigFixture(test, 'dynamic');
+    const installed = await install('user');
+    expect(installed).toMatchObject({ exitCode: 0, payload: { status: 'success', diagnostics: [invocationNotice] } });
     const setArgs = ['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"fast"', '--platform', 'generic', '--apply', '--yes'];
     const set = await runJson(setArgs);
     expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: fast');
@@ -157,29 +168,11 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
     } });
     expect(invocationNotices(unchanged)).toEqual([]);
 
-    const projectSkill = path.join(cwd, '.agents', 'skills', 'manual', 'SKILL.md');
-    const projectNotice = { ...invocationNotice, subject: { ...invocationNotice.subject, scope: 'project' } };
-    const projectInstall = await runJson(['plugin', 'install', 'team/demo', '--scope', 'project', '--target', 'generic', '--yes']);
-    expect(projectInstall).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
-    expect(invocationNotices(projectInstall)).toMatchObject([projectNotice]);
-    const current = await fs.readFile(skillPath);
-    expect(await fs.readFile(projectSkill)).toEqual(current);
-    await fs.remove(path.dirname(skillPath));
-    await fs.remove(path.dirname(projectSkill));
-    const projectApplyArgs = ['plugin', 'config', 'apply', 'team/demo', '--context', 'project', '--target', 'generic', '--yes'];
-    const jointApply = await runJson(projectApplyArgs);
-    expect(jointApply).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
-    expect(invocationNotices(jointApply)).toHaveLength(2);
-    expect(invocationNotices(jointApply)).toEqual(expect.arrayContaining([
-      expect.objectContaining(invocationNotice), expect.objectContaining(projectNotice),
-    ]));
-    expect(await fs.readFile(skillPath)).toEqual(current);
-    expect(await fs.readFile(projectSkill)).toEqual(current);
-
     const saveOnly = await runJson(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user',
       '--value-json', '"partial"', '--platform', 'generic']);
     expect(saveOnly).toMatchObject({ exitCode: 0, payload: { data: { apply: { state: 'skipped', reason: 'notRequested' } } } });
     expect(invocationNotices(saveOnly)).toEqual([]);
+    expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: fast');
     const ordinaryPath = path.join(path.dirname(path.dirname(skillPath)), 'ordinary', 'SKILL.md');
     const ordinary = await fs.readFile(ordinaryPath);
     const partial = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
@@ -194,6 +187,35 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
     expect(invocationNotices(partial), JSON.stringify(partial)).toMatchObject([invocationNotice]);
     expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: partial');
     expect(await fs.readFile(ordinaryPath)).toEqual(ordinary);
+  }, 30_000);
+
+  // Test Value Gate: the same Skill has separate delivery and warning evidence for each real scope.
+  it('keeps User and Project Skill delivery separate during configuration apply', async (test) => {
+    const { cwd, skillPath, install, runJson, invocationNotice, invocationNotices } = await prepareManualSkillConfigFixture(test, 'static');
+    const projectSkill = path.join(cwd, '.agents', 'skills', 'manual', 'SKILL.md');
+    const projectNotice = { ...invocationNotice, subject: { ...invocationNotice.subject, scope: 'project' } };
+    expect(await install('user')).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    const projectInstall = await install('project');
+    expect(projectInstall).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(invocationNotices(projectInstall)).toMatchObject([projectNotice]);
+    const current = await fs.readFile(skillPath);
+    expect(await fs.readFile(projectSkill)).toEqual(current);
+    await fs.remove(path.dirname(skillPath));
+    await fs.remove(path.dirname(projectSkill));
+    const userApply = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
+    expect(userApply).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(invocationNotices(userApply)).toMatchObject([invocationNotice]);
+    expect(await fs.readFile(skillPath)).toEqual(current);
+    expect(await fs.pathExists(projectSkill)).toBe(false);
+
+    await fs.remove(path.dirname(skillPath));
+    const jointApply = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'project', '--target', 'generic', '--yes']);
+    expect(jointApply).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(invocationNotices(jointApply)).toHaveLength(2);
+    expect(invocationNotices(jointApply)).toEqual(expect.arrayContaining([
+      expect.objectContaining(invocationNotice), expect.objectContaining(projectNotice),
+    ]));
+    expect(await fs.readFile(skillPath)).toEqual(current);
     expect(await fs.readFile(projectSkill)).toEqual(current);
   }, 30_000);
 

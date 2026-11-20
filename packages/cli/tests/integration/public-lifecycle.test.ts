@@ -156,18 +156,10 @@ describe('public plugin lifecycle', () => {
   });
   it.each([
     { cores: 4, overlap: true }, { cores: 1, overlap: false },
-  ])('runs each preApply alone and overlaps the independent Claude and Pi installs only with capacity (cores=$cores)', async ({ cores, overlap }) => {
-    const isolation = getCurrentSourceTestIsolation();
-    const claude = await createClaudeNativeTestRuntime(isolation);
+  ])('overlaps independent Claude and Pi installs only with capacity (cores=$cores)', async ({ cores, overlap }) => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
     const events: string[] = [];
-    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true });
-    const runScript = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
-    const script = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(async (invocation, options) => {
-      const host = JSON.parse(invocation.stdin!).target.platform;
-      events.push('start-script-' + host);
-      try { return await runScript(invocation, options); }
-      finally { events.push('end-script-' + host); }
-    });
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'] });
     const activeInstalls = new Set<string>();
     const gate = Promise.withResolvers<void>();
     const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
@@ -177,22 +169,17 @@ describe('public plugin lifecycle', () => {
       const pi = ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase());
       const run = pi ? piRunner : claude.nativeCliRunner;
       const host = pi ? 'pi' : 'claude';
-      const install = invocation.args.includes('install');
-      const mutation = install || invocation.args.includes('add') || invocation.args.includes('enable');
-      if (!mutation) return run(invocation);
-      const kind = install ? 'install' : 'write';
-      events.push('start-' + kind + '-' + host);
+      if (!invocation.args.includes('install')) return run(invocation);
+      events.push('start-install-' + host);
+      activeInstalls.add(host);
       try {
-        if (install) {
-          activeInstalls.add(host);
-          if (activeInstalls.size === 2) { clearTimeout(timer); gate.resolve(); }
-          else timer ??= setTimeout(() => { events.push('install-gate-expired'); gate.resolve(); }, 3000);
-          await gate.promise;
-        }
+        if (activeInstalls.size === 2) { clearTimeout(timer); gate.resolve(); }
+        else timer ??= setTimeout(() => { events.push('install-gate-expired'); gate.resolve(); }, 3000);
+        await gate.promise;
         return await run(invocation);
       } finally {
-        if (install) activeInstalls.delete(host);
-        events.push('end-' + kind + '-' + host);
+        activeInstalls.delete(host);
+        events.push('end-install-' + host);
       }
     };
     try {
@@ -205,25 +192,55 @@ describe('public plugin lifecycle', () => {
       expect(Math.min(claudeStart, piStart, claudeEnd, piEnd), events.join(', ')).toBeGreaterThanOrEqual(0);
       expect(Math.max(claudeStart, piStart) < Math.min(claudeEnd, piEnd), events.join(', ')).toBe(overlap);
       expect(events.includes('install-gate-expired'), events.join(', ')).toBe(!overlap);
-      let activeScripts = 0;
-      let activeWrites = 0;
-      const scripts: string[] = [];
-      for (const event of events) {
-        if (event === 'install-gate-expired') continue;
-        const [phase, kind, host] = event.split('-');
-        if (kind === 'script') {
-          if (phase === 'start') scripts.push(host!);
-          activeScripts += phase === 'start' ? 1 : -1;
-        } else activeWrites += phase === 'start' ? 1 : -1;
-        expect(activeScripts).toBeLessThanOrEqual(1);
-        if (activeScripts) expect(activeWrites).toBe(0);
-      }
-      expect(scripts.sort()).toEqual(['claude', 'pi']);
+      expect(result.data).toMatchObject({ targetResults: expect.arrayContaining([
+        expect.objectContaining({ target: 'claude', execution: 'applied', content: 'satisfied' }),
+        expect.objectContaining({ target: 'pi', execution: 'applied', content: 'satisfied' }),
+      ]) });
+    } finally { clearTimeout(timer); gate.resolve(); parallelism.mockRestore(); }
+  });
+
+  it('runs each preApply alone before its host writes', async () => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true });
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const runScript = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
+    const completedScripts: string[] = [];
+    let activeScripts = 0;
+    let activeWrites = 0;
+    const script = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(async (invocation, options) => {
+      const host = JSON.parse(invocation.stdin!).target.platform;
+      expect(activeScripts).toBe(0);
+      expect(activeWrites).toBe(0);
+      activeScripts++;
+      try {
+        const result = await runScript(invocation, options);
+        completedScripts.push(host);
+        return result;
+      } finally { activeScripts--; }
+    });
+    const installs: string[] = [];
+    const runner: NativeCliRunner = async (invocation) => {
+      const pi = ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase());
+      const run = pi ? piRunner : claude.nativeCliRunner;
+      const host = pi ? 'pi' : 'claude';
+      if (!['add', 'install', 'enable'].some((command) => invocation.args.includes(command))) return run(invocation);
+      expect(activeScripts).toBe(0);
+      expect(completedScripts).toContain(host);
+      if (invocation.args.includes('install')) installs.push(host);
+      activeWrites++;
+      try { return await run(invocation); }
+      finally { activeWrites--; }
+    };
+    try {
+      const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, { nativeCliRunner: runner });
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+      expect(completedScripts.sort()).toEqual(['claude', 'pi']);
+      expect(installs.sort()).toEqual(['claude', 'pi']);
       const status = await runPublicPluginStatus(['team/demo'], location, { nativeCliRunner: runner });
       expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
         expect.objectContaining({ target: 'claude', content: 'satisfied' }), expect.objectContaining({ target: 'pi', content: 'satisfied' }),
       ]) })] });
-    } finally { clearTimeout(timer); gate.resolve(); parallelism.mockRestore(); script.mockRestore(); }
+    } finally { parallelism.mockRestore(); script.mockRestore(); }
   });
 
   it('rechecks the package after preApply writes there and finishes the other host', async () => {
