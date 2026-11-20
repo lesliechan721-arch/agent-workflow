@@ -1,4 +1,5 @@
-import { execute } from './native-platform-runtime.mjs';
+import path from 'node:path';
+import { execute, repoRoot } from './native-platform-runtime.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
@@ -22,17 +23,20 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     await import('../../packages/agent-skill-eval/dist/process-tree.js');
   if (options.signal?.aborted) throw options.signal.reason ?? new Error('public-aw-cancelled');
   const hostedDiagnostics = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
+  const procfs = process.platform === 'linux' && processTree.execFile === undefined && launcher.executable === process.execPath
+    && launcher.prefix.at(-1) === path.join(repoRoot, 'packages/cli/dist/index.js');
   const queryTimings = hostedDiagnostics && process.platform === 'darwin'
     ? createProcessQueryTimingDiagnostic(processTree.execFile) : undefined;
-  const names = hostedDiagnostics && ['linux', 'darwin'].includes(process.platform)
+  const names = hostedDiagnostics && !procfs && ['linux', 'darwin'].includes(process.platform)
     ? createProcessNameDiagnostic(queryTimings?.execFile ?? processTree.execFile) : undefined;
   const markerRows = names && process.platform === 'linux'
     ? createProcessMarkerRowDiagnostic(names.execFile, {
       environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 60_000) }),
     }) : undefined;
-  const confirmations = markerRows ? createMarkerIdentityConfirmationCapture() : undefined;
+  const confirmations = hostedDiagnostics && process.platform === 'linux' ? createMarkerIdentityConfirmationCapture() : undefined;
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
     enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
+    ...(procfs ? { linuxProcessInspection: 'procfs' } : {}),
     ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}),
     ...(confirmations ? { onLinuxMarkerIdentityConfirmation: confirmations.capture } : {}) };
   const controller = new AbortController();

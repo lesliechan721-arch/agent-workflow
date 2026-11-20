@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
   observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
+import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
@@ -424,6 +424,30 @@ test('Linux private marker row evidence preserves a real missing-marker failure'
       if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
     }
   }
+});
+
+// The actual public AW entry uses birth ticks throughout its lease. A child
+// with a readable wrong marker must fail even when it exits before cleanup.
+test('Linux public AW verifies the sentinel and rejects a real unmarked child with procfs', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async options => {
+    const preload = path.join(options.cwd, 'wrong-marker.cjs');
+    await fs.writeFile(preload, `
+      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},1800)'], {
+        env: { AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER: 'incorrect' }, stdio: 'ignore',
+      });
+    `);
+    const launcher = { executable: process.execPath, prefix: ['--require', preload, path.join(repoRoot, 'packages/cli/dist/index.js')] };
+    await assert.rejects(executePublicAw(launcher, ['--version'], options), error => {
+      const first = error.publicAwProcessDiagnostics?.[0];
+      assert.equal(first?.stage, 'observation');
+      assert.match(first.sentinel.startTime, /^\d+$/u);
+      assert.equal(first.sentinel.markerMatches, true);
+      assert.match(error.message, /lost its process marker/);
+      return true;
+    });
+  });
 });
 
 // Native Grok uses the same strict observer. Diagnostic wiring must retain
