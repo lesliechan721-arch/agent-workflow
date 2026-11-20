@@ -14,6 +14,7 @@ import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { createNativeLifecycleServices } from '../../src/platforms/lifecycle-native-services.js';
 import { readCodexConfigFile, upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import type { OwnedComponent } from '../../src/utils/ownership.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const root = path.resolve('/tmp/aw-platform-lifecycle-fixture');
 const confirmed: MutationOutcome = { changed: true, mutation: 'confirmed' };
@@ -76,7 +77,7 @@ function supplementOnlyFixture(): LifecyclePrepareInput {
   return input;
 }
 function context(after: DeploymentObservation): MutationContext {
-  return { cwd: root, env: { HOME: root }, runner: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })), inspect: vi.fn(async () => after),
+  return { cwd: root, env: getCurrentSourceTestIsolation().env, runner: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })), inspect: vi.fn(async () => after),
     services: { verifyEvidence: vi.fn(async () => true), publishPackage: vi.fn(async () => confirmed), writeContribution: vi.fn(async () => confirmed),
       removeOwned: vi.fn(async () => confirmed), setActivation: vi.fn(async () => confirmed), registerMarketplace: vi.fn(async () => confirmed) } };
 }

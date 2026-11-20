@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { nativePath, readInstalled, targetOf, nativePackage, checkSettled } from './native-platform-public-state.mjs';
 import { qualifyCatalog } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles } from './native-platform-runtime.mjs';
+import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 
 export const componentPlatforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
@@ -179,6 +179,78 @@ function fingerprints(root, files) {
   }));
 }
 
+async function runGrokCommand(env, cwd, args) {
+  const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+  const { bin, package: packageName } = clients.grok;
+  let command = bin;
+  if (process.platform === 'win32') {
+    const { resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
+    const launcher = await resolveWindowsNpmCommand({ command: bin, binName: bin, packageName, cwd, env });
+    command = launcher.command;
+    args = [...launcher.argsPrefix, ...args];
+  }
+  const result = await runNativeCli({ command, args, cwd, env, timeoutMs: 60_000 });
+  assert.equal(result.exitCode, 0, result.stderr);
+  return result.stdout;
+}
+
+async function grokUserRefresh(ctx, report, spec, observed, sync) {
+  const id = source + '/' + spec.name;
+  const awPackage = nativePackage(targetOf(observed, ctx, id));
+  const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
+  const native = async (args, cwd = workspace) => JSON.parse(await runGrokCommand(ctx.env, cwd, args));
+  const registration = async () => {
+    const rows = (await native(['plugin', 'list', '--json'])).filter(row => row.name === spec.name);
+    assert.equal(rows.length, 1);
+    const [row] = rows;
+    assert.equal(row.status, 'installed');
+    assert.equal(path.relative(awPackage, row.source), '');
+    assert.match(row.repo_key, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
+    assert.equal(path.relative(path.join(ctx.env.GROK_HOME, 'installed-plugins', row.repo_key), row.path), '');
+    return { key: row.repo_key, path: row.path, source: row.source };
+  };
+  const trust = async allowed => {
+    // Only the qualification owns this empty Grok home. Give the calling
+    // project the opposite decision to detect accidental trust inheritance.
+    const entries = [[workspace, allowed], [ctx.project, !allowed]];
+    await fs.writeFile(path.join(ctx.env.GROK_HOME, 'trusted_folders.toml'), entries.map(([folder, trusted]) =>
+      '[folders.' + JSON.stringify(folder) + ']\ntrusted = ' + trusted + '\ndecided_at = ' + Math.floor(Date.now() / 1000) + '\n').join('\n'));
+    for (const [folder, trusted] of entries) {
+      const state = await native(['inspect', '--json'], folder);
+      assert.equal(state.grokVersion, clients.grok.version);
+      assert.equal(path.relative(folder, state.cwd), '');
+      if (folder === workspace) assert.equal(state.projectRoot, null);
+      assert.equal(state.projectTrusted, trusted, 'The native host must confirm the exact fixture folder decision.');
+    }
+  };
+  const original = await registration();
+  const files = spec.kinds.filter(kind => kind !== 'instruction').map(kind => ({ kind,
+    file: nativePath(ctx, { id }, kind, original.path, kind === 'skill' ? spec.name + '-skill' : names[kind]) }));
+  const readCopy = revision => Promise.all(files.map(({ kind, file }) => readInstalled(ctx, file, token(kind, revision))));
+  const originalFiles = await readCopy(1);
+  report.grokUserRefresh = { oldNativeFiles: originalFiles };
+  await trust(false);
+  const denied = await ctx.result(['plugin', 'sync', id, '--context', 'user', '--target', 'grok', '--yes']);
+  assert.equal(denied.exitCode, denied.value.status === 'partial' ? 4 : 3);
+  assert(['blocked', 'partial'].includes(denied.value.status));
+  const refused = targetOf(denied.value, ctx, id, true);
+  assert.deepEqual(refused.blockerCodes, ['nativeTrustRequired']);
+  assert(denied.value.diagnostics.some(item => item.subject?.pluginId === id
+    && item.detail?.reasonCode === 'grokNativeRefreshWorkspaceTrust'));
+  assert(denied.value.diagnostics.some(item => item.subject?.pluginId === id
+    && item.code === 'grokNativeInstallWorkspace' && path.relative(workspace, item.detail.path) === ''));
+  assert.deepEqual(await registration(), original, 'Denied refresh must preserve the native registration.');
+  assert.deepEqual(await readCopy(1), originalFiles, 'Denied refresh must preserve the installed revision.');
+  report.grokUserRefresh.denied = refused.blockerCodes;
+  await trust(true);
+  report.grokUserRefresh.explicitWorkspaceTrust = true;
+  const changed = await sync();
+  assert.deepEqual(changed.data.remainingTargets, []);
+  assert.deepEqual(await registration(), original);
+  report.grokUserRefresh.newNativeFiles = await readCopy(2);
+  return changed;
+}
+
 // Both roots share Pi's settings file. The dependency makes the extension
 // publish before the role, so the second target must observe AW's own write.
 async function piPair(ctx, report, inputs, install, status, sync) {
@@ -344,10 +416,20 @@ async function matrix(ctx, report) {
   assert.deepEqual(second.data.remainingTargets, []);
   assert.equal(second.data.changes.outputs, 'none');
   const mixed = inputs.find(spec => spec.name === 'mixed-components');
+  const mixedId = source + '/' + mixed.name;
+  const unchangedGrokFiles = platform === 'grok'
+    ? report.cases.filter(item => item.id !== mixedId).flatMap(item => item.installed.map(file => path.join(ctx.root, file.path))) : [];
+  const unchangedFiles = await fingerprints(ctx.root, unchangedGrokFiles);
   await writeFixture(workspace, scaffold, mixed, 2);
   await build();
   await aw(['source', 'sync', source, '--yes']);
-  await sync();
+  const update = platform === 'grok' && scope === 'user' ? await grokUserRefresh(ctx, report, mixed, observed, sync) : await sync();
+  if (unchangedGrokFiles.length) {
+    report.upgradeTargets = ids.map(id => ({ id, execution: targetOf(update, ctx, id).execution }));
+    for (const target of report.upgradeTargets) assert.equal(target.execution, target.id === mixedId ? 'applied' : 'no-op', target.id);
+    assert.deepEqual(update.data.remainingTargets, []);
+    assert.deepEqual(await fingerprints(ctx.root, unchangedGrokFiles), unchangedFiles, 'The six unchanged Grok packages must retain their files.');
+  }
   const beforeRemoval = await status();
   report.updated = await verifyFixture(ctx, beforeRemoval, mixed, 2);
   report.removals = [];
@@ -469,7 +551,6 @@ export async function runComponentQualification({ platform, scope, clientPath, s
         const direct = grokTrustTargets(value, dependencies, retry.authorized);
         if (!direct.length) return outcome;
         assert(Array.isArray(retry.roots) && retry.roots.length);
-        const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
         for (const target of direct) {
           const [provider, name] = target.pluginId.split('/');
           const after = target.deploymentReceipts.find(item => item.after.ownership === 'aw' && item.after.registration === 'absent'
@@ -483,9 +564,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
           assert.equal(JSON.parse(await fs.readFile(path.join(location, '.agent-workflows-owner.json'), 'utf8')).pluginId, target.pluginId);
           assert(value.diagnostics.some(diagnostic => diagnostic.code === 'grokNativeInstallRecovery'
             && diagnostic.subject?.pluginId === target.pluginId && diagnostic.detail.path === location));
-          const native = await runNativeCli({ command: 'grok', args: ['plugin', 'install', location, '--trust'],
-            cwd: path.join(env.AW_HOME, 'runtime', 'user'), env, timeoutMs: 60_000 });
-          assert.equal(native.exitCode, 0, 'Grok rejected the isolated explicit trust for ' + target.pluginId);
+          await runGrokCommand(env, path.join(env.AW_HOME, 'runtime', 'user'), ['plugin', 'install', location, '--trust']);
           retry.authorized.add(target.pluginId);
           (report.explicitFixtureTrust ??= []).push(target.pluginId);
         }

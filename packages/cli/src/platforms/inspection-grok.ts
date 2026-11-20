@@ -5,6 +5,7 @@ import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { queryNativeDeployment } from './inspection-query.js';
+import { grokUserWorkspace } from '../intent/scope-context.js';
 import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
@@ -39,7 +40,8 @@ function isPackageHook(hook: unknown, name: string, root: string): boolean {
 /** 1.0.77's list is an install inventory; inspect.enabled is not load evidence. */
 export async function inspectGrokDeployment(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout,
   result: DeploymentObservation): Promise<void> {
-  const list = rows(JSON.parse(await queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json'])));
+  const workspace = binding.scope.kind === 'user' ? await grokUserWorkspace(ctx.env ?? process.env) : undefined;
+  const list = rows(JSON.parse(await queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json'], workspace)));
   const name = layout.nativeIdentity.packageId;
   const matches = list.filter((row) => row.name === name);
   if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
@@ -87,7 +89,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
         message: 'The Grok installation path or package bytes could not be confirmed for maintenance.', subject: { target: 'grok', scope: binding.scope.kind } });
     }
   }
-  const inspect = object(JSON.parse(await queryNativeDeployment(ctx, binding, ['inspect', '--json'])));
+  const inspect = object(JSON.parse(await queryNativeDeployment(ctx, binding, ['inspect', '--json'], workspace)));
   const product = selectNativeProduct(binding.consumers);
   if (typeof inspect.grokVersion !== 'string' || !tryParseStrictSemVer(inspect.grokVersion)
     || !product || product.version !== null && product.version !== inspect.grokVersion) throw new Error('grokObservationVersionUnverified');
@@ -103,7 +105,9 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     && path.normalize(plugin.path as string) === path.normalize(nativeRoot) && plugin.scope === binding.scope.kind);
   const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
   // Scoped host authorization remains separate from consent to install a new source.
-  result.grokScopeAuthorization = inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';
+  const userWorkspaceUnconfirmed = binding.scope.kind === 'user' && (!workspace || inspect.projectRoot !== null);
+  result.grokScopeAuthorization = userWorkspaceUnconfirmed ? 'unknown'
+    : inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';
   for (const consumer of result.consumers) {
     if (consumer.productId !== product.id) continue;
     consumer.activation = own.length === 1 && typeof own[0]!.enabled === 'boolean' ? own[0]!.enabled ? 'enabled' : 'disabled' : 'unknown';
@@ -147,10 +151,11 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     }
   }
   const configEvidence = evidence.slice(3);
-  const attributedResources = new Set<Record<string, unknown>>();
-  const hooks: unknown[] | undefined = projectRoot && Array.isArray(inspect.hooks) ? inspect.hooks : undefined;
+  const resourcePackages = new Map<Record<string, unknown>, string>();
+  const hooks: unknown[] | undefined = Array.isArray(inspect.hooks) ? inspect.hooks : undefined;
   const hookPackages = new Map<unknown, string>();
   const sourceDigests: string[] = [];
+  const scopedList = [...list];
   let sourcesComplete = true;
   const sources: NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'] = [];
   for (const plugin of plugins) {
@@ -187,39 +192,47 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     sources.push({ name: plugin.name, version, path: plugin.path, scope: plugin.scope, origin,
       enabled: typeof plugin.enabled === 'boolean' ? plugin.enabled : null,
       effectiveComponents: resources.map(({ kind, row }) => `${kind}:${String(row.name)}`).sort() });
-    if (projectRoot) {
-      // Grok reports this file pointer for a plugin's hooks. Other hook formats
-      // (including global commands) remain part of the frozen scope.
-      const packageRoot = path.normalize(plugin.path);
-      const packageHooks = plugin.scope === 'project' ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
-      if (packageHooks.length === 1) hookPackages.set(packageHooks[0], packageRoot);
-      for (const { row } of resources) attributedResources.add(row);
-      sourceDigests.push(evidenceDigest([plugin, resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
+    // Only the installed version of an observed User plugin moves with its
+    // package. The scope retains the complete registration identity and order.
+    if (!projectRoot && inventory?.status === 'installed' && plugin.scope === 'user' && typeof inventory.version === 'string'
+      && within(path.join(hostRoot, 'installed-plugins'), plugin.path)) {
+      scopedList[list.indexOf(inventory)] = { ...inventory, version: null };
     }
+    // Grok reports this file pointer for a plugin's hooks. Other hook formats
+    // (including global commands) remain part of the frozen scope.
+    const packageRoot = path.normalize(plugin.path);
+    const packageHooks = plugin.scope === binding.scope.kind ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
+    if (packageHooks.length === 1) hookPackages.set(packageHooks[0], packageRoot);
+    for (const { row } of resources) resourcePackages.set(row, packageRoot);
+    sourceDigests.push(evidenceDigest([plugin, ...(!projectRoot && inventory ? [inventory.version] : []), resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
   }
   // Rule rows have no plugin source. Keep every row in order so execution can
   // compare the complete inventory after accounting for its own exact writes.
-  const instructions = projectRoot && Array.isArray(inspect.projectInstructions) ? inspect.projectInstructions.map((row: unknown) => ({
-    rulePath: isRecord(row) && row.scope === 'project' && row.fileType === 'rules' && typeof row.path === 'string' && path.isAbsolute(row.path)
-      && path.dirname(path.normalize(row.path)) === path.join(projectRoot, '.grok', 'rules') ? path.normalize(row.path) : null,
+  const instructions = Array.isArray(inspect.projectInstructions) ? inspect.projectInstructions.map((row: unknown) => ({
+    rulePath: isRecord(row) && row.scope === (projectRoot ? 'project' : 'global') && row.fileType === 'rules' && typeof row.path === 'string' && path.isAbsolute(row.path)
+      && path.dirname(path.normalize(row.path)) === layout.supplementRoot ? path.normalize(row.path) : null,
     digest: evidenceDigest(row),
   })) : undefined;
   // Keep unbound runtime resources, policy and configuration bound to the scope.
-  const grokProjectEvidence = projectRoot ? {
-    scopeDigest: evidenceDigest([binding.scope, list, {
+  const scopeEvidence = {
+    scopeDigest: evidenceDigest([binding.scope, scopedList, {
       ...nativeEvidence, plugins: undefined,
       hooks: hooks ? [] : nativeEvidence.hooks,
       projectInstructions: instructions ? [] : nativeEvidence.projectInstructions,
       ...Object.fromEntries(effectiveKinds.map((kind) => [kind,
-        effective.filter((entry) => entry.kind === kind && !attributedResources.has(entry.row)).map(({ row }) => row)])),
+        effective.filter((entry) => entry.kind === kind && !resourcePackages.has(entry.row)).map(({ row }) => row)])),
     }, ...configEvidence]),
     sourceDigests, instructions: instructions ?? [],
     // A bound hook's full row is in its source digest. Keep hook order across packages, too.
     hookOrder: hooks?.map((hook) => hookPackages.get(hook) ?? evidenceDigest(hook)) ?? [],
-  } : undefined;
+    // Per-package digests retain row contents. The source sequence also binds
+    // their positions relative to other packages and unbound runtime rows.
+    resourceOrder: effectiveKinds.map((kind) => effective.filter((entry) => entry.kind === kind)
+      .map(({ row }) => resourcePackages.get(row) ?? '')),
+  };
   const overlaps = [...new Set(sources.filter((source) => sources.some((other) => other !== source && other.name === source.name)).map((source) => source.name))].sort();
   result.prerequisites.nativeSources = { observation: sourcesComplete ? 'complete' : 'unknown', sources, overlaps,
-    configurationEvidence: evidenceDigest(evidence), ...(grokProjectEvidence ? { grokProjectEvidence } : {}) };
+    configurationEvidence: evidenceDigest(evidence), grokScopeEvidence: scopeEvidence };
   if (overlaps.length) result.diagnostics.push({ code: 'nativeCompatibilityOverlap', severity: 'warning',
     message: 'Grok discovered overlapping plugin sources. Effective component sources are reported; compatibility files remain outside AW cleanup authority.', subject: { target: 'grok' } });
   if (sources.some((source) => source.origin === 'compatibility' && source.name === name)) result.diagnostics.push({

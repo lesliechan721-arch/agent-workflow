@@ -5,7 +5,7 @@ import { installationInvocation, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
 export interface NativeQuerySession {
-  userCwd(env: NodeJS.ProcessEnv): Promise<string>;
+  userCwd(env: NodeJS.ProcessEnv, forGrok?: boolean): Promise<string>;
   read(key: string, ctx: ReadContext, action: () => Promise<string>): Promise<string>;
   dispose(): Promise<void>;
 }
@@ -41,11 +41,11 @@ export function createNativeQuerySession(): NativeQuerySession {
   let disposal: Promise<void> | undefined;
   const assertOpen = (): void => { if (disposal) throw new Error('nativeQuerySessionDisposed'); };
   return {
-    async userCwd(env) {
+    async userCwd(env, forGrok = false) {
       assertOpen();
-      const key = JSON.stringify(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)));
+      const key = JSON.stringify([forGrok, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))]);
       let cwd = neutral.get(key);
-      if (!cwd) { cwd = createSafeNeutralCwd(env); neutral.set(key, cwd); }
+      if (!cwd) { cwd = createSafeNeutralCwd(env, forGrok); neutral.set(key, cwd); }
       return (await cwd).executionCwd;
     },
     async read(key, ctx, action) {
@@ -76,15 +76,17 @@ export function createNativeQuerySession(): NativeQuerySession {
 
 /** User queries exclude caller project configuration; project queries use the exact binding. */
 export async function queryNativeDeployment(ctx: ReadContext, binding: DeploymentBinding,
-  args: string[] | ((cwd: string) => string[])): Promise<string> {
+  args: string[] | ((cwd: string) => string[]), validatedUserCwd?: string): Promise<string> {
   const product = selectNativeProduct(binding.consumers);
   if (!product) throw new Error('nativeEntryUnavailable');
   ctx.signal?.throwIfAborted();
   const session = ctx.nativeQuerySession;
-  const neutral = binding.scope.kind === 'user' && !session ? await createSafeNeutralCwd(ctx.env ?? process.env) : undefined;
+  const env = ctx.env ?? process.env;
+  const forGrok = binding.route === 'grok-cli';
+  const neutral = binding.scope.kind === 'user' && !validatedUserCwd && !session ? await createSafeNeutralCwd(env, forGrok) : undefined;
   try {
     const cwd = binding.scope.kind === 'project' ? binding.scope.projectRoot
-      : session ? await session.userCwd(ctx.env ?? process.env) : neutral!.executionCwd;
+      : validatedUserCwd ?? (session ? await session.userCwd(env, forGrok) : neutral!.executionCwd);
     const queryArgs = typeof args === 'function' ? args(cwd) : args;
     const invocation = await installationInvocation(product, { ...ctx, cwd }, queryArgs);
     const read = async (): Promise<string> => {

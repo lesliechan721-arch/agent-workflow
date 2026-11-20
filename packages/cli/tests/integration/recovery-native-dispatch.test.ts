@@ -110,6 +110,7 @@ describe('native recovery dispatch', () => {
   // while still rejecting changes made by someone else between targets.
   it.each([
     ['agent', 'unchanged'], ['hook', 'unchanged'], ['rule', 'unchanged'], ['agent and rule', 'unchanged'],
+    ['upgrade', 'unchanged'], ['upgrade', 'edited package'], ['upgrade', 'deleted rule'], ['upgrade', 'reordered agents'],
     ['agent', 'project configuration'], ['agent', 'project trust'], ['agent', 'same-name source'], ['hook', 'extra package file'],
     ['hook', 'foreign hook'], ['rule', 'foreign rule'], ['rule', 'edited rule'], ['rule', 'same-name User rule'],
   ] as const)('revalidates Grok Project batch with %s and %s', async (kind, change) => {
@@ -118,24 +119,42 @@ describe('native recovery dispatch', () => {
       const cwd = await fs.realpath(layout.fixtureCwd);
       await fs.ensureDir(path.join(cwd, '.git'));
       const source = path.join(cwd, 'grok-catalog');
-      const names = kind === 'agent and rule' ? ['base', 'bundle', 'leaf'] : ['base', 'bundle'];
-      const baseAgent = kind === 'agent' || kind === 'agent and rule';
-      const baseRule = kind === 'rule' || kind === 'agent and rule';
-      await createDependencyCatalogSnapshotFixture(source, names.map((name, index) => ({ name,
-        dependencies: index > 0 ? [names[index - 1]!] : [], configureManifest(manifest) {
-          manifest.platforms = ['grok'];
-          manifest.extensions = {};
-          if (name !== 'base' || baseAgent) manifest.extensions.agents = [
-            { name: `${name}-reviewer`, description: `Review ${name}.`, prompt: `Check the ${name} output.` },
-          ];
-          if (name === 'base' && baseRule) manifest.extensions.instructions = [
-            { name: 'rule', title: 'Rule', content: 'Keep the draft.', coverage: ['main'] },
-          ];
-          if (name === 'base' && kind === 'hook') manifest.extensions.hooks = [
-            { id: 'start', event: 'session_start', feedback: 'notify', command: 'true' },
-          ];
-        },
-      })));
+      const upgrade = kind === 'upgrade';
+      const independentUpgrade = upgrade && change === 'unchanged';
+      const names = independentUpgrade ? ['base', 'bundle', 'leaf', 'mcp', 'other', 'role', 'skill']
+        : upgrade || kind === 'agent and rule' ? ['base', 'bundle', 'leaf'] : ['base', 'bundle'];
+      const baseAgent = upgrade || kind === 'agent' || kind === 'agent and rule';
+      const baseRule = upgrade || kind === 'rule' || kind === 'agent and rule';
+      const writeCatalog = async (revision: number) => {
+        if (upgrade) {
+          const base = path.join(source, 'plugins', 'base');
+          await fs.outputFile(path.join(base, 'skills/base/SKILL.md'), `---\nname: base\ndescription: Use base.\n---\nBase skill ${revision}.\n`);
+          await fs.outputFile(path.join(base, 'skills/base/README.md'), 'Base skill.');
+          await fs.outputJson(path.join(base, 'grok/servers.json'), { mcpServers: { base: { type: 'http', url: `http://127.0.0.1:1/${revision}` } } });
+        }
+        await createDependencyCatalogSnapshotFixture(source, names.map((name, index) => ({ name,
+          dependencies: index > 0 && !independentUpgrade ? [names[index - 1]!] : [], configureManifest(manifest) {
+            manifest.platforms = ['grok'];
+            manifest.extensions = {};
+            if (name === 'base' && upgrade) {
+              manifest.version = `1.0.${revision}`;
+              manifest.skills = './skills';
+              manifest.mcpServers = './servers.json';
+            }
+            if (upgrade && change !== 'unchanged' && name === 'bundle') manifest.version = `1.0.${revision}`;
+            if (name !== 'base' || baseAgent) manifest.extensions.agents = [
+              { name: `${name}-reviewer`, description: `Review ${name}.`, prompt: name === 'base' && revision ? 'Check the new output.' : `Check the ${name} output.` },
+            ];
+            if (name === 'base' && baseRule) manifest.extensions.instructions = [
+              { name: 'rule', title: 'Rule', content: revision ? 'Keep the final draft.' : 'Keep the draft.', coverage: ['main'] },
+            ];
+            if (name === 'base' && (kind === 'hook' || upgrade)) manifest.extensions.hooks = [
+              { id: 'start', event: 'session_start', feedback: 'notify', command: revision ? 'echo updated' : 'true' },
+            ];
+          },
+        })));
+      };
+      await writeCatalog(0);
       const config = await readCatalogSourcesConfigSnapshot(env);
       await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
@@ -160,11 +179,23 @@ describe('native recovery dispatch', () => {
         await fs.outputFile(otherRule, 'Other project rule.');
       }
       let providerCompleted = false;
+      let delayedUpgradeInspection = false;
       let externalChange = false;
       const nativeCliRunner = async ({ args, cwd: nativeCwd }: NativeCliInvocation) => {
         if (args[0] === 'plugin' && args[1] === 'list') return { exitCode: 0, stdout: '[]', stderr: '' };
         if (args[0] !== 'inspect') throw new Error(`Unexpected Grok operation ${args.join(' ')}`);
         const project = nativeCwd === cwd;
+        if (project && independentUpgrade && !delayedUpgradeInspection
+          && (await fs.readJson(path.join(provider, '.grok-plugin/plugin.json')).catch(() => null))?.version === '1.0.1') {
+          delayedUpgradeInspection = true;
+          await new Promise((resolve) => setTimeout(resolve, 75));
+        }
+        // The next package's published version marks the point at which the
+        // previous package has finished. Modify its live output between targets.
+        if (project && upgrade && !providerCompleted && change !== 'unchanged') {
+          const next = await fs.readJson(path.join(consumer, '.grok-plugin/plugin.json')).catch(() => null);
+          providerCompleted = next?.version === '1.0.1';
+        }
         if (project && providerCompleted && !externalChange && change !== 'unchanged') {
           externalChange = true;
           if (change === 'project configuration') await fs.outputFile(configFile, '[plugins]\ndisabled = ["unrelated"]\n');
@@ -172,6 +203,11 @@ describe('native recovery dispatch', () => {
           if (change === 'foreign hook') await fs.outputFile(manualHook, '{}');
           if (change === 'foreign rule') await fs.outputFile(manualRule, 'Manual rule.');
           if (change === 'edited rule') await fs.writeFile(rule, (await fs.readFile(rule, 'utf8')).replace('Keep the draft.', 'Edit the draft.'));
+          if (change === 'edited package') {
+            const file = path.join(provider, 'agents/base-reviewer.md');
+            await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('Check the new output.', 'Check the old output.'));
+          }
+          if (change === 'deleted rule') await fs.unlink(rule);
           if (change === 'extra package file') await fs.outputFile(extraFile, 'Keep this file.\n');
         }
         const directories = project && await fs.pathExists(projectPlugins) ? await fs.readdir(projectPlugins) : [];
@@ -185,6 +221,7 @@ describe('native recovery dispatch', () => {
           const files = await fs.pathExists(directory) ? await fs.readdir(directory) : [];
           return files.map((file) => ({ name: path.basename(file, '.md'), source: { plugin_name: plugin.name, path: path.join(directory, file) } }));
         }))).flat();
+        if (externalChange && change === 'reordered agents') agents.reverse();
         const hooks = (await Promise.all(plugins.map(async (plugin) => {
           const file = path.join(plugin.path, 'hooks', 'hooks.json');
           return await fs.pathExists(file) ? [{ event: '(plugin)', hookType: 'file', target: file,
@@ -215,7 +252,7 @@ describe('native recovery dispatch', () => {
         expect(await fs.readFile(otherRule, 'utf8')).toBe('Other project rule.');
         return;
       }
-      if (change !== 'unchanged') {
+      if (!upgrade && change !== 'unchanged') {
         const install = await runRecovery('install', requested, options, { nativeCliRunner,
           onInstallProgress: ({ completed }) => { if (completed === 1) providerCompleted = true; } });
         expect(externalChange).toBe(true);
@@ -228,9 +265,11 @@ describe('native recovery dispatch', () => {
         if (change === 'extra package file') expect(await fs.readFile(extraFile, 'utf8')).toBe('Keep this file.\n');
         return;
       }
-      const install = await runPublicLifecycle('install', requested, options, { nativeCliRunner });
-      expect(install, JSON.stringify(install)).toMatchObject({ status: 'success', data: { remainingTargets: [],
-        targetResults: names.map((name) => ({ pluginId: 'local/' + name, execution: 'applied', content: 'satisfied' })) } });
+      for (const selected of independentUpgrade ? requested.map((name) => [name]) : [requested]) {
+        const install = await runPublicLifecycle('install', selected, options, { nativeCliRunner });
+        expect(install, JSON.stringify(install.diagnostics)).toMatchObject({ status: 'success', data: { remainingTargets: [],
+          targetResults: selected.map((pluginId) => ({ pluginId, execution: 'applied', content: 'satisfied' })) } });
+      }
       if (baseAgent) expect(await fs.readFile(path.join(provider, 'agents', 'base-reviewer.md'), 'utf8')).toContain('Check the base output.');
       if (baseRule) expect(await fs.readFile(rule, 'utf8')).toContain('Keep the draft.');
       if (kind === 'hook') expect(await fs.readJson(path.join(provider, 'hooks', 'hooks.json'))).toHaveProperty('hooks');
@@ -238,15 +277,157 @@ describe('native recovery dispatch', () => {
       const role = path.join(consumer, 'agents', 'bundle-reviewer.md');
       expect(await fs.readFile(role, 'utf8')).toContain('Check the bundle output.');
       const before = (await fs.stat(role)).mtimeMs;
-      const status = await runPublicPluginStatus([], { cwd, env, cliVersion: options.cliVersion, context: options.context }, { nativeCliRunner });
+      const statusOptions = { cwd, env, cliVersion: options.cliVersion, context: options.context };
+      const status = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
       expect(status.data).toMatchObject({ counts: { ready: names.length, pending: 0 }, inSync: true, allSatisfied: true });
       const sync = await runPublicLifecycle('sync', requested, options, { nativeCliRunner });
       expect(sync, JSON.stringify(sync)).toMatchObject({ status: 'success', data: { remainingTargets: [], changes: { outputs: 'none' } } });
       expect((await fs.stat(role)).mtimeMs).toBe(before);
+      if (upgrade) {
+        await writeCatalog(1);
+        await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: options.cliVersion, env });
+        const update = await runPublicLifecycle('sync', [], options, { nativeCliRunner });
+        if (change === 'unchanged') {
+          expect(delayedUpgradeInspection).toBe(true);
+          expect(update.data.targetResults.map(({ pluginId, execution, blockerCodes }) => ({ pluginId, execution, blockerCodes }))).toEqual(
+            names.map((name) => ({ pluginId: 'local/' + name, execution: name === 'base' ? 'applied' : 'no-op', blockerCodes: [] })));
+          expect(update.status).toBe('success');
+          expect(await fs.readFile(path.join(provider, 'skills/base/SKILL.md'), 'utf8')).toContain('Base skill 1.');
+          expect(await fs.readFile(path.join(provider, 'agents/base-reviewer.md'), 'utf8')).toContain('Check the new output.');
+          expect(await fs.readFile(path.join(provider, '.mcp.json'), 'utf8')).toContain('http://127.0.0.1:1/1');
+          expect(await fs.readFile(path.join(provider, 'hooks/hooks.json'), 'utf8')).toContain('echo updated');
+          expect(await fs.readFile(rule, 'utf8')).toContain('Keep the final draft.');
+          const updatedStatus = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
+          expect(updatedStatus.data).toMatchObject({ counts: { ready: names.length, pending: 0 }, inSync: true });
+          expect((await runPublicLifecycle('sync', [], options, { nativeCliRunner })).data.changes.outputs).toBe('none');
+          expect((await fs.stat(role)).mtimeMs).toBe(before);
+        } else {
+          expect(externalChange).toBe(true);
+          expect(update.data.targetResults.map(({ execution, blockerCodes }) => ({ execution, blockerCodes }))).toEqual([
+            { execution: 'applied', blockerCodes: [] }, { execution: 'applied', blockerCodes: [] },
+            { execution: 'failed', blockerCodes: ['operationPlanStale'] },
+          ]);
+          if (change === 'edited package') expect(await fs.readFile(path.join(provider, 'agents/base-reviewer.md'), 'utf8')).toContain('Check the old output.');
+          if (change === 'deleted rule') expect(await fs.pathExists(rule)).toBe(false);
+        }
+      }
       if (kind === 'rule') {
         expect(await fs.readFile(userRule, 'utf8')).toBe('User rule.');
         expect(await fs.readFile(otherRule, 'utf8')).toBe('Other project rule.');
       }
+    });
+
+  // A Grok User refresh changes the shared list even when a prior trust refusal
+  // already published the new AW source. Its untouched neighbor stays a no-op.
+  it.each(['trusted', 'retry after refusal', 'foreign registration', 'edited native copy'] as const)(
+    'revalidates a Grok User batch refresh with %s', async (scenario) => {
+      installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+      const { env, layout } = getCurrentSourceTestIsolation();
+      const cwd = layout.fixtureCwd;
+      const catalog = path.join(cwd, 'catalog');
+      const host = resolvePlatformConfigRoot('grok', { cwd, env });
+      const names = ['mixed', 'other'];
+      const writeCatalog = async (revision: number) => {
+        await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({ name, configureManifest(manifest) {
+          manifest.platforms = ['grok'];
+          const version = name === 'mixed' ? revision : 1;
+          manifest.version = '1.0.' + version;
+          manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Check revision ' + version + '.' }],
+            instructions: [{ name: 'guide', title: 'Guide', content: 'Keep revision ' + version + '.', coverage: ['main'] }] };
+        } })));
+      };
+      await writeCatalog(1);
+      const config = await readCatalogSourcesConfigSnapshot(env);
+      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+        sources: [{ id: 'local', type: 'path', primary: true, path: catalog }] }, expectedDigest: config.digest, env });
+      const updateSource = () => syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+      await updateSource();
+      await setTargets({ cwd, env, scope: 'user' }, ['grok']);
+
+      const registered = new Map<string, { name: string; repo_key: string; path: string; source: string; status: string; version: string }>();
+      if (scenario === 'foreign registration') registered.set('manual', { name: 'manual', version: '1.0.0', status: 'installed',
+        repo_key: 'manual', path: path.join(host, 'installed-plugins/manual'), source: path.join(cwd, 'manual-source') });
+      const installCopy = async (source: string) => {
+        const { name, version } = await fs.readJson(path.join(source, '.grok-plugin/plugin.json'));
+        const key = 'local-' + name;
+        const installed = path.join(host, 'installed-plugins', key);
+        await fs.copy(source, installed);
+        registered.set(name, { name, repo_key: key, path: installed, source, status: 'installed', version });
+      };
+      const mutations: string[][] = [];
+      let authorized = true;
+      let editAfterRefresh = false;
+      let edited = false;
+      const mixedCopy = path.join(host, 'installed-plugins/local-mixed/agents/reviewer.md');
+      const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+        if (editAfterRefresh && !edited) {
+          edited = true;
+          const content = await fs.readFile(mixedCopy, 'utf8');
+          await fs.writeFile(mixedCopy, content.replace('revision 2.', 'revision X.'));
+        }
+        const list = [...registered.values()].sort((a, b) => a.name.localeCompare(b.name));
+        let stdout = '';
+        if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(list);
+        else if (args[0] === 'inspect') stdout = JSON.stringify({
+          grokVersion: '1.0.77', projectTrusted: authorized, projectRoot: null,
+          plugins: list.map(({ name, path: installed }) => ({ name, path: installed, enabled: true, scope: 'user' })),
+          agents: list.map(({ name, version, path: installed }) => ({ name: 'reviewer', description: name === 'mixed' ? version : 'Review.',
+            source: { type: 'plugin', plugin_name: name, path: path.join(installed, 'agents/reviewer.md') } })),
+          mcpServers: [], skills: [],
+        });
+        else if (args.includes('--version')) stdout = 'grok 1.0.77';
+        else {
+          mutations.push([...args]);
+          expect(authorized).toBe(true);
+          if (args[1] === 'uninstall') {
+            expect(args).toEqual(['plugin', 'uninstall', 'mixed', '--confirm', '--keep-data']);
+            await fs.remove(registered.get('mixed')!.path);
+            registered.delete('mixed');
+          } else if (args[1] === 'install') {
+            await installCopy(args[2]!);
+            if (scenario === 'foreign registration') registered.get('manual')!.version = '2.0.0';
+          } else expect(args).toEqual(['plugin', 'enable', 'mixed']);
+        }
+        return { exitCode: 0, stdout, stderr: '' };
+      };
+      const options = { cwd, env, cliVersion: '1.0.0', scope: 'user' as const, context: 'user' as const, targets: ['grok'], yes: true };
+      for (const name of names) {
+        const result = await runPublicLifecycle('install', ['local/' + name], options, { nativeCliRunner });
+        const source = result.diagnostics.find(({ code }) => code === 'grokNativeInstallRecovery')?.detail?.path;
+        expect(source, JSON.stringify(result.diagnostics)).toBeTruthy();
+        await installCopy(source!);
+      }
+      const sync = () => runPublicLifecycle('sync', [], options, { nativeCliRunner });
+      expect((await sync()).status).toBe('success');
+      await writeCatalog(2);
+      await updateSource();
+      const otherRole = path.join(registered.get('other')!.path, 'agents/reviewer.md');
+      const otherMtime = (await fs.stat(otherRole)).mtimeMs;
+      if (scenario === 'retry after refusal') {
+        authorized = false;
+        const refusal = await runPublicLifecycle('sync', ['local/mixed'], options, { nativeCliRunner });
+        expect(refusal.diagnostics.map(({ code }) => code)).toContain('nativeTrustRequired');
+        expect(await fs.readFile(mixedCopy, 'utf8')).toContain('revision 1.');
+        expect(mutations).toEqual([]);
+        authorized = true;
+      }
+      if (scenario === 'edited native copy') {
+        const update = await runRecovery('sync', [], options, { nativeCliRunner, onInstallProgress: ({ completed }) => {
+          if (completed === 1) editAfterRefresh = true;
+        } });
+        expect(update.targetResults.find(({ pluginId }) => pluginId === 'local/other')?.blockers.map(({ code }) => code)).toContain('operationPlanStale');
+        expect(await fs.readFile(mixedCopy, 'utf8')).toContain('revision X.');
+      } else {
+        const update = await sync();
+        const foreign = scenario === 'foreign registration';
+        expect(update.data.targetResults.map(({ execution, blockerCodes }) => ({ execution, blockerCodes }))).toEqual([
+          { execution: 'applied', blockerCodes: [] }, { execution: foreign ? 'failed' : 'no-op', blockerCodes: foreign ? ['operationPlanStale'] : [] },
+        ]);
+        if (!foreign) expect(update.data.remainingTargets).toEqual([]);
+        expect(await fs.readFile(mixedCopy, 'utf8')).toContain('revision 2.');
+      }
+      expect((await fs.stat(otherRole)).mtimeMs).toBe(otherMtime);
+      expect(mutations.map((args) => args[1])).toEqual(['uninstall', 'install', 'enable']);
     });
 
   // Read role-only text from both native package routes, and verify the same

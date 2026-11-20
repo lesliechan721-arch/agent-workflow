@@ -200,9 +200,17 @@ function nativeSourceRecovery(diagnostic: Diagnostic, diagnostics: readonly Diag
   const workspace = location('workspace')?.path;
   const configRoot = location('nativeConfigRoot')?.path;
   const source = detail.path;
-  const nativeStep = `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}, ${source
+  const clientContext = `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}`;
+  let nativeStep: string;
+  if (detail.reasonCode === 'grokNativeRefreshWorkspaceTrust') {
+    nativeStep = workspace
+      ? `${clientContext}, keep the existing registered copy. If you approve this exact folder, grant folder trust in Grok. For Grok 1.0.77, review [folders.${JSON.stringify(workspace)}] in trusted_folders.toml, set trusted = true and decided_at to the current Unix timestamp in seconds, and preserve the other entries. From this workspace run grok inspect --json and verify projectRoot is null and projectTrusted is true.`
+      : 'Keep the existing registered copy. Check $AW_HOME/runtime/user and its ancestors for links or project configuration. Restore a safe User workspace, then review the same target again for its exact Grok folder trust step.';
+  } else {
+    nativeStep = `${clientContext}, ${source
       ? `check the current registration. If it is absent and you approve this source, run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}. This grants Grok trust for the source. Keep any existing foreign or unverified registration and inspect it in Grok before retrying.`
       : 'identify the exact retained AW source and check its registration in a fresh Review before making changes.'}`;
+  }
   const retries = roots.map((root) => root.kind === 'exact-project' ? exactProjectRetry(root)
     : `Then run ${retryCommand(root).join(' ')}.`);
   const message = [nativeStep, 'Continue after verifying the native registration.',

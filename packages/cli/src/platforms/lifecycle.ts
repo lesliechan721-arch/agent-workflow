@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { grokUserWorkspace } from '../intent/scope-context.js';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { NativeCliError } from '../utils/native-cli.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -405,12 +406,17 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
         const subject = { target: 'grok', pluginId: binding.plugin.pluginId, scope: binding.scope.kind };
+        const workspace = await grokUserWorkspace(ctx.env ?? process.env);
+        const needsFolderTrust = effect.kind === 'refresh' && code === 'nativeTrustRequired';
         result.diagnostics.push({ ...lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
-          'The owned AW source package is retained for interactive Grok installation.'), severity: 'warning',
+          needsFolderTrust ? 'The registered Grok copy was retained. Review the User workspace trust before retrying.'
+            : 'The owned AW source package is retained for interactive Grok installation.'), severity: 'warning',
           subject: { ...subject, field: 'nativeSource' },
-          detail: { reasonCode: 'grokNativeInstallSource', path: plan.evidence.layout.packageRoot } },
-        { code: 'grokNativeInstallWorkspace', severity: 'info', message: 'Review the retained source in this workspace.',
-          subject: { ...subject, field: 'workspace' }, detail: { reasonCode: 'grokNativeInstallWorkspace', path: ctx.cwd } });
+          detail: { reasonCode: needsFolderTrust ? 'grokNativeRefreshWorkspaceTrust' : 'grokNativeInstallSource',
+            path: plan.evidence.layout.packageRoot } });
+        if (workspace) result.diagnostics.push({ code: 'grokNativeInstallWorkspace', severity: 'info',
+          message: 'Review Grok in this User workspace.', subject: { ...subject, field: 'workspace' },
+          detail: { reasonCode: 'grokNativeInstallWorkspace', path: workspace } });
         if (state.product?.entry?.kind === 'cli') result.diagnostics.push({ code: 'grokNativeInstallConfigRoot', severity: 'info',
           message: 'Use this Grok configuration root when reviewing the retained source.', subject: { ...subject, field: 'nativeConfigRoot' },
           detail: { reasonCode: 'grokNativeInstallConfigRoot', path: state.product.entry.configRoot } });

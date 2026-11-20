@@ -49,7 +49,7 @@ async function canonicalPath(value: string, label: string): Promise<string> {
   return canonicalizePathThroughExistingAncestor(absolutePath(value, label));
 }
 
-export async function assertNeutralAncestorChain(candidate: string): Promise<string> {
+export async function assertNeutralAncestorChain(candidate: string, grokUserHome?: string): Promise<string> {
   const canonical = await canonicalPath(candidate, 'neutral cwd');
   let current = canonical;
   while (true) {
@@ -61,14 +61,23 @@ export async function assertNeutralAncestorChain(candidate: string): Promise<str
       throw new Error(`userNeutralCwdUnsafe: non-directory ancestor ${current}`);
     }
     // These markers can change backend configuration through upward discovery.
-    const markers = ['.git', '.agent-workflows', '.aw-workspace.json', 'pnpm-workspace.yaml',
-      '.codex', '.claude', '.cursor', 'AGENTS.md', 'CLAUDE.md'];
+    const globalDirs = ['.codex', '.claude', '.cursor', ...(grokUserHome ? ['.grok', '.agents'] : [])];
+    const globalFiles = ['AGENTS.md', 'CLAUDE.md', ...(grokUserHome ? ['GROK.md'] : [])];
+    const markers = ['.git', '.agent-workflows', '.aw-workspace.json', 'pnpm-workspace.yaml', ...globalDirs, ...globalFiles,
+      ...(grokUserHome && current === canonical ? ['.mcp.json'] : [])];
     const markerStats = await Promise.all(markers.map((marker) =>
       fs.lstat(path.join(current, marker)).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       })));
-    const markerIndex = markerStats.findIndex((markerStat) => markerStat !== null);
+    const markerIndex = markerStats.findIndex((markerStat, index) => {
+      if (!markerStat) return false;
+      // Grok reads ordinary global configuration at HOME from every cwd.
+      // Project markers, links and configuration at any other ancestor still block it.
+      const name = markers[index]!;
+      return current !== grokUserHome || !(globalDirs.includes(name) && markerStat.isDirectory()
+        || globalFiles.includes(name) && markerStat.isFile());
+    });
     if (markerIndex !== -1) throw new Error(`userNeutralCwdUnsafe: ancestor marker ${path.join(current, markers[markerIndex]!)}`);
     const parent = path.dirname(current);
     if (parent === current) return canonical;
@@ -76,10 +85,29 @@ export async function assertNeutralAncestorChain(candidate: string): Promise<str
   }
 }
 
-export async function createSafeNeutralCwd(env: NodeJS.ProcessEnv): Promise<{
+/** Read-only callers only borrow an existing validated directory. */
+export async function grokUserWorkspace(env: NodeJS.ProcessEnv, create = false): Promise<string | undefined> {
+  const [awHome, userHome] = await Promise.all([
+    canonicalPath(resolveAbsoluteAwHome(env), 'AW_HOME'), canonicalPath(resolveUserHome(env), 'user home'),
+  ]);
+  const workspace = path.join(awHome, 'runtime', 'user');
+  try {
+    if (await assertNeutralAncestorChain(workspace, userHome) !== workspace) return undefined;
+    if (create) {
+      assertTestWritablePath(workspace, 'Grok User neutral cwd', '用隔离 AW_HOME 登记可写路径。');
+      await ensureRegularDirectoryPath(workspace, 'Grok User neutral cwd');
+    }
+    return await fs.realpath(workspace) === workspace ? workspace : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function createSafeNeutralCwd(env: NodeJS.ProcessEnv, forGrok = false): Promise<{
   executionCwd: string;
   dispose(): Promise<void>;
 }> {
+  const grokUserHome = forGrok ? await canonicalPath(resolveUserHome(env), 'user home') : undefined;
   const systemRoot = process.platform === 'win32'
     ? readEnvironmentValue(env, 'SystemRoot') || readEnvironmentValue(env, 'windir')
     : undefined;
@@ -89,12 +117,12 @@ export async function createSafeNeutralCwd(env: NodeJS.ProcessEnv): Promise<{
   let lastError: unknown;
   for (const candidate of new Set(candidates)) {
     try {
-      const parent = await assertNeutralAncestorChain(candidate);
+      const parent = await assertNeutralAncestorChain(candidate, grokUserHome);
       assertTestWritablePath(parent, 'neutral temporary root', '用隔离临时目录登记可写路径。');
       const executionCwd = await fs.mkdtemp(path.join(parent, 'aw-user-neutral-'));
       const created = await fs.lstat(executionCwd);
       try {
-        await assertNeutralAncestorChain(executionCwd);
+        await assertNeutralAncestorChain(executionCwd, grokUserHome);
       } catch (error) {
         await fs.remove(executionCwd);
         throw error;

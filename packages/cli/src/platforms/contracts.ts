@@ -195,6 +195,14 @@ export interface DeploymentObservation {
   prerequisites: RuntimePrerequisites;
   diagnostics: Diagnostic[];
 }
+/** Operation-local facts for rechecking confirmed Grok writes within one host scope. */
+interface GrokScopeEvidence {
+  scopeDigest: string;
+  sourceDigests: string[];
+  hookOrder: string[];
+  resourceOrder: string[][];
+  instructions: Array<{ rulePath: string | null; digest: string }>;
+}
 export interface RuntimePrerequisites {
   agentConsumers: {
     observation: 'complete' | 'unknown';
@@ -208,9 +216,7 @@ export interface RuntimePrerequisites {
     sources: Array<{ name: string; version: string | null; path: string; scope: string;
       origin: 'native' | 'compatibility' | 'unknown'; enabled: boolean | null; effectiveComponents: string[] }>;
     overlaps: string[];
-    /** Operation-local evidence for confirmed Grok Project package and rule writes. */
-    grokProjectEvidence?: { scopeDigest: string; sourceDigests: string[]; hookOrder: string[];
-      instructions: Array<{ rulePath: string | null; digest: string }> };
+    grokScopeEvidence?: GrokScopeEvidence;
   };
 }
 export interface AgentConsumerObservation {

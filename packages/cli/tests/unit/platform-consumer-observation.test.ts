@@ -63,7 +63,7 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
   await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const secondBin = path.join(item.ctx.cwd, 'other-bin');
   if (multipleCli) await fs.outputFile(path.join(secondBin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const env = { ...item.ctx.env, PATH: [bin, ...(multipleCli ? [secondBin] : [])].join(path.delimiter) };
+  const env: NodeJS.ProcessEnv = { ...item.ctx.env, PATH: [bin, ...(multipleCli ? [secondBin] : [])].join(path.delimiter) };
   const root = path.join(item.ctx.cwd, 'grok-plugin');
   await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name: 'example', version: '1.0.0',
     description: 'Grok trust and stale fixture.', platforms: ['grok'], skills: './skills',
@@ -73,6 +73,8 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/example', sourceIdentity: item.binding.plugin.sourceIdentity });
   const installed = path.join(item.host, 'installed-plugins/local-123');
   const state = { trusted, enabled: true, source: '', registered: false };
+  await fs.ensureDir(env.AW_HOME!);
+  const workspace = path.join(await fs.realpath(env.AW_HOME!), 'runtime', 'user');
   const queryCwds = new Set<string>();
   const nativeWrites: string[][] = [];
   const runner: NonNullable<RebuildExecutionContext['nativeCliRunner']> = async ({ args, cwd }) => {
@@ -83,11 +85,12 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
       name: 'example', repo_key: 'local-123', version: '1.0.0', path: installed, source: state.source }] : []);
     else if (args[0] === 'inspect') {
       queryCwds.add(cwd);
-      stdout = JSON.stringify({ grokVersion: '1.0.77', cwd, projectRoot: null, projectTrusted: state.trusted,
+      stdout = JSON.stringify({ grokVersion: '1.0.77', cwd, projectRoot: null, projectTrusted: cwd === workspace ? state.trusted : true,
         configSources: { layers: [{ role: 'user', path: path.join(item.host, 'config.toml') }] },
         plugins: state.registered ? [{ name: 'example', scope: 'user', path: installed, enabled: state.enabled }] : [],
         skills: [], agents: [], mcpServers: [] });
     } else {
+      expect(cwd).toBe(workspace);
       nativeWrites.push([...args]);
       if (args[0] === 'plugin' && args[1] === 'install') {
         state.source = args[2]!; state.registered = true; state.enabled = true;
@@ -107,7 +110,7 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
     catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0' } });
   const observe = () => inspectDeployment({ ...item.ctx, env, runner }, item.binding);
   const grant = async () => {
-    await runner({ command: path.join(bin, 'grok'), cwd: item.ctx.cwd, env,
+    await runner({ command: path.join(bin, 'grok'), cwd: workspace, env,
       args: ['plugin', 'install', item.layout.packageRoot, '--trust'] });
     // Explicit native consent happens between AW commands, with a new Review.
     await context.platformRebuildSession?.dispose();
@@ -115,12 +118,40 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
     context.preparedArtifactRenderResults = new Map();
     integration = createRebuildIntegration({ context });
   };
-  return { item, state, queryCwds, nativeWrites, context, get integration() { return integration; }, prepare, observe, grant };
+  return { item, state, workspace, queryCwds, nativeWrites, context, get integration() { return integration; }, prepare, observe, grant };
 }
 
 describe('public native consumer observation', () => {
-  // Test Value Gate: runtime trust does not grant new-source consent, and fresh
-  // neutral query directories must not invalidate an unchanged prepared action.
+  // A trusted caller, linked runtime or nested project configuration cannot authorize User maintenance.
+  it.each(['home', 'nested-config', 'workspace-mcp', 'home-repo', 'linked-runtime', 'detected-project', 'unknown-project'] as const)(
+    'reports Grok folder trust only for a neutral User workspace with %s', async (scenario) => {
+      const item = await fixture('grok');
+      const env: NodeJS.ProcessEnv = { ...item.ctx.env, AW_HOME: undefined };
+      const home = env.HOME!;
+      await Promise.all(['.codex', '.claude', '.grok'].map((name) => fs.ensureDir(path.join(home, name))));
+      await fs.outputFile(path.join(home, 'AGENTS.md'), 'global');
+      const runtime = path.join(home, '.aw', 'runtime');
+      if (scenario === 'linked-runtime') {
+        await fs.ensureDir(path.dirname(runtime));
+        await fs.symlink(item.ctx.cwd, runtime, 'junction');
+      }
+      await fs.ensureDir(path.join(runtime, 'user'));
+      if (scenario === 'nested-config') await fs.ensureDir(path.join(runtime, '.grok'));
+      if (scenario === 'workspace-mcp') await fs.outputJson(path.join(runtime, 'user', '.mcp.json'), { mcpServers: {} });
+      if (scenario === 'home-repo') await fs.ensureDir(path.join(home, '.git'));
+      const cwds = new Set<string>();
+      const observed = await inspectDeployment({ ...item.ctx, env, runner: async ({ args, cwd }) => {
+        cwds.add(cwd);
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? [] :
+          { grokVersion: '1.0.77', projectRoot: scenario === 'detected-project' ? home : scenario === 'unknown-project' ? undefined : null, projectTrusted: true,
+            plugins: [], skills: [], agents: [], mcpServers: [] }) };
+      } }, item.binding);
+      expect(observed.grokScopeAuthorization).toBe(scenario === 'home' ? 'granted' : 'unknown');
+      const workspace = await fs.realpath(path.join(runtime, 'user'));
+      expect(cwds.has(workspace)).toBe(['home', 'detected-project', 'unknown-project'].includes(scenario));
+    });
+
+  // The host can trust the caller and temporary directories independently of the User workspace.
   it.each([true, false, undefined])('uses Grok native User trust=%s through preparation and execution', async (trusted) => {
     const test = await grokRebuildFixture(trusted);
     try {
@@ -128,7 +159,8 @@ describe('public native consumer observation', () => {
       const repeat = await test.observe();
       expect(test.queryCwds.size).toBe(2);
       expect(repeat.prerequisites.nativeSources?.configurationEvidence).toBe(before.prerequisites.nativeSources?.configurationEvidence);
-      expect(before.grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
+      expect(before.grokScopeAuthorization).toBe('unknown');
+      expect(await fs.pathExists(test.workspace)).toBe(false);
       const target = await test.prepare();
       const result = await executeRebuildOperation({ command: 'sync', target, driver: test.integration.driver });
       expect(result.status).toBe('failed');
@@ -137,8 +169,9 @@ describe('public native consumer observation', () => {
       ]);
       expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
       expect(test.nativeWrites).toEqual([]);
+      await test.grant();
+      expect((await test.observe()).grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
       if (trusted) {
-        await test.grant();
         const synced = await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });
         expect(synced.status, JSON.stringify(synced)).toBe('succeeded');
         expect((await test.observe()).registration).toBe('present');
@@ -146,6 +179,13 @@ describe('public native consumer observation', () => {
         const refreshed = await executeRebuildOperation({ command: 'reinstall', target: refresh, driver: test.integration.driver });
         expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
         expect(test.nativeWrites.filter((args) => args[0] === 'plugin' && args[1] === 'install')).toHaveLength(2);
+      } else {
+        const refresh = await test.prepare('reinstall');
+        const result = await executeRebuildOperation({ command: 'reinstall', target: refresh, driver: test.integration.driver });
+        expect(result.deploymentReceipts?.flatMap((receipt) => receipt.effects.flatMap((effect) => effect.diagnostics))).toContainEqual(
+          expect.objectContaining({ detail: { reasonCode: 'grokNativeRefreshWorkspaceTrust', path: test.item.layout.packageRoot } }));
+        expect(test.nativeWrites).toEqual([['plugin', 'install', test.item.layout.packageRoot, '--trust']]);
+        expect((await test.observe()).registration).toBe('present');
       }
     } finally { await test.context.platformRebuildSession?.dispose(); }
   });
@@ -537,6 +577,7 @@ describe('public native consumer observation', () => {
   it('keeps Grok native activation, local configuration, load and Claude overlap independent', async () => {
     const item = await fixture('grok');
     const name = item.layout.nativeIdentity.packageId;
+    await fs.ensureDir(path.join(item.ctx.env!.AW_HOME!, 'runtime', 'user'));
     const installed = path.join(item.host, 'installed-plugins', 'local-123');
     const compatible = path.join(item.ctx.env!.HOME!, '.claude', 'plugins', 'cache', name);
     await fs.outputJson(path.join(compatible, '.claude-plugin/plugin.json'), { name, version: '2.0.0' });
@@ -547,7 +588,7 @@ describe('public native consumer observation', () => {
     let active = false;
     const list = [{ status: 'installed', name, repo_key: 'local-123', version: '1.0.0', path: installed, source: item.layout.packageRoot }];
     item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? list : {
-      grokVersion: '1.0.77', projectTrusted: false, configSources: { layers: [{ role: 'user', path: config }] },
+      grokVersion: '1.0.77', projectRoot: null, projectTrusted: false, configSources: { layers: [{ role: 'user', path: config }] },
       plugins: [{ name, scope: 'user', path: installed, enabled: true }, { name, scope: 'user', path: compatible, enabled: true },
         { name: 'extra-native', scope: 'user', path: extraNative, enabled: true },
         { name: 'unknown-extra', scope: 'user', path: path.join(item.ctx.cwd, 'unknown-extra'), enabled: true }],
@@ -720,7 +761,8 @@ describe('public native consumer observation', () => {
       policy = 'on';
       const after = await read();
       expect(after).toEqual({ ...before, prerequisites: { ...before.prerequisites,
-        nativeSources: { ...before.prerequisites.nativeSources!, configurationEvidence: expect.any(String) } } });
+        nativeSources: { ...before.prerequisites.nativeSources!, configurationEvidence: expect.any(String),
+          grokScopeEvidence: { ...before.prerequisites.nativeSources!.grokScopeEvidence, scopeDigest: expect.any(String) } } } });
       expect(after.prerequisites.nativeSources?.configurationEvidence).not.toBe(before.prerequisites.nativeSources?.configurationEvidence);
       const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
       expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
