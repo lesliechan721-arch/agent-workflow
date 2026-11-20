@@ -11,7 +11,7 @@ import { createEmptyPreferences, observePreferences, writePreferences } from '..
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
-import { NativeCliError } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(): Promise<ReadContext> {
@@ -30,6 +30,18 @@ async function fixture(): Promise<ReadContext> {
 async function executable(ctx: ReadContext, name: string): Promise<void> {
   const file = path.join(ctx.env!.PATH!, name);
   await fs.writeFile(file, 'controlled probe boundary'); await fs.chmod(file, 0o755);
+}
+
+async function windowsCopilotFixture() {
+  const ctx = await fixture();
+  ctx.platform = 'win32';
+  ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', COPILOT_HOME: path.join(ctx.cwd, 'copilot-home') };
+  const packageRoot = path.join(ctx.env.PATH!, 'node_modules', '@github', 'copilot');
+  const entry = path.join(packageRoot, 'npm-loader.js');
+  await fs.outputFile(entry, 'controlled probe boundary');
+  await fs.outputJson(path.join(packageRoot, 'package.json'), { name: '@github/copilot', bin: { copilot: 'npm-loader.js' } });
+  await fs.outputFile(path.join(ctx.env.PATH!, 'copilot.cmd'), renderNpmCmdShim('node_modules\\@github\\copilot\\npm-loader.js'));
+  return { ctx, entry: await fs.realpath(entry) };
 }
 
 async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
@@ -256,6 +268,123 @@ describe('read-only target discovery and production selection', () => {
     const found = await discoverPlatform('copilot', { ...ctx,
       runner: async () => ({ exitCode: 0, stdout: 'GitHub Copilot CLI 1.0.95', stderr: '' }) });
     expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
+  });
+
+  // Test Value Gate: the first target selection can recover from a cleaned-up
+  // version timeout, and peers in the same operation share that recovery.
+  it('selects Windows Copilot after its first version probe times out', async () => {
+    const { ctx, entry } = await windowsCopilotFixture();
+    ctx.discoveryCache = new Map();
+    const calls: NativeCliInvocation[] = [];
+    ctx.runner = async (invocation) => {
+      calls.push(invocation);
+      if (calls.length === 1) throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+      return { exitCode: 0, stdout: 'GitHub Copilot CLI 1.0.95.\r\n', stderr: '' };
+    };
+    const [selected, found] = await Promise.all([
+      targetsSet({ ...ctx, discovery: ctx, targets: ['copilot'] }),
+      discoverPlatform('copilot', ctx),
+    ]);
+    expect(publicExitCode(projectReceipt('target.set', selected))).toBe(0);
+    expect(selected.policy?.targets).toEqual(['copilot']);
+    expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
+    expect(calls).toMatchObject(Array.from({ length: 2 }, () => ({ command: process.execPath,
+      args: [entry, '--version'], timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS })));
+  });
+
+  // A second installation on PATH still gets its own probe within the same recovery budget.
+  it('limits Windows Copilot discovery to one retry across two timed-out entries', async () => {
+    const { ctx, entry } = await windowsCopilotFixture();
+    const second = path.join(ctx.cwd, 'second-bin', 'copilot.exe');
+    await fs.outputFile(second, 'controlled probe boundary');
+    ctx.env = { ...ctx.env, PATH: [ctx.env!.PATH, path.dirname(second)].join(';') };
+    ctx.discoveryCache = new Map();
+    const calls: string[] = [];
+    ctx.runner = async (invocation) => {
+      calls.push(invocation.command === process.execPath ? invocation.args[0]! : invocation.command);
+      throw new NativeCliError({ invocation, exitCode: 124, stdout: 'GitHub Copilot CLI 1.0.95', stderr: '', reason: 'timeout' });
+    };
+    const found = await discoverPlatform('copilot', ctx);
+    expect(found.installations).toMatchObject(Array.from({ length: 2 }, () => ({
+      availability: 'unknown', version: null, reasonCodes: ['clientProbeFailed'],
+    })));
+    expect(await discoverPlatform('copilot', ctx)).toEqual(found);
+    expect(calls).toEqual([entry, entry, await fs.realpath(second)]);
+  });
+
+  // Test Value Gate: an exit or an unsafe interruption must keep its original
+  // result and run at most one process for the entry.
+  it.each(['exit', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const)(
+    'runs one Windows Copilot version probe on %s', async (failure) => {
+      const { ctx } = await windowsCopilotFixture();
+      const abort = new AbortController();
+      const cleanupError = failure === 'cleanup' ? new Error('cleanup unconfirmed') : undefined;
+      ctx.signal = abort.signal;
+      let calls = 0;
+      ctx.runner = async (invocation) => {
+        calls += 1;
+        if (failure === 'cancelled') abort.abort();
+        const error = new NativeCliError({ invocation, exitCode: failure === 'aborted' ? 1 : 124, stdout: '', stderr: '',
+          reason: failure === 'exit' || failure === 'aborted' ? failure : 'timeout', cleanupError });
+        if (failure === 'AbortError') error.name = failure;
+        throw error;
+      };
+      const found = discoverPlatform('copilot', ctx);
+      if (failure === 'exit') {
+        expect((await found).installations[0]).toMatchObject({ availability: 'unknown', reasonCodes: ['clientProbeFailed'] });
+      } else if (cleanupError) await expect(found).rejects.toMatchObject({ cleanupError });
+      else if (failure === 'aborted') await expect(found).rejects.toMatchObject({ reason: 'aborted' });
+      else await expect(found).rejects.toMatchObject({ name: 'AbortError' });
+      expect(calls).toBe(1);
+    },
+  );
+
+  // Test Value Gate: the new version attempt still needs a supported version
+  // and a confirmed Copilot identity.
+  it.each([
+    { output: 'GitHub Copilot CLI 1.0.94', availability: 'unsupported', reason: 'clientVersionUnsupported', version: '1.0.94', help: [] },
+    { output: '1.0.95 unrelated tool', availability: 'unknown', reason: 'clientIdentityUnconfirmed', version: null, help: ['--help'] },
+  ])('keeps the Windows Copilot gate for $reason after a timeout', async ({ output, availability, reason, version, help }) => {
+    const { ctx } = await windowsCopilotFixture();
+    const calls: string[] = [];
+    ctx.runner = async (invocation) => {
+      const arg = invocation.args.at(-1)!;
+      calls.push(arg);
+      if (calls.length === 1) throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+      return { exitCode: 0, stderr: '', stdout: arg === '--version' ? output : 'Unrelated tool' };
+    };
+    const found = await discoverPlatform('copilot', ctx);
+    expect(found.installations[0]).toMatchObject({ version, availability, reasonCodes: [reason] });
+    expect(calls).toEqual(['--version', '--version', ...help]);
+  });
+
+  // Test Value Gate: the recovery path is specific to Windows version probes.
+  it('does not repeat Windows Copilot help after a timeout', async () => {
+    const { ctx } = await windowsCopilotFixture();
+    const calls: string[] = [];
+    ctx.runner = async (invocation) => {
+      const arg = invocation.args.at(-1)!;
+      calls.push(arg);
+      if (arg === '--version') return { exitCode: 0, stdout: '1.0.95', stderr: '' };
+      throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+    };
+    expect((await discoverPlatform('copilot', ctx)).installations[0]).toMatchObject({
+      availability: 'unknown', reasonCodes: ['clientProbeFailed'],
+    });
+    expect(calls).toEqual(['--version', '--help']);
+  });
+
+  it.runIf(process.platform !== 'win32')('does not repeat a Copilot version timeout on another OS', async () => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    let calls = 0;
+    ctx.runner = async (invocation) => {
+      calls += 1;
+      throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+    };
+    expect((await discoverPlatform('copilot', ctx)).installations[0]).toMatchObject({
+      availability: 'unknown', reasonCodes: ['clientProbeFailed'],
+    });
+    expect(calls).toBe(1);
   });
 
   it.each([
