@@ -299,7 +299,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           && (expectedExitCode === 3 && expectedStatus === 'blocked' || expectedExitCode === 4 && expectedStatus === 'partial');
         const grokSyncArgs = ['plugin', 'sync', `qualification/${ctx.pluginName}`, '--context', 'user', '--target', 'grok', '--yes'];
         const expectedGrokSafetyBlock = options.publicAw && platform === 'grok' && scope === 'user'
-          && expectedExitCode === 3 && expectedStatus === 'blocked'
+          && (expectedExitCode === 3 && expectedStatus === 'blocked' || expectedExitCode === 4 && expectedStatus === 'partial')
           && args.length === grokSyncArgs.length && args.every((arg, index) => arg === grokSyncArgs[index]);
         const expectedNonzero = trustBootstrap || expectedIncompleteStatus || expectedGrokSafetyBlock;
         if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !expectedNonzero) {
@@ -458,7 +458,6 @@ async function cleanupClientAcquisition(installRoot, result) {
 
 export async function run(options) {
   const codexBehaviorRequested = options['public-aw'] && ['all', 'codex'].includes(options.client);
-  const grokPublicRequested = options['public-aw'] && ['all', 'grok'].includes(options.client);
   const loopbackRequested = options['public-aw'] && ['all', 'codex', 'grok', 'copilot'].includes(options.client);
   const mixedPublicAwRequested = Boolean(options['mixed-native-aw']);
   const mixedClients = new Map();
@@ -497,13 +496,10 @@ export async function run(options) {
     uncovered: [...(options['public-aw'] ? [] : ['public-aw-install-end-to-end']),
       ...(options['public-aw'] ? ['invocation-controls-outside-tested-scenarios'] : ['skill-invocation-controls']),
       ...(codexBehaviorRequested ? ['agents-execution-outside-three-codex-user-roles'] : ['agents-execution']),
-      ...(grokPublicRequested ? ['grok-user-same-source-refresh-with-host-authorization-denied'] : []),
       'external-model-invocation', 'mcp-execution', 'hook-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor'], clients: [],
     uncoveredReasons: { cursor: 'separate-fixed-interface-probe',
-      antigravity: 'public-user-scope-runs-through-dedicated-qualification',
-      ...(grokPublicRequested ? { 'grok-user-same-source-refresh-with-host-authorization-denied':
-        'Grok 1.0.77 on macOS arm64 kept projectTrusted=true in credential-free User neutral directories with exact denied-folder entries. A separate Project plugin produced denial only in its own directory.' } : {}) },
+      antigravity: 'public-user-scope-runs-through-dedicated-qualification' },
   };
   try {
     report.candidate = await verifyCandidate(options.candidate);

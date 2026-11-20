@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { nativePath, readInstalled, targetOf, nativePackage, checkSettled } from './native-platform-public-state.mjs';
+import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { qualifyCatalog } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
@@ -213,8 +213,7 @@ async function grokUserRefresh(ctx, report, spec, observed, sync) {
     // Only the qualification owns this empty Grok home. Give the calling
     // project the opposite decision to detect accidental trust inheritance.
     const entries = [[workspace, allowed], [ctx.project, !allowed]];
-    await fs.writeFile(path.join(ctx.env.GROK_HOME, 'trusted_folders.toml'), entries.map(([folder, trusted]) =>
-      '[folders.' + JSON.stringify(folder) + ']\ntrusted = ' + trusted + '\ndecided_at = ' + Math.floor(Date.now() / 1000) + '\n').join('\n'));
+    await writeGrokFixtureFolderDecisions(ctx.env, entries);
     for (const [folder, trusted] of entries) {
       const state = await native(['inspect', '--json'], folder);
       assert.equal(state.grokVersion, clients.grok.version);
@@ -587,7 +586,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     if (platform === 'pi' && scope === 'project')
       await fs.writeFile(path.join(env.PI_CODING_AGENT_DIR, 'trust.json'), JSON.stringify({ [project]: true }));
     if (platform === 'grok' && scope === 'project')
-      await fs.writeFile(path.join(env.GROK_HOME, 'trusted_folders.toml'), '[folders.' + JSON.stringify(project) + ']\ntrusted = true\ndecided_at = ' + Math.floor(Date.now() / 1000) + '\n');
+      await writeGrokFixtureFolderDecisions(env, [[project, true]]);
     if (platform === 'copilot' && scope === 'project' && process.env.GITHUB_ACTIONS === 'true') {
       // Same temporary, offline management precondition as the public Copilot route.
       env.COPILOT_ALLOW_ALL = 'true';

@@ -112,6 +112,8 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
   const grant = async () => {
     await runner({ command: path.join(bin, 'grok'), cwd: workspace, env,
       args: ['plugin', 'install', item.layout.packageRoot, '--trust'] });
+    if (trusted !== undefined) await fs.outputFile(path.join(item.host, 'trusted_folders.toml'),
+      `[folders.${JSON.stringify(workspace)}]\ntrusted = ${trusted}\ndecided_at = 1\n`);
     // Explicit native consent happens between AW commands, with a new Review.
     await context.platformRebuildSession?.dispose();
     delete context.platformRebuildSession;
@@ -136,6 +138,9 @@ describe('public native consumer observation', () => {
         await fs.symlink(item.ctx.cwd, runtime, 'junction');
       }
       await fs.ensureDir(path.join(runtime, 'user'));
+      const workspace = await fs.realpath(path.join(runtime, 'user'));
+      await fs.outputFile(path.join(item.host, 'trusted_folders.toml'),
+        `[folders.${JSON.stringify(workspace)}]\ntrusted = true\ndecided_at = 1\n`);
       if (scenario === 'nested-config') await fs.ensureDir(path.join(runtime, '.grok'));
       if (scenario === 'workspace-mcp') await fs.outputJson(path.join(runtime, 'user', '.mcp.json'), { mcpServers: {} });
       if (scenario === 'home-repo') await fs.ensureDir(path.join(home, '.git'));
@@ -147,7 +152,6 @@ describe('public native consumer observation', () => {
             plugins: [], skills: [], agents: [], mcpServers: [] }) };
       } }, item.binding);
       expect(observed.grokScopeAuthorization).toBe(scenario === 'home' ? 'granted' : 'unknown');
-      const workspace = await fs.realpath(path.join(runtime, 'user'));
       expect(cwds.has(workspace)).toBe(['home', 'detected-project', 'unknown-project'].includes(scenario));
     });
 
@@ -170,6 +174,8 @@ describe('public native consumer observation', () => {
       expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
       expect(test.nativeWrites).toEqual([]);
       await test.grant();
+      // Grok with only a Skill can report true even for a missing or denied folder decision.
+      test.state.trusted = true;
       expect((await test.observe()).grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
       if (trusted) {
         const synced = await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });

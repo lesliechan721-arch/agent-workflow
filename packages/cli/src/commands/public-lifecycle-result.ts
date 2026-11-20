@@ -204,7 +204,7 @@ function nativeSourceRecovery(diagnostic: Diagnostic, diagnostics: readonly Diag
   let nativeStep: string;
   if (detail.reasonCode === 'grokNativeRefreshWorkspaceTrust') {
     nativeStep = workspace
-      ? `${clientContext}, keep the existing registered copy. If you approve this exact folder, grant folder trust in Grok. For Grok 1.0.77, review [folders.${JSON.stringify(workspace)}] in trusted_folders.toml, set trusted = true and decided_at to the current Unix timestamp in seconds, and preserve the other entries. From this workspace run grok inspect --json and verify projectRoot is null and projectTrusted is true.`
+      ? `${clientContext}, keep the existing registered copy. If you approve this exact folder, grant folder trust in Grok. For Grok 1.0.77, review [folders.${JSON.stringify(workspace)}] in trusted_folders.toml, set trusted = true and decided_at to the current Unix timestamp in seconds, and preserve the other entries. From this workspace run grok inspect --json and verify projectRoot is null and projectTrusted is true. AW checks both your saved folder decision and the runtime result.`
       : 'Keep the existing registered copy. Check $AW_HOME/runtime/user and its ancestors for links or project configuration. Restore a safe User workspace, then review the same target again for its exact Grok folder trust step.';
   } else {
     nativeStep = `${clientContext}, ${source

@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
-  PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
+  GrokOrderEntry, PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
 import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGroup } from '../platforms/discovery.js';
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
@@ -109,8 +109,20 @@ interface GrokPublication {
   contentDigest: string;
   owner: Extract<OwnedComponent, { kind: 'owned-directory' | 'owned-text-file' }>;
   priorNativeDigest?: string;
+  orderAfter?: NonNullable<NativeSources['grokScopeEvidence']>;
 }
 type NativeSources = NonNullable<DeploymentObservation['prerequisites']['nativeSources']>;
+function matchesGrokComponentOrder(before: GrokOrderEntry[], after: GrokOrderEntry[], publishedRoots: ReadonlySet<string>): boolean {
+  // Leave newly added or removed identities out of both sides. Every other
+  // row, including a surviving component of an upgraded package, anchors order.
+  const retained = (order: GrokOrderEntry[], other: GrokOrderEntry[]) => {
+    const otherKeys = new Set(other.map(({ key }) => key));
+    return order.filter(({ sourceRoot, key }) => sourceRoot === null || !publishedRoots.has(sourceRoot) || otherKeys.has(key));
+  };
+  const previous = retained(before, after);
+  const current = retained(after, before);
+  return previous.length === current.length && previous.every((row, index) => row.key === current[index]!.key);
+}
 function grokSourceDigest(sources: NativeSources, root: string, name: string, scope: DeploymentBinding['scope']['kind'], version?: string): string | undefined {
   const index = sources.sources.findIndex((source) => path.normalize(source.path) === root);
   const source = sources.sources[index];
@@ -466,10 +478,11 @@ export class PlatformRebuildSession {
       const priorNativeDigest = before.package === 'present' && before.ownership === 'aw' && (refreshed || before.packageVersion)
         ? grokSourceDigest(priorSources, root, identity.packageId, scope, refreshed ? undefined : before.packageVersion) : undefined;
       const nativeDigest = grokSourceDigest(sources, root, identity.packageId, scope, binding.plugin.version);
-      const knownHooks = !evidence.hookOrder.includes(root) || prepared.plan.projections.some((projection) => projection.bundle
+      const knownHooks = !evidence.hookOrder.some((row) => row.sourceRoot === root) || prepared.plan.projections.some((projection) => projection.bundle
         && projection.components.some((component) => component.relativeOutputs.includes('hooks/hooks.json')));
       if ((newlyInstalled || priorNativeDigest) && nativeDigest && knownHooks) {
-        this.grokPublications.set(root, { scope, scopeRoot, installedRoot, nativeDigest, priorNativeDigest, contentDigest: bundle.contentDigest, owner });
+        this.grokPublications.set(root, { scope, scopeRoot, installedRoot, nativeDigest, priorNativeDigest, contentDigest: bundle.contentDigest,
+          owner, orderAfter: evidence });
       }
     }
     const prior = priorSources?.grokScopeEvidence?.instructions;
@@ -954,9 +967,11 @@ export class PlatformRebuildSession {
         const sources = [...after.sources];
         const sourceDigests = [...scopeEvidence.sourceDigests];
         const addedSources = new Set<string>();
+        const publishedRoots = new Set<string>();
+        const orderChecks = [priorEvidence];
         const instructions = [...scopeEvidence.instructions];
         let adjusted = false;
-        for (const { owner, scopeRoot: publishedRoot, installedRoot, nativeDigest, contentDigest, priorNativeDigest } of publications) {
+        for (const { owner, scopeRoot: publishedRoot, installedRoot, nativeDigest, contentDigest, priorNativeDigest, orderAfter } of publications) {
           ctx.signal?.throwIfAborted();
           if (owner.kind === 'owned-directory') {
             const root = installedRoot ?? owner.path;
@@ -966,6 +981,8 @@ export class PlatformRebuildSession {
             const priorDigest = priorEvidence.sourceDigests[priorIndex];
             if (priorDigest !== nativeDigest) {
               if (priorDigest !== priorNativeDigest) return false;
+              publishedRoots.add(root);
+              if (orderAfter) orderChecks.push(orderAfter);
               // Restore the frozen source at its current position. Moving a
               // source or changing any other source still invalidates the plan.
               if (priorIndex < 0) addedSources.add(root);
@@ -1008,10 +1025,15 @@ export class PlatformRebuildSession {
         }
         ctx.signal?.throwIfAborted();
         if (!adjusted) return artifactValueDigest(current) === baselineDigest;
+        // The reviewed order anchors surviving rows. Each publication's receipt
+        // also anchors its new rows against later cross-package moves.
+        for (const previous of orderChecks) {
+          if (!matchesGrokComponentOrder(previous.hookOrder, scopeEvidence.hookOrder, publishedRoots)
+            || !scopeEvidence.resourceOrder.every((order, index) => matchesGrokComponentOrder(previous.resourceOrder[index]!, order, publishedRoots))) return false;
+        }
         const normalizedSources = { ...after, sources: sources.filter((_, index) => !addedSources.has(paths[index]!)),
           configurationEvidence: before.configurationEvidence, grokScopeEvidence: { ...scopeEvidence, instructions,
-            hookOrder: scopeEvidence.hookOrder.filter((item) => !addedSources.has(item)),
-            resourceOrder: scopeEvidence.resourceOrder.map((order) => order.filter((root) => !addedSources.has(root))),
+            hookOrder: priorEvidence.hookOrder, resourceOrder: priorEvidence.resourceOrder,
             sourceDigests: sourceDigests.filter((_, index) => !addedSources.has(paths[index]!)) } };
         const observation = { ...current.observation, prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
         return artifactValueDigest({ ...current, observation }) === baselineDigest;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { assertPublicTarget, readPiPublicInventory, readPublicNativeState, readPublicRemovedNativeScope } from './native-platform-public-state.mjs';
+import { assertPublicTarget, readPiPublicInventory, readPublicNativeState, readPublicRemovedNativeScope, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { fixedClientVersion, sha256 } from './native-platform-runtime.mjs';
 
 async function codexList(ctx, cwd, { entry, name = ctx.pluginName } = {}) {
@@ -258,7 +258,11 @@ async function qualifyGrokForeignReplacement(ctx, pluginId) {
   };
   const initial = await inventory();
   assert.equal(path.relative(initial.source, originalSource), '');
-  const initialAuthorization = JSON.parse((await ctx.command(['inspect', '--json'], ctx.neutral)).stdout);
+  const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
+  await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, true]]);
+  const initialAuthorization = JSON.parse((await ctx.command(['inspect', '--json'], workspace)).stdout);
+  assert.equal(path.relative(workspace, initialAuthorization.cwd), '');
+  assert.equal(initialAuthorization.projectRoot, null);
   assert.equal(initialAuthorization.projectTrusted, true, 'The User refresh fixture must have actual Grok authorization.');
   await fs.mkdir(clone);
   for (const directory of ['.grok-plugin', 'skills']) {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { constants } from 'node:fs';
 import { clients, sha256, fixedClientVersion, repoRoot } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
-import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
 import { addOfficialCatalog, qualifyShippedGitInstall } from './native-platform-shipped-git.mjs';
 import { runComponentQualification } from './native-platform-public-components.mjs';
@@ -438,13 +438,8 @@ async function qualifyPublicLifecycle(ctx, preparedEntry) {
     else if (ctx.platform === 'pi') await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
       JSON.stringify({ [ctx.project]: true, [ctx.neutral]: true }) + '\n');
     else if (ctx.platform === 'grok') {
-      assert.equal(clients.grok.version, '1.0.77');
       const canonical = await fs.realpath(ctx.project);
-      const home = await fs.realpath(ctx.env.GROK_HOME);
-      // Fixed-version empirical trust state for this isolated directory only.
-      // This grants no production permission to trust user projects.
-      await fs.writeFile(path.join(home, 'trusted_folders.toml'),
-        `[folders.${JSON.stringify(canonical)}]\ntrusted = true\ndecided_at = ${Math.floor(Date.now() / 1000)}\n`);
+      await writeGrokFixtureFolderDecisions(ctx.env, [[canonical, true]]);
       return { level: 'fixture-config', interface: 'empirical-isolated-folder-trust-state',
         exactVersion: '1.0.77', project: 'exact-canonical-fixture-project', productionAutomaticTrust: false };
     }
@@ -554,6 +549,31 @@ async function qualifyPublicLifecycle(ctx, preparedEntry) {
   await qualifyPublicPlatformCases(ctx, { pluginId, ready, status });
   await ctx.check('public-update', async () => {
     await publishRevision(2);
+    if (ctx.platform === 'grok' && ctx.scope === 'user') {
+      const workspace = await fs.realpath(grokUserWorkspace(ctx));
+      await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, false], [ctx.project, true]]);
+      const inspection = JSON.parse((await ctx.command(['inspect', '--json'], workspace)).stdout);
+      assert.equal(path.relative(workspace, inspection.cwd), '');
+      assert.equal(inspection.projectRoot, null);
+      assert.equal(typeof inspection.projectTrusted, 'boolean');
+      const inventory = async () => JSON.parse((await ctx.command(['plugin', 'list', '--json'], workspace)).stdout)
+        .filter(row => row.name === ctx.pluginName);
+      const registered = await inventory();
+      assert.equal(registered.length, 1);
+      assert.equal(path.relative(registered[0].path, ctx.grokInstalledPackage), '');
+      const skill = path.join(ctx.grokInstalledPackage, 'skills', ctx.skillName, 'SKILL.md');
+      const oldSkill = await fs.readFile(skill);
+      const refused = await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'],
+        ctx.project, { expectedExitCode: 4, expectedStatus: 'partial' });
+      const target = refused.data.targetResults.find(row => row.pluginId === pluginId && row.target === 'grok' && row.scope === 'user');
+      assert.deepEqual(target?.blockerCodes, ['nativeTrustRequired']);
+      assert(refused.diagnostics.some(item => item.subject?.pluginId === pluginId && item.detail?.reasonCode === 'grokNativeRefreshWorkspaceTrust'));
+      assert.deepEqual(await inventory(), registered);
+      assert.deepEqual(await fs.readFile(skill), oldSkill);
+      await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, true], [ctx.project, false]]);
+      return { ...await syncedRevision(2), explicitFolderRefusal: { runtimeProjectTrusted: inspection.projectTrusted,
+        retainedRegistration: true, retainedSkillSha256: sha256(oldSkill) } };
+    }
     return syncedRevision(2);
   });
   await ctx.check('public-update-native-scope', () => nativeScope(2));

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
-import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
+import type { DeploymentBinding, DeploymentObservation, GrokOrderEntry, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { queryNativeDeployment } from './inspection-query.js';
 import { grokUserWorkspace } from '../intent/scope-context.js';
@@ -35,6 +35,29 @@ function isPackageHook(hook: unknown, name: string, root: string): boolean {
     && typeof hook.target === 'string' && path.normalize(hook.target) === path.join(root, 'hooks', 'hooks.json')
     && isRecord(hook.source) && hook.source.type === 'plugin' && hook.source.plugin_name === name
     && typeof hook.source.path === 'string' && path.normalize(hook.source.path) === root;
+}
+
+async function grokUserFolderAuthorization(hostRoot: string, workspace: string,
+  hostTrusted: unknown): Promise<DeploymentObservation['grokScopeAuthorization']> {
+  if (hostTrusted === false) return 'denied';
+  if (hostTrusted !== true) return 'unknown';
+  // With no active Hook, Grok 1.0.77 may return projectTrusted=true even
+  // when the user explicitly refused this folder. Require both observations
+  // before a refresh can uninstall the registered copy and trust a new one.
+  const file = path.join(hostRoot, 'trusted_folders.toml');
+  try {
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return 'unknown';
+    const content = await fs.readFile(file);
+    if (content.length > 1024 * 1024) return 'unknown';
+    const folders = object(getStaticTOMLValue(parseTOML(content.toString('utf8')))).folders;
+    const decision = isRecord(folders) && Object.hasOwn(folders, workspace) ? folders[workspace] : undefined;
+    if (!isRecord(decision) || !Number.isSafeInteger(decision.decided_at)) return 'unknown';
+    return decision.trusted === true ? 'granted' : decision.trusted === false ? 'denied' : 'unknown';
+  } catch (error) {
+    rethrowFatalError(error);
+    return 'unknown';
+  }
 }
 
 /** 1.0.77's list is an install inventory; inspect.enabled is not load evidence. */
@@ -105,9 +128,12 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     && path.normalize(plugin.path as string) === path.normalize(nativeRoot) && plugin.scope === binding.scope.kind);
   const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
   // Scoped host authorization remains separate from consent to install a new source.
-  const userWorkspaceUnconfirmed = binding.scope.kind === 'user' && (!workspace || inspect.projectRoot !== null);
-  result.grokScopeAuthorization = userWorkspaceUnconfirmed ? 'unknown'
-    : inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';
+  if (binding.scope.kind === 'user') {
+    result.grokScopeAuthorization = workspace && inspect.projectRoot === null
+      ? await grokUserFolderAuthorization(hostRoot, workspace, inspect.projectTrusted) : 'unknown';
+  } else {
+    result.grokScopeAuthorization = inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';
+  }
   for (const consumer of result.consumers) {
     if (consumer.productId !== product.id) continue;
     consumer.activation = own.length === 1 && typeof own[0]!.enabled === 'boolean' ? own[0]!.enabled ? 'enabled' : 'disabled' : 'unknown';
@@ -151,9 +177,9 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     }
   }
   const configEvidence = evidence.slice(3);
-  const resourcePackages = new Map<Record<string, unknown>, string>();
+  const resourceOrderEntries = new Map<Record<string, unknown>, GrokOrderEntry>();
   const hooks: unknown[] | undefined = Array.isArray(inspect.hooks) ? inspect.hooks : undefined;
-  const hookPackages = new Map<unknown, string>();
+  const hookPackages = new Map<unknown, GrokOrderEntry>();
   const sourceDigests: string[] = [];
   const scopedList = [...list];
   let sourcesComplete = true;
@@ -202,8 +228,18 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     // (including global commands) remain part of the frozen scope.
     const packageRoot = path.normalize(plugin.path);
     const packageHooks = plugin.scope === binding.scope.kind ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
-    if (packageHooks.length === 1) hookPackages.set(packageHooks[0], packageRoot);
-    for (const { row } of resources) resourcePackages.set(row, packageRoot);
+    if (packageHooks.length === 1) hookPackages.set(packageHooks[0], { sourceRoot: packageRoot, key: packageRoot });
+    // Only uniquely named rows with explicit plugin provenance can move with
+    // this package. Keep ambiguous or unbound rows frozen in full.
+    const uniqueResources = new Map<string, Record<string, unknown> | null>();
+    for (const { kind, row, source } of resources) {
+      if (source.type !== 'plugin' || typeof row.name !== 'string' || !row.name) continue;
+      const key = evidenceDigest([packageRoot, kind, row.name]);
+      uniqueResources.set(key, uniqueResources.has(key) ? null : row);
+    }
+    for (const [key, row] of uniqueResources) {
+      if (row) resourceOrderEntries.set(row, { sourceRoot: packageRoot, key });
+    }
     sourceDigests.push(evidenceDigest([plugin, ...(!projectRoot && inventory ? [inventory.version] : []), resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
   }
   // Rule rows have no plugin source. Keep every row in order so execution can
@@ -220,15 +256,15 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       hooks: hooks ? [] : nativeEvidence.hooks,
       projectInstructions: instructions ? [] : nativeEvidence.projectInstructions,
       ...Object.fromEntries(effectiveKinds.map((kind) => [kind,
-        effective.filter((entry) => entry.kind === kind && !resourcePackages.has(entry.row)).map(({ row }) => row)])),
+        effective.filter((entry) => entry.kind === kind && !resourceOrderEntries.has(entry.row)).map(({ row }) => row)])),
     }, ...configEvidence]),
     sourceDigests, instructions: instructions ?? [],
     // A bound hook's full row is in its source digest. Keep hook order across packages, too.
-    hookOrder: hooks?.map((hook) => hookPackages.get(hook) ?? evidenceDigest(hook)) ?? [],
-    // Per-package digests retain row contents. The source sequence also binds
-    // their positions relative to other packages and unbound runtime rows.
+    hookOrder: hooks?.map((hook) => hookPackages.get(hook) ?? { sourceRoot: null, key: evidenceDigest(hook) }) ?? [],
+    // Per-package digests retain row contents. A surviving identity also
+    // binds its position relative to other packages and unbound runtime rows.
     resourceOrder: effectiveKinds.map((kind) => effective.filter((entry) => entry.kind === kind)
-      .map(({ row }) => resourcePackages.get(row) ?? '')),
+      .map(({ row }) => resourceOrderEntries.get(row) ?? { sourceRoot: null, key: evidenceDigest(row) })),
   };
   const overlaps = [...new Set(sources.filter((source) => sources.some((other) => other !== source && other.name === source.name)).map((source) => source.name))].sort();
   result.prerequisites.nativeSources = { observation: sourcesComplete ? 'complete' : 'unknown', sources, overlaps,

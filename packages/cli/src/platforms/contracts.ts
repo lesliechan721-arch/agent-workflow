@@ -195,12 +195,16 @@ export interface DeploymentObservation {
   prerequisites: RuntimePrerequisites;
   diagnostics: Diagnostic[];
 }
+export interface GrokOrderEntry {
+  sourceRoot: string | null;
+  key: string;
+}
 /** Operation-local facts for rechecking confirmed Grok writes within one host scope. */
 interface GrokScopeEvidence {
   scopeDigest: string;
   sourceDigests: string[];
-  hookOrder: string[];
-  resourceOrder: string[][];
+  hookOrder: GrokOrderEntry[];
+  resourceOrder: GrokOrderEntry[][];
   instructions: Array<{ rulePath: string | null; digest: string }>;
 }
 export interface RuntimePrerequisites {

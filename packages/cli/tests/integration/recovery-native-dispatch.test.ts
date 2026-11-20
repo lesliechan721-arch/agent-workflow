@@ -111,6 +111,7 @@ describe('native recovery dispatch', () => {
   it.each([
     ['agent', 'unchanged'], ['hook', 'unchanged'], ['rule', 'unchanged'], ['agent and rule', 'unchanged'],
     ['upgrade', 'unchanged'], ['upgrade', 'edited package'], ['upgrade', 'deleted rule'], ['upgrade', 'reordered agents'],
+    ['add components', 'unchanged'], ['drop components', 'unchanged'], ['add components', 'moved new agent'],
     ['agent', 'project configuration'], ['agent', 'project trust'], ['agent', 'same-name source'], ['hook', 'extra package file'],
     ['hook', 'foreign hook'], ['rule', 'foreign rule'], ['rule', 'edited rule'], ['rule', 'same-name User rule'],
   ] as const)('revalidates Grok Project batch with %s and %s', async (kind, change) => {
@@ -119,8 +120,8 @@ describe('native recovery dispatch', () => {
       const cwd = await fs.realpath(layout.fixtureCwd);
       await fs.ensureDir(path.join(cwd, '.git'));
       const source = path.join(cwd, 'grok-catalog');
-      const upgrade = kind === 'upgrade';
-      const independentUpgrade = upgrade && change === 'unchanged';
+      const upgrade = kind === 'upgrade' || kind === 'add components' || kind === 'drop components';
+      const independentUpgrade = kind === 'upgrade' && change === 'unchanged';
       const names = independentUpgrade ? ['base', 'bundle', 'leaf', 'mcp', 'other', 'role', 'skill']
         : upgrade || kind === 'agent and rule' ? ['base', 'bundle', 'leaf'] : ['base', 'bundle'];
       const baseAgent = upgrade || kind === 'agent' || kind === 'agent and rule';
@@ -145,10 +146,13 @@ describe('native recovery dispatch', () => {
             if (name !== 'base' || baseAgent) manifest.extensions.agents = [
               { name: `${name}-reviewer`, description: `Review ${name}.`, prompt: name === 'base' && revision ? 'Check the new output.' : `Check the ${name} output.` },
             ];
+            const withExtraComponents = kind === 'add components' && revision === 1 || kind === 'drop components' && revision === 0;
+            if (name === 'base' && withExtraComponents) manifest.extensions.agents!.push(
+              { name: 'extra-role', description: 'Review details.', prompt: 'Check the details.' });
             if (name === 'base' && baseRule) manifest.extensions.instructions = [
               { name: 'rule', title: 'Rule', content: revision ? 'Keep the final draft.' : 'Keep the draft.', coverage: ['main'] },
             ];
-            if (name === 'base' && (kind === 'hook' || upgrade)) manifest.extensions.hooks = [
+            if (name === 'base' && (kind === 'hook' || kind === 'upgrade' || withExtraComponents)) manifest.extensions.hooks = [
               { id: 'start', event: 'session_start', feedback: 'notify', command: revision ? 'echo updated' : 'true' },
             ];
           },
@@ -219,9 +223,17 @@ describe('native recovery dispatch', () => {
         const agents = (await Promise.all(plugins.map(async (plugin) => {
           const directory = path.join(plugin.path, 'agents');
           const files = await fs.pathExists(directory) ? await fs.readdir(directory) : [];
-          return files.map((file) => ({ name: path.basename(file, '.md'), source: { plugin_name: plugin.name, path: path.join(directory, file) } }));
+          return files.map((file) => ({ name: path.basename(file, '.md'), source: { type: 'plugin', plugin_name: plugin.name, path: path.join(directory, file) } }));
         }))).flat();
-        if (externalChange && change === 'reordered agents') agents.reverse();
+        if (externalChange && change === 'reordered agents') {
+          const providerIndex = agents.findIndex((agent) => agent.name === 'base-reviewer');
+          const consumerIndex = agents.findIndex((agent) => agent.name === 'bundle-reviewer');
+          [agents[providerIndex], agents[consumerIndex]] = [agents[consumerIndex]!, agents[providerIndex]!];
+        }
+        if (externalChange && change === 'moved new agent') {
+          const added = agents.splice(agents.findIndex((agent) => agent.name === 'extra-role'), 1)[0]!;
+          agents.push(added);
+        }
         const hooks = (await Promise.all(plugins.map(async (plugin) => {
           const file = path.join(plugin.path, 'hooks', 'hooks.json');
           return await fs.pathExists(file) ? [{ event: '(plugin)', hookType: 'file', target: file,
@@ -288,14 +300,18 @@ describe('native recovery dispatch', () => {
         await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: options.cliVersion, env });
         const update = await runPublicLifecycle('sync', [], options, { nativeCliRunner });
         if (change === 'unchanged') {
-          expect(delayedUpgradeInspection).toBe(true);
+          if (independentUpgrade) expect(delayedUpgradeInspection).toBe(true);
           expect(update.data.targetResults.map(({ pluginId, execution, blockerCodes }) => ({ pluginId, execution, blockerCodes }))).toEqual(
             names.map((name) => ({ pluginId: 'local/' + name, execution: name === 'base' ? 'applied' : 'no-op', blockerCodes: [] })));
           expect(update.status).toBe('success');
           expect(await fs.readFile(path.join(provider, 'skills/base/SKILL.md'), 'utf8')).toContain('Base skill 1.');
           expect(await fs.readFile(path.join(provider, 'agents/base-reviewer.md'), 'utf8')).toContain('Check the new output.');
           expect(await fs.readFile(path.join(provider, '.mcp.json'), 'utf8')).toContain('http://127.0.0.1:1/1');
-          expect(await fs.readFile(path.join(provider, 'hooks/hooks.json'), 'utf8')).toContain('echo updated');
+          if (kind === 'drop components') expect(await fs.pathExists(path.join(provider, 'hooks/hooks.json'))).toBe(false);
+          else expect(await fs.readFile(path.join(provider, 'hooks/hooks.json'), 'utf8')).toContain('echo updated');
+          if (kind === 'add components' || kind === 'drop components') {
+            expect(await fs.pathExists(path.join(provider, 'agents/extra-role.md'))).toBe(kind === 'add components');
+          }
           expect(await fs.readFile(rule, 'utf8')).toContain('Keep the final draft.');
           const updatedStatus = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
           expect(updatedStatus.data).toMatchObject({ counts: { ready: names.length, pending: 0 }, inSync: true });
@@ -334,6 +350,9 @@ describe('native recovery dispatch', () => {
           manifest.version = '1.0.' + version;
           manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Check revision ' + version + '.' }],
             instructions: [{ name: 'guide', title: 'Guide', content: 'Keep revision ' + version + '.', coverage: ['main'] }] };
+          if (name === 'mixed' && version === (scenario === 'retry after refusal' ? 1 : 2)) {
+            manifest.extensions.hooks = [{ id: 'start', event: 'session_start', feedback: 'notify', command: 'true' }];
+          }
         } })));
       };
       await writeCatalog(1);
@@ -373,6 +392,11 @@ describe('native recovery dispatch', () => {
           plugins: list.map(({ name, path: installed }) => ({ name, path: installed, enabled: true, scope: 'user' })),
           agents: list.map(({ name, version, path: installed }) => ({ name: 'reviewer', description: name === 'mixed' ? version : 'Review.',
             source: { type: 'plugin', plugin_name: name, path: path.join(installed, 'agents/reviewer.md') } })),
+          hooks: (await Promise.all(list.map(async (plugin) => {
+            const target = path.join(plugin.path, 'hooks/hooks.json');
+            return await fs.pathExists(target) ? [{ event: '(plugin)', hookType: 'file', target, matcher: null,
+              source: { type: 'plugin', plugin_name: plugin.name, path: plugin.path } }] : [];
+          }))).flat(),
           mcpServers: [], skills: [],
         });
         else if (args.includes('--version')) stdout = 'grok 1.0.77';
@@ -391,6 +415,9 @@ describe('native recovery dispatch', () => {
         return { exitCode: 0, stdout, stderr: '' };
       };
       const options = { cwd, env, cliVersion: '1.0.0', scope: 'user' as const, context: 'user' as const, targets: ['grok'], yes: true };
+      const workspace = path.join(await fs.realpath(env.AW_HOME!), 'runtime', 'user');
+      await fs.outputFile(path.join(host, 'trusted_folders.toml'),
+        `[folders.${JSON.stringify(workspace)}]\ntrusted = true\ndecided_at = 1\n`);
       for (const name of names) {
         const result = await runPublicLifecycle('install', ['local/' + name], options, { nativeCliRunner });
         const source = result.diagnostics.find(({ code }) => code === 'grokNativeInstallRecovery')?.detail?.path;

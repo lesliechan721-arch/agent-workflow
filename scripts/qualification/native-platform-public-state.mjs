@@ -6,6 +6,16 @@ import { readPublicOpenCodeState, capturePublicOpenCodeRemoval, readPublicOpenCo
 
 export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1}`;
 
+// The qualifier owns this temporary Grok home. Only its named fixture
+// directories receive a decision, in the format read by the pinned client.
+export async function writeGrokFixtureFolderDecisions(env, entries) {
+  assert.equal(clients.grok.version, '1.0.77');
+  const now = Math.floor(Date.now() / 1000);
+  const tables = entries.map(([folder, trusted]) =>
+    `[folders.${JSON.stringify(folder)}]\ntrusted = ${trusted}\ndecided_at = ${now}\n`);
+  await fs.writeFile(path.join(env.GROK_HOME, 'trusted_folders.toml'), tables.join('\n'));
+}
+
 const directoryRegistration = ctx => ctx.platform === 'opencode' || ctx.platform === 'grok' && ctx.scope === 'project';
 
 export function expectedOpenCodeObservation(result, ctx, pluginId) {
