@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
 import { nativePath, readInstalled, targetOf, nativePackage, checkSettled } from './native-platform-public-state.mjs';
+import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
 const roleSkills = { 'agent-subagent': { subagent: 'spawn-subagent/assets/task-instructions.md' },
@@ -10,6 +11,67 @@ const roleSkills = { 'agent-subagent': { subagent: 'spawn-subagent/assets/task-i
     'codex-advisor': 'codex-advisor/assets/advisor-instructions.md' } };
 export const shippedRoles = Object.fromEntries(Object.entries(roleSkills).map(([plugin, roles]) => [plugin, Object.keys(roles).sort()]));
 export const rolePlatform = platform => !['generic', 'opencode'].includes(platform);
+
+// Install across scopes before any explicit Project request for either dependency.
+// A green receipt alone cannot detect a second native package shadowing User.
+export async function qualifyProjectDependencies(ctx, report) {
+  const catalog = await addOfficialCatalog(ctx);
+  const names = ['agent-content-toolkit', 'agent-skill-toolkit', 'aw-development-toolkit'];
+  const ids = names.map(name => `${officialSource}/${name}`);
+  const [content, skills, root] = ids;
+  const manifest = JSON.parse(await fs.readFile(path.join(catalog, 'catalog-manifest.json'), 'utf8'));
+  for (const entry of manifest.entries) ctx.dependencies.set(`${officialSource}/${entry.name}`,
+    entry.dependencies.map(name => name.includes('/') ? name : `${officialSource}/${name}`));
+  assert.deepEqual(ctx.dependencies.get(skills), [content]);
+  assert.deepEqual([...ctx.dependencies.get(root)].sort(), [content, skills]);
+
+  const install = (id, scope) => ctx.aw(['plugin', 'install', id, '--scope', scope, '--context', scope, '--target', ctx.platform, '--yes']);
+  const user = { ...ctx, scope: 'user' };
+  const personal = await install(skills, 'user');
+  const personalFiles = [];
+  for (const [id, expected] of [[content, ['agent-content']], [skills,
+    ['audit-agent-skill-evals', 'author-agent-skill', 'review-agent-skill', 'simplify-agent-skill']]]) {
+    const target = targetOf(personal, user, id);
+    const directory = ctx.platform === 'antigravity' ? path.join(ctx.env.HOME, '.gemini/config/plugins', id.split('/')[1]) : nativePackage(target);
+    for (const name of expected) {
+      const file = nativePath(user, { id }, 'skill', directory, name);
+      personalFiles.push(await readInstalled(ctx, file, name));
+    }
+  }
+  const project = await install(root, 'project');
+  const rootTarget = targetOf(project, ctx, root);
+  assert.equal(rootTarget.execution, 'applied');
+  const providerRows = project.data.targetResults.filter(row => [content, skills].includes(row.pluginId));
+  for (const row of providerRows) assert.equal(row.providerScope, 'user', `${row.pluginId}: redundant Project dependency`);
+  const expectedNames = ['develop-aw', 'publish-aw-catalog'];
+  if (ctx.platform === 'antigravity') assert.equal(nativePackage(rootTarget), path.join(ctx.project, '.agents/plugins/aw-development-toolkit'));
+  const rootFiles = [];
+  for (const name of expectedNames) rootFiles.push(await readInstalled(ctx,
+    nativePath(ctx, { id: root }, 'skill', nativePackage(rootTarget), name), name));
+  const namespace = { antigravity: '.agents', generic: '.agents', cursor: '.cursor', pi: '.pi', grok: '.grok',
+    opencode: '.opencode', codex: '.codex', claude: '.claude', copilot: '.github' }[ctx.platform];
+  const publicRoot = path.join(ctx.project, namespace);
+  const files = await fs.readdir(publicRoot, { recursive: true }).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const projectFiles = files.filter(file => path.basename(file) === 'SKILL.md').map(file => path.join(namespace, file)).sort();
+  const shared = ['codex', 'claude', 'copilot'].includes(ctx.platform);
+  const expectedProjectFiles = shared ? [] : rootFiles.map(file => path.relative(ctx.project, path.resolve(ctx.root, file.path))).sort();
+  assert.deepEqual(projectFiles, expectedProjectFiles, 'The project should contain only the requested plugin’s skill files.');
+
+  const status = await ctx.aw(['plugin', 'status', '--context', 'project']);
+  checkSettled(status);
+  assert.equal(targetOf(status, ctx, root).content, 'satisfied');
+  const sync = await ctx.aw(['plugin', 'sync', root, '--context', 'project', '--target', ctx.platform, '--yes']);
+  assert.deepEqual(sync.data.remainingTargets, []);
+  assert.equal(targetOf(sync, ctx, root).execution, 'no-op');
+  assert(sync.data.targetResults.every(row => row.execution === 'no-op'), 'A second sync must leave the installation in place.');
+  for (const file of personalFiles) assert.equal(sha256(await fs.readFile(path.join(ctx.root, file.path))), file.sha256);
+  report.inheritance = { userRoot: skills, projectRoot: root, personalFiles, projectFiles, rootFiles,
+    providers: providerRows.map(({ pluginId, providerScope }) => ({ pluginId, providerScope })),
+    inSync: status.data.inSync, sync: sync.data.targetResults.map(({ pluginId, execution }) => ({ pluginId, execution })) };
+}
 
 export async function qualifyCatalog(ctx, report, catalog, frozen) {
   const snapshot = await fs.readFile(path.join(catalog, 'catalog-manifest.json'));

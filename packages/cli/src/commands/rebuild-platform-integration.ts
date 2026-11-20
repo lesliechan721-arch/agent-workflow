@@ -9,8 +9,8 @@ import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGrou
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
-import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
+import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
 import { piAgentConsumerDiagnostic, piProjectListContainsOnly } from '../platforms/inspection-pi.js';
 import { grokRegistrationOwned, piProjectEmptyDeliveryObserved, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
@@ -112,6 +112,17 @@ interface GrokPublication {
   orderAfter?: NonNullable<NativeSources['grokScopeEvidence']>;
 }
 type NativeSources = NonNullable<DeploymentObservation['prerequisites']['nativeSources']>;
+interface GrokProjectRetirement {
+  projectRoot: string;
+  name: string;
+  projectPackage: string;
+  projectDigest: string;
+  userPackage: string;
+  userDigest: string;
+  userSource: string;
+  userContentDigest: string;
+  userPhysicalKey: string;
+}
 function matchesGrokComponentOrder(before: GrokOrderEntry[], after: GrokOrderEntry[], publishedRoots: ReadonlySet<string>): boolean {
   // Leave newly added or removed identities out of both sides. Every other
   // row, including a surviving component of an upgraded package, anchors order.
@@ -311,9 +322,11 @@ export const platformOwnership: OwnedComponentExecutor = {
   },
 };
 
-async function requireWritable(component: OwnedComponent, executor: OwnedComponentExecutor = platformOwnership): Promise<void> {
+async function requireWritable(component: OwnedComponent, executor: OwnedComponentExecutor = platformOwnership): Promise<'present' | 'absent'> {
   const inspection = await inspectOwnedComponents({ components: [component], executor });
-  if (!['present', 'absent'].includes(inspection.components[0]!.state)) throw new Error('operationPlanStale: deployment ownership changed.');
+  const state = inspection.components[0]!.state;
+  if (state !== 'present' && state !== 'absent') throw new Error('operationPlanStale: deployment ownership changed.');
+  return state;
 }
 async function publishDirectory(source: string, component: OwnedComponent, nativeProjection?: NativeProjectionEvidence, staged?: string): Promise<{ mutation: 'confirmed'; changed: true }> {
   if (component.kind !== 'owned-directory') throw new Error('deploymentPackageOwnerInvalid');
@@ -322,7 +335,9 @@ async function publishDirectory(source: string, component: OwnedComponent, nativ
     allowedRoot: component.allowedRoot, label: 'Native package', createParent: true });
   const staging = await fs.mkdtemp(path.join(component.allowedRoot, '.aw-package-'));
   const candidate = path.join(staging, component.identity.artifactKey);
-  const backup = `${staging}.previous`;
+  const verifiesContents = component.identity.platform === 'antigravity' && component.identity.scope === 'project';
+  const backupRoot = `${staging}.previous`;
+  const backup = verifiesContents ? path.join(backupRoot, component.identity.artifactKey) : backupRoot;
   let moved = false;
   try {
     if (staged && nativeProjection) {
@@ -338,13 +353,24 @@ async function publishDirectory(source: string, component: OwnedComponent, nativ
       }
     } else await fs.copy(source, candidate, { dereference: false });
     await writeSkillOwnerMarker({ skillRoot: candidate, allowedRoot: staging, identity: component.identity, nativeProjection });
-    await requireWritable(component);
-    if (await fs.pathExists(component.path)) { await fs.move(component.path, backup); moved = true; }
-    try { await fs.move(candidate, component.path); }
+    const state = await requireWritable(component);
+    if (verifiesContents ? state === 'present' : await fs.pathExists(component.path)) {
+      await fs.move(component.path, backup);
+      moved = true;
+    }
+    try {
+      if (verifiesContents && moved && await requireWritable({ ...component, path: backup, allowedRoot: backupRoot }) !== 'present') {
+        throw new Error('operationPlanStale: deployment backup could not be verified.');
+      }
+      await fs.move(candidate, component.path);
+    }
     catch (error) { if (moved && !await fs.pathExists(component.path)) await fs.move(backup, component.path); throw error; }
     await fs.remove(backup);
     return { mutation: 'confirmed', changed: true };
-  } finally { await fs.remove(staging); }
+  } finally {
+    await fs.remove(staging);
+    if (verifiesContents) await fs.rmdir(backupRoot).catch(() => undefined);
+  }
 }
 
 
@@ -410,6 +436,7 @@ export class PlatformRebuildSession {
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
   private readonly piProjectRegisteredRoots = new Map<string, Set<string>>();
   private readonly grokPublications = new Map<string, GrokPublication>();
+  private readonly grokProjectRetirements = new Map<string, GrokProjectRetirement>();
   private readonly exclusions = new Map<string, DeploymentExclusion[]>();
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
@@ -498,6 +525,26 @@ export class PlatformRebuildSession {
       }
     }
   }
+  recordGrokProjectRetirement(projectRoot: string, project: DeploymentObservation, user: DeploymentObservation,
+    removed: readonly string[]): void {
+    const old = project.nativeIdentity;
+    const replacement = user.nativeIdentity;
+    if (old?.route !== 'grok-directory' || project.ownership !== 'aw' || project.package !== 'present'
+      || replacement?.route !== 'grok-cli' || replacement.packageId !== old.packageId || !replacement.registrationId
+      || user.ownership !== 'aw' || user.registration !== 'present' || user.nativePackage !== 'present' || !user.nativePackageContentDigest
+      || path.dirname(old.sourceLocation) !== path.join(projectRoot, '.grok', 'plugins') || !removed.includes(path.basename(old.sourceLocation))) return;
+    const before = project.prerequisites.nativeSources;
+    const personal = user.prerequisites.nativeSources;
+    if (before?.observation !== 'complete' || personal?.observation !== 'complete') return;
+    const source = personal.sources.find(({ name, path: location }) => name === old.packageId
+      && path.basename(location) === replacement.registrationId && path.basename(path.dirname(location)) === 'installed-plugins');
+    const projectDigest = grokSourceDigest(before, old.sourceLocation, old.packageId, 'project');
+    const userDigest = source && grokSourceDigest(personal, source.path, old.packageId, 'user');
+    if (!projectDigest || !source || !userDigest) return;
+    this.grokProjectRetirements.set(old.sourceLocation, { projectRoot, name: old.packageId, projectPackage: old.sourceLocation,
+      projectDigest, userPackage: source.path, userDigest, userSource: replacement.sourceLocation,
+      userContentDigest: user.nativePackageContentDigest, userPhysicalKey: user.physicalKey });
+  }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
     if (this.staging) await fs.remove(await this.staging);
@@ -505,6 +552,7 @@ export class PlatformRebuildSession {
     this.targets.clear(); this.resolutions.clear(); this.units.clear(); this.published.clear();
     this.nativeEffects.clear(); this.piProjectRegisteredRoots.clear(); this.exclusions.clear();
     this.grokPublications.clear();
+    this.grokProjectRetirements.clear();
     this.contexts.clear(); this.mutableChecks.clear(); this.requestedOperations.clear(); this.marketplaces.clear();
     this.marketplaceTargets.clear(); this.marketplaceCandidatesFrozen = false;
   }
@@ -860,6 +908,10 @@ export class PlatformRebuildSession {
             ? policyKey : entry.layout.renderUnits.find((unit) => unit.id === projection.renderUnitId)!.physicalKey)))];
       const historical = await ownedSupplements(entry.binding, entry.layout.supplementRoot,
         entry.layout.renderUnits.find((unit) => unit.output === 'supplement')?.physicalKey);
+      const antigravityProject = isAntigravityProjectDirectory(entry.binding);
+      const legacyPackage = entry.observation.antigravityLegacyProjectPackage?.state === 'owned'
+        ? antigravityLegacyProjectComponent(entry.binding, entry.layout) : undefined;
+      if (legacyPackage) historical.push(legacyPackage);
       if (entry.binding.platform === 'codex' && policyKey) historical.push(...await ownedSupplements(entry.binding, path.join(entry.layout.activationPath, 'rules'), policyKey));
       if (entry.binding.platform === 'claude' && policyKey) {
         const destination = path.join(entry.layout.activationPath, entry.binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json');
@@ -931,7 +983,7 @@ export class PlatformRebuildSession {
       if (ordinaryObservation !== undefined && ordinaryObservation !== artifactValueDigest(mutableBaseline.observation)) {
         throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
       }
-      const preparationObservation = entry.binding.route === 'antigravity-cli'
+      const preparationObservation = entry.binding.route === 'antigravity-cli' || antigravityProject
         ? mutableBaseline.observation : entry.observation;
       const piInventoryKey = piProjectInventoryKey(entry.binding, entry.layout.activationPath);
       const matchesMutable = (current: Awaited<ReturnType<typeof currentMutable>>): boolean => {
@@ -953,8 +1005,10 @@ export class PlatformRebuildSession {
           : binding.route === 'grok-directory' && binding.scope.kind === 'project' ? binding.scope.projectRoot : null;
         const publications = scopeRoot && operation(input) === 'ensure' ? [...this.grokPublications.values()].filter(
           (item) => item.scope === binding.scope.kind && item.scopeRoot === scopeRoot && item.owner.identity.pluginId !== binding.plugin.pluginId) : [];
+        const retirements = binding.route === 'grok-directory' && operation(input) === 'ensure'
+          ? [...this.grokProjectRetirements.values()].filter((item) => item.projectRoot === scopeRoot) : [];
         const baselineDigest = artifactValueDigest(mutableBaseline);
-        if (!publications.length) return artifactValueDigest(current) === baselineDigest;
+        if (!publications.length && !retirements.length) return artifactValueDigest(current) === baselineDigest;
         const before = mutableBaseline.observation.prerequisites.nativeSources;
         const after = current.observation.prerequisites.nativeSources;
         const priorEvidence = before?.grokScopeEvidence;
@@ -970,7 +1024,28 @@ export class PlatformRebuildSession {
         const publishedRoots = new Set<string>();
         const orderChecks = [priorEvidence];
         const instructions = [...scopeEvidence.instructions];
+        const retiredSources = new Set<string>();
         let adjusted = false;
+        for (const retirement of retirements) {
+          const { name, projectPackage, projectDigest, userPackage, userDigest, userSource, userContentDigest, userPhysicalKey } = retirement;
+          if (!priorPaths.includes(projectPackage)) continue;
+          if (name === entry.layout.nativeIdentity.packageId || priorPaths.includes(userPackage) || paths.includes(projectPackage)
+            || grokSourceDigest(before, projectPackage, name, 'project') !== projectDigest
+            || grokSourceDigest(after, userPackage, name, 'user') !== userDigest
+            || await pathEvidence(projectPackage) !== null) return false;
+          await assertSafeFileMutationPath({ filePath: path.join(userPackage, '.grok-plugin', 'plugin.json'),
+            allowedRoot: path.dirname(path.dirname(userPackage)), label: 'Grok installed package' });
+          const [installed, source, marker] = await Promise.all([readPlatformPackageContentDigest(userPackage), readPlatformPackageContentDigest(userSource),
+            readSkillOwnerMarker({ skillRoot: userSource, allowedRoot: path.dirname(userSource) })]);
+          if (installed !== userContentDigest || source !== userContentDigest || marker?.physicalKey !== userPhysicalKey) return false;
+          // The Project copy hid this exact User copy. Both may leave their
+          // old positions, and the remaining sources and components keep theirs.
+          retiredSources.add(projectPackage);
+          addedSources.add(userPackage);
+          publishedRoots.add(projectPackage);
+          publishedRoots.add(userPackage);
+          adjusted = true;
+        }
         for (const { owner, scopeRoot: publishedRoot, installedRoot, nativeDigest, contentDigest, priorNativeDigest, orderAfter } of publications) {
           ctx.signal?.throwIfAborted();
           if (owner.kind === 'owned-directory') {
@@ -1036,7 +1111,11 @@ export class PlatformRebuildSession {
             hookOrder: priorEvidence.hookOrder, resourceOrder: priorEvidence.resourceOrder,
             sourceDigests: sourceDigests.filter((_, index) => !addedSources.has(paths[index]!)) } };
         const observation = { ...current.observation, prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
-        return artifactValueDigest({ ...current, observation }) === baselineDigest;
+        const normalizedBefore = { ...before, sources: before.sources.filter((_, index) => !retiredSources.has(priorPaths[index]!)),
+          grokScopeEvidence: { ...priorEvidence, sourceDigests: priorEvidence.sourceDigests.filter((_, index) => !retiredSources.has(priorPaths[index]!)) } };
+        const baselineObservation = { ...mutableBaseline.observation, prerequisites: { ...mutableBaseline.observation.prerequisites,
+          nativeSources: normalizedBefore } };
+        return artifactValueDigest({ ...current, observation }) === artifactValueDigest({ ...mutableBaseline, observation: baselineObservation });
       };
       const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
         if (!parallelNativeReads) return await fingerprint(discovery) === initial
@@ -1110,6 +1189,7 @@ export class PlatformRebuildSession {
         sharedReferences: await sharedReferences(this.context, entry.binding, preparationObservation, entry.layout),
         nativeIdentity: preparationObservation.nativeIdentity ?? entry.layout.nativeIdentity,
         contentMatches: projections.some((projection) => projection.bundle !== null)
+          && (!antigravityProject || preparationObservation.ownership === 'aw')
           && await readPlatformPackageContentDigest(entry.layout.packageRoot) === projections.find((projection) => projection.bundle !== null)?.bundle?.contentDigest };
       if (entry.binding.platform === 'codex') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli'
@@ -1156,7 +1236,8 @@ export class PlatformRebuildSession {
       }
       if (!removing) {
         const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
-        inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence));
+        const packageComponents = projections.find((projection) => projection.bundle)?.components;
+        inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence, packageComponents));
         if (expected.unmet.every(isDeliveryCapabilityGap)) {
           const permissionNotices = platformPermissionNotices(projections.flatMap(({ diagnostics }) => diagnostics));
           const noticeFields = permissionNotices.length ? { permissionNotices } : {};
@@ -1466,7 +1547,17 @@ export class PlatformRebuildSession {
               } else throw new Error('platformContributionUnsupported');
               return { mutation: 'confirmed', changed: true };
             },
-            removeOwned: async (_binding, component) => {
+            removeOwned: async (binding, component) => {
+              if (isAntigravityProjectDirectory(binding) && component.kind === 'owned-directory'
+                && component.path !== prepared.plan.evidence.layout.packageRoot && prepared.driverState.bundle) {
+                const replacement = prepared.driverState.packageComponent;
+                if (replacement?.kind !== 'owned-directory' || await requireWritable(replacement, this.ownership) !== 'present'
+                  || await readPlatformPackageContentDigest(replacement.path) !== prepared.driverState.bundle.contentDigest) {
+                  throw Object.assign(new Error('The Antigravity replacement package could not be verified.'), {
+                    code: 'operationPlanStale', mutation: 'none',
+                  });
+                }
+              }
               const result = await cleanupOwnedComponents({ components: [component], executor: this.ownership });
               cleanupResults.push(result);
               if (result.failures.length || result.residual.length || result.quarantined.length) {

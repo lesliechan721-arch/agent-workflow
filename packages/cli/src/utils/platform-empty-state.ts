@@ -6,7 +6,7 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
-import type { DeploymentBinding, RenderUnit } from '../platforms/contracts.js';
+import type { DeploymentBinding, ProjectionResult, RenderUnit } from '../platforms/contracts.js';
 import { toPlatformCapabilitiesView } from '../platforms/capabilities.js';
 import { isDeliveryCapabilityGap } from './component-gap.js';
 import { artifactValueDigest } from './artifact-plan.js';
@@ -18,7 +18,7 @@ import { assertSafeFileMutationPath, atomicReplaceSafeFile } from './safe-fs.js'
 import { resolveAbsoluteAwHome } from './state-paths.js';
 import { assertTestReadablePath, assertTestWritablePath } from './test-path-fence.js';
 import { SKILL_OWNER_MARKER } from './ownership.js';
-import { createDynamicSkillTreeContentDigest } from './dynamic-skill-tree.js';
+import { readPackageContentDigest } from './package-content.js';
 import { INVOCATION_POLICY_NOT_APPLIED, isSkippedPermissionReason, safeComponentIdentity, safeSkippedPermissionActions,
   type PermissionAction } from '../output/component-delivery.js';
 import type { Diagnostic } from '../output/public-result.js';
@@ -155,33 +155,19 @@ export async function createPlatformEmptyState(input: PlatformInputEvidenceOptio
 }
 
 /** A package is shared by activation scopes; scope-local supplements are checked separately. */
-export function platformPackageInputDigest(evidence: PlatformInputEvidence): string {
+export function platformPackageInputDigest(evidence: PlatformInputEvidence, components: Readonly<ProjectionResult['components']> = []): string {
   const units = evidence.units.filter((unit) => unit.output === 'package');
   if (units.length !== 1) throw new Error('platformPackageInputInvalid');
+  // OpenCode packages generated with only location need a refresh before they can provide Skills on newer V2 hosts.
+  const openCodeSkills = evidence.platform === 'opencode' && components.some(({ nativeName, relativeOutputs }) =>
+    relativeOutputs.includes(`skills/${nativeName}/SKILL.md`));
   return artifactValueDigest({ schemaVersion: evidence.schemaVersion, kind: evidence.kind,
-    plugin: evidence.plugin, platform: evidence.platform, units });
+    plugin: evidence.plugin, platform: evidence.platform, units,
+    ...(openCodeSkills ? { openCodeSkillRegistration: 'location-and-path' } : {}) });
 }
 
-export async function readPlatformPackageContentDigest(root: string): Promise<string | undefined> {
-  const stat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
-    throw error;
-  });
-  if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) return undefined;
-  const files: Record<string, Buffer> = {};
-  const fileModes: Record<string, 0o755> = {};
-  async function visit(directory: string, prefix: string): Promise<void> {
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (relative === SKILL_OWNER_MARKER) continue;
-      const file = path.join(directory, entry.name);
-      if (entry.isSymbolicLink() || !entry.isFile() && !entry.isDirectory()) throw new Error('platformContentInvalid');
-      if (entry.isDirectory()) await visit(file, relative);
-      else { files[relative] = await fs.readFile(file); if ((await fs.stat(file)).mode & 0o111) fileModes[relative] = 0o755; }
-    }
-  }
-  await visit(root, '');
-  return createDynamicSkillTreeContentDigest({ skillKey: '', files, fileModes });
+export function readPlatformPackageContentDigest(root: string): Promise<string | undefined> {
+  return readPackageContentDigest(root, SKILL_OWNER_MARKER);
 }
 
 function statePath(state: Pick<PlatformInputEvidence, 'platform' | 'binding'>, env?: NodeJS.ProcessEnv): { root: string; filePath: string } {

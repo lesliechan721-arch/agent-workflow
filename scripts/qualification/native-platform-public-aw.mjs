@@ -351,6 +351,7 @@ async function observePublicComponentSuites(ctx) {
   const failures = [];
   for (const scope of scopes) {
     const suites = ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate'];
+    if (scope === 'project') suites.push('project-inheritance');
     if (ctx.platform === 'grok' && scope === 'project') suites.push('grok-hook-pair', 'grok-rule-pair');
     for (const suite of suites) {
       try {

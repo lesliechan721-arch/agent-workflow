@@ -1,5 +1,5 @@
 import type { Scope, CommandProducerResult } from '../types.js';
-import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors,
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors, userSkillProviderRepairs,
   type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryRetryDisposition, type RecoveryTarget } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
@@ -98,6 +98,9 @@ const messages: Record<string, string> = {
   nativePackageContentDrift: 'The native client copy is out of date.',
   nativePackageContentUnconfirmed: 'The native client copy could not be verified.',
   platformInputDrift: 'The plugin inputs changed and its deployment needs to be synced.',
+  userSkillProviderNotReady: 'Sync the declared User plugin to repair its Skill dependency, then retry the Project plugin.',
+  projectSkillProviderConflict: 'Check the existing Project package, permissions and activation before reusing the User Skill dependency.',
+  providerSwitchVerificationFailed: 'The replacement could not be verified. The previous copy was retained.',
   platformContentDrift: 'The deployed plugin content changed and needs to be synced.',
   platformExpectationUnconfirmed: 'The package projection could not be verified.',
   platformPreparationPartial: 'The package has only a partial projection.',
@@ -245,6 +248,8 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
     }
     else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
       message = `${identity}: Check ${detail.path ? `the previous output at ${JSON.stringify(detail.path)}` : 'the previous output'} in the affected scope before preparing the retry.`;
+    } else if (detail.path && ['antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict'].includes(diagnostic.code)) {
+      message = `${identity}: Back up and inspect ${JSON.stringify(detail.path)}. If this copy should no longer load in the project, move that directory or link outside .agents/plugins. Run status again for the same project and plugin.`;
     } else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
       message = `${identity}: Automatic cleanup cannot prove exclusive ownership (${detail.reasonCode}). Back up ${detail.path
         ? `the detected item ${JSON.stringify(detail.path)}` : 'the affected host output identified by the inventory scan'} and the related host configuration. ${detail.configKey
@@ -413,7 +418,8 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const excludedProviders = new Map<string, NextAction>();
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-    diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) => publicDiagnostic(entry, subject)));
+    diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) =>
+      publicDiagnostic(entry, entry.code === 'userSkillProviderNotReady' ? entry.subject ?? subject : subject)));
     diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
       .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
@@ -450,14 +456,21 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
       result.nextActions.push({ kind: 'manual',
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
-    } else if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
-    else {
+    } else if (command === 'plugin.remove') {
+      result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
+      for (const target of receipt.targetResults) {
+        if (target.scope !== 'user' || !target.blockers.some(({ code }) => code === 'providerSwitchVerificationFailed')) continue;
+        result.nextActions.push({ kind: 'manual', message: `Restore the Project dependency and verify it with aw plugin status --context project. If the User copy is no longer needed, review aw plugin remove ${target.pluginId} --only outputs --scope user --target ${target.agent}.` });
+      }
+    } else {
+      const prerequisites = new Map<string, RecoveryRetryDisposition>();
       const retries = new Map<string, { root: RecoveryRetryDisposition; nativeManual: boolean }>();
       let checkRoot = false;
       for (const target of receipt.targetResults) {
         if (!receipt.remainingTargets.some((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent && entry.scope === target.scope)) continue;
         const local = result.diagnostics.filter((entry) => matchesRecoveryPosition(entry.subject, target));
         if (local.some((entry) => entry.code === 'stateInventoryFailed' && entry.detail)) continue;
+        for (const root of userSkillProviderRepairs(target)) prerequisites.set(JSON.stringify([root.pluginId, root.agent, root.scope]), root);
         const nativeManual = target.agent === 'grok' && local.some((entry) => entry.code === 'grokNativeInstallRecovery');
         const roots = recoveryRetryDispositions(receipt, [target]);
         if (!roots.length) checkRoot = true;
@@ -470,6 +483,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       if (checkRoot) result.nextActions.push({ kind: 'command',
         argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false });
+      for (const [key, root] of prerequisites) {
+        result.nextActions.push(recoverySyncAction(root, messages.userSkillProviderNotReady));
+        retries.delete(key);
+      }
       for (const { root, nativeManual } of retries.values()) {
         if (root.kind === 'exact-project' && inventory.exactProjects.has(JSON.stringify([root.pluginId, root.agent]))) continue;
         result.nextActions.push(recoverySyncAction(root, nativeManual ? 'Complete the host recovery and verify its effects before reviewing this retry.'

@@ -35,11 +35,15 @@ test('validates and redacts the session response', () => {
   assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project), /^Error: skill-inventory-location-mismatch$/u);
   const inProject = { ...selected, path: path.join(project, '.agents', 'plugins', 'aw-fixture', 'skills', 'manual', 'SKILL.md') };
   assert.deepEqual(parseAntigravitySkillInventory(make([inProject]), names, project), { ...safe, verifiedProjectLocations: 1 });
+  const personal = path.resolve('home', 'plugins', 'aw-fixture');
+  const inherited = { ...selected, path: path.join(personal, 'skills', 'manual', 'SKILL.md') };
+  assert.equal(parseAntigravitySkillInventory(make([inherited]), names, project, personal).verifiedProjectLocations, 0);
+  assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project, personal), /location-mismatch/u);
 });
 async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false, dropOwner = false, neutralEnabled = true, retainOnUninstall = false } = {}) {
   let installed = false, installs = 0;
   const cache = path.join(ctx.env.HOME, '.gemini/config/plugins/aw-local-management-user');
-  const projectDirectory = path.join(ctx.project, '.agents/plugins/aw-qualification-aw-local-management-project');
+  const projectDirectory = path.join(ctx.project, '.agents/plugins/aw-local-management-project');
   const command = async (id, args, cwd) => {
     if (args[1] === 'validate') {
       const manifest = JSON.parse(await fs.readFile(path.join(args[2], '.antigravity-plugin/plugin.json'), 'utf8'));

@@ -7,7 +7,7 @@ import { resolveIntentPath } from '../intent/intent-store.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import type { StatusScopedTarget } from '../commands/status-v6.js';
 import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
-import { readJointDemand, deriveJointDemand, type JointDemandSnapshot } from './joint-demand.js';
+import { readJointDemand, deriveJointDemand, projectSkillCandidates, isInstalledSkillProvider, hasReadyProviderSkills, type JointPlacement, type ProjectSkillProvider, type JointDemandSnapshot } from './joint-demand.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
@@ -17,7 +17,7 @@ import { createCodexNativeObservationSession, type CodexNativeObservationSession
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
-import { piAgentConsumerDiagnostic } from '../platforms/inspection-pi.js';
+import { piAgentConsumerDiagnostic, piProjectListsUserSkills } from '../platforms/inspection-pi.js';
 import { gapSupplementFiles } from '../platforms/supplement-layout.js';
 import { inspectPlatformSupplementState } from '../platforms/supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
@@ -33,7 +33,7 @@ import { inventoryCatalogSourceReferences, type CatalogSourceReference } from '.
 import { resolvePartialCatalogOperationContext, type CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
-import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { resolvePluginDependencyClosure, resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { installationInvocation, selectNativeProduct, type ReadContext } from '../platforms/discovery.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
@@ -59,6 +59,9 @@ export interface NativeObservation {
   intentionalEmpty?: boolean;
   expectationConfirmed?: boolean;
 }
+type ExistingTarget = Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'> & {
+  nativePackage?: { sourceIdentity: string; skillsReady: boolean };
+};
 export interface RecoveryStatus {
   schemaVersion: 1;
   kind: 'aw-recovery-status';
@@ -69,9 +72,12 @@ export interface RecoveryStatus {
   inventory: Array<{ pluginId: string; source: string; sourceState: string;
     blockers: RecoveryDiagnostic[]; targetResults: RecoveryTarget[] }> | null;
   observedTargets?: RecoveryTarget[];
-  existingTargets?: Array<{ pluginId: string; agent: AgentId; scope: Scope }>;
+  projectSkillProviders?: ProjectSkillProvider[];
+  existingTargets?: ExistingTarget[];
+  /** Exact Project directories available only as consumer evidence for removal. */
+  retainedProjectPackages?: Array<ExistingTarget & { dependencies: string[] | null }>;
   ownedTargets?: Array<{ pluginId: string; agent: AgentId; scope: Scope }>;
-  extraObserved: Array<Omit<Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope' | 'delivery' | 'observation' | 'content' | 'backend' | 'deploymentObservations' | 'expectedVersion' | 'installedVersion'>, 'agent'>
+  extraObserved: Array<Omit<Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope' | 'delivery' | 'observation' | 'content' | 'reasons' | 'backend' | 'deploymentObservations' | 'expectedVersion' | 'installedVersion'>, 'agent'>
     & { agent: AgentId | null }>;
   coverage: { native: boolean; portable: boolean; scopes?: Scope[]; projectRoot?: string; requestComplete?: boolean };
   inSync: boolean | null;
@@ -80,6 +86,8 @@ export interface RecoveryStatus {
   errors: RecoveryDiagnostic[];
 }
 export interface ReadRecoveryStatusOptions {
+  /** Prospective Project dependencies examined in the same inventory as the saved requirements. */
+  projectSkillProbes?: JointPlacement[];
   nativeCliRunner?: NativeCliRunner;
   codexObservationSession?: CodexNativeObservationSession;
   catalogOperationContext?: CatalogOperationContext;
@@ -173,6 +181,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
       for (const root of roots) {
         options.signal?.throwIfAborted();
         const observation: NativeObservation = { pluginId: root.pluginId, expectedVersion: root.plugin?.manifest.version, platform, content: 'unknown', blockers: [], reasons: [], deploymentObservations: [] };
+        let nativePackage: NonNullable<(typeof existing)[number]['nativePackage']> | undefined;
         observations.push(observation);
         try {
           const plugin = root.plugin!;
@@ -215,7 +224,9 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               : live.package === 'present' && live.ownership === 'aw';
             if (scopedNativeConsumer && (live.ownership === 'aw' || live.ownership === 'shared')) {
               owned.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
-              existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
+              if (!shared) nativePackage ??= { sourceIdentity: binding.plugin.sourceIdentity, skillsReady: false };
+              existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope,
+                ...(nativePackage ? { nativePackage } : {}) });
             }
             const unmet: ComponentUnmet[] = [];
             const staticPackageIds = new Set<string>();
@@ -363,9 +374,17 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 ? observation.blockers : observation.reasons!;
               destination.push({ code: entry.code, message: entry.message, subject: { ...subject, ...entry.subject }, detail: entry.detail });
             }
+            const legacyAntigravityPackage = live.antigravityLegacyProjectPackage;
+            if (legacyAntigravityPackage?.state === 'owned') observation.reasons!.push({
+              code: 'antigravityProjectPackageMigrationPending',
+              message: 'Sync this plugin to finish moving it to the short Antigravity project path.',
+              subject,
+              detail: { reasonCode: 'antigravityProjectPackageMigrationPending', path: legacyAntigravityPackage.path },
+            });
             const requiresScopeRegistration = binding.route === 'claude-marketplace' && !inheritsUserNative;
             const registration = requiresScopeRegistration ? live.scopeRegistration ?? 'unknown' : live.registration;
-            const ownershipConflict = live.ownership === 'foreign' || live.ownership === 'shared';
+            const ownershipConflict = live.ownership === 'foreign' || live.ownership === 'shared'
+              || legacyAntigravityPackage?.state === 'unconfirmed';
             if (ownershipConflict) block('deploymentOwnershipConflict');
             const missing = hasPackageExpectation && (live.package === 'absent' && packageExpectedCount > 0
               || registration === 'absent' && (packageExpectedCount > 0 || live.package === 'present')
@@ -393,13 +412,15 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 if (nativeContentDrift) warn('nativePackageContentDrift');
               }
               projectionUnconfirmed = !projection || projection.preparation !== 'complete' || !contentDigest;
-              const packageInputDigest = platformPackageInputDigest(inputEvidence);
+              const packageInputDigest = platformPackageInputDigest(inputEvidence, projection?.components);
               inputDrift = Boolean(projection && (projection.inputDigest !== packageInputDigest
                 || contentDigest && projection.contentDigest !== contentDigest));
               if (projectionUnconfirmed) warn(projection?.preparation === 'partial'
                 ? 'platformPreparationPartial' : 'platformExpectationUnconfirmed');
-              else if (inputDrift) warn(projection!.inputDigest !== packageInputDigest
-                ? 'platformInputDrift' : 'platformContentDrift');
+              else if (inputDrift) {
+                if (projection!.inputDigest !== packageInputDigest) warn('platformInputDrift');
+                if (projection!.contentDigest !== contentDigest) warn('platformContentDrift');
+              }
               componentMissing = live.components.some((component) => component.presence === 'absent');
               componentUnknown = live.components.some((component) => component.presence === 'unknown'
                 && !component.reasonCodes.includes('nativePackageContentDrift'));
@@ -429,6 +450,11 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               || !dynamicSupplementsUnconfirmed && confirmedEmptyPackage || recordedSupplements !== null && !hasPackageExpectation);
             emptyMatches.push(confirmedEmpty && !capabilityEmpty);
             for (const entry of blockingGaps) block(entry.reasonCode);
+            if (legacyAntigravityPackage?.state === 'owned' && !ownershipConflict
+              && live.ownership !== 'unknown' && !blockingGaps.length) {
+              states.push('drifted');
+              continue;
+            }
 
             const inactiveScope = live.registration === 'absent'
               || live.package === 'absent' && live.registration === 'not-applicable'
@@ -521,6 +547,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           if (observation.content === 'satisfied' || observation.content === 'absent' || deliveredIds.size) {
             observation.installedComponentIds = [...deliveredIds];
           }
+          if (nativePackage) nativePackage.skillsReady = hasReadyProviderSkills({ ...observation, installedComponentCount: deliveredIds.size });
         } catch (error) {
           rethrowFatalError(error);
           options.signal?.throwIfAborted();
@@ -844,17 +871,37 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         nativeExtraObserved.push({ ...entry, delivery: { kind: 'native', platform: entry.agent }, observation: 'unknown', content: 'unknown' });
       }
     }
+    const retainedProjectPackages: NonNullable<RecoveryStatus['retainedProjectPackages']> = [];
     for (const entry of candidates) {
       const component = entry.ownedComponent;
-      if (component?.kind !== 'owned-directory' || !['codex', 'claude', 'copilot'].includes(entry.platform!)
-        || component.identity.scope !== options.scope || entry.recoveryCandidate?.evidence !== 'verified'
+      const recovery = entry.recoveryCandidate;
+      if (component?.kind !== 'owned-directory' || recovery?.evidence !== 'verified' || component.identity.scope !== options.scope
         || component.identity.sourceId !== entry.sourceId || component.identity.sourceIdentity !== entry.sourceIdentity
         || component.identity.platform !== entry.platform || component.identity.pluginId !== `${entry.sourceId}/${entry.pluginName}`
-        || component.identity.physicalKey !== entry.recoveryCandidate.binding.physicalKey) continue;
+        || component.identity.physicalKey !== recovery.binding.physicalKey) continue;
       const pluginId = component.identity.pluginId!;
+      const agent = entry.platform as PlatformName;
+      const sourceIdentity = recovery.binding.plugin.sourceIdentity;
+      if (!hasSharedUserPackage(agent)) {
+        const location = recovery.binding.scope;
+        if (location.kind !== 'project' || location.projectRoot !== context.projectRoot
+          || adapters.existing.some((target) => target.pluginId === pluginId && target.agent === agent
+            && target.nativePackage?.sourceIdentity === sourceIdentity)) continue;
+        const source = catalogSources.get(entry.sourceId!)?.resolution;
+        let dependencies: string[] | null = null;
+        if (source?.sourceIdentity === sourceIdentity && source.manifest.entries.some((plugin) => plugin.name === entry.pluginName)) {
+          try {
+            dependencies = resolvePluginDependencyClosure(source.manifest.entries, [entry.pluginName!])
+              .filter((plugin) => plugin.name !== entry.pluginName).map((plugin) => `${entry.sourceId}/${plugin.name}`);
+          } catch { /* An unavailable closure retains only same-source candidates. */ }
+        }
+        retainedProjectPackages.push({ pluginId, agent, scope: 'project', dependencies,
+          nativePackage: { sourceIdentity, skillsReady: false } });
+        continue;
+      }
       if (observedPlugins.get(pluginId)?.sourceIdentity === component.identity.sourceIdentity) continue;
-      nativeExtraObserved.push({ pluginId, agent: entry.platform as PlatformName, scope: component.identity.scope,
-        delivery: { kind: 'native', platform: entry.platform as PlatformName }, observation: 'unknown', content: 'unknown',
+      nativeExtraObserved.push({ pluginId, agent, scope: component.identity.scope,
+        delivery: { kind: 'native', platform: agent }, observation: 'unknown', content: 'unknown',
         backend: { retainedPackage: true, ownedComponents: [{ ...component, state: 'present' }] } });
     }
     const portableExtra = options.targets && !options.targets.includes('generic') ? { targets: [], complete: true }
@@ -917,6 +964,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       ...adapters.existing,
       ...portableExtra.targets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: options.scope })),
     ];
+    result.retainedProjectPackages = retainedProjectPackages;
     result.ownedTargets = [
       ...adapters.owned, ...inventoryOwned,
       ...portableExtra.targets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: options.scope })),
@@ -1050,14 +1098,53 @@ async function checkUndeclaredSelection(options: ReadRecoveryStatusOptions, snap
   return errors;
 }
 
+/** Decide whether a project location can consume the exact User Skills observed this round. */
+function projectSkillCopy(user: RecoveryTarget, project: RecoveryTarget, userAbsent: boolean): ProjectSkillProvider['projectCopy'] {
+  const deployments = project.deploymentObservations;
+  if (!deployments?.length || project.blockers.length) return 'blocked';
+  const userDeployments = user.deploymentObservations ?? [];
+  for (const { after, products } of deployments) {
+    if (!products.every((product) => userDeployments.some((deployment) => deployment.products.some((item) => item.id === product.id)))) return 'blocked';
+    if (!userAbsent && project.agent === 'pi' && !userDeployments.some((deployment) => deployment.after.nativeIdentity
+      && piProjectListsUserSkills(after, deployment.after.nativeIdentity.sourceLocation))) return 'blocked';
+    if (after.configuration?.activation === 'disabled' || after.configuration?.activation === 'unknown'
+      || after.antigravityLegacyProjectPackage?.state === 'unconfirmed' || after.grokScopeAuthorization === 'denied') return 'blocked';
+    if (after.package === 'present' && after.ownership === 'aw') {
+      // A previous input generation can retire if its own published bytes are still intact.
+      const staleInput = project.content === 'drifted' && project.reasons?.some((reason) =>
+        reason.code === 'platformInputDrift' || reason.code === 'antigravityProjectPackageMigrationPending')
+        && project.reasons.every((reason) => ['platformInputDrift', 'antigravityProjectPackageMigrationPending',
+          'opencodeNativeObservationRequired', INVOCATION_POLICY_NOT_APPLIED].includes(reason.code));
+      if (project.content === 'satisfied' || staleInput) continue;
+    }
+    if (after.package !== 'absent' || after.ownership !== 'absent') return 'blocked';
+    if (project.agent === 'pi') {
+      const hiddenSection = after.registration === 'unknown' && after.diagnostics.some((entry) => entry.code === 'piProjectRegistrationNotVisible');
+      if ((!hiddenSection && after.registration !== 'absent') || after.configuration?.activation !== 'absent') return 'blocked';
+    }
+    if (!userAbsent && project.agent === 'grok') {
+      const name = after.nativeIdentity?.packageId;
+      const native = after.prerequisites.nativeSources;
+      const sources = native?.sources.filter((source) => source.name === name);
+      const personal = user.deploymentObservations?.flatMap(({ after }) => after.prerequisites.nativeSources?.sources ?? [])
+        .find((source) => source.name === name && source.scope === 'user' && source.enabled && source.origin === 'native');
+      if (after.grokScopeAuthorization !== 'granted' || native?.observation !== 'complete' || !personal || sources?.length !== 1
+        || sources[0]!.scope !== 'user' || !sources[0]!.enabled || sources[0]!.path !== personal.path
+        || !user.installedComponentIds?.every((id) => sources[0]!.effectiveComponents.includes(id.replace(/^skill:/u, 'skills:')))) return 'blocked';
+    }
+  }
+  return deployments.some(({ after }) => after.package === 'present' || after.antigravityLegacyProjectPackage?.state === 'owned') ? 'owned' : 'absent';
+}
+
 async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & {
   onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (status: RecoveryStatus, demand: DemandSnapshot) => void | Promise<void>;
 }, snapshot: JointDemandSnapshot): Promise<RecoveryStatus> {
   const selectionErrors = await checkUndeclaredSelection(options, snapshot);
-  const globalPlan = deriveJointDemand(snapshot);
-  const plan = options.targets ? deriveJointDemand({ ...snapshot, preferences: snapshot.preferences
-    ? { ...snapshot.preferences, targets: [...new Set([...snapshot.preferences.targets, ...options.targets as AgentId[]])] } : null }) : globalPlan;
+  const requestedDemand = options.targets ? { ...snapshot, preferences: snapshot.preferences
+    ? { ...snapshot.preferences, targets: [...new Set([...snapshot.preferences.targets, ...options.targets as AgentId[]])] } : null } : snapshot;
+  let globalPlan = deriveJointDemand(snapshot);
+  let plan = requestedDemand === snapshot ? globalPlan : deriveJointDemand(requestedDemand);
   const matchesPlugin = (id: string): boolean => !options.plugins?.length || options.plugins.some((selector) =>
     selector === id || !selector.includes('/') && parsePluginId(id).pluginName === selector);
   const selected = Boolean(options.plugins?.length || options.targets);
@@ -1079,12 +1166,14 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
   if (observationPlugins) for (const plugin of options.plugins ?? []) observationPlugins.add(plugin);
   const selectedPlacement = (item: (typeof plan.placements)[number]): boolean =>
     (!options.targets || options.targets.includes(item.target)) && (!observationPlugins || observationPlugins.has(item.pluginId));
+  const candidates = [...new Map([...projectSkillCandidates(plan), ...(options.projectSkillProbes ?? [])]
+    .filter(selectedPlacement).map((item) => [`${item.pluginId}\0${item.target}`, item])).values()];
   const scopes = [snapshot.user, ...(snapshot.project ? [snapshot.project] : [])];
   const observed: RecoveryStatus[] = [];
   // Scope order gives User discovery the neutral cwd before equivalent Project
   // probes reuse it. Codex also shares a mutable manager and neutral inventory.
   for (const demand of scopes) {
-    const nodes = plan.placements.filter((item) => selectedPlacement(item) && (item.scope === demand.scope
+    const nodes = [...plan.placements, ...(options.projectSkillProbes ?? [])].filter((item) => selectedPlacement(item) && (item.scope === demand.scope
       || demand.scope === 'project' && ['codex', 'claude', 'copilot'].includes(item.target)
         && item.contributions.some((contribution) => contribution.scope === 'project')));
     const expanded: DemandSnapshot = { ...demand,
@@ -1104,11 +1193,27 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
     observed.push(await readScopedRecoveryStatus({ ...options, onNativeStatus: undefined, scope: demand.scope,
       cwd: snapshot.context.projectRoot ?? options.cwd, observationPlugins, targets: options.targets, demandOverride: expanded }));
   }
-  const allTargets = observed.flatMap((status) => status.inventory?.flatMap((item) => item.targetResults) ?? []).map((target) => {
+  const scopedTargets = observed.flatMap((status) => status.inventory?.flatMap((item) => item.targetResults) ?? []);
+  const skillProviders = candidates.flatMap((candidate): ProjectSkillProvider[] => {
+    const matches = (target: RecoveryTarget) => target.pluginId === candidate.pluginId && target.agent === candidate.target;
+    const user = scopedTargets.find((target) => matches(target) && target.scope === 'user');
+    const project = scopedTargets.find((target) => matches(target) && target.scope === 'project');
+    if (!user || !project) return [];
+    const absent = user.deploymentObservations?.length && user.deploymentObservations.every(({ after }) =>
+      after.package === 'absent' && after.ownership === 'absent' && (after.registration === 'absent' || after.registration === 'not-applicable'));
+    return [{ pluginId: candidate.pluginId, target: candidate.target, sourceIdentity: candidate.plugin.sourceIdentity!,
+      projectCopy: projectSkillCopy(user, project, !!absent), userAbsent: !!absent, userNeedsRepair: !absent && !isInstalledSkillProvider(user) }];
+  });
+  if (skillProviders.length) {
+    globalPlan = deriveJointDemand(snapshot, skillProviders);
+    plan = requestedDemand === snapshot ? globalPlan : deriveJointDemand(requestedDemand, skillProviders);
+  }
+  const allTargets = scopedTargets.flatMap((target) => {
     const providers = plan.placements.filter((placement) => placement.pluginId === target.pluginId && placement.target === target.agent
       && (placement.scope === target.scope || target.scope === 'project'
         && ['codex', 'claude', 'copilot'].includes(target.agent) && placement.scope === 'user'
         && placement.contributions.some((entry) => entry.scope === 'project')));
+    if (!providers.length) return [];
     const contributions = providers.flatMap((provider) => provider.contributions
       .filter((entry) => provider.scope === target.scope || entry.scope === target.scope));
     return { ...target, contributions: contributions.map((entry) => ({ root: entry.root, scope: entry.scope, path: [...entry.path] })),
@@ -1116,6 +1221,14 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
       relation: contributions.some((entry) => entry.path.length === 1 && entry.scope === target.scope) ? 'root' as const : 'dependency' as const };
   });
   const inventory: RecoveryStatus['inventory'] = scopes.some((demand) => demand.roots !== null) ? [] : null;
+  const expected = new Set(plan.placements.map((item) => `${item.pluginId}\0${item.target}\0${item.scope}`));
+  const surplusSkills = scopedTargets.filter((target) => target.scope === 'project'
+    && !expected.has(`${target.pluginId}\0${target.agent}\0project`)
+    && skillProviders.some((provider) => provider.projectCopy === 'owned' && !provider.userAbsent && !provider.userNeedsRepair
+      && provider.pluginId === target.pluginId && provider.target === target.agent))
+    .map((target) => ({ ...target, reasons: [{ code: 'projectSkillDuplicatePending', pluginId: target.pluginId,
+      subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope },
+      message: 'Sync the Project plugin to remove the previous copy of its User Skill dependency.' }] }));
   const visibleInventory: NonNullable<RecoveryStatus['inventory']> = [];
   for (const demand of scopes) for (const root of demand.roots ?? []) {
     const targetResults: RecoveryTarget[] = [];
@@ -1145,6 +1258,12 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
         if (ownProvider?.installedVersion) target.installedVersion = ownProvider.installedVersion;
         target.blockers.push(...providers.flatMap((item) => item?.blockers ?? []));
         const reasons = providers.flatMap((item) => item?.reasons ?? []);
+        if (demand.scope === 'project') {
+          for (const copy of surplusSkills) {
+            if (copy.agent !== requirement.target || !requirement.dependencies.includes(copy.pluginId)) continue;
+            reasons.push(...copy.reasons);
+          }
+        }
         if (reasons.length) target.reasons = reasons;
         const componentGaps = providers.flatMap((item) => item?.componentGaps ?? []);
         if (componentGaps.length) target.componentGaps = uniqueRecoveryComponentGaps(componentGaps);
@@ -1163,13 +1282,12 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
     visibleInventory.push({ pluginId: root.pluginId, source: root.sourceId, sourceState: root.sourceState,
       blockers: root.blockers.map(diagnostic), targetResults });
   }
-  const expected = new Set(plan.placements.map((item) => `${item.pluginId}\0${item.target}\0${item.scope}`));
-  const extraObserved = observed.flatMap((status) => status.extraObserved)
+  const extraObserved = [...observed.flatMap((status) => status.extraObserved), ...surplusSkills]
     .filter((item) => !expected.has(`${item.pluginId}\0${item.agent}\0${item.scope}`));
   const targets = visibleInventory.flatMap((item) => item.targetResults);
   const globalTargets = targets.filter((target) => globalPlan.roots.some((root) => root.pluginId === target.pluginId && root.target === target.agent && root.scope === target.scope));
   const fullObservation = !selected || globalPlan.placements.every(selectedPlacement);
-  const knownFailure = globalPlan.errors.some((error) => ['targetsNotConfigured', 'dependencyExcluded', 'dependencyContractInvalid', 'targetPlacementConflict'].includes(error.code))
+  const knownFailure = globalPlan.errors.some((error) => ['targetsNotConfigured', 'dependencyExcluded', 'dependencyContractInvalid', 'targetPlacementConflict', 'projectSkillProviderConflict', 'userSkillProviderNotReady'].includes(error.code))
     || globalTargets.some((target) => ['absent', 'drifted', 'conflict'].includes(target.content ?? 'unknown')
       || target.blockers.some((entry) => entry.code === 'awCapabilityUnsupported'));
   const uncertain = !fullObservation || !globalPlan.complete || globalTargets.some((target) => target.content === 'unknown' || target.blockers.length > 0);
@@ -1185,8 +1303,9 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
       : scopes.some((demand) => demand.intent.state === 'unsupported-version') ? 'unsupported-version'
       : scopes.some((demand) => demand.intent.state === 'valid') ? 'valid' : 'absent' },
     selection: { agents: snapshot.preferences?.targets ?? [], origin: snapshot.preferences?.targets.length ? 'preference' : 'none', preferences: snapshot.user.preferences.state },
-    inventory: inventory === null ? null : visibleInventory, extraObserved, observedTargets: allTargets,
+    inventory: inventory === null ? null : visibleInventory, extraObserved, observedTargets: allTargets, projectSkillProviders: skillProviders,
     existingTargets: observed.flatMap((status) => status.existingTargets ?? []), ownedTargets: observed.flatMap((status) => status.ownedTargets ?? []),
+    retainedProjectPackages: observed.flatMap((status) => status.retainedProjectPackages ?? []),
     coverage: { native: nativeCoverage, portable: portableCoverage, scopes: snapshot.context.scopes,
       ...(snapshot.context.projectRoot ? { projectRoot: snapshot.context.projectRoot } : {}) },
     counts: { blocked: targets.filter((target) => target.blockers.length).length,

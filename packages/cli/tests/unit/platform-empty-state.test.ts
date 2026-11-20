@@ -11,6 +11,20 @@ import type { DeploymentObservation } from '../../src/platforms/contracts.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('native intentional empty currentness', () => {
+  it('keeps older OpenCode package evidence current when the package only contains an MCP server', () => {
+    const id = `sha256:${'a'.repeat(64)}`;
+    const scope = { kind: 'user' } as const;
+    const evidence: PlatformInputEvidence = {
+      schemaVersion: 1, kind: 'aw-platform-input', platform: 'opencode',
+      plugin: { sourceId: 'local', sourceIdentity: id, pluginId: 'local/mcp', version: '1.0.0' },
+      binding: { id, physicalKey: id, scope },
+      units: [{ id, physicalKey: id, renderScope: scope, output: 'package', kinds: ['skill', 'mcp'], inputDigest: id }],
+    };
+    const storedDigest = platformPackageInputDigest(evidence);
+    expect(platformPackageInputDigest(evidence, [{ id: 'mcp:service', nativeName: 'service', relativeOutputs: ['index.mjs'] }]))
+      .toBe(storedDigest);
+  });
+
   it('rejects a damaged capability receipt that changes one installed Skill into zero', async () => {
     const { env } = getCurrentSourceTestIsolation();
     const id = `sha256:${'a'.repeat(64)}`;

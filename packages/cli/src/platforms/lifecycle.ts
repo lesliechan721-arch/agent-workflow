@@ -97,6 +97,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   if (observation.physicalKey !== binding.physicalKey) {
     return blocked('deploymentEvidenceMismatch', 'The observation does not belong to this deployment. Prepare the operation again.');
   }
+  const legacyConflict = observation.diagnostics.find(({ code }) => code === 'antigravityLegacyPackageUnconfirmed');
+  if (!removing && legacyConflict) return { status: 'blocked', diagnostics: [legacyConflict] };
   if (!removing && !expected.components.length && expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap))) {
     const residual = evidence.ownership.filter((slot) => slot.state !== 'absent').map((slot) =>
       contributionDestination(slot.component) ?? evidence.layout.activationPath);
@@ -109,6 +111,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   if (bundles.length > 1) return blocked('shared-projection-conflict', 'This deployment has conflicting package projections. Existing output was kept.');
   const allContributions = input.projections.flatMap((projection) => projection.supplements);
   if (!removing && !retainPackage && bundles.length && (observation.ownership === 'foreign' || observation.ownership === 'unknown')) {
+    const collision = observation.diagnostics.find(({ code }) => code === 'antigravityProjectPackageConflict');
+    if (collision) return { status: 'blocked', diagnostics: [collision] };
     return blocked('deploymentOwnershipUnconfirmed', 'The deployment ownership is not safe for replacement. Check the output and prepare again.');
   }
   if (!removing && expected.components.length && !bundles.length && !allContributions.length) {
@@ -436,6 +440,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
   }
   receipt.after = await observe();
+  receipt.diagnostics.push(...receipt.after.diagnostics.filter(({ code }) =>
+    code === 'antigravityLegacyPackageUnconfirmed' || code === 'antigravityProjectPackageConflict'));
   const afterConsumer = selectedNativeConsumer(binding, receipt.after);
   const beforeConsumer = selectedNativeConsumer(binding, state.before);
   const requiredActivation = requiredDeploymentActivation(binding, receipt.after);

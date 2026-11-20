@@ -224,13 +224,17 @@ function projectProcessTreeDiagnostics(diagnostics) {
   });
 }
 
-// This Hosted fixture deliberately carries just its current public marker
-// through the production script environment boundary. It adds no parent env.
-export function createManagedPluginTraceRunner(base, { env = process.env, emit, nextOperationId }) {
+// Carry only the outer qualification lease's marker into the isolated script.
+// The production runner still creates its own marker and supervises the child.
+export function createManagedPluginTraceRunner(base, { env = process.env, emit, nextOperationId } = {}) {
   let operationId = 0;
   return function managedPluginTraceRunner(invocation, options) {
     const marker = env[PUBLIC_MARKER];
     if (typeof marker !== 'string' || marker.length === 0) return base(invocation, options);
+    const existing = invocation.env?.[PUBLIC_MARKER];
+    if (existing !== undefined && existing !== marker) throw new Error('Qualification plugin invocation has a conflicting public process marker.');
+    const tracedInvocation = { ...invocation, env: { ...invocation.env, [PUBLIC_MARKER]: marker } };
+    if (!emit) return base(tracedInvocation, options);
     const details = { role: 'plugin-script', operationId: nextOperationId ? nextOperationId() : ++operationId,
       parentPid: process.pid, startTime: new Date().toISOString(), publicMarkerProvided: true };
     const record = (phase, value, threw = false) => {
@@ -246,7 +250,6 @@ export function createManagedPluginTraceRunner(base, { env = process.env, emit, 
         } : {}) });
       } catch { /* Diagnostics cannot replace the original result or error. */ }
     };
-    const tracedInvocation = { ...invocation, env: { ...invocation.env, [PUBLIC_MARKER]: marker } };
     const tracedOptions = { ...options, onSpawn(child) {
       try { options.onSpawn?.(child); } catch { /* Diagnostic only. */ }
       try {

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -20,6 +19,7 @@ import {
   SKILL_OWNER_MARKER,
 } from './ownership.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { compareSkillPaths, createFileTreeContentDigest, sortedSkillFileEntries } from './package-content.js';
 import { validateSkillFrontmatterCapabilities } from '@lesliechan721/aw-plugin-core/manifest';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
@@ -41,26 +41,6 @@ export interface DynamicSkillTree {
 
 export function validatePortableSkillName(value: string, fieldName = 'portable Skill name'): void {
   validateCorePortableSkillName(value, fieldName);
-}
-
-function compareSkillPaths(left: string, right: string): number {
-  const byteOrder = Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
-  if (byteOrder !== 0 || left === right) return byteOrder;
-  return left < right ? -1 : 1;
-}
-
-function assertWellFormedSkillPath(relativePath: string): void {
-  if (Buffer.from(relativePath, 'utf8').toString('utf8') !== relativePath) {
-    throw new Error(`Skill 文件路径必须是有效 Unicode：${JSON.stringify(relativePath)}`);
-  }
-}
-
-function sortedSkillFileEntries(
-  files: Record<string, Buffer>,
-): Array<[string, Buffer]> {
-  const entries = Object.entries(files);
-  for (const [relativePath] of entries) assertWellFormedSkillPath(relativePath);
-  return entries.sort(([left], [right]) => compareSkillPaths(left, right));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -401,20 +381,7 @@ export async function createDynamicSkillExpectedTree(options: {
 }
 
 export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): string {
-  const hash = crypto.createHash('sha256');
-  for (const [relativePath, content] of sortedSkillFileEntries(tree.files)) {
-    const relativePathBytes = Buffer.from(relativePath, 'utf8');
-    const pathLength = Buffer.alloc(8);
-    const contentLength = Buffer.alloc(8);
-    pathLength.writeBigUInt64BE(BigInt(relativePathBytes.length));
-    contentLength.writeBigUInt64BE(BigInt(content.length));
-    hash.update(pathLength);
-    hash.update(relativePathBytes);
-    hash.update(catalogFileMode(relativePath, tree.fileModes?.[relativePath] ?? 0o644));
-    hash.update(contentLength);
-    hash.update(content);
-  }
-  return `sha256:${hash.digest('hex')}`;
+  return createFileTreeContentDigest(tree);
 }
 
 export async function skillDirectoryMatchesExpectedTree(

@@ -177,8 +177,8 @@ it('keeps Antigravity scope paths separate while co-readers share each placement
   expect(user.bindings[0]?.consumers).toHaveLength(2);
   expect(project.bindings[0]?.route).toBe('antigravity-directory');
   expect(project.bindings[0]?.consumers).toHaveLength(2);
-  expect((await physical(project)).packageRoot).toBe(path.join(a, '.agents', 'plugins', 'aw-test-example'));
-  expect((await physical(secondProject)).packageRoot).toBe(path.join(b, '.agents', 'plugins', 'aw-test-example'));
+  expect((await physical(project)).packageRoot).toBe(path.join(a, '.agents', 'plugins', 'example'));
+  expect((await physical(secondProject)).packageRoot).toBe(path.join(b, '.agents', 'plugins', 'example'));
   expect(new Set([user, project, secondProject].map((resolved) => resolved.bindings[0]?.physicalKey)).size).toBe(3);
 
   const profile = getQualifiedPlatformProfile('antigravity', { platform: 'darwin', arch: 'arm64' });

@@ -11,7 +11,7 @@ import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
-  recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+  recoverySummaryErrors, userSkillProviderRepairs, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import { projectComponentDeliveryHistory, projectDeliveryNoticeHistory, projectSkillInvocationHistory } from './diagnostic-projection.js';
 import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
 import { safeDiagnosticCode } from './diagnostics.js';
@@ -92,11 +92,15 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         const permission = permissionCodes.includes(code);
         const stale = code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync');
         const retry = remaining && entry.execution === 'failed' && (entry.observation === 'missing' || entry.content === 'absent');
+        const providers = remaining && code === 'userSkillProviderNotReady' ? userSkillProviderRepairs(entry) : [];
         if (remaining || stale) details.push(checkStatus);
-        if (permission || stale || retry) {
+        if (code === 'providerSwitchVerificationFailed' && receipt.command === 'uninstall' && entry.scope === 'user') {
+          details.push('先同步项目插件并核实项目依赖。确认个人副本可以清理后，在个人安装位置审阅仅移除输出。');
+        }
+        if (permission || stale || retry || providers.length) {
           if (permission) details.push('从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
           // Store reviewable commands from structured positions only. Backend prose may contain private data.
-          for (const position of recoveryRetryDispositions(receipt, [entry])) {
+          for (const position of [...providers, ...recoveryRetryDispositions(receipt, [entry])]) {
             try {
               const root = canonicalPluginId(position.pluginId);
               if (permission) {

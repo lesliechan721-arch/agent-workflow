@@ -4,7 +4,7 @@ import type { PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { inspectOwnedComponents, parseOwnedTextHeader, readSkillOwnerMarker, type OwnedComponent } from '../utils/ownership.js';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
-import { getDeploymentLayout, getNativePackageName, type DeploymentLayout } from './layout.js';
+import { antigravityLegacyProjectSlot, getDeploymentLayout, getNativePackageName, isAntigravityProjectDirectory, type DeploymentLayout } from './layout.js';
 import { inspectNativeDeployment } from './inspection-native.js';
 import { inspectOpenCodeDeployment } from './inspection-opencode.js';
 import { tryParseStrictSemVer } from '../utils/manifest.js';
@@ -44,13 +44,22 @@ export function unknownDeployment(binding: DeploymentBinding, code = 'deployment
     prerequisites: { agentConsumers: { observation: binding.platform === 'pi' ? 'unknown' : 'complete', candidates: [], reasonCodes: binding.platform === 'pi' ? ['agentConsumerDiscoveryUnverified'] : [] } },
     diagnostics: [{ code, severity: 'warning', message: 'The deployment could not be fully observed. Check permissions and client status before a change.', subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } }] };
 }
-export function deploymentPackageComponent(binding: DeploymentBinding, layout: DeploymentLayout): OwnedComponent {
+export function deploymentPackageComponent(binding: DeploymentBinding, layout: DeploymentLayout): Extract<OwnedComponent, { kind: 'owned-directory' }> {
   const shared = ['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(binding.route);
-  return { kind: 'owned-directory', path: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
+  const allowedRoot = isAntigravityProjectDirectory(binding)
+    ? path.dirname(path.dirname(layout.physicalIdentity.namespaceRoot)) : path.dirname(layout.packageRoot);
+  return { kind: 'owned-directory', path: layout.packageRoot, allowedRoot,
     identity: { owner: 'agent-workflows', plugin: getNativePackageName(binding.plugin), pluginId: binding.plugin.pluginId,
       sourceId: binding.plugin.sourceId, platform: binding.platform, scope: shared ? 'user' : binding.scope.kind,
       sourceIdentity: binding.plugin.sourceIdentity, physicalKey: binding.physicalKey,
       artifactKey: path.basename(layout.packageRoot) } };
+}
+
+export function antigravityLegacyProjectComponent(binding: DeploymentBinding, layout: DeploymentLayout):
+  ReturnType<typeof deploymentPackageComponent> | undefined {
+  const slot = antigravityLegacyProjectSlot(binding, layout);
+  if (!slot) return undefined;
+  return deploymentPackageComponent({ ...binding, physicalKey: slot.physicalKey }, { ...layout, packageRoot: slot.path });
 }
 
 /** Static expected host files can be checked without preparing or rendering a package. */
@@ -151,13 +160,36 @@ export async function inspectDeployment(ctx: ReadContext, binding: DeploymentBin
       return result;
     }
     const packageComponent = deploymentPackageComponent(binding, layout);
-    const inspected = await inspectOwnedComponents({ components: [packageComponent] });
+    const legacyComponent = antigravityLegacyProjectComponent(binding, layout);
+    const inspected = await inspectOwnedComponents({ components: legacyComponent ? [packageComponent, legacyComponent] : [packageComponent] });
     const state = inspected.components[0]!.state;
+    const legacy = inspected.components[1];
+    // A different AW plugin can legitimately have the old basename as its short name.
+    if (legacyComponent && legacy && legacy.state !== 'absent'
+      && (!legacy.collision?.actualOwner || legacy.collision.actualOwner === binding.plugin.pluginId)) {
+      result.antigravityLegacyProjectPackage = { path: legacyComponent.path,
+        state: legacy.state === 'present' ? 'owned' : 'unconfirmed' };
+      if (legacy.state !== 'present') result.diagnostics.push({
+        code: 'antigravityLegacyPackageUnconfirmed', severity: 'error',
+        message: 'The previous Antigravity project path contains unconfirmed content. Back it up and move it out of the project plugin directory if it is obsolete.',
+        subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
+        detail: { reasonCode: 'antigravityLegacyPackageUnconfirmed', path: legacyComponent.path },
+      });
+    }
     result.package = state === 'absent' ? 'absent' : state === 'error' ? 'unknown' : 'present';
     result.ownership = state === 'foreign' ? 'foreign' : state === 'error' ? 'unknown' : state === 'absent' ? 'absent' : 'aw';
+    if (packageComponent.identity.platform === 'antigravity' && packageComponent.identity.scope === 'project' && state === 'foreign') {
+      result.diagnostics.push({
+        code: 'antigravityProjectPackageConflict', severity: 'error',
+        message: 'The Antigravity project plugin path contains different or modified content. Back it up and move it out of the project plugin directory before syncing.',
+        subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
+        detail: { reasonCode: 'antigravityProjectPackageConflict', path: packageComponent.path },
+      });
+    }
     if (state === 'present' || state === 'partial') {
       result.packageVersion = await inspectPackageVersion(ctx, binding, layout);
-      const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot), expectedIdentity: packageComponent.identity });
+      const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: packageComponent.allowedRoot,
+        expectedIdentity: packageComponent.identity });
       for (const component of marker?.nativeProjection?.components ?? []) {
         const outputs = await Promise.all(component.relativeOutputs.map((output) => inspectRelativeOutput(layout.packageRoot, output)));
         const presence = !outputs.length || outputs.includes('unknown') ? 'unknown' : outputs.includes('absent') ? 'absent' : 'present';

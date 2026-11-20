@@ -26,9 +26,8 @@ const orderedSkills = {
   [dependencyB]: ['dependency-b-first', 'dependency-b-second'],
 };
 const names = Object.keys(orderedSkills);
-const projectGit = name => `aw-qualification-official-git-toolkit:${name}`;
+const projectGit = name => `git-toolkit:${name}`;
 const direct = 'aw-scope-proof-direct';
-const projectKey = name => `aw-${source}-${name}`;
 const noticeCode = 'skillInvocationPolicyNotGuaranteed';
 const skillFile = (folder, name) => path.join(folder, 'skills', name, 'SKILL.md');
 const skillText = (name, revision) => [
@@ -61,7 +60,7 @@ async function writePlugin(workspace, name, revision) {
 async function projectBytes(cwd, revision) {
   const records = [];
   for (const name of names) {
-    const folder = path.join(cwd, '.agents', 'plugins', projectKey(name));
+    const folder = path.join(cwd, '.agents', 'plugins', name);
     const manifest = JSON.parse(await fs.readFile(path.join(folder, nativeManifest), 'utf8'));
     assert.equal(manifest.version, `1.0.${revision}`);
     assert.equal(manifest.name, name);
@@ -169,22 +168,23 @@ async function runQualification(executable, authenticatedSkills, report) {
     await fs.writeFile(foreign, 'Retain unrelated project files.\n');
 
     const approved = [direct, ...['git-commit', ...ordinaryGitSkills].map(projectGit),
-      ...names.flatMap(name => [1, 2].flatMap(revision => skillsFor(name, revision).map(skill => `${projectKey(name)}:${skill}`)))];
+      ...names.flatMap(name => [1, 2].flatMap(revision => skillsFor(name, revision).map(skill => `${name}:${skill}`)))];
     const samples = {};
     report.sessions = { status: 'unverified', user: 'unobserved', project: 'unobserved',
       ...(authenticatedSkills ? { samples } : { reason: 'authentication-session-probe-not-requested' }) };
-    const query = async (stage, cwd) => {
+    const query = async (stage, cwd, projectGitPresent = false) => {
       if (!authenticatedSkills) return;
       try {
         const stdout = await native(antigravitySkillQuery, cwd, sessionEnv);
-        samples[stage] = parseAntigravitySkillInventory({ status: 'observed', exitCode: 0, stdout }, approved, cwd);
+        const personalGit = projectGitPresent ? undefined : path.join(sessionEnv.HOME, '.gemini', 'config', 'plugins', 'git-toolkit');
+        samples[stage] = parseAntigravitySkillInventory({ status: 'observed', exitCode: 0, stdout }, approved, cwd, personalGit);
       } catch (error) {
         const wrongLocation = error?.message === 'skill-inventory-location-mismatch';
         samples[stage] = wrongLocation ? { status: 'mismatch', reason: 'skill-inventory-location-mismatch' }
           : { status: 'unverified', reason: 'session-inventory-unconfirmed' };
       }
     };
-    await query('git-project-a', a);
+    await query('git-project-a', a, true);
     await query('git-project-b', b);
 
     await aw(['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace);
@@ -201,8 +201,8 @@ async function runQualification(executable, authenticatedSkills, report) {
     requireNotice(await aw(syncProject), []);
     report.firstPublication = await projectBytes(a, 1);
     assert.equal(report.firstPublication.length, 7);
-    for (const name of names) await assert.rejects(fs.stat(path.join(b, '.agents', 'plugins', projectKey(name))), { code: 'ENOENT' });
-    await query('first-project-a', a);
+    for (const name of names) await assert.rejects(fs.stat(path.join(b, '.agents', 'plugins', name)), { code: 'ENOENT' });
+    await query('first-project-a', a, true);
     await query('first-project-b', b);
     requireNotice(await aw(['plugin', 'install', id, ...projectContext], b), []);
     const bBytes = await projectBytes(b, 1);
@@ -224,11 +224,11 @@ async function runQualification(executable, authenticatedSkills, report) {
     assert.deepEqual(await projectBytes(b, 1), bBytes);
     await userRegistration(a);
     await userRegistration(b);
-    await query('updated-project-a', a);
+    await query('updated-project-a', a, true);
     await query('updated-project-b', b);
 
     requireNotice(await aw(['plugin', 'remove', id, gitPluginId, '--scope', 'project', '--yes']), []);
-    for (const key of [...names.map(projectKey), 'aw-qualification-official-git-toolkit']) {
+    for (const key of [...names, 'git-toolkit']) {
       await assert.rejects(fs.stat(path.join(a, '.agents', 'plugins', key)), { code: 'ENOENT' });
     }
     assert.deepEqual(await projectBytes(b, 1), bBytes);
@@ -242,7 +242,7 @@ async function runQualification(executable, authenticatedSkills, report) {
     await query('removed-project-b', b);
     if (Object.values(samples).some(sample => sample.status === 'mismatch')) throw new Error('skill-inventory-location-mismatch');
     if (authenticatedSkills && Object.values(samples).every(sample => sample.status === 'SUCCESS')) {
-      const projectNames = revision => names.flatMap(name => skillsFor(name, revision).map(skill => `${projectKey(name)}:${skill}`));
+      const projectNames = revision => names.flatMap(name => skillsFor(name, revision).map(skill => `${name}:${skill}`));
       const present = (stage, expected, withGit = true) => {
         const fixtures = [...expected, ...(withGit ? ['git-commit', ...ordinaryGitSkills].map(projectGit) : [])];
         const rows = samples[stage].skills;

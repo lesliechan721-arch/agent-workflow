@@ -130,6 +130,14 @@ export function recoveryRetryTargets(receipt: RecoveryReceipt, targets: readonly
 
 export type RecoveryRetryDisposition = RecoveryPosition & { kind: 'cli' | 'exact-project' };
 
+export function userSkillProviderRepairs(target: RecoveryTarget): RecoveryRetryDisposition[] {
+  const roots = new Set<string>();
+  for (const { code, subject } of target.blockers) {
+    if (code === 'userSkillProviderNotReady' && subject?.scope === 'user' && subject.target === target.agent && subject.pluginId) roots.add(subject.pluginId);
+  }
+  return [...roots].map((pluginId) => ({ pluginId, scope: 'user', agent: target.agent, kind: 'cli' }));
+}
+
 export function recoveryRootDisposition(root: RecoveryPosition, bothPending: boolean, userMayBeVisited: boolean): RecoveryRetryDisposition {
   const scope = bothPending ? 'project' : root.scope;
   return { ...root, scope, kind: scope === 'project' && !bothPending && userMayBeVisited ? 'exact-project' : 'cli' };

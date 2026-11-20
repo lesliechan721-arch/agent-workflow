@@ -151,6 +151,11 @@ test('Grok only offers trust recovery for a fully explained dependency chain', (
   const value = { data: { targetResults: [grandchild, child, parent] }, diagnostics: [] };
   const edges = new Map([[parent.pluginId, []], [child.pluginId, [parent.pluginId]], [grandchild.pluginId, [child.pluginId]]]);
   assert.deepEqual(grokTrustTargets(value, edges, new Set()), [parent]);
+  const propagated = { ...child, execution: 'not-run', blockerCodes: ['dependencyInstallFailed', 'nativeTrustRequired'] };
+  const mixed = { ...value, data: { targetResults: [grandchild, propagated, parent] } };
+  assert.deepEqual(grokTrustTargets(mixed, edges, new Set()), [parent]);
+  assert.deepEqual(grokTrustTargets(mixed, new Map([...edges, [child.pluginId, []]]), new Set()), []);
+  assert.deepEqual(grokTrustTargets({ ...mixed, data: { targetResults: [{ ...propagated, execution: 'partial' }, parent] } }, edges, new Set()), []);
   assert.deepEqual(grokTrustTargets(value, edges, new Set([parent.pluginId])), []);
   assert.deepEqual(grokTrustTargets(value, new Map([...edges, [child.pluginId, []]]), new Set()), []);
   value.data.targetResults.push(row('official/unrelated', 'operationPlanStale'));

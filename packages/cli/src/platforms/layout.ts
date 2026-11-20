@@ -19,6 +19,9 @@ export function getNativePackageName(plugin: PluginIdentity): string {
 export function getDeploymentResourceKey(plugin: PluginIdentity): string {
   return `aw-${plugin.sourceId}-${getNativePackageName(plugin)}`;
 }
+export function isAntigravityProjectDirectory(binding: DeploymentBinding): boolean {
+  return binding.route === 'antigravity-directory' && binding.scope.kind === 'project';
+}
 export interface DeploymentLayout {
   physicalIdentity: PhysicalIdentity;
   packageRoot: string;
@@ -28,6 +31,13 @@ export interface DeploymentLayout {
   nativeIdentity: NativeIdentity;
   marketplaceRoot: string | null;
   marketplaceName: string | null;
+}
+/** The exact previous slot of a short-name Project binding. */
+export function antigravityLegacyProjectSlot(binding: DeploymentBinding, layout: DeploymentLayout):
+  { path: string; physicalKey: string } | undefined {
+  if (!isAntigravityProjectDirectory(binding) || layout.physicalIdentity.resourceKey !== getNativePackageName(binding.plugin)) return undefined;
+  const identity = { ...layout.physicalIdentity, resourceKey: getDeploymentResourceKey(binding.plugin) };
+  return { path: path.join(identity.namespaceRoot, identity.resourceKey), physicalKey: getPhysicalKey(identity) };
 }
 export function getInstallRoute(platform: DeploymentBinding['platform'], scope: ScopeRef, product: DeploymentBinding['consumers'][number]): InstallRoute {
   switch (platform) {
@@ -49,7 +59,7 @@ function configRoot(binding: DeploymentBinding): string {
 }
 export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentLayout> {
   const pluginName = getNativePackageName(binding.plugin);
-  const resourceKey = getDeploymentResourceKey(binding.plugin);
+  let resourceKey = getDeploymentResourceKey(binding.plugin);
   const hostRoot = await canonicalNamespaceRoot(configRoot(binding));
   const scope: ScopeRef = binding.scope.kind === 'project' ? { kind: 'project', projectRoot: await canonicalNamespaceRoot(binding.scope.projectRoot) } : { kind: 'user' };
   const home = resolveUserHome(ctx.env ?? process.env, ctx.platform);
@@ -88,12 +98,21 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
       break;
     case 'antigravity-directory':
       namespaceRoot = scope.kind === 'user' ? path.join(hostRoot, 'plugins') : path.join(scopeRoot, '.agents', 'plugins');
-      packageRoot = path.join(namespaceRoot, resourceKey);
       activationPath = namespaceRoot;
       // Check the declared directory chain before canonicalization can follow
       // a project link into another project's or the user's plugin store.
-      await assertSafeFileMutationPath({ filePath: path.join(packageRoot, SKILL_OWNER_MARKER),
-        allowedRoot: scope.kind === 'user' ? hostRoot : scopeRoot, label: 'Antigravity plugin directory' });
+      if (scope.kind === 'project') {
+        await assertSafeFileMutationPath({ filePath: path.join(namespaceRoot, SKILL_OWNER_MARKER),
+          allowedRoot: scopeRoot, label: 'Antigravity plugin directory' });
+        const legacyKey = getPhysicalKey({ sourceIdentity: binding.plugin.sourceIdentity, pluginId: binding.plugin.pluginId,
+          platform: binding.platform, route: binding.route, namespaceRoot, resourceKey });
+        if (binding.physicalKey !== legacyKey) resourceKey = pluginName;
+      }
+      packageRoot = path.join(namespaceRoot, resourceKey);
+      if (scope.kind === 'user') {
+        await assertSafeFileMutationPath({ filePath: path.join(packageRoot, SKILL_OWNER_MARKER),
+          allowedRoot: hostRoot, label: 'Antigravity plugin directory' });
+      }
       break;
     case 'opencode-directory':
       namespaceRoot = scope.kind === 'user' ? path.join(hostRoot, 'plugins') : path.join(scopeRoot, '.opencode', 'plugins');
@@ -125,9 +144,13 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
       kinds = ['skill'];
       break;
   }
-  namespaceRoot = await canonicalNamespaceRoot(namespaceRoot);
-  packageRoot = await canonicalizePathThroughExistingAncestor(packageRoot);
-  activationPath = await canonicalizePathThroughExistingAncestor(activationPath);
+  // Keep the declared Project path. A symlink introduced in the plugin slot
+  // is a collision for the directory owner reader.
+  if (!isAntigravityProjectDirectory(binding)) {
+    namespaceRoot = await canonicalNamespaceRoot(namespaceRoot);
+    packageRoot = await canonicalizePathThroughExistingAncestor(packageRoot);
+    activationPath = await canonicalizePathThroughExistingAncestor(activationPath);
+  }
   const physicalIdentity: PhysicalIdentity = { sourceIdentity: binding.plugin.sourceIdentity, pluginId: binding.plugin.pluginId,
     platform: binding.platform, route: binding.route, namespaceRoot, resourceKey };
   const physicalKey = getPhysicalKey(physicalIdentity);

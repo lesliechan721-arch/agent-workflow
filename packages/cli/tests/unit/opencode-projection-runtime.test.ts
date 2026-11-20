@@ -18,7 +18,7 @@ it.each([
   ['manual-only', 'disable-model-invocation: true\n', false],
   ['explicit model access', 'disable-model-invocation: false\n', true],
   ['metadata-only', 'metadata:\n  opencode/autoinvoke: "false"\n', undefined],
-] as const)('registers the OpenCode %s Skill at its absolute location without an SDK install', async (_case, policy, autoinvoke) => {
+] as const)('registers the OpenCode %s Skill at its absolute path on both V2 APIs without an SDK install', async (_case, policy, autoinvoke) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-opencode-projection-'));
   temporaryRoots.push(root);
   const skillText = `---\nname: check\ndescription: Check the input.\n${policy}---\nRun the check.\n`;
@@ -59,7 +59,7 @@ it.each([
   expect(manifest.dependencies).toBeUndefined();
   const entrypoint = path.resolve(bundle, manifest.exports['.']);
   const extension = await import(/* @vite-ignore */ pathToFileURL(entrypoint).href);
-  const registered: Array<{ id: string; name: string; description: string; content: string; location: string; autoinvoke?: boolean }> = [];
+  const registered: Array<{ id: string; name: string; description: string; content: string; path: string; location: string; autoinvoke?: boolean }> = [];
   const cleanup = await extension.default.setup({ skill: {
     transform: async (edit: (editor: {
       get: (id: string) => typeof registered[number] | undefined;
@@ -70,10 +70,11 @@ it.each([
     },
   } });
   expect(extension.default.id).toBe('aw-source-example');
+  const skillPath = path.join(bundle, 'skills/check/SKILL.md');
   expect(registered).toEqual([{ id: 'check', name: 'check', description: 'Check the input.', content: 'Run the check.\n',
-    location: path.join(bundle, 'skills/check/SKILL.md'), ...(autoinvoke === undefined ? {} : { autoinvoke }) }]);
-  expect(path.isAbsolute(registered[0]!.location)).toBe(true);
-  const final = await fs.readFile(registered[0]!.location, 'utf8');
+    path: skillPath, location: skillPath, ...(autoinvoke === undefined ? {} : { autoinvoke }) }]);
+  expect(path.isAbsolute(registered[0]!.path)).toBe(true);
+  const final = await fs.readFile(skillPath, 'utf8');
   if (autoinvoke !== undefined) {
     expect(YAML.parse(final.split('---')[1]!)).toEqual({
       name: 'check', description: 'Check the input.', metadata: { 'opencode/autoinvoke': String(autoinvoke) },

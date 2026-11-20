@@ -186,6 +186,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/native-results"
           node scripts/qualification/native-platform-public-components.mjs --target generic --suite candidate --report "$RUNNER_TEMP/native-results/generic-shipped.json"
+          node scripts/qualification/native-platform-public-components.mjs --target generic --scope project --suite project-inheritance --report "$RUNNER_TEMP/native-results/generic-project-inheritance.json"
       - name: Verify the public Cursor component matrix with its pinned Linux x64 distribution
         if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
         shell: bash

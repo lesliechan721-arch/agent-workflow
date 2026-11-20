@@ -12,7 +12,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const antigravitySkillQuery = ['-p', '/skills', '--output-format', 'json'];
 
 /** Only the known fixtures leave memory. The response can contain account and local path data. */
-export function parseAntigravitySkillInventory(record, expectedNames, projectRoot) {
+export function parseAntigravitySkillInventory(record, expectedNames, projectRoot, inheritedPluginDirectory) {
   if (record.status !== 'observed' || record.exitCode !== 0) throw new Error('skill-inventory-query-failed');
   let report;
   try { report = JSON.parse(record.stdout); } catch { throw new Error('skill-inventory-invalid-json'); }
@@ -20,7 +20,13 @@ export function parseAntigravitySkillInventory(record, expectedNames, projectRoo
   if (report?.status !== 'SUCCESS' || report.num_turns !== 0 || report.command?.name !== 'skills'
     || !Array.isArray(skills) || !skills.every(skill => typeof skill?.name === 'string')
     || (report.usage && Object.values(report.usage).some(value => value !== 0))) throw new Error('skill-inventory-unconfirmed');
-  const matched = skills.filter(skill => expectedNames.includes(skill.name));
+  const matched = skills.filter(skill => {
+    if (!expectedNames.includes(skill.name)) return false;
+    const [plugin, name] = skill.name.split(':');
+    if (!inheritedPluginDirectory || !name || plugin !== path.basename(inheritedPluginDirectory)) return true;
+    const personal = path.join(inheritedPluginDirectory, 'skills', name);
+    return skill.path !== personal && skill.path !== path.join(personal, 'SKILL.md');
+  });
   if (new Set(matched.map(({ name }) => name)).size !== matched.length
     || matched.some(({ model_invocable }) => typeof model_invocable !== 'boolean')) throw new Error('skill-inventory-ambiguous');
   if (projectRoot) for (const skill of matched) {

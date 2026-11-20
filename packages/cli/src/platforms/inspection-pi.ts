@@ -29,6 +29,14 @@ interface ConfiguredPackage {
   scope: ScopeRef['kind'];
   source: string;
   installedPath?: string;
+  filtered?: boolean;
+}
+
+const projectUserSkillSources = new WeakMap<DeploymentObservation, Set<string>>();
+
+/** Exact, unfiltered User registrations visible to Pi in this project. */
+export function piProjectListsUserSkills(observation: DeploymentObservation, source: string): boolean {
+  return projectUserSkillSources.get(observation)?.has(source) === true;
 }
 
 const projectRegistrations = new WeakMap<DeploymentObservation, (string | null)[]>();
@@ -61,7 +69,7 @@ function nativePackages(text: string): ConfiguredPackage[] {
     } else if (line.startsWith('  ') && scope) {
       const source = line.slice(2).replace(/ \(filtered\)$/u, '');
       if (!source || source.trim() !== source) throw new Error('piNativeListInvalid');
-      entries.push({ scope, source });
+      entries.push({ scope, source, ...(line.endsWith(' (filtered)') ? { filtered: true } : {}) });
     } else throw new Error('piNativeListInvalid');
   }
   if (!seen.size || [...seen].some((scope) => !entries.some((entry) => entry.scope === scope))) throw new Error('piNativeListInvalid');
@@ -367,6 +375,9 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
   if (binding.scope.kind === 'project') {
     scopes.push({ root: path.join(binding.scope.projectRoot, '.pi'), scope: binding.scope, settings: project, trust: projectTrust });
   }
+  const userSkillSources = new Set(listed.flatMap((entry) =>
+    entry.scope === 'user' && !entry.filtered && entry.installedPath && localSource(entry.source, agentRoot, home) === entry.installedPath
+      ? [entry.installedPath] : []));
   const sourcesByIdentity = new Map<string, { root: string; entry: SourceScope; patterns?: string[]; delta?: string[]; autoload: boolean }>();
   for (const entry of scopes) {
     const sources = entry.settings.packages ?? [];
@@ -382,6 +393,7 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
       const parsed = sourceLocation(source, entry.root, home);
       const root = native?.installedPath ?? parsed?.root;
       const identity = parsed?.identity ?? root;
+      if (root && (filter.autoload === false || filter.skills !== undefined)) userSkillSources.delete(root);
       if (!root || !identity) {
         if (entry.trust !== 'blocked' && patterns?.length !== 0) complete = false;
         continue;
@@ -419,6 +431,7 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
   for (const { root, entry, patterns, delta, autoload } of sourcesByIdentity.values()) {
     await inspectRoot(root, entry, patterns, delta, 'package', autoload);
   }
+  if (binding.scope.kind === 'project') projectUserSkillSources.set(result, userSkillSources);
   const configurationEvidence = digest(evidence);
   for (const candidate of candidates) candidate.configurationEvidence = configurationEvidence;
   result.prerequisites.agentConsumers = { observation: complete ? 'complete' : 'unknown', candidates,

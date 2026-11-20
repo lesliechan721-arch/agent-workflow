@@ -163,6 +163,8 @@ export interface DeploymentConfigurationObservation {
   reasonCodes: string[];
 }
 export interface DeploymentObservation {
+  /** Historical Project copy at the previous Antigravity namespaced path. */
+  antigravityLegacyProjectPackage?: { path: string; state: 'owned' | 'unconfirmed' };
   /** Version read from the verified owned package descriptor; absence means unknown. */
   packageVersion?: string;
   /** Observed native installation bytes; absence does not confirm the installed content. */

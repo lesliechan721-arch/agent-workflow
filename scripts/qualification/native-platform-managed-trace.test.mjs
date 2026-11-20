@@ -49,11 +49,51 @@ test('injects only the current public marker into each qualification script call
   assert.notEqual(records[0].operationId, records[3].operationId);
   const encoded = JSON.stringify(records);
   for (const secret of ['fixture-marker', 'next-fixture-marker', 'private-', 'isolated-']) assert(!encoded.includes(secret));
+  assert.throws(() => wrapped({ ...invocation, env: { [PUBLIC_MARKER]: 'other-lease' } }, options),
+    /conflicting public process marker/);
+  assert.equal(calls, 2);
   const unchangedOptions = Object.freeze({ timeoutMs: 456 });
   const unchanged = createManagedPluginTraceRunner((received, receivedOptions) => {
     assert.equal(received, invocation); assert.equal(receivedOptions, unchangedOptions); return Promise.resolve(result);
   }, { env: { PARENT_SECRET: 'private-parent' }, emit() { throw new Error('trace failure'); } });
   assert.equal(await unchanged(invocation, unchangedOptions), result);
+});
+
+// Exercise the component preload with a real isolated renderer. The outer
+// observer and the renderer must each retain their own exact launch marker.
+test('supervises a Linux component renderer across its private environment', {
+  skip: process.platform !== 'linux', timeout: 20_000,
+}, async (t) => {
+  const { executePublicAw } = await import('./native-platform-public-process.mjs');
+  const { prepareEnvironment } = await import('./native-platform-runtime.mjs');
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-marker-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const script = path.join(cwd, 'renderer.mjs');
+  const launcher = path.join(cwd, 'launch.mjs');
+  await fs.writeFile(script, `
+    import { createHash } from 'node:crypto';
+    const outer = process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER;
+    const inner = process.env.AW_NATIVE_CLI_PROCESS_MARKER;
+    if (!outer || !inner || outer === inner || process.env.PRIVATE_PARENT_VALUE !== undefined ||
+        createHash('sha256').update(outer).digest('hex') !== process.argv[2]) process.exitCode = 1;
+  `);
+  const runtime = new URL('../../packages/cli/dist/src/utils/plugin-scripts.js', import.meta.url);
+  await fs.writeFile(launcher, `
+    import { createHash } from 'node:crypto';
+    import { buildPluginScriptSpawnEnv, defaultPluginProcessRunner } from ${JSON.stringify(runtime.href)};
+    const cwd = process.cwd();
+    const env = buildPluginScriptSpawnEnv({ commandEnv: process.env, contextPath: '', tempDir: cwd,
+      plugin: {name:'fixture', version:'1.0.0'}, event:'install', scope:'user', bundleRoot:cwd });
+    const digest = createHash('sha256').update(process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER).digest('hex');
+    const run = await defaultPluginProcessRunner.run({command:process.execPath, args:[process.argv[2], digest],
+      cwd, env}, {timeoutMs:5000});
+    process.exitCode = run.exitCode ?? 1;
+  `);
+  const preload = new URL('./native-platform-component-plugin-marker.mjs', import.meta.url);
+  const result = await executePublicAw({ executable: process.execPath, prefix: ['--import', preload.href, launcher] },
+    [script], { cwd, env: { ...await prepareEnvironment(cwd), PRIVATE_PARENT_VALUE: 'fixture' }, timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.terminationReason, 'complete');
 });
 
 test('retains plugin errors and projects bounded snapshot timing without secrets', async () => {

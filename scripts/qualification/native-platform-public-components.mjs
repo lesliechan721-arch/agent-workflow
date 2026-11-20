@@ -8,7 +8,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
-import { qualifyCatalog } from './native-platform-public-catalog.mjs';
+import { qualifyCatalog, qualifyProjectDependencies } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
@@ -36,10 +36,13 @@ const pairPrerequisites = new Map([
 // Recover only the trust requests actually observed in this isolated Catalog.
 export function grokTrustTargets(value, dependencies, alreadyAuthorized) {
   const blocked = value.data.targetResults.filter(target => target.blockerCodes.length);
+  const trustReasons = ['nativeTrustRequired', 'dependencyInstallFailed'];
   if (!blocked.length || blocked.some(target => target.target !== 'grok' || target.scope !== 'user' ||
-      target.blockerCodes.length !== 1 || !['nativeTrustRequired', 'dependencyInstallFailed'].includes(target.blockerCodes[0])) ||
-      value.diagnostics.some(item => item.severity === 'error' && !['nativeTrustRequired', 'dependencyInstallFailed'].includes(item.code))) return [];
-  const direct = blocked.filter(target => target.blockerCodes[0] === 'nativeTrustRequired');
+      target.blockerCodes.some(code => !trustReasons.includes(code)) ||
+      target.blockerCodes.length > 1 && !(target.execution === 'not-run' && target.blockerCodes.includes('dependencyInstallFailed'))) ||
+      value.diagnostics.some(item => item.severity === 'error' && !trustReasons.includes(item.code))) return [];
+  const direct = blocked.filter(target => target.blockerCodes.length === 1 && target.blockerCodes[0] === 'nativeTrustRequired'
+    && target.execution !== 'not-run');
   if (!direct.length || direct.some(target => !dependencies.has(target.pluginId) || alreadyAuthorized.has(target.pluginId))) return [];
   const blockedIds = new Set(blocked.map(target => target.pluginId));
   const explained = new Set(direct.map(target => target.pluginId));
@@ -479,7 +482,8 @@ async function matrix(ctx, report) {
 
 export async function runComponentQualification({ platform, scope, clientPath, suite = 'matrix', catalog }) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
-  assert(['matrix', 'pi-seven', 'candidate', 'frozen'].includes(suite) || pairPrerequisites.has(suite));
+  assert(['matrix', 'pi-seven', 'candidate', 'frozen', 'project-inheritance'].includes(suite) || pairPrerequisites.has(suite));
+  if (suite === 'project-inheritance') assert.equal(scope, 'project');
   if (suite.startsWith('pi-')) assert.equal(platform, 'pi');
   if (suite.startsWith('grok-')) assert.deepEqual([platform, scope], ['grok', 'project']);
   const artifactIdentity = async () => {
@@ -538,13 +542,19 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     await fs.mkdir(project);
     assertCommand(await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', project], { cwd: root, env }));
     const dependencies = new Map();
+    const prefix = [cli];
+    if (process.platform === 'linux') {
+      prefix.unshift('--import', new URL('./native-platform-component-plugin-marker.mjs', import.meta.url).href);
+      report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
+    }
     async function result(args, cwd = project, trustRetry) {
-      const response = await executePublicAw({ executable: process.execPath, prefix: [cli] }, [...args, '--json'], { cwd, env, timeoutMs: 180000 });
+      const response = await executePublicAw({ executable: process.execPath, prefix }, [...args, '--json'], { cwd, env, timeoutMs: 180000 });
       assert(!response.cancelled && !response.timedOut && response.terminationReason === 'complete', args.join(' '));
       const value = JSON.parse(response.stdout);
       assert.equal(value.schemaVersion, 2);
       const outcome = { exitCode: response.exitCode, value, stderr: response.stderr };
-      if (platform === 'grok' && scope === 'user' && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
+      const userCommand = scope === 'user' || suite === 'project-inheritance' && args[args.indexOf('--context') + 1] === 'user';
+      if (platform === 'grok' && userCommand && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
         && value.status === 'partial' && response.exitCode === 4) {
         const retry = trustRetry ?? { roots: value.data.request.plugins, authorized: new Set() };
         const direct = grokTrustTargets(value, dependencies, retry.authorized);
@@ -587,7 +597,10 @@ export async function runComponentQualification({ platform, scope, clientPath, s
       await fs.writeFile(path.join(env.PI_CODING_AGENT_DIR, 'trust.json'), JSON.stringify({ [project]: true }));
     if (platform === 'grok' && scope === 'project')
       await writeGrokFixtureFolderDecisions(env, [[project, true]]);
-    if (platform === 'copilot' && scope === 'project' && process.env.GITHUB_ACTIONS === 'true') {
+    if (platform === 'copilot' && suite === 'project-inheritance') {
+      await fs.writeFile(path.join(env.COPILOT_HOME, 'config.json'), JSON.stringify({ trustedFolders: [project] }), { flag: 'wx' });
+      report.fixtureTrust = 'isolated project directory in trustedFolders';
+    } else if (platform === 'copilot' && scope === 'project' && process.env.GITHUB_ACTIONS === 'true') {
       // Same temporary, offline management precondition as the public Copilot route.
       env.COPILOT_ALLOW_ALL = 'true';
       report.fixtureTrust = 'hosted COPILOT_ALLOW_ALL in the isolated environment';
@@ -595,7 +608,8 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
     const ctx = { root, project, env, aw, result, scope, platform, dependencies };
-    if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report);
+    if (suite === 'project-inheritance') await qualifyProjectDependencies(ctx, report);
+    else if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';

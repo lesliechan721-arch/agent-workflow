@@ -20,7 +20,7 @@ import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { readDemand } from '../../src/recovery/demand.js';
 import { createPlatformEmptyState, createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState } from '../../src/utils/platform-empty-state.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
-import { writeOwnedTextFile, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { SKILL_OWNER_MARKER, writeOwnedTextFile, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import { runCli } from '../../src/index.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -168,10 +168,11 @@ async function materializeStatusSkill(value: Awaited<ReturnType<typeof fixture>>
       sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform,
       scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
   }))) });
+  const components = [{ id: 'skill:example', nativeName: 'example', relativeOutputs: ['skills/example/SKILL.md'] }];
   await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
     nativeProjection: { physicalIdentity: layout.physicalIdentity, preparation: 'complete',
-      components: [{ id: 'skill:example', nativeName: 'example', relativeOutputs: ['skills/example/SKILL.md'] }],
-      inputDigest: platformPackageInputDigest(input), contentDigest: (await readPlatformPackageContentDigest(layout.packageRoot))! } });
+      components, inputDigest: platformPackageInputDigest(input, components),
+      contentDigest: (await readPlatformPackageContentDigest(layout.packageRoot))! } });
   return { binding, layout, skill, input };
 }
 
@@ -612,6 +613,25 @@ describe('public status through platform adapters', () => {
     expect(target(status).content).toBe('conflict');
     expect(target(status).deploymentObservations?.[0]?.after.ownership).toBe('foreign');
     expect(await snapshot(layout.packageRoot)).toEqual(before);
+  });
+
+  it.each(['static', 'dynamic'] as const)('reports an installed OpenCode %s Skill from before the registration format update as drifted', async (kind) => {
+    qualifySkill('opencode');
+    const value = await fixture('opencode', { available: true, dynamic: kind === 'dynamic' });
+    const { input, layout } = await materializeStatusSkill(value, 'opencode', await placement(value));
+    const markerPath = path.join(layout.packageRoot, SKILL_OWNER_MARKER);
+    const legacyMarker = await fs.readJson(markerPath);
+    legacyMarker.nativeProjection.inputDigest = platformPackageInputDigest(input);
+    await fs.writeJson(markerPath, legacyMarker);
+    const before = await snapshot(layout.packageRoot);
+
+    const status = await value.read();
+    expect(status).toMatchObject({ allSatisfied: false, inSync: false });
+    expect(target(status)).toMatchObject({ content: 'drifted', reasons: expect.arrayContaining([
+      expect.objectContaining({ code: 'platformInputDrift' }),
+    ]) });
+    expect(await snapshot(layout.packageRoot)).toEqual(before);
+    expect(await fs.pathExists(value.sentinel)).toBe(false);
   });
 
   it('retains a static Skill expectation when gap evidence omits its component ID', async () => {

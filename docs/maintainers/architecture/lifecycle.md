@@ -6,7 +6,7 @@
 
 两份 Intent 使用 schema 3：`sources` 绑定 Catalog logical identity，`roots` 只保存 source-qualified plugin ID。用户声明位于 `<AW_HOME>/plugin-intents.json`，项目声明位于当前项目 `.agent-workflows/plugin-intents.json`。本机只有一个 `<AW_HOME>/deployment-preferences.json`：schema 2、`targets` 和 `exclusions: [{plugin, target}]`；没有项目偏好或依赖位置 override。初始 targets 为空；排除记录在关闭、重新启用本机 target 后保留。
 
-普通 sync/status 在项目内读取用户与当前项目，在项目外只读用户；显式 `--context user` 不解析调用项目。每个 target 独立展开两份完整依赖闭包，再过滤本次 root/target。相同插件的用户和项目需求按固定平台布局解析。共享原生包合并物理产物，activation 保持各自 scope；Cursor、OpenCode、Pi 等独立 scope 位置不能因用户需求存在就省略项目部署。共享提供者缺失或损坏时修该提供者，失败不改用另一条路由。source-qualified 身份不同不按短名称合并。未知 Intent 或来源不当空需求，不能据此删除、去重或复用。
+普通 sync/status 在项目内读取用户与当前项目，在项目外只读用户；显式 `--context user` 不解析调用项目。每个 target 独立展开两份完整依赖闭包，再过滤本次 root/target。相同插件的用户和项目需求按固定平台布局解析。共享原生包合并物理产物，activation 保持各自 scope。项目直接声明的插件仍有项目部署。项目引用的依赖按下文规则选择提供位置。共享提供者缺失或损坏时修该提供者，失败不改用另一条路由。source-qualified 身份不同不按短名称合并。未知 Intent 或来源不当空需求，不能据此删除、去重或复用。
 
 固定布局由 adapter resolve 按真实产品入口、物理 namespace、scope 和原生身份确定。冲突按真实物理位置判断，不从 target 名称组合推断。共享单元固定 render scope，同一位置的 scope、来源、类别或集合不一致时阻断该组，不按执行顺序覆盖。结构合法的偏好可保存，Review 保留冲突原因和旧输出。
 
@@ -62,7 +62,7 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 插件依赖来自 manifest `dependencies`，在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图。安装按目标及其实际 provider scope 建立依赖。提供者完成写入并通过所需的现场校验后，对应消费者才可以执行。独立部署可以先完成，命令按稳定的依赖优先顺序报告结果。
 
-dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。对允许跨 scope 复用的布局，User 需要的共同依赖由 User 提供；scope 独立的 Native 布局在各自 scope 物化。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
+dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。Codex、Claude、Copilot 和 generic 沿用共享提供者规则。Antigravity、Cursor、Grok、OpenCode 和 Pi 的项目可以继承已安装且健康的同源个人静态 Skill 依赖。仅有个人声明时，只安装项目根仍可将缺少的依赖安装到项目。显式项目根、需要按范围渲染、运行安装脚本或生成专属配置的包保留各自的部署。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 
 只同步项目根时，如果它复用的个人依赖已核验健康，重试会跳过该依赖的安装脚本。同时选择个人根且它也需要这项依赖时，该依赖的个人安装脚本执行一次。generic 核对 AW 所有权、内容摘要，以及升级时已确认移除的旧 Skill。共享个人包的原生平台核对依赖文件与宿主登记，项目仍执行自己的启用步骤。安装脚本可能改变依赖。首次安装、同步和重建都会在脚本之后、消费者写入之前重新核对它实际使用的直接和间接依赖，包括经多条路径复用的个人依赖。核对失败只阻断依赖它的写入，独立目标可以完成。显式选择该个人插件时仍按普通同步处理。
 
@@ -72,9 +72,9 @@ dependency placement 由 User/Project 完整需求闭包自动决定，不提供
 
 普通 remove 默认清理本次取消需求后失去全部引用的依赖输出，包括传递依赖。候选限于本次请求原依赖闭包、所选物理 scope 和本机执行 targets，且必须没有独立 Intent、没有剩余需求或已观察到的现存消费者，并有充分 live ownership 证据。精确请求按 root×Agent 保留对应关系，不能展开为插件和 Agent 的全部组合；依赖候选只来自同一 Agent 上被选根的贡献，未选位置的现存消费者仍保护其依赖。未知需求、来源或消费者依赖关系不能当作无引用。`--keep-dependencies` 保留这些依赖；它不改变所选根的移除或提供位置切换。清理按依赖者优先执行；依赖者移除失败时，保留它需要的依赖，报告未完成项。Review 冻结依赖清理的精确位置，锁内按同一证据重验。
 
-所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断；取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
+所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断。当前项目中归属明确的原生包在取消声明或从 Active 下架后，仍可保护同源个人 Skill 依赖。无法读取依赖闭包时，保护限于该来源和目标下可能被继承的个人包。用 `remove --only outputs` 清理项目包，或核验已存在的健康项目副本后，可以继续卸载。取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
 
-项目已声明、尚未安装的插件也会保护它需要的 User 提供者。读取某个依赖的插件清单失败时，已绑定 Active 的 Catalog 依赖条目可以确认哪些根可能共用提供者。分目录部署的 Native 目标在各自 scope 观察。允许共用的目标上，Project 显式根有自己的部署需求，其余可能借用 User 的依赖保留为未知。普通 remove 保留仍可能被引用的提供者及其声明。对于 generic，若 Project 也显式声明同一提供者，Review 和写锁内均核实项目副本属于 AW、内容完整且依赖满足后，可以移除 User 副本。索引也无法确认闭包时，保留同来源、同目标、对应提供范围的保护。执行安装或重新放置仍需取得完整的插件清单。
+项目已声明、尚未安装的插件也会保护它需要的 User 提供者。读取某个依赖的插件清单失败时，已绑定 Active 的 Catalog 依赖条目可以确认哪些根可能共用提供者。分目录部署的 Native 目标分别观察个人与当前项目的实际提供位置。允许共用的目标上，Project 显式根有自己的部署需求，其余可能借用 User 的依赖保留为未知。普通 remove 保留仍可能被引用的提供者及其声明。对于 generic，若 Project 也显式声明同一提供者，Review 和写锁内均核实项目副本属于 AW、内容完整且依赖满足后，可以移除 User 副本。索引也无法确认闭包时，保留同来源、同目标、对应提供范围的保护。执行安装或重新放置仍需取得完整的插件清单。
 
 ## 安装、重建、卸载与清理
 

@@ -26,9 +26,12 @@ try {
     'base=$(dirname "$0")/../files/dist-package', 'exec "$base/node" "$base/index.js" "$@"', '',
   ].join('\n'), { mode: 0o755 });
   const clientPath = [bin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
-  for (const scope of ['user', 'project']) for (const suite of ['matrix', 'candidate']) {
-    const result = await runComponentQualification({ platform: 'cursor', scope, suite, clientPath });
-    report.outcomes.push(result);
+  for (const scope of ['user', 'project']) {
+    const suites = ['matrix', 'candidate'];
+    if (scope === 'project') suites.push('project-inheritance');
+    for (const suite of suites) {
+      report.outcomes.push(await runComponentQualification({ platform: 'cursor', scope, suite, clientPath }));
+    }
   }
   if (report.outcomes.every(result => result.status === 'passed')) report.status = 'passed';
 } catch (error) {

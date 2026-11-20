@@ -240,7 +240,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     for (const [key, row] of uniqueResources) {
       if (row) resourceOrderEntries.set(row, { sourceRoot: packageRoot, key });
     }
-    sourceDigests.push(evidenceDigest([plugin, ...(!projectRoot && inventory ? [inventory.version] : []), resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
+    sourceDigests.push(evidenceDigest([plugin, ...(inventory ? [inventory.version] : []), resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
   }
   // Rule rows have no plugin source. Keep every row in order so execution can
   // compare the complete inventory after accounting for its own exact writes.

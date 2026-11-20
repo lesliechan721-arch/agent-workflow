@@ -83,7 +83,7 @@ export interface RecoveryInventoryInput {
   extraObserved?: Array<{
     pluginId: string; agent: AgentId | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
-    content?: RecoveryTarget['content']; backend?: unknown; expectedVersion?: string; installedVersion?: string;
+    content?: RecoveryTarget['content']; reasons?: RecoveryTarget['reasons']; backend?: unknown; expectedVersion?: string; installedVersion?: string;
   }>;
 }
 
@@ -115,7 +115,7 @@ function targetState(target: RecoveryTarget): InventoryState {
   if (target.content === 'conflict') return 'blocked';
   if (target.satisfaction === 'not-applicable') return 'ready';
   if (target.observation === 'missing' || target.content === 'absent'
-    || target.content === 'drifted') return 'pending';
+    || target.content === 'drifted' || target.reasons?.some(({ code }) => code === 'projectSkillDuplicatePending')) return 'pending';
   if (target.observation === 'unknown' || target.content === 'unknown') return 'unknown';
   return 'ready';
 }
@@ -197,7 +197,8 @@ export function buildScopedInventory(options: {
       target.delivery ? [{
         ...(target.delivery.kind === 'native' ? { platform: target.delivery.platform } : {}),
         scope: target.scope, location: 'scope', state: targetState(target),
-        reasonCodes: target.blockers.map((blocker) => blocker.code),
+        reasonCodes: [...target.blockers.map((blocker) => blocker.code),
+          ...(target.reasons ?? []).filter(({ code }) => code === 'projectSkillDuplicatePending').map(({ code }) => code)],
         agent: target.agent, delivery: target.delivery.kind,
         ...targetDeliveryFacts(target),
         ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
@@ -302,12 +303,13 @@ export function buildScopedInventory(options: {
       if (!extras.has(target.pluginId)) extras.set(target.pluginId, []);
       continue;
     }
+    const duplicate = target.reasons?.some(({ code }) => code === 'projectSkillDuplicatePending');
     const state: InventoryState = target.content === 'conflict' ? 'blocked'
-      : target.observation === 'missing' || target.content === 'absent' || target.content === 'drifted' ? 'pending'
+      : duplicate || target.observation === 'missing' || target.content === 'absent' || target.content === 'drifted' ? 'pending'
         : target.observation === 'unknown' || target.content === 'unknown' ? 'unknown' : 'ready';
     extras.set(target.pluginId, [...(extras.get(target.pluginId) ?? []), {
       ...(target.delivery?.kind === 'native' ? { platform: target.delivery.platform } : {}),
-      scope: recovery.scope, location: 'scope', state, reasonCodes: [],
+      scope: recovery.scope, location: 'scope', state, reasonCodes: duplicate ? ['projectSkillDuplicatePending'] : [],
       ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
       ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
       ...(target.agent ? { agent: target.agent } : {}),

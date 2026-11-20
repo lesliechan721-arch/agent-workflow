@@ -3994,7 +3994,7 @@ async function runRebuildCommandInSession(
                   sourceId: entry.source.sourceId,
                   pluginName: dependency,
                 });
-                return (['codex', 'claude'] as const).flatMap((platform) =>
+                return [...closureEntriesByPlatform.keys()].flatMap((platform) =>
                   placementNodes.some((node) =>
                     node.pluginId === entry.pluginId && node.platform === platform)
                   && placementNodes.some((node) =>
@@ -5067,9 +5067,14 @@ async function runRebuildCommandInSession(
         const preparedTargets = lockedPreparation.preparedTargets;
         const preparedTargetErrors = lockedPreparation.preparedTargetErrors;
         const removalRequiredConsumers = new Map<string, Set<string>>();
+        // A wider dependency that execution keeps cannot withdraw consumer output.
+        const consumerCheckSelections = options.command === 'sync' ? executionSelections.filter((selection) => {
+          const planned = planTargetFor(lockedPlan, selection);
+          return !planned || !isHealthyWiderDependency(planned);
+        }) : executionSelections;
         // Sync checks live references for Codex/Claude providers. Without a possible
         // consumer the second inventory cannot add a dependency to this plan.
-        const syncNeedsConsumerCheck = options.command === 'sync' && executionSelections.some(({ platform, entry }) =>
+        const syncNeedsConsumerCheck = options.command === 'sync' && consumerCheckSelections.some(({ platform, entry }) =>
           (platform === 'codex' || platform === 'claude') && availableEntries.some((candidate) =>
             candidate.source.sourceId === entry.source.sourceId && candidate.entry.dependencies.includes(entry.plugin.manifest.name)));
         if ((options.command === 'cleanup' && !cleanupForce)
@@ -5174,7 +5179,7 @@ async function runRebuildCommandInSession(
               projectKey: reference.projectKey ?? null,
             }] as const];
           })).values()];
-          for (const dependencyTarget of executionSelections) {
+          for (const dependencyTarget of consumerCheckSelections) {
             const dependencyPluginName = dependencyTarget.entry.plugin.manifest.name;
             for (const consumer of currentConsumerCandidates) {
               if (consumer.entry.source.sourceId

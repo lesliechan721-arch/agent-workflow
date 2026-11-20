@@ -1627,6 +1627,8 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
   });
   return { inputs: plan.joint?.evidence ?? [plan.originalIntent, plan.preferencesEvidence],
     catalog: plan.command === 'install' ? plan.demand.catalogOperationContext?.generationSetDigest : undefined,
+    pendingUserSkills: plan.joint?.pendingUserSkills,
+    providerRetirements: plan.joint ? [...plan.joint.providerRetirements] : undefined,
     command: plan.command, dependencyCleanupTargets: plan.dependencyCleanupTargets,
     declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
     children: (plan.joint?.children ?? [plan]).map(describe) };

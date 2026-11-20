@@ -52,10 +52,10 @@ Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须�
 | Codex | 用户选择 Skill，`agents/openai.yaml` 的 `allow_implicit_invocation` 控制隐式调用 | 0.167.0 CLI 的 User 在六个宿主验证了显式正文和自动候选。Project 使用同一加载器和独立激活，接口最低版本为 0.155.0。桌面 App 与 CLI 共读时提示 App 的验证缺口 |
 | Claude Code | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 2.1.317 的会话命令列表与模型上下文可核对两项行为。按有记录的宿主和 scope 判断 |
 | Pi | `/skill:技能名`，原生 frontmatter 禁止自动调用 | 1.5.0 的显式正文、自动候选和安装范围均有独立检查 |
-| OpenCode | `@技能名`，V2 注册时写入 `autoinvoke: false` | 2.0.0 的原生登记、显式附件正文及作用域可独立检查 |
+| OpenCode | `@技能名`，手动 Skill 注册时写入 `autoinvoke: false`。2.0.0 读取 `location`，2.2.6 读取 `path`，两字段指向同一份 `SKILL.md` | 2.0.0 和 2.2.6 均可独立检查原生登记、显式附件正文及作用域 |
 | Copilot CLI | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 1.0.95 的离线 ACP 需要显式挂载已登记的插件才能观察到手动入口。安装时提示默认会话的验证缺口 |
 | Grok Build | `/技能名`，原生 frontmatter 禁止自动调用 | 1.0.77 的 User 已验证显式正文和普通模型候选。Project 安装提示作用域的验证缺口 |
-| Antigravity | Skill 保留原生 `disable-model-invocation`。CLI 的 User 包使用实际原生插件名前缀，Project 包使用会话清单列出的目录前缀 | 1.3.4 具备上述 User 管理证据。macOS arm64 的 1.5.13 登录 CLI 以 `/skills` 确认 User/Project 发现和原生 `model_invocable`，显式调用加载正文仍未取证。App 单独使用和 CLI/App 共读的会话行为分别保留未知 |
+| Antigravity | Skill 保留原生 `disable-model-invocation`。CLI 的 User 和 Project 包均以插件名作为技能前缀 | 1.3.4 具备上述 User 管理证据。macOS arm64 的 1.5.13 登录 CLI 以 `/skills` 确认 User/Project 发现和原生 `model_invocable`，显式调用加载正文仍未取证。App 单独使用和 CLI/App 共读的会话行为分别保留未知 |
 | Cursor CLI | `/技能名`，客户端将 `disableModelInvocation` 传给服务 | `2026.11.05-86047df` 在 Linux x64 和 macOS arm64 的 User、Project 均核对了菜单、显式正文和发送的策略。服务端模型与桌面 App 尚未实测 |
 | generic | 通用文件以 `metadata` 保留作者的调用意图 | Skill 全部交付。安装提示说明该目录没有绑定实施调用限制的客户端 |
 
@@ -122,7 +122,7 @@ Claude 的角色写入包内默认的 `agents/` 目录，由宿主自动发现�
 
 Antigravity CLI `1.3.4` 的 User 清单将 `source` 表示为 `antigravity` 类型，`path` 指向实际配置根下的 `plugins/<packageId>` 副本。该类型不证明 AW 归属。AW 核对精确路径、无 symlink 路径链、副本自己的完整 source/plugin/platform/scope/physical owner、物理身份及旧包完整摘要；仅 AW 来源目录的 owner 不足以授权原生更新或移除。foreign、共享、弱 owner、额外或改写的本地数据均保留。来源目录丢失时，精确原生副本证据仍可用于移除，不建立安装 ledger。普通 ensure 比较实际副本与本次冻结包的摘要，即使来源目录已是当前内容，也会为旧副本安排直接 `plugin install <packageRoot>` 刷新；版本变化与同版本正文变化共用该路径。执行前重验实际归属，执行后及最终 grouped postcheck 均核对实际副本字节；原生命令退出 0 或版本相同不能代替内容证据。
 
-Antigravity Project 使用当前项目 A 的 `.agents/plugins/aw-<sourceId>-<pluginName>/`。安装依赖、更新、重装及移除均使用该项目的目录证据。独立项目 B 和 User 位置单独观察和维护。Project 不调用会写入 User 的 `agy plugin install`。User 只识别到 App 时使用公开用户目录，有可用 CLI 且 App 共用同一用户根时，由 CLI 管理同一副本。CLI 和 App 在 Project 共读同一路径时只发布一次，分别保留各自的资格。
+Antigravity Project 使用 `.agents/plugins/<pluginName>/`，因此两个范围的技能都以 `<pluginName>:<skillName>` 调用。AW 仍按完整 Catalog 来源、插件身份和实际目录判断归属。同名目录有其他来源或本地修改时保留现场。同步旧版带来源前缀的项目包时，AW 核对旧包归属与完整内容，确认短目录已就绪后才可以清理旧目录。独立项目 B 和 User 位置单独观察和维护。Project 不调用会写入 User 的 `agy plugin install`。User 只识别到 App 时使用公开用户目录，有可用 CLI 且 App 共用同一用户根时，由 CLI 管理同一副本。CLI 和 App 在 Project 共读同一路径时只发布一次，分别保留各自的资格。
 
 另行验收项目发现时，在已登录的 CLI 中用 `agy -p /skills --output-format json` 核对成功、零模型轮次的会话清单。分别检查 A、独立项目 B、更新和移除后的完整原生名称，保留 User 同名 Skill 及独立工作区 Skill 作对照。项目目录包不以 `plugin list --json` 为发现证据。日常预览、安装、状态与更新使用目录和本地交付证据，无需启动登录会话。
 
@@ -148,7 +148,7 @@ Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`
 
 Copilot/Grok 按[角色正文组合合同](../../reference/plugin-runtime.md#35-合并命令闭包与冻结)投影 Instructions。Grok User 和 Project 都将同范围的包与规则补足一起准备，专属角色正文通过包内角色文件核验。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-Grok Project 处理同批的后续目标时，重新核对本批在该项目新增或更新的包及独立规则。更新已有包需要确认更新前后的同一原生来源、独占归属和已发布的新包内容。包内 Hook 必须指向该包的 Hook 文件。独立规则须匹配已确认写入的路径、原生规则记录，以及含 AW 归属头的完整字节。只有本次写入能够解释的变化可以继续。配置、项目信任、外来文件、同名来源及原生组件顺序的变化仍会使计划失效。
+Grok Project 处理同批的后续目标时，重新核对本批在该项目新增或更新的包及独立规则。更新已有包需要确认更新前后的同一原生来源、独占归属和已发布的新包内容。包内 Hook 必须指向该包的 Hook 文件。独立规则须匹配已确认写入的路径、原生规则记录，以及含 AW 归属头的完整字节。切换静态 Skill 依赖时，后续目标核对旧 Project 副本的精确删除回执，并匹配刚显现的同源 User 原生副本及其完整包字节。只有本次已确认操作能够解释的变化可以继续。配置、项目信任、其他来源、外来文件及其他原生组件顺序的变化仍会使计划失效。
 
 Grok 的 `list` 提供登记信息。`inspect` 的版本须有效且与本次入口一致，匹配精确来源的 `enabled` 表示原生报告的启用状态。加载状态另行取证。配置中的 enabled/disabled 集合用于补充展示。Project 目录就绪需要该项目的有效启用。首次 User 安装保留 AW 源包，用户按回执在 Grok 中明确同意这一来源后再运行 `sync`。
 

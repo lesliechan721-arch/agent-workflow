@@ -7,6 +7,8 @@ import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
+import { readPackageContentDigest } from './package-content.js';
+import { getPhysicalKey } from '../platforms/identity.js';
 
 import type { PlatformTarget, Scope } from '../types.js';
 import type { PhysicalIdentity } from '../platforms/contracts.js';
@@ -607,6 +609,13 @@ async function inspectPathAt(
     if (canonicalPath && path.basename(actualPath) !== component.identity.artifactKey) {
       return foreignProbe(component, 'ownerMismatch', publicOwner(marker));
     }
+    if (component.kind === 'owned-directory' && component.identity.platform === 'antigravity'
+      && component.identity.scope === 'project') {
+      const projection = marker.nativeProjection;
+      const content = projection && getPhysicalKey(projection.physicalIdentity) === component.identity.physicalKey
+        ? await readPackageContentDigest(actualPath, SKILL_OWNER_MARKER, true).catch(() => undefined) : undefined;
+      if (!content || content !== projection?.contentDigest) return foreignProbe(component, 'unownedContent', publicOwner(marker));
+    }
     return { state: 'present' };
   }
   if (!stats.isFile()) return foreignProbe(component, 'typeMismatch');
@@ -896,7 +905,7 @@ async function cleanupPathComponent(options: {
     return;
   }
 
-  // A matching marker/header is deletion authorization. Content drift is intentionally out of scope.
+  // The quarantine probe repeats the component's exact deletion authorization.
   try {
     await fs.remove(quarantinePath);
   } catch (error) {
