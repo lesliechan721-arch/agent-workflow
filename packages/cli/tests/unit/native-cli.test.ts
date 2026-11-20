@@ -816,6 +816,111 @@ describe('native-cli', () => {
     },
   );
 
+  // A real child must own the process group AW signals during cleanup.
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'starts the real POSIX CLI in its own process group',
+    async () => {
+      let childPid: number | undefined;
+      const result = await execFileNativeCliRunner({
+        command: process.execPath,
+        args: ['-e', `
+          const { execFileSync } = require('node:child_process');
+          const group = execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' });
+          process.stdout.write(group.trim());
+        `],
+        agentKind: 'claude',
+        env: { PATH: '/bin:/usr/bin' },
+        onSpawn: ({ pid }) => { childPid = pid; },
+      });
+
+      expect(childPid).toBeGreaterThan(1);
+      expect(Number(result.stdout)).toBe(childPid);
+    },
+  );
+
+  // The POSIX launcher must drain both pipes and decode UTF-8 across reads.
+  it.skipIf(process.platform === 'win32')('preserves large UTF-8 output on both POSIX streams', async () => {
+    const stdout = '😀'.repeat(200_000) + '\nstdout complete\n';
+    const stderr = '界'.repeat(230_000) + '\nstderr complete\n';
+    const response = await execFileNativeCliRunner({
+      command: process.execPath,
+      args: ['-e', `
+        const out = Buffer.from('😀'.repeat(200_000) + '\\nstdout complete\\n');
+        const err = Buffer.from('界'.repeat(230_000) + '\\nstderr complete\\n');
+        process.stdout.write(out.subarray(0, 1));
+        process.stderr.write(err.subarray(0, 1));
+        setTimeout(() => {
+          process.stdout.write(out.subarray(1));
+          process.stderr.write(err.subarray(1));
+        }, 10);
+      `],
+      agentKind: 'claude',
+      env: {},
+    });
+
+    expect(response.exitCode).toBe(0);
+    expect(response.stdout === stdout, 'stdout differs from what the child wrote').toBe(true);
+    expect(response.stderr === stderr, 'stderr differs from what the child wrote').toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'bounds POSIX output and cleans up a child that ignores TERM after overflowing',
+    async () => {
+      const error = await execFileNativeCliRunner({
+        command: process.execPath,
+        args: ['-e', `
+          process.on('SIGTERM', () => {});
+          process.stderr.write('warning', () => process.stdout.write('x'.repeat(2 * 1024 * 1024)));
+          setTimeout(() => {}, 2_000);
+        `],
+        agentKind: 'claude',
+        env: {},
+        timeoutMs: 1_000,
+      }).catch((failure: unknown) => failure);
+
+      expect(error).toBeInstanceOf(NativeCliError);
+      expect(error).toMatchObject({ exitCode: 1, reason: 'exit', stderr: 'warning', cleanupError: undefined,
+        cause: { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' } });
+      expect(Buffer.byteLength((error as NativeCliError).stdout)).toBe(1024 * 1024);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')('reports a real POSIX spawn ENOENT as a missing executable', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-cli-missing-'));
+    try {
+      const running = execFileNativeCliRunner({ command: path.join(root, 'missing'), args: [], env: {}, timeoutMs: 100 });
+      await expect(running).rejects.toMatchObject({ reason: 'exit', stdout: '', stderr: '' });
+      await expect(running).rejects.toSatisfy(isNativeCliExecutableMissingError);
+    } finally {
+      await fs.remove(root);
+    }
+  });
+
+  // A trusted CLI's successful root exit skips the marker audit. That leaves
+  // group cleanup responsible for an unmarked child still holding the pipe.
+  it.skipIf(process.platform === 'win32')('cleans a real POSIX group member and keeps its final output', async () => {
+    const descendant = `
+      process.once('SIGTERM', () => process.stdout.write('descendant terminated\\n', () => process.exit(0)));
+      setTimeout(() => {}, 1_000);
+      process.send('ready');
+    `;
+    const response = await execFileNativeCliRunner({
+      command: process.execPath,
+      args: ['-e', `
+        const { spawn } = require('node:child_process');
+        const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {
+          env: {}, stdio: ['ignore', 'inherit', 'ignore', 'ipc'],
+        });
+        child.once('message', () => process.stdout.write('root exited\\n', () => process.exit(0)));
+      `],
+      agentKind: 'claude',
+      env: {},
+      timeoutMs: 2_000,
+    });
+
+    expect(response).toEqual(result('root exited\ndescendant terminated\n'));
+  });
+
   // A root exit can precede the execFile callback. Return the complete output
   // within the grace window while still signaling and verifying the group.
   it.each([
@@ -1468,7 +1573,7 @@ describe('native-cli', () => {
   });
 
   it('fails closed when trusted POSIX CLI process-group exit cannot be confirmed', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     try {
       const child = Object.assign(new EventEmitter(), {
         pid: 321,

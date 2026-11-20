@@ -6,7 +6,13 @@ import { promisify } from 'node:util';
 import { expect, it, vi } from 'vitest';
 
 import * as linux from '../../src/linux-process-marker.js';
-import { acquireProcessTreeInspectionLease, observeProcessTree, terminateProcessTree, type ProcessTreeDependencies } from '../../src/process-tree.js';
+import {
+  acquireProcessTreeInspectionLease,
+  hasOnlyZombieLinuxProcessGroupMembers,
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeDependencies,
+} from '../../src/process-tree.js';
 
 function processScans() {
   const pending: Array<(error: Error | null, stdout: string) => void> = [];
@@ -138,6 +144,7 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
   const stat = (pid: number, start: number, end: number): string => {
     const fields = Array<string>(50).fill('0');
     fields[0] = 'S'; fields[1] = '1'; fields[2] = String(pid);
+    fields[17] = '2';
     fields[19] = String(pid + 100); fields[47] = String(start); fields[48] = String(end);
     return `${pid} (odd ) name\n) ${fields.join(' ')}\n`;
   };
@@ -168,7 +175,7 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
     const scan = await pending;
     expect(scan.markerPidsByValue.get(marker)).toEqual(new Set([process.pid, reparented]));
     expect(scan.unreadablePids).toEqual(new Set([partial, redacted, changed, malformed]));
-    expect(scan.table.get(wrong)).toMatchObject({ pgid: wrong, startTime: String(wrong + 100) });
+    expect(scan.table.get(wrong)).toMatchObject({ pgid: wrong, startTime: String(wrong + 100), threadCount: 2 });
     expect(scan.table.has(empty)).toBe(true);
     // The synthetic FIFO has completed its controlled lookup. Use regular
     // files for the byte-limit check so the kernel can close the scan promptly.
@@ -179,6 +186,33 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.abort(), 16_384, root))
       .rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// Cleanup may succeed with unreaped zombies only if every member has exited.
+it.skipIf(process.platform !== 'linux')('requires complete member and thread evidence to confirm a Linux zombie group', async () => {
+  const pgid = 101;
+  const zombie = { ppid: 1, pgid, state: 'Z', startTime: '1000', threadCount: 1 };
+  const table = new Map([[102, zombie], [201, { ...zombie, pgid: 201, state: 'S' }]]);
+  const verifyVisibility = vi.spyOn(linux, 'assertLinuxProcfsProcessVisibility').mockResolvedValue();
+  const read = vi.spyOn(linux, 'readLinuxMarkerScan').mockResolvedValue({
+    table, markerPidsByValue: new Map(), unreadablePids: new Set(),
+  });
+  const verifyGroup = () => hasOnlyZombieLinuxProcessGroupMembers(pgid, 1_000);
+  try {
+    await expect(verifyGroup()).resolves.toBe(true);
+    table.set(103, { ...zombie, state: 'S' });
+    await expect(verifyGroup()).resolves.toBe(false);
+    table.set(103, { ...zombie, threadCount: 2 });
+    await expect(verifyGroup()).resolves.toBe(false);
+    table.delete(103);
+    verifyVisibility.mockRejectedValueOnce(new Error('Process visibility unavailable.'));
+    await expect(verifyGroup()).resolves.toBe(false);
+    table.delete(102);
+    await expect(verifyGroup()).resolves.toBe(false);
+  } finally {
+    verifyVisibility.mockRestore();
+    read.mockRestore();
+  }
 });
 
 it.skipIf(process.platform !== 'linux')('retains the first unreadable observation and the latest failed cleanup', async () => {

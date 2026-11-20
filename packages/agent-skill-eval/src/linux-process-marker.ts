@@ -6,6 +6,7 @@ interface LinuxProcessEntry {
   pgid: number;
   state: string;
   startTime: string;
+  threadCount?: number;
 }
 
 export interface LinuxMarkerScan {
@@ -19,17 +20,42 @@ function processGone(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ESRCH';
 }
 
+export async function assertLinuxProcfsProcessVisibility(signal: AbortSignal): Promise<void> {
+  const mountInfo = await readFile('/proc/self/mountinfo', { encoding: 'utf8', signal });
+  const procMounts: string[] = [];
+  for (const line of mountInfo.split('\n')) {
+    const mountPoint = line.split(' ', 5)[4];
+    if (mountPoint === '/proc') procMounts.push(line);
+    if (/^\/proc\/[1-9]\d*(?:\/|$)/u.test(mountPoint ?? '')) {
+      throw new Error('Linux procfs process entries are overmounted.');
+    }
+  }
+  const [mount, filesystem] = procMounts[0]?.split(' - ') ?? [];
+  const [type, , options] = filesystem?.split(' ') ?? [];
+  // In particular, hidepid=invisible may silently omit a live group member.
+  if (procMounts.length !== 1 || mount?.split(' ')[3] !== '/' || type !== 'proc' || !options ||
+    options.split(',').some(option => option.startsWith('hidepid=') && option !== 'hidepid=0' && option !== 'hidepid=off')) {
+    throw new Error('Linux procfs process visibility could not be confirmed.');
+  }
+  const status = await readFile('/proc/self/status', { encoding: 'utf8', signal });
+  // A procfs mounted for an ancestor namespace lists an additional PID per level.
+  if (/^NSpid:[ \t]+(\d+)$/mu.exec(status)?.[1] !== String(process.pid)) {
+    throw new Error('Linux procfs does not describe the current PID namespace.');
+  }
+}
+
 function readIdentity(text: string, pid: number) {
   // comm can contain spaces, newlines and parentheses. The remaining fields
-  // begin with state (field 3); field 22 is the process start tick.
+  // begin with state (field 3); fields 20 and 22 are thread count and start tick.
   const end = text.lastIndexOf(') ');
   const fields = text.slice(end + 2).trim().split(/\s+/u);
   const ppid = Number(fields[1]);
   const pgid = Number(fields[2]);
+  const threadCount = /^\d+$/u.test(fields[17] ?? '') ? Number(fields[17]) : undefined;
   if (end < 0 || !text.startsWith(`${pid} (`) || !/^[A-Za-z]$/u.test(fields[0])
     || ![ppid, pgid].every(value => Number.isSafeInteger(value) && value >= 0)
     || ![19, 47, 48].every(index => /^\d+$/u.test(fields[index] ?? ''))) throw new Error('Invalid Linux process identity.');
-  return { entry: { ppid, pgid, state: fields[0], startTime: fields[19] },
+  return { entry: { ppid, pgid, state: fields[0], startTime: fields[19], threadCount },
     envStart: BigInt(fields[47]), envEnd: BigInt(fields[48]) };
 }
 

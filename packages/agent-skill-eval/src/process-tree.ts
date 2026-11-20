@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 
-import { readLinuxMarkerScan, type LinuxMarkerScan } from './linux-process-marker.js';
+import { assertLinuxProcfsProcessVisibility, readLinuxMarkerScan, type LinuxMarkerScan } from './linux-process-marker.js';
 import { DARWIN_PROCESS_MARKER_SCRIPT } from './darwin-process-marker.js';
 import { readWindowsNativeProcessTable, type WindowsNativeProcessRow } from './windows-native.js';
 
@@ -542,11 +542,20 @@ function usesLinuxProcfs(state: ObservationState): boolean {
     && !state.lease && !state.dependencies.enforceProcessMarker && !state.dependencies.enforceCooperativeProcessGroup;
 }
 
-function queryLinuxMarkers(timeoutMs: number, markers: Set<string>, name = DEFAULT_PROCESS_MARKER_ENV): ProcessCommandPromise<LinuxMarkerScan> {
+function queryLinuxMarkers(
+  timeoutMs: number,
+  markers: Set<string>,
+  name = DEFAULT_PROCESS_MARKER_ENV,
+  requireCompleteProcessTable = false,
+): ProcessCommandPromise<LinuxMarkerScan> {
   const controller = new AbortController();
   const deadline = performance.now() + timeoutMs;
   return measureProcessQuery(markers.size ? 'marker' : 'identity', timeoutMs, complete => {
-    void readLinuxMarkerScan(name, markers, controller.signal, PROCESS_TREE_MAX_BUFFER_BYTES)
+    const read = () => readLinuxMarkerScan(name, markers, controller.signal, PROCESS_TREE_MAX_BUFFER_BYTES);
+    const scan = requireCompleteProcessTable
+      ? assertLinuxProcfsProcessVisibility(controller.signal).then(read)
+      : read();
+    void scan
       .then(output => complete(performance.now() < deadline ? { output }
         : { output: null, failure: commandFailure('deadline-exceeded') }),
       error => {
@@ -554,6 +563,21 @@ function queryLinuxMarkers(timeoutMs: number, markers: Set<string>, name = DEFAU
         complete({ output: null, failure: commandFailure('callback-error', error) });
       });
   }, () => controller.abort());
+}
+
+/** @internal Confirms an existing Linux group has only zombie members after group SIGKILL. */
+export async function hasOnlyZombieLinuxProcessGroupMembers(pgid: number, timeoutMs: number): Promise<boolean> {
+  if (process.platform !== 'linux') return false;
+  const { output } = await queryLinuxMarkers(
+    Math.min(timeoutMs, POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS),
+    new Set(),
+    DEFAULT_PROCESS_MARKER_ENV,
+    true,
+  );
+  if (output === null) return false;
+  const members = [...output.table.values()].filter(entry => entry.pgid === pgid);
+  // A zombie thread-group leader can still have another live thread.
+  return members.length > 0 && members.every(entry => entry.state === 'Z' && entry.threadCount === 1);
 }
 
 interface PendingMarkerScan {

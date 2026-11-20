@@ -1,6 +1,7 @@
 export {
   assertProcessTreeInspectionAvailable,
   createWindowsJobInvocation,
+  hasOnlyZombieLinuxProcessGroupMembers,
   observeProcessTree,
   prepareWindowsJobHelper,
   resolveWindowsJobHelperPath,
