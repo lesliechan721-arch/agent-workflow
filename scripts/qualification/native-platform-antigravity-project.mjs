@@ -135,15 +135,18 @@ async function runQualification(executable, authenticatedSkills, report) {
     const products = discovery.data.availability.find(({ id }) => id === 'antigravity').installations;
     const userCli = products.find(({ product, version: found, availability }) => product === 'cli' && found === version && availability === 'available');
     assert.equal(await fs.realpath(userCli?.entry?.executable ?? ''), await fs.realpath(executable));
-    report.app = products.some(({ product, availability }) => product === 'app' && availability === 'available') ? 'unobserved' : 'absent';
+    report.app = products.some(({ product, availability }) => product === 'app' && availability !== 'missing') ? 'unobserved' : 'absent';
     report.coReading = 'unobserved';
 
     await addOfficialCatalog({ root, aw });
     const context = { root, env, platform: 'antigravity', aw, project: a };
     report.userDelivery = await qualifyShippedGitInstall({ ...context, scope: 'user' });
     const userDirectory = path.join(env.HOME, '.gemini', 'config', 'plugins', 'git-toolkit');
-    const userManifest = await fs.readFile(path.join(userDirectory, nativeManifest));
-    assert.equal(JSON.parse(userManifest).name, 'git-toolkit');
+    const userBytes = () => Promise.all([nativeManifest, '.agent-workflows-owner.json',
+      ...['git-commit', ...ordinaryGitSkills].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/README.md`])]
+      .map(file => fs.readFile(path.join(userDirectory, file))));
+    const userBefore = await userBytes();
+    assert.equal(JSON.parse(userBefore[0]).name, 'git-toolkit');
     const inventory = async cwd => JSON.parse(await native(['plugin', 'list', '--json'], cwd));
     const userRegistration = async cwd => {
       const inventoryRows = await inventory(cwd);
@@ -227,7 +230,7 @@ async function runQualification(executable, authenticatedSkills, report) {
     assert.deepEqual(await projectBytes(b, 1), bBytes);
     await userRegistration(a);
     await userRegistration(b);
-    assert.deepEqual(await fs.readFile(path.join(userDirectory, nativeManifest)), userManifest);
+    assert.deepEqual(await userBytes(), userBefore);
     assert.equal(await fs.readFile(foreign, 'utf8'), 'Retain unrelated project files.\n');
     assert.equal(await fs.readFile(directFile, 'utf8'), skillText(direct, 1));
     report.mixedCleanup = 'project-a-owned-project-b-user-and-foreign-retained';

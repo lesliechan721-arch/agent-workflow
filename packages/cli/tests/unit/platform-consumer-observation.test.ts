@@ -421,6 +421,9 @@ describe('public native consumer observation', () => {
     const tintin = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
     await consumer(nico, version, 'pi-subagents');
     await consumer(tintin);
+    await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), {
+      name: item.layout.nativeIdentity.packageId, version: '1.0.0', pi: { subagents: { agents: ['./agents'] } },
+    });
     const targetSource = path.relative(item.host, item.layout.packageRoot).split(path.sep).join('/');
     const observe = async (target: string, ...otherSources: string[]) => {
       await fs.outputJson(item.layout.activationPath, { packages: ['npm:pi-subagents', target, ...otherSources] });

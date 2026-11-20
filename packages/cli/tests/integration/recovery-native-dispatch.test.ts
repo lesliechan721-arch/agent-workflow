@@ -373,6 +373,7 @@ describe('native recovery dispatch', () => {
     }
   });
 
+  // A generated extension must not stale the next install or hide a missing role consumer. External drift still invalidates Review.
   it.each([
     { scope: 'user', foreignRegistration: false }, { scope: 'project', foreignRegistration: false },
     { scope: 'project', foreignRegistration: true },
@@ -450,6 +451,13 @@ describe('native recovery dispatch', () => {
       const extension = path.join(guide, 'index.mjs');
       const changed = 'export default function register(pi) { pi.registerTool({ name: "user-tool" }); }\n';
       await fs.writeFile(extension, changed);
+      const status = await readRecoveryStatus({ context: scope, cwd, env, nativeCliRunner });
+      for (const pluginId of ['local/guide', 'local/roles']) {
+        const target = status.inventory?.find((item) => item.pluginId === pluginId)?.targetResults[0];
+        expect(target?.deploymentObservations?.[0]?.after.prerequisites.agentConsumers).toMatchObject({
+          observation: 'unknown', reasonCodes: ['agentConsumerDiscoveryUnverified'],
+        });
+      }
       expect(await executeRecovery(reviewed)).toMatchObject({ ok: false, outputsMayHaveChanged: false,
         blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
       expect(await fs.readFile(extension, 'utf8')).toBe(changed);

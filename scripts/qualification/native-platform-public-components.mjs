@@ -35,6 +35,7 @@ async function writeFixture(workspace, scaffold, spec, revision) {
   };
   const manifest = { ...scaffold, name: spec.name, version: '0.1.' + revision, platforms: componentPlatforms };
   delete manifest.skills;
+  if (spec.dependencies) manifest.dependencies = spec.dependencies;
   const extensions = {};
   if (spec.kinds.includes('agent')) extensions.agents = [{ name: names.agent, description: 'Local fixture.', prompt: token('agent', revision) }];
   if (spec.kinds.includes('instruction')) extensions.instructions = [{ name: names.instruction, title: 'Local fixture',
@@ -123,14 +124,72 @@ async function verifyFixture(ctx, result, spec, revision) {
 }
 
 
+// Both roots share Pi's settings file. The dependency makes the extension
+// publish before the role, so the second target must observe AW's own write.
+async function piPair(ctx, report, inputs, install, status, sync) {
+  const ids = inputs.map(spec => source + '/' + spec.name);
+  const first = await install(ids);
+  assert.deepEqual(first.data.remainingTargets, []);
+  const scopeRoot = ctx.scope === 'project' ? path.join(ctx.project, '.pi') : ctx.env.PI_CODING_AGENT_DIR;
+  const settings = path.join(scopeRoot, 'settings.json');
+  const paths = [settings];
+  const warnings = first.diagnostics.filter(item => item.code === 'piAgentConsumerUnavailable'
+    && item.subject?.pluginId === source + '/single-agent' && item.subject.scope === ctx.scope);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].detail.reasonCode, 'piAgentConsumerMissing');
+  report.pair = { targets: [], scope: ctx.scope, consumerWarning: warnings[0].detail.reasonCode };
+  for (const spec of inputs) {
+    const id = source + '/' + spec.name;
+    const target = targetOf(first, ctx, id);
+    assert.equal(target.execution, 'applied');
+    const receipts = target.deploymentReceipts.filter(receipt => receipt.after.nativeIdentity?.packageId === spec.name);
+    assert.equal(receipts.length, 1);
+    const [receipt] = receipts;
+    assert.equal(receipt.after.registration, 'present');
+    assert.equal(receipt.after.ownership, 'aw');
+    const plan = target.deploymentPlans.find(plan => plan.bindingId === receipt.bindingId);
+    for (const kind of ['publish-package', 'register']) {
+      const effects = plan.effects.filter(effect => effect.kind === kind);
+      assert.equal(effects.length, 1, id + '/' + kind);
+      assert.deepEqual(receipt.effects.filter(effect => effect.id === effects[0].id).map(effect => [effect.status, effect.mutation]),
+        [['applied', 'confirmed']], id + '/' + kind);
+    }
+    const installed = await verifyFixture(ctx, first, spec, 1);
+    assert.equal(installed.installed.length, 1);
+    paths.push(path.join(ctx.root, installed.installed[0].path), path.join(nativePackage(target), 'package.json'));
+    report.pair.targets.push(installed);
+  }
+  const packages = JSON.parse(await fs.readFile(settings, 'utf8')).packages;
+  const registered = packages.map(entry => path.basename(typeof entry === 'string' ? entry : entry.source));
+  assert.deepEqual(registered, inputs.map(spec => 'aw-matrix-' + spec.name), 'Pi must register each package once, extension first.');
+  const fingerprints = () => Promise.all(paths.map(async file => {
+    const stat = await fs.stat(file, { bigint: true });
+    return { path: path.relative(ctx.root, file).split(path.sep).join('/'), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs),
+      sha256: sha256(await fs.readFile(file)) };
+  }));
+  const before = await fingerprints();
+  const observed = await status();
+  checkSettled(observed);
+  for (const spec of inputs) await verifyFixture(ctx, observed, spec, 1);
+  const again = await sync();
+  assert.deepEqual(again.data.remainingTargets, []);
+  assert.equal(again.data.changes.outputs, 'none');
+  for (const id of ids) assert.equal(targetOf(again, ctx, id).execution, 'no-op');
+  assert.deepEqual(await fingerprints(), before, 'A satisfied Pi batch must preserve both packages and the scope settings.');
+  Object.assign(report.pair, { registered, filesAfterSync: before, syncOutputs: again.data.changes.outputs });
+}
+
 async function matrix(ctx, report) {
   const { aw, platform, scope } = ctx;
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);
   await aw(['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace);
-  await aw(['dev', 'plugin', 'create', specs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace);
-  const scaffold = JSON.parse(await fs.readFile(path.join(workspace, 'plugins', specs[0].name, manifestFile), 'utf8'));
-  const inputs = platform === 'generic' ? specs : specs.filter(spec => spec.name !== 'without-skills');
+  const inputs = report.suite === 'pi-pair' ? [
+    specs.find(spec => spec.name === 'single-instruction'),
+    { ...specs.find(spec => spec.name === 'single-agent'), dependencies: ['single-instruction'] },
+  ] : platform === 'generic' ? specs : specs.filter(spec => spec.name !== 'without-skills');
+  await aw(['dev', 'plugin', 'create', inputs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace);
+  const scaffold = JSON.parse(await fs.readFile(path.join(workspace, 'plugins', inputs[0].name, manifestFile), 'utf8'));
   for (const spec of inputs) await writeFixture(workspace, scaffold, spec, 1);
   const build = () => aw(['dev', 'catalog', 'build', '--force', '--yes', '--workspace-root', workspace], workspace);
   await build();
@@ -139,6 +198,7 @@ async function matrix(ctx, report) {
   const install = ids => aw(['plugin', 'install', ...ids, '--scope', scope, '--context', scope, '--target', platform, '--yes']);
   const sync = () => aw(['plugin', 'sync', '--context', scope, '--yes']);
   const status = () => aw(['plugin', 'status', '--context', scope]);
+  if (report.suite === 'pi-pair') return piPair(ctx, report, inputs, install, status, sync);
   // A target with only missing capability starts in a genuinely empty scope.
   if (['opencode', 'generic'].includes(platform)) {
     const spec = inputs.find(spec => spec.name === 'hook-only');
@@ -147,6 +207,14 @@ async function matrix(ctx, report) {
     const observed = await status();
     checkSettled(observed);
     report.onlyHook = await verifyFixture(ctx, observed, spec, 1);
+    const directory = platform === 'generic' ? path.join(scope === 'project' ? ctx.project : ctx.env.HOME, '.agents/skills')
+      : scope === 'project' ? path.join(ctx.project, '.opencode/plugins') : path.join(ctx.env.XDG_CONFIG_HOME, 'opencode/plugins');
+    const entries = await fs.readdir(directory).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(entries, [], 'A clean zero-output scope must have no installed artifact');
+    report.onlyHook.artifactDirectory = 'absent-or-empty';
     const unchanged = await sync();
     assert.deepEqual(unchanged.data.remainingTargets, []);
     assert.equal(unchanged.data.changes.outputs, 'none');
@@ -197,13 +265,34 @@ async function matrix(ctx, report) {
     assert.equal(await fs.readFile(file, 'utf8'), 'foreign bytes');
     report.foreign = { preserved: true, exitCode: failure.exitCode, status: failure.value.status,
       diagnostics: failure.value.diagnostics.map(item => item.code) };
+    if (process.platform !== 'win32' && process.getuid() !== 0) {
+      await fs.unlink(file);
+      await fs.rmdir(path.dirname(file));
+      const parent = path.dirname(path.dirname(file));
+      const mode = (await fs.stat(parent)).mode & 0o777;
+      try {
+        await fs.chmod(parent, 0o555);
+        await assert.rejects(fs.access(parent, constants.W_OK), { code: 'EACCES' });
+        const denied = await ctx.result(['plugin', 'install', source + '/' + skill.name, '--scope', scope, '--target', platform, '--yes']);
+        assert.notEqual(denied.exitCode, 0);
+        const target = targetOf(denied.value, ctx, source + '/' + skill.name, true);
+        assert(target.blockerCodes.includes('portableWriteFailed'));
+        assert(denied.value.data.remainingTargets.some(row => row.pluginId === target.pluginId));
+        await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+        report.writeDenied = { exitCode: denied.exitCode, status: denied.value.status,
+          execution: target.execution, blockerCodes: target.blockerCodes };
+      } finally { await fs.chmod(parent, mode); }
+      await install([source + '/' + skill.name]);
+      report.recovered = await verifyFixture(ctx, await status(), skill, 1);
+    } else report.writeDenied = { observed: 'unverified', reason: 'POSIX non-root write-denial fixture' };
   }
 }
 
 
 export async function runComponentQualification({ platform, scope, clientPath, suite = 'matrix', catalog }) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
-  assert(['matrix', 'candidate', 'frozen'].includes(suite));
+  assert(['matrix', 'pi-pair', 'candidate', 'frozen'].includes(suite));
+  if (suite === 'pi-pair') assert.equal(platform, 'pi');
   const artifactIdentity = async () => {
     const files = Object.entries(await candidateFiles()).filter(([name]) => name.startsWith('packages/'));
     return sha256(JSON.stringify(files));
@@ -295,7 +384,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
     const ctx = { root, project, env, aw, result, scope, platform };
-    if (suite === 'matrix') await matrix(ctx, report);
+    if (suite === 'matrix' || suite === 'pi-pair') await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';

@@ -37,7 +37,8 @@ const projectRegistrations = new WeakMap<DeploymentObservation, (string | null)[
 /** Keep exact native sources available to the current write without exposing them in status. */
 export function piProjectListContainsOnly(observation: DeploymentObservation, knownRoots: ReadonlySet<string>): boolean {
   const roots = projectRegistrations.get(observation);
-  return !!roots?.length && new Set(roots).size === roots.length && roots.every((root) => root !== null && knownRoots.has(root));
+  return !!roots?.length && roots.length === knownRoots.size && new Set(roots).size === roots.length
+    && roots.every((root) => root !== null && knownRoots.has(root));
 }
 
 /** Pi list reports configured packages and resolved paths. */
@@ -232,7 +233,7 @@ function packageAccess(id: string, version: string | null, settings: ObjectValue
 
 /** AW's generated Hook, MCP and Instruction extension does not consume Pi roles. */
 async function isGeneratedPiExtension(root: string, namespaceRoot: string, scope: ScopeRef['kind'], name: string): Promise<boolean> {
-  if (path.dirname(root) !== path.join(namespaceRoot, 'aw-packages')) return false;
+  if (path.dirname(root) !== path.join(namespaceRoot, 'aw-packages') || !path.basename(root).startsWith('aw-')) return false;
   try {
     const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: namespaceRoot });
     const projection = marker?.nativeProjection;

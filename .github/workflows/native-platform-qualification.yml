@@ -136,12 +136,6 @@ jobs:
       - name: Verify Windows process setup and timeout handling
         if: runner.os == 'Windows'
         run: pnpm test:qualification:native-platforms:harness
-      - name: Verify generic delivery, empty results and foreign content in both scopes
-        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && env.QUALIFICATION_CLIENT == 'all'
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-results"
-          node scripts/qualification/native-platform-public-components.mjs --target generic --report "$RUNNER_TEMP/native-results/generic-components.json"
       - name: Verify real clients and public AW status in credential-free temporary environments
         if: env.QUALIFICATION_CLIENT != 'antigravity-user'
         shell: bash
@@ -161,6 +155,12 @@ jobs:
           args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-results/report.json")
           if [[ "$ANTIGRAVITY_PUBLIC_AW" == '1' ]]; then args+=(--public-aw); fi
           node scripts/qualification/native-platform-antigravity-user.mjs "${args[@]}"
+      - name: Verify generic delivery, empty results and foreign content in both scopes
+        if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && env.QUALIFICATION_CLIENT == 'all' }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-results"
+          node scripts/qualification/native-platform-public-components.mjs --target generic --report "$RUNNER_TEMP/native-results/generic-components.json"
       - name: Verify the public Cursor component matrix with its pinned Linux x64 distribution
         if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
         shell: bash

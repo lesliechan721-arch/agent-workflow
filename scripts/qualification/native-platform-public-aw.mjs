@@ -361,20 +361,6 @@ export async function qualifyPublicAw(ctx) {
   // profile or use --force to turn a missing capability into public success.
   if (ctx.platform !== 'antigravity') await requireProductionSkillProfile(ctx);
   if (ctx.platform === 'opencode') await ctx.check('public-opencode-observation-environment', () => preparePublicOpenCodeObservation(ctx));
-  if (process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1') {
-    const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
-    for (const scope of scopes) {
-      for (const suite of ctx.platform === 'pi' ? ['matrix', 'candidate', 'frozen'] : ['matrix', 'candidate']) {
-        await ctx.check('public-components-' + scope + '-' + suite, async () => {
-          const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
-            ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
-          if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
-          assert.equal(result.status, 'passed', result.reason);
-          return result;
-        });
-      }
-    }
-  }
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);
   const plugin = path.join(workspace, 'plugins', ctx.pluginName);
@@ -572,5 +558,23 @@ export async function qualifyPublicAw(ctx) {
   if (ctx.platform === 'codex' && ctx.scope === 'user') {
     const { qualifyPublicCodexBehavior } = await import('./native-platform-codex-behavior.mjs');
     await qualifyPublicCodexBehavior(ctx);
+  }
+  if (process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1') {
+    const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
+    const failures = [];
+    for (const scope of scopes) {
+      for (const suite of ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate']) {
+        try {
+          await ctx.check('public-components-' + scope + '-' + suite, async () => {
+            const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
+              ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
+            if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
+            assert.equal(result.status, 'passed', result.reason);
+            return result;
+          });
+        } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
+      }
+    }
+    assert.deepEqual(failures, []);
   }
 }
