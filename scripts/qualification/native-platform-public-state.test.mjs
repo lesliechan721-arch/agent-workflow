@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,8 +8,8 @@ import { preparePublicClientPath, preparePublicClientPaths } from './native-plat
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { grokTrustTargets } from './native-platform-public-components.mjs';
-import { confirmedSharedRetention } from './native-platform-public-removal.mjs';
-import { clients } from './native-platform-runtime.mjs';
+import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
+import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
 
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
 test('requires OpenCode explicit observation to report a scoped runtime outcome', () => {
@@ -305,6 +306,47 @@ test('binds retained marketplace bytes to this package and its separately remove
     change(altered);
     assert.equal(matches(altered), false);
   }
+});
+
+// Test Value Gate: the component removal harness must launch the Copilot npm
+// entry through Windows Job and read a fresh inventory in both directories.
+test('reads retained Copilot components through the isolated client launcher', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-copilot-removal-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { ctx, pluginId, result, receipt, target } = removalFixture('copilot', 'project', { root });
+  const directory = path.join(root, 'marketplace', ctx.pluginName);
+  const component = path.join(directory, 'component.md');
+  const content = 'Retained component.\n';
+  await fs.mkdir(ctx.project);
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(component, content);
+  receipt.after.nativeIdentity.sourceLocation = directory;
+  target.deploymentObservations = [{ after: receipt.after }];
+  Object.assign(result.data, { requirements: { roots: [] }, remainingTargets: [] });
+  result.diagnostics = [];
+
+  const clientBin = path.join(root, 'npm prefix');
+  const packageRoot = path.join(clientBin, 'node_modules', ...clients.copilot.package.split('/'));
+  const entry = path.join(packageRoot, 'cli.js');
+  await fs.mkdir(packageRoot, { recursive: true });
+  await fs.writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: clients.copilot.package, bin: { copilot: 'cli.js' } }));
+  const disabled = [{ name: ctx.pluginName, version: '0.1.1', enabled: false }];
+  await fs.writeFile(entry, ['#!/usr/bin/env node',
+    "require('node:assert/strict').deepEqual(process.argv.slice(2), ['plugin', 'list', '--json']);",
+    "const directory = require('node:path').basename(process.cwd());",
+    "if (!['project', 'neutral-removal'].includes(directory)) process.exit(2);",
+    `console.log(JSON.stringify(directory === 'project' ? ${JSON.stringify(disabled)} : []));`,
+  ].join('\n'), { mode: 0o755 });
+  const env = await prepareEnvironment(root);
+  await preparePublicClientPath({ ...ctx, root, env, clientBin, launcher: { executable: process.execPath, prefix: [entry] } });
+  const report = { removals: [], updated: { id: 'another-fixture' } };
+  await verifyFixtureRemoval({ ...ctx, root, env, result: async () => ({ exitCode: 0, value: result }) }, report, result,
+    { id: pluginId, installed: [{ path: path.relative(root, component), kind: 'agent',
+      sha256: createHash('sha256').update(content).digest('hex') }] }, new Set(), []);
+  assert.deepEqual(report.removals[0].activeAfter, {
+    target: { level: 'native-management-state', active: false, present: true, version: '0.1.1' },
+    neutral: { level: 'native-management-state', active: false, present: false },
+  });
 });
 
 test('rejects retained registrations without the successful shared removal boundary', async (t) => {

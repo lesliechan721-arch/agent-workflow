@@ -277,11 +277,9 @@ describe('native recovery dispatch', () => {
         if (change === 'extra package file') expect(await fs.readFile(extraFile, 'utf8')).toBe('Keep this file.\n');
         return;
       }
-      for (const selected of independentUpgrade ? requested.map((name) => [name]) : [requested]) {
-        const install = await runPublicLifecycle('install', selected, options, { nativeCliRunner });
-        expect(install, JSON.stringify(install.diagnostics)).toMatchObject({ status: 'success', data: { remainingTargets: [],
-          targetResults: selected.map((pluginId) => ({ pluginId, execution: 'applied', content: 'satisfied' })) } });
-      }
+      const install = await runPublicLifecycle('install', requested, options, { nativeCliRunner });
+      expect(install, JSON.stringify(install.diagnostics)).toMatchObject({ status: 'success', data: { remainingTargets: [],
+        targetResults: requested.map((pluginId) => ({ pluginId, execution: 'applied', content: 'satisfied' })) } });
       if (baseAgent) expect(await fs.readFile(path.join(provider, 'agents', 'base-reviewer.md'), 'utf8')).toContain('Check the base output.');
       if (baseRule) expect(await fs.readFile(rule, 'utf8')).toContain('Keep the draft.');
       if (kind === 'hook') expect(await fs.readJson(path.join(provider, 'hooks', 'hooks.json'))).toHaveProperty('hooks');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { nativePackage, readPublicNativeState, targetOf } from './native-platform-public-state.mjs';
-import { sha256 } from './native-platform-runtime.mjs';
+import { clients, sha256 } from './native-platform-runtime.mjs';
 
 const routes = { codex: 'codex-marketplace', claude: 'claude-marketplace', copilot: 'copilot-marketplace' };
 
@@ -124,7 +124,15 @@ export async function verifyFixtureRemoval(ctx, report, observed, fixture, contr
     const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
     const pluginName = id.split('/')[1];
     const native = { ...ctx, pluginName, async command(args, cwd) {
-      const output = await runNativeCli({ command: ctx.platform, args, cwd, env: ctx.env, timeoutMs: 30_000 });
+      let command = ctx.platform;
+      if (process.platform === 'win32' && ctx.platform === 'copilot') {
+        const { resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
+        const { bin, package: packageName } = clients.copilot;
+        const launcher = await resolveWindowsNpmCommand({ command: bin, binName: bin, packageName, cwd, env: ctx.env });
+        command = launcher.command;
+        args = [...launcher.argsPrefix, ...args];
+      }
+      const output = await runNativeCli({ command, args, cwd, env: ctx.env, timeoutMs: 30_000 });
       assert.equal(output.exitCode, 0, id + ': native scope lookup failed');
       return output;
     } };
