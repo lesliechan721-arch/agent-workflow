@@ -178,7 +178,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 [`native-platform-qualification.yml`](../../.github/workflows/native-platform-qualification.yml) 是独立手动工作流，不属于普通 PR 更新、自动 Beta 或发布通过门禁。可在 Actions 选择一个固定客户端或 `all`；首次工作流尚未进入默认分支时，也可手动给 PR 添加 `native-qualification` 标签运行全部客户端。只有本次添加该标签才触发，普通 PR 更新不触发；`native-qualification-copilot` 标签在相同六环境中只验证 Copilot，用于定向修复验证，不代表其他客户端重验。重跑使用 Actions 的 rerun 或重新添加对应标签。
 
-每次运行都在自己的 runner 上构建 Windows helper，验证 x64 和 arm64，再上传供本次运行使用的制品。同一分支的全客户端验证和 Antigravity 专项可以同时执行这些步骤。候选制品和 Windows helper 的前置作业结束后，Linux、macOS、Windows 的 x64/arm64 在各自的托管 runner 上独立验证同一候选。所有选中的宿主均可并行，实际启动时间取决于 GitHub runner 可用量。各宿主的失败互不取消。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。手动运行可用 `hosts=windows-x64-and-macos-x64` 选择 Windows x64 和 macOS x64，或用 `hosts=windows-x64-and-arm64` 复测两种 Windows 架构。默认 `all` 与原有 PR 标签按各自原矩阵执行。
+运行客户端资格矩阵时，每次都在自己的 runner 上构建 Windows helper，验证 x64 和 arm64，再上传供本次运行使用的制品。同一分支的全客户端验证和 Antigravity 专项可以同时执行这些步骤。候选制品和 Windows helper 的前置作业结束后，Linux、macOS、Windows 的 x64/arm64 在各自的托管 runner 上独立验证同一候选。所有选中的宿主均可并行，实际启动时间取决于 GitHub runner 可用量。各宿主的失败互不取消。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。手动运行可用 `hosts=windows-x64-and-macos-x64` 选择 Windows x64 和 macOS x64，或用 `hosts=windows-x64-and-arm64` 复测两种 Windows 架构。默认 `all` 与原有 PR 标签按各自原矩阵执行。
 
 常规 CI 和资格候选都运行 [shipped-catalog-user.mjs](../../scripts/qualification/shipped-catalog-user.mjs)，读取本次构建的官方 Catalog，逐插件核对九个个人目标的组件和实际投影。对 `git-toolkit`，三个 Skill 的正文和宿主调用字段都有独立断言。generic 另外走公开安装与更新，读回三个目录，检查手动技能的非阻断提示和成功退出码。矩阵使用固定的 CLI 发现数据，真正的宿主安装、调用入口、自动候选和已知限制由各自的原生探针记录。公开安装检查会读回正文，并核对当前宿主是否应提示明确的调用限制。Claude、Pi 和 OpenCode 的原生检查分别从 User 和 Project 的已安装技能读取调用行为。[实测记录](../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
 
