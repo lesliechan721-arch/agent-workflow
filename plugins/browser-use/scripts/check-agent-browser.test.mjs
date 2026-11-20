@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, copyFileSync, linkSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -14,8 +14,13 @@ test('preApply accepts an executable agent-browser on PATH', () => {
     const bin = path.join(root, 'bin');
     mkdirSync(bin);
     if (process.platform === 'win32') {
-      // Node is a native executable that succeeds for the probe's --version.
-      copyFileSync(process.execPath, path.join(bin, 'agent-browser.exe'));
+      // Reuse the running Node image for the PATH fixture instead of creating a new executable image.
+      const executable = path.join(bin, 'agent-browser.exe');
+      try {
+        linkSync(process.execPath, executable);
+      } catch {
+        copyFileSync(process.execPath, executable, constants.COPYFILE_EXCL);
+      }
     } else {
       const executable = path.join(bin, 'agent-browser');
       writeFileSync(executable, '#!/bin/sh\nexit 0\n');
