@@ -127,7 +127,8 @@ describe('ConsoleAppV4', () => {
     await confirmReview(partialInstance, partial);
     await nextTurn(4);
     expect(partialScreens).toContain('C13');
-    expect(partialInstance.lastFrame()).toContain('部分应用失败');
+    expect(partialInstance.lastFrame()).toContain('插件应用未完成');
+    expect(partialInstance.lastFrame()).not.toContain('设置已保存');
     expect(partialInstance.lastFrame()).toContain('重试应用');
 
     const resetScreens = new Set<ConsoleV4ScreenId>();
