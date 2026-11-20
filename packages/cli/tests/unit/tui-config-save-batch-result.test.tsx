@@ -313,7 +313,11 @@ describe('TUI config save batch result', () => {
         targetResults: [
           ...(delivered ? [{ target: { pluginName: 'demo', pluginId, platform: 'generic' as const, scope: 'user' as const },
             state: 'completed' as const, action: 'refresh' }] : []),
-          { target: { pluginName: 'demo', pluginId, platform: 'codex', scope: 'user' }, state: 'failed', action: 'refresh', errorCode: code },
+          {
+            target: delivered ? { pluginName: 'demo', pluginId, platform: 'codex', scope: 'user' }
+              : { pluginName: 'consumer', pluginId: 'team/consumer', platform: 'codex', scope: 'project' },
+            state: 'failed', action: 'refresh', errorCode: code,
+          },
         ],
       });
       if (!retryApply) interrupted.configWrite = 'succeeded';
@@ -327,14 +331,26 @@ describe('TUI config save batch result', () => {
       const review = await value.buildOperationReview({
         kind: 'configSave', pluginId, scope: 'user', apply: true,
         ...(retryApply ? { retryApply: true } : { updates: { mode: 'new' } }),
+        ...(!delivered ? { platform: 'codex', context: 'project' } : {}),
       });
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 35 }} />);
       await value.executeOperation(review.reviewToken);
       if (!delivered) {
-        expect(value.snapshot.result).toMatchObject({ state: 'blocked', code: 'operationInterrupted' });
+        const result = value.snapshot.result;
+        const failedPosition = { pluginId: 'team/consumer', platform: 'codex', scope: 'project' };
+        expect(result).toMatchObject({
+          state: 'blocked', code, message: expect.stringContaining('请检查未完成位置'),
+          summary: { configTargets: [{ ...failedPosition, state: 'failed', errorCode: code }] },
+        });
+        const history = value.getOperationDiagnostic(result!.operationRecordId!);
+        expect(history?.targets).toMatchObject([{ ...failedPosition, state: 'failed', errorCode: code }]);
+        expect(history?.diagnostics.filter((diagnostic) => diagnostic.target)).toMatchObject([
+          { code, target: failedPosition },
+        ]);
+        await vi.waitFor(() => expect(instance.lastFrame()).toContain('operationInterrupted'));
         return;
       }
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分插件目标已更新'));
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分插件内容已就绪'));
       expect(value.snapshot.result).toMatchObject({
         state: 'partial', effects: { configCommit: retryApply ? 'notStarted' : 'completed', awWrite: 'partial' },
         summary: {
@@ -359,6 +375,80 @@ describe('TUI config save batch result', () => {
       }));
     },
   );
+
+  it('keeps repeated apply Reviews within the remaining platforms in the selected context', async () => {
+    const target = (platform: 'generic' | 'codex' | 'claude', state: 'completed' | 'failed') => ({
+      target: { pluginName: 'demo', pluginId, platform, scope: 'project' as const }, state, action: 'refresh',
+    });
+    const interrupted = new ConfigApplyInterruptedError(new RecoveryInterruptedError(
+      {} as RecoveryReceipt, new DOMException('Cancelled', 'AbortError'),
+    ), { state: 'partial', targetResults: [
+      target('generic', 'completed'), target('codex', 'failed'), target('claude', 'failed'),
+    ] });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidence(intent));
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(interrupted)
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'partial', apply: {
+        state: 'partial', targetResults: [target('claude', 'completed'), target('codex', 'failed')],
+      } })
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'partial', apply: {
+        state: 'unavailable', reason: 'targetDiscoveryFailed', targetResults: [],
+      } })
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'succeeded', apply: {
+        state: 'succeeded', targetResults: [target('codex', 'completed')],
+      } });
+    const value = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status()), captureEvidence, executeIntent });
+    await value.load();
+    const initial = await value.buildOperationReview({
+      kind: 'configSave', pluginId, scope: 'user', context: 'project', retryApply: true, apply: true,
+      targets: ['generic', 'codex', 'claude'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 38 }} />);
+    await value.executeOperation(initial.reviewToken);
+    for (const targets of [['codex', 'claude'], ['codex'], ['codex']]) {
+      const expected = { kind: 'configSave', pluginId, scope: 'user', context: 'project', retryApply: true, targets };
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('重试应用'));
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(value.snapshot.activeReview).toBeDefined());
+      expect(captureEvidence.mock.lastCall?.[0]).toMatchObject(expected);
+      await value.executeOperation(value.snapshot.activeReview!.reviewToken);
+      expect(executeIntent.mock.lastCall?.[0]).toMatchObject(expected);
+    }
+    expect(executeIntent).toHaveBeenCalledTimes(4);
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded', effects: { configCommit: 'notStarted' } });
+  });
+
+  it('keeps a verified Skill on an interrupted position with an unfinished sibling and offers manual recovery', async () => {
+    const code = 'operationInterrupted';
+    const warning = skillInvocationWarning('alpha', [
+      { feature: 'skill.invocation.model', values: ['false'] },
+    ], { pluginId, target: 'generic', scope: 'user' })!;
+    const error = new ConfigApplyInterruptedError(new RecoveryInterruptedError(
+      {} as RecoveryReceipt, new DOMException('Cancelled', 'AbortError'),
+    ), { state: 'partial', diagnostics: [warning], targetResults: [{
+      target: { pluginName: 'demo', pluginId, platform: 'generic', scope: 'user' },
+      state: 'failed', action: 'refresh', errorCode: code, partialDelivery: true,
+    }] });
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async (intent) => evidence(intent)),
+      executeIntent: vi.fn().mockRejectedValueOnce(error),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'configSave', pluginId, scope: 'user', retryApply: true, apply: true, targets: ['generic'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 36 }} />);
+    await value.executeOperation(review.reviewToken);
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', summary: {
+      configTargets: [{ pluginId, platform: 'generic', scope: 'user', state: 'failed', partialDelivery: true, errorCode: code }],
+      configDiagnostics: [warning], configApplyRetryAvailable: false,
+    } });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分插件内容已就绪'));
+    expect(instance.lastFrame()).toContain('alpha');
+    expect(instance.lastFrame()).toContain('请检查未完成位置');
+    expect(instance.lastFrame()).not.toContain('重试应用');
+  });
 
   it('pages config apply notices and retains exact controls in compact technical details', async () => {
     const location = { pluginId, target: 'generic', scope: 'project' } as const;

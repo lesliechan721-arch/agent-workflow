@@ -3078,15 +3078,16 @@ export function createTuiControllerDependencies(
                     ? 'succeeded' as const
                     : result.apply.state === 'skipped'
                       ? 'notNeeded' as const
-                      : 'failed' as const;
+                      : configApplyHasCompletedWork(result.apply) ? 'partial' as const : 'failed' as const;
+                const applyIncomplete = applyStatus === 'failed' || applyStatus === 'partial';
                 results.push({
                   scope: 'user', platform: group.platform,
-                  status: applyStatus === 'failed' ? 'failed' : 'succeeded',
+                  status: applyIncomplete ? 'failed' : 'succeeded',
                   configSaved,
                   applyRequested: intent.apply,
                   applyStatus,
                   execution: { ...result, operationRebuildResults },
-                  ...(applyStatus === 'failed' ? {
+                  ...(applyIncomplete ? {
                     errorCode: result.apply.state === 'unavailable'
                       ? result.apply.error?.code ?? result.apply.reason
                       : result.apply.targetResults.find((target) => target.errorCode)?.errorCode

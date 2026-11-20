@@ -189,6 +189,8 @@ type LifecycleData = {
 
 安装、同步、重建或配置应用交付 Skill 后，如果该位置无法保证声明的显式调用、模型自动调用或可见性要求，`diagnostics` 按实际插件、Skill、平台和范围给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 给出每项未能保证的控制、声明值与原因，区分未绑定执行客户端、客户端不支持和能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。CLI 文本和 TUI 结果显示同一事实。警告本身不影响成功状态或退出码，也不会使已交付目标进入重试。遇到其他失败时，仍报告实际未完成项。
 
+配置应用的同一目标若有部分输出已读回、其余输出仍失败，`data.apply.targetResults[]` 保留目标的 `state: "failed"` 和失败原因，并附 `partialDelivery: true`。已交付 Skill 的提示保留在对应的 `diagnostics` 中。此时回执提供检查未完成输出的指引。
+
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。

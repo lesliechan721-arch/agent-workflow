@@ -353,6 +353,8 @@ export interface ConfigApplyTargetResult {
   target: ConfigApplyTargetIdentity;
   action: string;
   state: ConfigApplyTargetState;
+  /** Part of this target's output was verified even though applying the full target did not finish. */
+  partialDelivery?: true;
   message?: string;
   errorCode?: string;
   relation?: 'requested' | 'dependency';

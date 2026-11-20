@@ -795,7 +795,9 @@ function writeConfigApplyNotice(
           ? `失败原因：${entry.errorCode}。`
           : '未提供安全失败原因。';
       const command = `aw plugin sync ${receipt.plugin} --rebuild --target ${entry.target.platform} --context ${entry.target.scope}`;
-      const recovery = entry.errorCode === 'invalidConfig'
+      const recovery = entry.partialDelivery
+        ? ' 部分输出已验证。请检查尚未完成的输出后再重新准备应用。'
+        : entry.errorCode === 'invalidConfig'
         ? ` 请修复无效配置后运行 ${command}。`
         : entry.errorCode === 'preApplyAuthorizationRequired'
           || entry.errorCode === 'sharedNativeConfigApplyConfirmationRequired'
@@ -839,9 +841,11 @@ function writeConfigApplyNotice(
     writeTargetFailures();
   } else {
     const completed = targetResults.filter((entry) => entry.state === 'completed').length;
-    const failed = targetResults.filter((entry) => entry.state === 'failed').length;
+    const partiallyDelivered = targetResults.filter((entry) => entry.partialDelivery).length;
+    const failed = targetResults.filter((entry) => entry.state === 'failed' && !entry.partialDelivery).length;
     const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
-    writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；失败 ${failed} 个；跳过 ${skipped} 个。`);
+    const partialSummary = partiallyDelivered > 0 ? `部分完成 ${partiallyDelivered} 个；` : '';
+    writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；${partialSummary}失败 ${failed} 个；跳过 ${skipped} 个。`);
     writeTargetFailures();
   }
   writeWarnings(write, receipt.warnings);

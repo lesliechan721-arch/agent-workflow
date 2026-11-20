@@ -9815,14 +9815,14 @@ export function ConsoleAppV4(props: {
                   : '✓ 来源配置已保存'
       : configOperation
       ? blocked
-        ? '× 设置未确认保存'
+        ? resultSummary?.configRetryApply ? '× 插件应用未完成' : '× 设置未确认保存'
         : partial ? resultSummary?.configApplySkippedReason === 'invalidConfig'
           ? resultSummary.configRetryApply ? '! 配置无效，应用未完成' : '! 设置已保存，但未应用'
           : resultSummary?.configRetryApply
-            ? resultSummary.configApplied ? '! 部分插件目标已更新' : '! 插件应用未完成'
+            ? resultSummary.configApplied ? '! 部分插件内容已就绪' : '! 插件应用未完成'
             : resultSummary?.configApplied && (resultSummary.configApplyRetryTargets !== undefined
               || resultSummary.configGroups?.some((group) => group.applyStatus === 'partial'))
-              ? '! 设置已保存，部分插件目标已更新'
+              ? '! 设置已保存，部分插件内容已就绪'
               : '! 设置已保存，但部分应用失败'
           : resultSummary?.configRetryApply
             ? resultSummary.configApplied ? '✓ 已应用已保存的设置' : '✓ 应用检查完成'
@@ -10227,7 +10227,8 @@ export function ConsoleAppV4(props: {
     }
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
-    type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'> & { platform: PlatformTarget };
+    type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'>
+      & { platform: PlatformTarget; partialDelivery?: true };
     const resultTargetName = (target: ResultTarget): string =>
       target.pluginId
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
@@ -10269,11 +10270,16 @@ export function ConsoleAppV4(props: {
       return priority(left) - priority(right);
     });
     const targetResultRows = prioritizedTargets.map((target) => {
-      const state = operationTargetStateLabel(target.state);
+      const state = target.partialDelivery
+        ? { label: '部分完成', status: 'warning' as const }
+        : operationTargetStateLabel(target.state);
       const relation = target.relation === 'requested' ? '你选择的插件'
         : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined;
+      const targetDescription = configOperation
+        ? [agentLabel(target.platform), scopeLabel(target.scope), target.errorCode].filter(Boolean).join(' · ')
+        : relation;
       return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)}
-        description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
+        description={targetDescription} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
     });
     const generalResultRows = [...configInvocationRows, ...configGroupRows, ...targetResultRows, ...commandResultRows];
     const baseResultPaginationTotal = Math.max(
@@ -10367,7 +10373,7 @@ export function ConsoleAppV4(props: {
       ...(resultSummary?.warnings ?? []),
       ...(resultSummary?.recoveryActions ?? []),
       ...prioritizedTargets.map((target) =>
-        `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${operationTargetStateLabel(target.state).label}`),
+        `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${target.partialDelivery ? '部分完成' : operationTargetStateLabel(target.state).label}`),
       ...commandResults.flatMap((result) => [
         `命令生产者 ${result.producer.key} · ${scopeLabel(result.producer.scope)} · ${result.state}`,
         ...(retainedCommandPackage(result) ? [`保留命令包 ${getCommandPackageId(result.producer)} · ${result.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`] : []),

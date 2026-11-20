@@ -1,6 +1,7 @@
 import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
-import type { PlatformName, Scope } from '../types.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import type { PlatformTarget, Scope } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
@@ -8,7 +9,7 @@ import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import type { OperationKind } from './controller.js';
 import type { OperationEffectFacts, SafeOperationDiagnostic } from './operation-history.js';
 
-type Target = { pluginId?: string; platform: PlatformName; scope: Scope };
+type Target = { pluginId?: string; platform: PlatformTarget; scope: Scope };
 
 export function projectSkillInvocationHistory(
   diagnostics: readonly RecoveryDiagnostic[],
@@ -62,7 +63,7 @@ const SAFE_ERROR_CODES = new Set([
 function targetFrom(value: unknown): Target | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Record<string, unknown>;
-  if ((candidate.platform !== 'codex' && candidate.platform !== 'claude')
+  if (!isPlatformTarget(candidate.platform)
     || (candidate.scope !== 'user' && candidate.scope !== 'project')) return undefined;
   return {
     ...(typeof candidate.pluginId === 'string' ? { pluginId: candidate.pluginId } : {}),
@@ -618,7 +619,9 @@ export function projectExecutionDiagnostics(
         code: typeof entry.errorCode === 'string'
           ? safeDiagnosticCode(entry.errorCode, 'configApplyFailed') : 'configApplyFailed',
         stage: 'apply',
-        safeMessage: 'The config was not applied to this target.',
+        safeMessage: entry.partialDelivery === true
+          ? 'Configuration apply left some verified outputs and did not complete this target.'
+          : 'The config was not applied to this target.',
         ...(target ? { target } : {}),
         causes: [], detailLines: [],
       });

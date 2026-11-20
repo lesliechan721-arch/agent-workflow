@@ -148,7 +148,14 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
     const ordinaryPath = path.join(path.dirname(path.dirname(skillPath)), 'ordinary', 'SKILL.md');
     const ordinary = await fs.readFile(ordinaryPath);
     const partial = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
-    expect(partial).toMatchObject({ exitCode: 4, payload: { status: 'partial' } });
+    expect(partial).toMatchObject({ exitCode: 4, payload: {
+      status: 'partial',
+      data: { configWrite: 'notStarted', apply: { state: 'partial', targetResults: [{
+        target: { pluginId: 'team/demo', platform: 'generic', scope: 'user' },
+        state: 'failed', partialDelivery: true, errorCode: 'portableComponentsUnmet',
+      }] } },
+      nextActions: [{ kind: 'manual', message: expect.stringContaining('team/demo (generic/user)') }],
+    } });
     expect(invocationNotices(partial), JSON.stringify(partial)).toMatchObject([invocationNotice]);
     expect(await fs.readFile(skillPath, 'utf8')).toContain('Mode: partial');
     expect(await fs.readFile(ordinaryPath)).toEqual(ordinary);

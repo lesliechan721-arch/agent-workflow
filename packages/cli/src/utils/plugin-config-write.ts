@@ -1,6 +1,7 @@
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
+import type { RecoveryTarget } from '../recovery/receipt.js';
 import { readDemand, demandNativeProjection } from '../recovery/demand.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import type {
@@ -136,6 +137,7 @@ interface ConfigRuntimeReplayReceipt {
 
 interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'state'> {
   state: ConfigApplyTargetResult['state'];
+  partialDelivery?: ConfigApplyTargetResult['partialDelivery'];
 }
 
 interface ConfigApplyDiscovery {
@@ -170,6 +172,7 @@ function publicConfigApplyTargetResult(
     },
     action: result.action,
     state: result.state,
+    ...(result.partialDelivery ? { partialDelivery: true } : {}),
     ...(result.message ? { message: result.message } : {}),
     ...(result.errorCode ? { errorCode: result.errorCode } : {}),
     ...(result.relation ? { relation: result.relation } : {}),
@@ -1339,6 +1342,19 @@ export class ConfigApplyInterruptedError extends Error {
   }
 }
 
+function configApplyHasPartialDelivery(target: RecoveryTarget): boolean {
+  if (target.execution !== 'partial') return false;
+  if (skillInvocationDiagnostics([target]).length > 0) return true;
+  if (target.delivery?.kind !== 'agent-skills' || !Array.isArray(target.backend)) return false;
+  return target.backend.some((entry: unknown) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const outcome = entry as Record<string, unknown>;
+    return typeof outcome.skill === 'string' && outcome.observation === 'satisfied'
+      && (outcome.execution === 'applied' || outcome.execution === 'no-op')
+      && Array.isArray(outcome.blockers) && outcome.blockers.length === 0;
+  });
+}
+
 export async function applyPluginConfig(options: ApplyPluginConfigOptions): Promise<{
   configWrite: 'notStarted'; overallState: RebuildReceiptOverallState; apply: ConfigApplyResult;
   otherProjectsMayRequireSync: boolean;
@@ -1392,6 +1408,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
           action: 'refresh',
           state: target.execution === 'applied' || target.execution === 'no-op' ? 'completed'
             : target.execution === 'not-run' ? 'skipped' : 'failed',
+          ...(configApplyHasPartialDelivery(target) ? { partialDelivery: true } : {}),
           ...(target.blockers.length ? { errorCode: target.blockers[0]!.code,
             message: target.blockers.map((item) => item.message).join(' ') } : {}),
         })), ...retainedLegacyTargets.map((target): ConfigApplyTargetResult => ({

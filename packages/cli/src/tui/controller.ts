@@ -749,6 +749,7 @@ export interface OperationResultSummary {
     platform: PlatformTarget;
     scope: Scope;
     state: 'completed' | 'kept' | 'failed' | 'skipped';
+    partialDelivery?: true;
     errorCode?: string;
     diagnosticIds?: string[];
     effects?: OperationEffectFacts;
@@ -2067,7 +2068,7 @@ export class TuiController {
           stage,
           fallbackCode: code,
           sensitiveValues,
-          ...(intent && 'pluginId' in intent && 'platform' in intent
+          ...(!(error instanceof ConfigApplyInterruptedError) && intent && 'pluginId' in intent && 'platform' in intent
             && (intent.platform === 'codex' || intent.platform === 'claude')
             && (intent.scope === 'user' || intent.scope === 'project')
             ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
@@ -5403,10 +5404,10 @@ export class TuiController {
       return cloneFrozen(result);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      const code = issueCode(error);
+      const interruptedApply = error instanceof ConfigApplyInterruptedError ? error : undefined;
+      const code = interruptedApply?.code ?? issueCode(error);
       const metadata = readSafeOperationError(error);
       const preApply = metadata?.stage === 'preApply';
-      const interruptedApply = error instanceof ConfigApplyInterruptedError ? error : undefined;
       const applyCompletedWork = configApplyHasCompletedWork(interruptedApply?.apply);
       const configWrite = error && typeof error === 'object' && 'configWrite' in error
         ? (error as { configWrite?: unknown }).configWrite : undefined;
@@ -5418,7 +5419,7 @@ export class TuiController {
         preApplyExternalEffect: preApply ? 'possible' : 'notApplicable',
         finalVerification: 'notStarted',
       });
-      if (interruptedApply && (configWrite === 'succeeded' || applyCompletedWork)) {
+      if (interruptedApply) {
         const projected = this.#operationDiagnostics.get(operationId)!;
         const applyProjection = projectExecutionDiagnostics(
           interruptedApply, `${this.#sessionEpoch}:${operationId}:interrupted-apply`,
@@ -5427,6 +5428,7 @@ export class TuiController {
         projected.diagnostics.push(...applyProjection.diagnostics);
         projected.effects = {
           ...applyProjection.effects,
+          awWrite: applyCompletedWork ? 'partial' : projected.effects.awWrite,
           preApplyExternalEffect: preApply ? 'possible' : applyProjection.effects.preApplyExternalEffect,
           finalVerification: 'notStarted',
         };
@@ -5474,18 +5476,23 @@ export class TuiController {
         }
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      const applySummary = interruptedApply ? operationResultSummary(ticket.intent, interruptedApply) : undefined;
+      const configMadeProgress = configWrite === 'succeeded' || applyCompletedWork;
+      const retryTargets = configMadeProgress ? configApplyUnfinishedPlatforms(
+        interruptedApply?.apply, ticket.intent.kind === 'configSave' ? ticket.intent.targets : undefined,
+      ) : [];
+      const interruptionMessage = interruptedApply
+        ? configApplyInterruptionMessage(interruptedApply.code, retryTargets) : undefined;
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
-        && (configWrite === 'succeeded' || applyCompletedWork)) {
+        && configMadeProgress) {
         const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
-        const applySummary = interruptedApply ? operationResultSummary(ticket.intent, interruptedApply) : undefined;
-        const retryTargets = configApplyInterruptionRetryTargets(interruptedApply?.apply);
         const summary: OperationResultSummary = {
           ...applySummary,
           code: 'operationPartial',
           message: ticket.intent.kind === 'configReset'
             ? '设置层重置已提交，但后续步骤未完成。'
             : applyCompletedWork
-              ? configWrite === 'succeeded' ? '设置已保存，部分插件目标已更新。' : '部分插件目标已更新。'
+              ? configWrite === 'succeeded' ? '设置已保存，部分插件内容已就绪。' : '部分插件内容已就绪。'
             : finalVerification === 'failed'
               ? ticket.intent.apply
                 ? '设置已保存，但后续应用或状态复核失败。'
@@ -5505,7 +5512,7 @@ export class TuiController {
             ...(configWrite === 'succeeded' ? [ticket.intent.kind === 'configReset'
               ? '设置层重置已经提交；失败的后续步骤没有恢复旧设置。'
               : '配置写入已经提交；失败的后续步骤没有回滚设置。'] : []),
-            ...(interruptedApply ? [configApplyInterruptionMessage(interruptedApply.code, retryTargets)] : []),
+            ...(interruptionMessage ? [interruptionMessage] : []),
             ...(finalVerification === 'failed' && interruptedApply
               ? ['最终状态无法刷新。请稍后重新检查状态。'] : []),
           ],
@@ -5530,6 +5537,16 @@ export class TuiController {
         navigation: 'result',
         returnRoute: ticket.returnRoute,
         writeMayHaveCompleted: ticket.intent.kind === 'catalogSourcesRecovery' ? false : true,
+        ...(applySummary && interruptionMessage ? {
+          message: interruptionMessage,
+          summary: {
+            ...applySummary,
+            code: 'operationFailed',
+            message: interruptionMessage,
+            configApplyRetryAvailable: false,
+            configApplyRetryTargets: [],
+          },
+        } : {}),
       });
     }
   }
@@ -5638,6 +5655,7 @@ export class TuiController {
       intent?: OperationIntent;
       navigation?: 'back' | 'result';
       returnRoute?: TuiRoute;
+      message?: string;
       writeMayHaveCompleted?: boolean;
       verification?: 'issueStillPresent' | 'verificationFailed';
       summary?: OperationResultSummary;
@@ -5646,7 +5664,7 @@ export class TuiController {
     if (!this.#operationDiagnostics.has(operationId)) {
       this.#captureThrownProjection(operationId, undefined, code, 'execute', options?.intent);
     }
-    const message = code === 'codexCliNotFound'
+    const message = options?.message ?? (code === 'codexCliNotFound'
       ? '操作在插件写入前停止。未找到本机 Codex CLI。请检查 PATH，或安装 Codex CLI 或 Codex App 后重试。'
       : code === 'codexSystemCliUnsupported'
         ? '操作在插件写入前停止。本机 Codex CLI 版本不受支持或无法确认。请升级或修复本机 Codex CLI 或 Codex App 后重试。'
@@ -5658,7 +5676,7 @@ export class TuiController {
           ? '重置执行后设置层仍然存在。请重新检查设置问题。'
         : code === 'issueStillPresent'
           ? '写入已完成，但重新检查后原问题仍然存在。'
-          : '操作未完成。请重新检查后重试。';
+          : '操作未完成。请重新检查后重试。');
     const result: OperationExecuteResult = {
       state: 'blocked',
       operationId,
@@ -5728,27 +5746,34 @@ function configApplyResult(execution: unknown): ConfigApplyResult | undefined {
 }
 
 export function configApplyHasCompletedWork(apply: ConfigApplyResult | undefined): boolean {
-  return apply?.targetResults?.some((target) => target.state === 'completed' && target.action !== 'skipped') === true
+  return apply?.targetResults?.some((target) =>
+    target.partialDelivery || target.state === 'completed' && target.action !== 'skipped') === true
     || apply?.commandResults?.some((result) => result.state === 'completed') === true;
 }
 
-function configApplyInterruptionRetryTargets(apply: ConfigApplyResult | undefined): PlatformTarget[] {
+function configApplyUnfinishedPlatforms(
+  apply: ConfigApplyResult | undefined,
+  reviewedPlatforms?: readonly PlatformTarget[],
+): PlatformTarget[] {
   if (!apply || apply.commandResults?.length) return [];
-  const completed = new Set(apply.targetResults.filter((result) => result.state === 'completed')
+  const completed = new Set(apply.targetResults.filter((result) => result.state === 'completed' || result.partialDelivery)
     .map((result) => result.target.platform));
   return [...new Set(apply.targetResults.filter((result) =>
     (result.state === 'failed' || result.state === 'skipped' && result.errorCode)
-    && !completed.has(result.target.platform))
+    && !completed.has(result.target.platform)
+    && (!reviewedPlatforms || reviewedPlatforms.includes(result.target.platform)))
     .map((result) => result.target.platform))];
 }
 
 function configApplyInterruptionMessage(code: string, retryTargets: readonly PlatformTarget[]): string {
   const nextStep = retryTargets.length > 0
-    ? '可为未完成平台重新准备确认。' : '请检查未完成位置后，从设置重新准备应用。';
+    ? '可为未完成平台重新准备确认。' : CONFIG_APPLY_MANUAL_RECOVERY;
   return code === 'processCleanupUnconfirmed'
     ? `无法确认进程已清理。请先检查相关平台进程。${nextStep}`
     : `应用已中断。${nextStep}`;
 }
+
+const CONFIG_APPLY_MANUAL_RECOVERY = '请检查未完成位置后，从设置重新准备应用。';
 
 function configApplyTargets(apply: ConfigApplyResult | undefined): NonNullable<OperationResultSummary['configTargets']> {
   return (apply?.targetResults ?? []).flatMap((entry) => {
@@ -5772,6 +5797,7 @@ function configApplyTargets(apply: ConfigApplyResult | undefined): NonNullable<O
       state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped'
         : entry.state === 'failed' ? 'failed'
           : entry.action === 'keep' ? 'kept' : 'completed',
+      ...(entry.partialDelivery ? { partialDelivery: true as const } : {}),
       ...(typeof entry.errorCode === 'string'
         ? { errorCode: safeDiagnosticCode(entry.errorCode, 'configApplyFailed') }
         : {}),
@@ -6176,8 +6202,9 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       applyStatus: group.applyStatus,
       ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
       ...(group.status === 'notStarted' ? { notStarted: true as const } : {}),
-      ...(group.errorCode === 'operationInterrupted' || group.errorCode === 'processCleanupUnconfirmed'
-        ? { retryTargets: configApplyInterruptionRetryTargets(applies[index]) } : {}),
+      ...(group.applyStatus === 'partial'
+        || group.errorCode === 'operationInterrupted' || group.errorCode === 'processCleanupUnconfirmed'
+        ? { retryTargets: configApplyUnfinishedPlatforms(applies[index]) } : {}),
     }));
     const retryScopes = configGroups.filter((group) =>
       group.configSaved && (group.applyStatus === 'failed' || group.applyStatus === 'partial')
@@ -6227,8 +6254,10 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
                 : group.applyStatus === 'failed' ? '，但应用失败' : ''}。`
             : `${label}保存失败。`;
         }),
-        ...configGroups.flatMap((group) => group.retryTargets !== undefined
-          ? [configApplyInterruptionMessage(group.errorCode!, group.retryTargets)] : []),
+        ...configGroups.flatMap((group) =>
+          group.errorCode === 'operationInterrupted' || group.errorCode === 'processCleanupUnconfirmed'
+            ? [configApplyInterruptionMessage(group.errorCode, group.retryTargets ?? [])]
+            : group.retryTargets?.length === 0 ? [CONFIG_APPLY_MANUAL_RECOVERY] : []),
         ...publicWarnings.map((warning) => `警告：${warning}`),
         ...(otherProjectsMayRequireSync
           ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
@@ -6277,18 +6306,28 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         && targets.every((target) => target.state === 'failed' || target.state === 'skipped'));
     const retryApply = intent.kind === 'configSave' && intent.retryApply === true;
     const applied = applyState === 'succeeded' || configApplyHasCompletedWork(apply);
+    const retryable = intent.kind === 'configSave'
+      && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable');
+    const retryTargets = retryable && intent.kind === 'configSave'
+      ? applied || commandResults.some((result) => result.state === 'partial')
+        ? configApplyUnfinishedPlatforms(apply, intent.targets)
+        : intent.targets
+      : undefined;
+    if (retryable && retryTargets?.length === 0 && !(execution instanceof ConfigApplyInterruptedError)) {
+      publicMessages.push(CONFIG_APPLY_MANUAL_RECOVERY);
+    }
     return {
       code: failed || partial ? 'operationPartial' : 'operationSucceeded',
       message: retryApply
         ? invalidConfig ? '当前配置仍无效。请返回设置修复。'
-          : failed || partial ? applied ? '部分插件目标已更新。' : '插件设置应用未完成。'
+          : failed || partial ? applied ? '部分插件内容已就绪。' : '插件设置应用未完成。'
             : applied ? '已应用已保存的设置。' : '应用检查完成。'
         : invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
           : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
       pluginId: intent.pluginId,
       configScope: 'user', configPlatform: intent.platform, configContext: intent.context ?? 'user',
-      configApplyRetryAvailable: intent.kind === 'configSave'
-        && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
+      configApplyRetryAvailable: retryable && retryTargets?.length !== 0,
+      ...(retryTargets ? { configApplyRetryTargets: retryTargets } : {}),
       ...(retryApply ? { configRetryApply: true } : {}),
       ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'

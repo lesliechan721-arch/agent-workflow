@@ -67,6 +67,7 @@ export interface OperationHistoryTarget {
   platform: PlatformTarget;
   scope: Scope;
   state: 'completed' | 'kept' | 'failed' | 'skipped';
+  partialDelivery?: true;
   errorCode?: string;
   diagnosticIds: string[];
   effects?: OperationEffectFacts;
@@ -165,6 +166,7 @@ function reportContent(record: OperationHistoryRecord): string {
       '',
       `Target: ${target.pluginId ?? 'unknown'} ${target.platform}/${target.scope}`,
       `Target state: ${target.state}`,
+      ...(target.partialDelivery ? ['Delivery: some outputs verified'] : []),
       ...(target.errorCode ? [`Target code: ${target.errorCode}`] : []),
       ...(target.effects ? [`Target effects: ${JSON.stringify(target.effects)}`] : []),
     );

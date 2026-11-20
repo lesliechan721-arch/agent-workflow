@@ -110,7 +110,8 @@ function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): Recor
     if (entry.errorCode) {
       diagnostics.push(diagnostic({ code: entry.errorCode, message: entry.message }, 'error', subject));
     }
-    return { ...pick(entry, ['action', 'state', 'relation', 'requiredBy', 'errorCode']), ...(entry.message ? { message: message(entry.message, entry.errorCode ?? 'configApplyFailed') } : {}), target: pick(entry.target, ['pluginName', 'pluginId', 'platform', 'scope']),
+    return { ...pick(entry, ['action', 'state', 'relation', 'requiredBy', 'errorCode']), ...(entry.partialDelivery === true ? { partialDelivery: true } : {}),
+      ...(entry.message ? { message: message(entry.message, entry.errorCode ?? 'configApplyFailed') } : {}), target: pick(entry.target, ['pluginName', 'pluginId', 'platform', 'scope']),
       ...(entry.errorCode ? { blockerCodes: [entry.errorCode] } : {}) };
   });
   if ('error' in value && value.error) { data.error = issue(record(value.error)); diagnostics.push(diagnostic(value.error)); }
@@ -488,8 +489,12 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
           result.nextActions.push({ kind: 'command', argv: ['aw', 'command', 'package', 'sync', `${identity.sourceId}/${identity.pluginName}`, identity.key, '--scope', identity.scope], reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
         }
       }
-      for (const { target, state, errorCode } of (r.apply as ConfigApplyResult | undefined)?.targetResults ?? []) {
+      for (const { target, state, errorCode, partialDelivery } of (r.apply as ConfigApplyResult | undefined)?.targetResults ?? []) {
         if (state !== 'completed' && (state !== 'skipped' || errorCode) && target.pluginId) {
+          if (partialDelivery) {
+            result.nextActions.push({ kind: 'manual', message: `Inspect the verified and unfinished outputs for ${target.pluginId} (${target.platform}/${target.scope}) before preparing a new apply.` });
+            continue;
+          }
           result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform],
             reason: 'Repair the affected deployment target after reviewing its diagnostics.', requiresConfirmation: true });
         }

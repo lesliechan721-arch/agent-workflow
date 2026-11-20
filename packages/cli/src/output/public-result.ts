@@ -84,8 +84,15 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
     if (field.storedValue !== undefined && field.storedSourceLayer) lines.push(`  stored=${field.storedSourceLayer} ${display(field.storedValue)}`);
   }
   else if (configFields && typeof configFields === 'object') for (const [key, field] of Object.entries(configFields as Record<string, { type?: string; title?: string; sensitive?: boolean; required?: boolean }>)) lines.push(`${key}: ${field.type ?? 'value'}${field.required ? ' (required)' : ''}${field.sensitive ? ' (sensitive)' : ''}${field.title ? ` — ${field.title}` : ''}`);
-  const apply = data.apply as { state?: string; reason?: string; targetResults?: Array<{ state: string; target: { platform: string; scope: string } }> } | undefined;
-  if (apply) { lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`); for (const target of apply.targetResults ?? []) lines.push(`${target.target.platform}/${target.target.scope}: ${target.state}`); }
+  const apply = data.apply as { state?: string; reason?: string; targetResults?: Array<{
+    state: string; partialDelivery?: true; target: { platform: string; scope: string };
+  }> } | undefined;
+  if (apply) {
+    lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`);
+    for (const target of apply.targetResults ?? []) {
+      lines.push(`${target.target.platform}/${target.target.scope}: ${target.state}${target.partialDelivery ? ' (some outputs verified)' : ''}`);
+    }
+  }
 
   const snapshot = data.snapshot as { state?: string; path?: string } | undefined;
   if (snapshot?.state) lines.push(`Snapshot: ${snapshot.state}${verbose && snapshot.path ? ` (${snapshot.path})` : ''}`);
