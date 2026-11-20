@@ -43,6 +43,8 @@ const receiptCodes = new Set(['commandFailed', 'operationInterrupted', 'operatio
   'processCleanupUnconfirmed', 'pluginProcessCleanupFailed', 'nativeCliExecutableMissing', 'nativeCliFailed', 'nativeCliTimedOut',
   'nativeObservationFailed', 'nativeObservationUnconfirmed',
   'preApplyExecutableMissing', 'preApplyInputFailed', 'preApplyStartFailed', 'preApplyTimedOut', 'preApplyExited']);
+const deploymentStaleReasons = new Set(['deploymentInputsChanged', 'clientDiscoveryChanged', 'deploymentObservationChanged',
+  'deploymentReferencesChanged', 'deploymentPathsChanged', 'marketplaceChanged', 'deploymentEvidenceReadFailed']);
 // A few existing reasons distinguish stale checks and cleanup failures without publishing free-form messages.
 const receiptReasons = new Set(['operationPlanStale: client discovery changed after the ordinary observation.',
   'operationPlanStale: deployment evidence changed after the ordinary observation.',
@@ -92,11 +94,12 @@ function readComponentReceipt(result, command) {
 }
 
 function receiptDiagnostics(value) {
-  const facts = rows(value, 64).filter(item => receiptCodes.has(item?.code)).slice(0, 8).map(item => ({
-    code: item.code, ...(['error', 'warning', 'info'].includes(item.severity) ? { severity: item.severity } : {}),
-    ...(receiptCodes.has(item.detail?.reasonCode) ? { reasonCode: item.detail.reasonCode } : {}),
-    ...(receiptReasons.has(item.message) ? { reason: item.message } : {}),
-  }));
+  const facts = rows(value, 64).filter(item => receiptCodes.has(item?.code)).slice(0, 8).map(item => {
+    const reasonCode = item.detail?.reasonCode;
+    const safeReason = receiptCodes.has(reasonCode) || item.code === 'operationPlanStale' && deploymentStaleReasons.has(reasonCode);
+    return { code: item.code, ...(['error', 'warning', 'info'].includes(item.severity) ? { severity: item.severity } : {}),
+      ...(safeReason ? { reasonCode } : {}), ...(receiptReasons.has(item.message) ? { reason: item.message } : {}) };
+  });
   return facts.length ? { diagnostics: facts } : {};
 }
 
@@ -533,19 +536,22 @@ async function matrix(ctx, report) {
     const row = report.cells.find(row => spec.name === 'single-' + row.kind);
     // A returned business failure for one independent root must not hide
     // unrelated reads. An incomplete process observation still stops this scope.
-    const { exitCode, value } = await ctx.result(installArgs([id]));
+    const { exitCode, value, failure: commandFailure } = await ctx.result(installArgs([id]));
     if (exitCode !== 0) {
       assert(['blocked', 'partial', 'failed'].includes(value.status), id + ': unexpected command result');
-      const target = value.data.targetResults?.find(item => item.pluginId === id && item.target === platform && item.scope === scope);
+      const target = commandFailure.awReceipt.targets?.find(item => item.pluginId === id);
       const failure = { id, exitCode, status: value.status, execution: target?.execution, blockerCodes: target?.blockerCodes,
-        diagnostics: value.diagnostics.map(item => item.code) };
+        diagnostics: (commandFailure.awReceipt.diagnostics ?? []).map(item => item.code) };
       if (row) row.failure = failure;
       installFailures.push(failure);
       continue;
     }
     assert.equal(value.status, 'success');
-    if (value.data.remainingTargets.length) {
-      const failure = { id, exitCode, status: value.status, remainingTargets: value.data.remainingTargets };
+    const { remainingTargets } = value.data;
+    assert(Array.isArray(remainingTargets), id + ': invalid remaining targets');
+    const remainingTargetCount = remainingTargets.length;
+    if (remainingTargetCount) {
+      const failure = { id, exitCode, status: value.status, remainingTargetCount };
       if (row) row.failure = failure;
       installFailures.push(failure);
       continue;
@@ -711,11 +717,13 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
       const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && args[0] === 'target' && args[1] === 'set';
-      const installTrace = traceEntry && platform === 'codex' && scope === 'project' && suite === 'candidate'
-        && args[0] === 'plugin' && args[1] === 'install';
+      const command = componentCommand(args, dependencies);
+      const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
+      const installTrace = traceEntry && platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
+        && (suite === 'candidate' || matrixInstall);
       const trace = Boolean(discoveryTrace || installTrace);
       const traceFile = discoveryTrace ? path.join(root, 'target-discovery.jsonl')
-        : installTrace ? path.join(root, `candidate-install-${++installTraceIndex}.jsonl`) : undefined;
+        : installTrace ? path.join(root, `${suite}-install-${++installTraceIndex}.jsonl`) : undefined;
       const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         ...(installTrace ? { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: 'codex-component-install' } : {}),
@@ -724,7 +732,6 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       let value;
       let failure;
       let stage = 'execute';
-      const command = componentCommand(args, dependencies);
       const recordFailure = (stage, kind, error, receipt) => {
         failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
           ...componentReceiptEvidence(receipt, command, platform) };

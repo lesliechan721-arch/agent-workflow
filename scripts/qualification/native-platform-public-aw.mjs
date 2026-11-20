@@ -359,7 +359,7 @@ async function observePublicComponentSuites(ctx, publicClientEntry) {
           const trace = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true'
             && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
           const traceEntry = trace && (['copilot', 'antigravity'].includes(ctx.platform) ? ctx.launcher.prefix[0] ?? publicClientEntry
-            : ctx.platform === 'codex' && scope === 'project' && suite === 'candidate' ? publicClientEntry : undefined);
+            : ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite) ? publicClientEntry : undefined);
           const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
             ...(traceEntry ? { traceEntry } : {}),
             ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });

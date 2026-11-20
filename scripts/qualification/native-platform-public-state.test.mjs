@@ -274,6 +274,74 @@ test('scopes the Codex candidate native trace to the failing Project install', a
   }
 });
 
+// Adjacent independent installs must keep separate native evidence, including
+// when AW returns partial and the next install fails outside the AW process.
+test('keeps Windows Codex Project matrix traces attached to the right installs', async () => {
+  const traceFiles = [];
+  const installs = [];
+  const sentinel = 'private_matrix_payload';
+  const report = await runComponentQualification({ platform: 'codex', scope: 'project', suite: 'matrix',
+    clientPath: process.env.PATH, traceEntry: process.execPath }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env, cwd }) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      if (command !== 'plugin.install') assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'codex', installations: [] }] });
+      if (command === 'dev.plugin.create') {
+        const folder = path.join(cwd, 'plugins', 'single-skill', '.agents-plugin');
+        await fs.mkdir(folder, { recursive: true });
+        await fs.writeFile(path.join(folder, 'plugin.json'), '{}');
+      }
+      if (command !== 'plugin.install') return publicResponse(command, {});
+      const pluginId = args[2];
+      installs.push(pluginId);
+      assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, 'codex-component-install');
+      const traceFile = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
+      traceFiles.push(traceFile);
+      await assert.rejects(fs.stat(traceFile), { code: 'ENOENT' });
+      await fs.writeFile(traceFile, JSON.stringify({ phase: 'finish', category: 'codex-version', elapsedMs: installs.length,
+        exitCode: 0, threw: false, argv: [sentinel], stdout: sentinel, stderr: sentinel, env: { SECRET: sentinel } }) + '\n', { flag: 'wx' });
+      const target = { pluginId, target: 'codex', scope: 'project', blockerCodes: [] };
+      if (pluginId === 'matrix/single-skill') {
+        const folder = path.join(cwd, 'fixture-package');
+        const skill = path.join(folder, 'skills', 'single-skill-skill');
+        await fs.mkdir(skill, { recursive: true });
+        await fs.writeFile(path.join(skill, 'SKILL.md'), 'qualification-skill-revision-1');
+        return publicResponse(command, { remainingTargets: [], targetResults: [{ ...target, execution: 'applied',
+          observation: 'verified', content: 'satisfied', deploymentReceipts: [{ after: { package: 'present', ownership: 'aw',
+            components: [{ id: 'skill:single-skill-skill', presence: 'present' }],
+            nativeIdentity: { packageId: 'single-skill', sourceLocation: folder } } }] }] });
+      }
+      if (pluginId === 'matrix/single-mcp') return publicResponse(command, { remainingTargets: [
+        { pluginId, target: 'codex', scope: 'user', extra: sentinel },
+        { pluginId: 'unrelated/plugin', target: 'claude', scope: 'project', extra: sentinel },
+      ] });
+      const value = { schemaVersion: 2, command, status: 'partial', diagnostics: [
+        { code: 'operationPlanStale', message: sentinel, detail: { reasonCode: sentinel } },
+        { code: 'platformExecutionFailed', detail: { reasonCode: 'deploymentPathsChanged' } }, { code: sentinel },
+      ], data: { targetResults: [{ ...target, execution: 'not-run', blockerCodes: ['operationPlanStale', sentinel],
+        deploymentReceipts: [{ diagnostics: [{ code: 'operationPlanStale', severity: 'error', message: sentinel,
+          detail: { reasonCode: 'deploymentObservationChanged', path: sentinel } }] }],
+      }] } };
+      return { ...publicResponse(command, {}), exitCode: pluginId === 'matrix/single-agent' ? 4 : 250, stdout: JSON.stringify(value) };
+    },
+  });
+  assert.deepEqual(installs, ['matrix/single-skill', 'matrix/single-agent', 'matrix/single-mcp', 'matrix/single-hook']);
+  assert.equal(new Set(traceFiles).size, installs.length);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.cells[0].observed, 'installed');
+  const incomplete = { id: 'matrix/single-mcp', exitCode: 0, status: 'success', remainingTargetCount: 2 };
+  assert.deepEqual(report.installFailures.find(row => row.id === incomplete.id), incomplete);
+  assert.deepEqual(report.cells.find(row => row.kind === 'mcp').failure, incomplete);
+  assert.deepEqual(report.commandFailures[0].awReceipt, { status: 'partial',
+    diagnostics: [{ code: 'operationPlanStale' }, { code: 'platformExecutionFailed' }],
+    targets: [{ pluginId: 'matrix/single-agent', target: 'codex', scope: 'project', execution: 'not-run', blockerCodes: ['operationPlanStale'],
+      diagnostics: [{ code: 'operationPlanStale', severity: 'error', reasonCode: 'deploymentObservationChanged' }] }] });
+  assert.deepEqual(report.commandFailures.map(failure => [failure.pluginIds[0], failure.stage, failure.exitCode,
+    failure.nativeCommandTrace.records[0].elapsedMs]), [['matrix/single-agent', 'command', 4, 2], ['matrix/single-hook', 'execute', 250, 4]]);
+  assert(!JSON.stringify(report).includes(sentinel));
+});
+
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
 test('requires OpenCode explicit observation to report a scoped runtime outcome', () => {
   const ctx = { scope: 'project' };
