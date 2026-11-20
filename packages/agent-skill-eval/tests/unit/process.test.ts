@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -217,6 +220,33 @@ describe('managed provider containment gate', () => {
 })
 
 describe('shared provider process behavior', () => {
+  it.skipIf(process.platform !== 'linux')('keeps a live argv-only marker outside the default Linux cleanup', async () => {
+    const name = 'AW_NATIVE_CLI_PROCESS_MARKER'
+    const marker = randomUUID()
+    const fake = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)', `${name}=${marker}`], {
+      detached: true, env: {}, stdio: 'ignore',
+    })
+    const root = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], {
+      detached: true, env: { [name]: marker }, stdio: 'ignore',
+    })
+    const ended = once(root, 'close')
+    const closed = once(fake, 'close')
+    const kill = vi.fn()
+    const observation = observeProcessTree(root.pid!, marker, { kill })
+    try {
+      await ended
+      await terminateProcessTree(root.pid!, () => {}, { kill }, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      })
+      expect(kill).not.toHaveBeenCalled()
+      expect(fake.exitCode).toBeNull()
+    } finally {
+      observation.dispose()
+      fake.kill()
+      await closed
+    }
+  })
+
   it('shares layered POSIX scans across observers and stops with no subscribers', async () => {
     vi.useFakeTimers()
     try {

@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 
+import { readLinuxMarkerScan, type LinuxMarkerScan } from './linux-process-marker.js';
 import { DARWIN_PROCESS_MARKER_SCRIPT } from './darwin-process-marker.js';
 import { readWindowsNativeProcessTable, type WindowsNativeProcessRow } from './windows-native.js';
 
@@ -62,11 +63,11 @@ interface ProcessQueryDiagnostic {
   failureReason?: ProcessCommandFailure['reason'];
 }
 
-type ProcessCommandResult = (
-  | { output: string; failure?: never }
+type ProcessCommandResult<T = string> = (
+  | { output: T; failure?: never }
   | { output: null; failure: ProcessCommandFailure }
 ) & { query?: ProcessQueryDiagnostic };
-type ProcessCommandPromise = Promise<ProcessCommandResult> & { readonly query: ProcessQueryDiagnostic };
+type ProcessCommandPromise<T = string> = Promise<ProcessCommandResult<T>> & { readonly query: ProcessQueryDiagnostic };
 
 interface PosixProcessSnapshot {
   table: Map<number, ProcessEntry>;
@@ -90,11 +91,14 @@ function confirmationDeadline(snapshot: PosixProcessSnapshot, platform: NodeJS.P
   );
 }
 
-interface PosixMarkerScan {
+interface PsMarkerScan {
   table: Map<number, ProcessEntry>;
   commands: Map<number, string>;
   unreadablePids: Set<number>;
 }
+
+type PosixMarkerScan = PsMarkerScan | LinuxMarkerScan;
+type MarkerOutput = string | LinuxMarkerScan;
 
 export interface ProcessTreeDependencies {
   platform?: NodeJS.Platform;
@@ -268,21 +272,20 @@ function commandFailure(
   };
 }
 
-function runCommandWithDiagnostics(
-  command: string,
-  args: string[],
-  execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+function measureProcessQuery<T>(
+  kind: ProcessQueryDiagnostic['kind'],
   timeoutMs: number,
-): ProcessCommandPromise {
+  start: (callback: (result: ProcessCommandResult<T>) => void) => unknown,
+  expire?: () => void,
+): ProcessCommandPromise<T> {
   const startedAt = Date.now();
   const query: ProcessQueryDiagnostic = {
-    kind: command === '/usr/bin/osascript' ? 'darwin-marker'
-      : args[0] === 'eww' ? 'marker' : 'identity',
+    kind,
     startedAt, deadline: startedAt + timeoutMs, callbackState: 'pending', completion: 'pending',
   };
-  const pending = new Promise<ProcessCommandResult>((resolve) => {
+  const pending = new Promise<ProcessCommandResult<T>>((resolve) => {
     let settled = false;
-    const finish = (result: ProcessCommandResult, completion: ProcessQueryDiagnostic['completion']): void => {
+    const finish = (result: ProcessCommandResult<T>, completion: ProcessQueryDiagnostic['completion']): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
@@ -292,33 +295,35 @@ function runCommandWithDiagnostics(
       if (result.failure) query.failureReason = result.failure.reason;
       resolve({ ...result, query: { ...query } });
     };
-    const timeout = setTimeout(() => finish({
-      output: null,
-      failure: commandFailure('deadline-exceeded'),
-    }, 'deadline'), timeoutMs);
+    const timeout = setTimeout(() => {
+      finish({ output: null, failure: commandFailure('deadline-exceeded') }, 'deadline');
+      expire?.();
+    }, timeoutMs);
     timeout.unref();
 
     try {
-      execFileImpl(
-        command,
-        args,
-        {
-          timeout: timeoutMs,
-          windowsHide: true,
-          maxBuffer: PROCESS_TREE_MAX_BUFFER_BYTES,
-        },
-        (error, stdout) => {
-          query.callbackAt = Date.now();
-          query.callbackState = 'returned';
-          finish(error ? { output: null, failure: commandFailure('callback-error', error) }
-            : { output: stdout }, 'callback');
-        },
-      );
+      start((result) => {
+        query.callbackAt = Date.now();
+        query.callbackState = 'returned';
+        finish(result, 'callback');
+      });
     } catch (error) {
       finish({ output: null, failure: commandFailure('synchronous-error', error) }, 'synchronous-error');
     }
   });
   return Object.assign(pending, { query });
+}
+
+function runCommandWithDiagnostics(
+  command: string,
+  args: string[],
+  execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+  timeoutMs: number,
+): ProcessCommandPromise {
+  const kind = command === '/usr/bin/osascript' ? 'darwin-marker' : args[0] === 'eww' ? 'marker' : 'identity';
+  return measureProcessQuery(kind, timeoutMs, complete => execFileImpl(command, args,
+    { timeout: timeoutMs, windowsHide: true, maxBuffer: PROCESS_TREE_MAX_BUFFER_BYTES }, (error, output) =>
+      complete(error ? { output: null, failure: commandFailure('callback-error', error) } : { output })));
 }
 
 function runCommand(
@@ -371,7 +376,8 @@ function parseCompletePosixIdentityTable(stdout: string): Map<number, ProcessEnt
   return parsePosixProcessTable(stdout);
 }
 
-function parsePosixMarkerScan(stdout: string): PosixMarkerScan {
+function parsePosixMarkerScan(stdout: MarkerOutput): PosixMarkerScan {
+  if (typeof stdout !== 'string') return stdout;
   const table = new Map<number, ProcessEntry>();
   const commands = new Map<number, string>();
   const unreadablePids = new Set<number>();
@@ -403,7 +409,7 @@ function unreadableMarkerPids(
   markerPids: ReadonlySet<number>,
 ): Set<number> {
   if (!scan) return new Set();
-  if (platform !== 'linux') return scan.unreadablePids;
+  if (platform !== 'linux' || 'markerPidsByValue' in scan) return scan.unreadablePids;
   const unreadable = new Set(scan.unreadablePids);
   // procps uses [comm] when command arguments cannot be read. A stale live
   // state does not make that fallback complete environment evidence.
@@ -418,6 +424,7 @@ function parseMarkerProcessIds(
   markerEnvironmentVariable: string,
   marker: string,
 ): Set<number> {
+  if ('markerPidsByValue' in scan) return new Set(scan.markerPidsByValue.get(marker));
   const processIds = new Set<number>();
   const assignment = `${markerEnvironmentVariable}=${marker}`;
   for (const [pid, command] of scan.commands) {
@@ -525,19 +532,45 @@ function readPosixMarkerOutput(
   );
 }
 
+function usesLinuxProcfs(state: ObservationState): boolean {
+  return state.platform === 'linux' && process.platform === 'linux' && state.dependencies.execFile === undefined
+    && state.marker !== undefined && state.markerEnvironmentVariable === DEFAULT_PROCESS_MARKER_ENV
+    && !state.lease && !state.dependencies.enforceProcessMarker && !state.dependencies.enforceCooperativeProcessGroup;
+}
+
+function queryLinuxMarkers(timeoutMs: number, markers: Set<string>): ProcessCommandPromise<LinuxMarkerScan> {
+  const controller = new AbortController();
+  const deadline = performance.now() + timeoutMs;
+  return measureProcessQuery(markers.size ? 'marker' : 'identity', timeoutMs, complete => {
+    void readLinuxMarkerScan(DEFAULT_PROCESS_MARKER_ENV, markers, controller.signal, PROCESS_TREE_MAX_BUFFER_BYTES)
+      .then(output => complete(performance.now() < deadline ? { output }
+        : { output: null, failure: commandFailure('deadline-exceeded') }),
+      error => {
+        controller.abort();
+        complete({ output: null, failure: commandFailure('callback-error', error) });
+      });
+  }, () => controller.abort());
+}
+
 interface PendingMarkerScan {
   expiresAt: number;
-  receive(lookup: ProcessCommandPromise): void;
+  marker: string;
+  receive(lookup: ProcessCommandPromise<MarkerOutput>): void;
 }
 
 // All members of a batch use the same execution backend, inherited process
-// view, ps arguments, and output limit. Only requests waiting to launch are kept.
-const pendingMarkerScans = new WeakMap<NonNullable<ProcessTreeDependencies['execFile']>, PendingMarkerScan[]>();
+// view and byte limit. Only requests waiting to launch are kept.
+const pendingMarkerScans = new WeakMap<object, PendingMarkerScan[]>();
 
-function readObservationMarkerOutput(state: ObservationState, timeoutMs: number): ProcessCommandPromise {
+function readObservationMarkerOutput(state: ObservationState, timeoutMs: number, initial = false): ProcessCommandPromise<MarkerOutput> {
   const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
-  if (!state.coalescePosixMarkerScans || timeoutMs < MARKER_SCAN_MIN_SHARED_BUDGET_MS) {
-    return readPosixMarkerOutput(execFileImpl, timeoutMs);
+  const linux = usesLinuxProcfs(state);
+  const backend = linux ? queryLinuxMarkers : execFileImpl;
+  const launch = (budget: number, markers: Set<string>) => linux
+    ? queryLinuxMarkers(budget, markers)
+    : readPosixMarkerOutput(execFileImpl, budget);
+  if ((!state.coalescePosixMarkerScans && !(linux && initial)) || timeoutMs < MARKER_SCAN_MIN_SHARED_BUDGET_MS) {
+    return launch(timeoutMs, new Set([state.marker!]));
   }
   const requestedAt = Date.now();
   const expiresAt = performance.now() + timeoutMs;
@@ -545,7 +578,7 @@ function readObservationMarkerOutput(state: ObservationState, timeoutMs: number)
     kind: 'marker', startedAt: requestedAt, deadline: requestedAt + timeoutMs,
     callbackState: 'not-called', completion: 'pending',
   };
-  const pending = new Promise<ProcessCommandResult>((resolve) => {
+  const pending = new Promise<ProcessCommandResult<MarkerOutput>>((resolve) => {
     const expire = (): void => {
       if (query.completion !== 'pending') return;
       query.settledAt = Date.now();
@@ -556,7 +589,7 @@ function readObservationMarkerOutput(state: ObservationState, timeoutMs: number)
     const timer = setTimeout(expire, timeoutMs);
     timer.unref();
     const request: PendingMarkerScan = {
-      expiresAt,
+      expiresAt, marker: state.marker!,
       receive(lookup) {
         if (query.completion !== 'pending') return;
         query.startedAt = lookup.query.startedAt;
@@ -573,22 +606,24 @@ function readObservationMarkerOutput(state: ObservationState, timeoutMs: number)
         });
       },
     };
-    const waiting = pendingMarkerScans.get(execFileImpl);
+    const waiting = pendingMarkerScans.get(backend);
     if (waiting) {
       waiting.push(request);
       return;
     }
     const batch = [request];
-    pendingMarkerScans.set(execFileImpl, batch);
-    setTimeout(() => {
-      pendingMarkerScans.delete(execFileImpl);
+    pendingMarkerScans.set(backend, batch);
+    const launchBatch = () => {
+      pendingMarkerScans.delete(backend);
       const now = performance.now();
       const live = batch.filter((member) => member.expiresAt > now);
       if (live.length === 0) return;
       const remaining = Math.ceil(Math.max(...live.map((member) => member.expiresAt - now)));
-      const lookup = readPosixMarkerOutput(execFileImpl, remaining);
+      const lookup = launch(remaining, new Set(live.map(member => member.marker)));
       for (const member of live) member.receive(lookup);
-    }, MARKER_SCAN_COLLECTION_MS);
+    };
+    if (state.coalescePosixMarkerScans) setTimeout(launchBatch, MARKER_SCAN_COLLECTION_MS);
+    else queueMicrotask(launchBatch);
   });
   return Object.assign(pending, { query });
 }
@@ -1080,8 +1115,11 @@ async function acceptPosixSnapshot(
   const originalIdentityAbsentPids = new Set<number>();
   const markerConfirmationDeadline = confirmationDeadline(snapshot, state.platform, deadline);
   const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
-    if (state.failure) return;
-    latchObservationFailure(state, error, posixDiagnostic(state, snapshot, stage, reason, affectedPids));
+    const recordCleanup = stage !== 'observation' && usesLinuxProcfs(state);
+    if (state.failure && !recordCleanup) return;
+    const diagnostic = posixDiagnostic(state, snapshot, stage, reason, affectedPids);
+    latchObservationFailure(state, error, diagnostic);
+    if (recordCleanup) state.diagnostics[1] = diagnostic;
   };
   const enforceProcessMarker = state.dependencies.enforceProcessMarker === true ||
     state.dependencies.enforceCooperativeProcessGroup === true;
@@ -1115,6 +1153,11 @@ async function acceptPosixSnapshot(
   };
   const unreadablePids = [...snapshot.unreadableMarkerPids].filter(needsConfirmation);
   if (state.marker !== undefined && unreadablePids.length > 0) {
+    if (usesLinuxProcfs(state)) {
+      // A positive identity remains relevant if it detaches or becomes
+      // unreadable in the confirmation. Signals still need fresh evidence.
+      refreshObservedProcesses(state, snapshot.table, snapshot.markerPids);
+    }
     const originalEntries = new Map(unreadablePids.map((pid) => [pid, snapshot.table.get(pid)!]));
     const observerEntry = snapshot.table.get(process.pid);
     const anchor = state.lease?.sentinel ?? (observerEntry
@@ -1139,7 +1182,7 @@ async function acceptPosixSnapshot(
     retainGroupDepartures(snapshot.table);
     const remaining = markerConfirmationDeadline - Date.now();
     snapshot.markerLookupAttempts += 1;
-    const confirmation: ProcessCommandResult = remaining > 0
+    const confirmation: ProcessCommandResult<MarkerOutput> = remaining > 0
       ? await readObservationMarkerOutput(state, remaining)
       : { output: null, failure: commandFailure('deadline-exceeded') };
     if (confirmation.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(confirmation.query);
@@ -1153,19 +1196,27 @@ async function acceptPosixSnapshot(
     const confirmedMarkers = parseMarkerProcessIds(confirmed, state.markerEnvironmentVariable, state.marker);
     const confirmedUnreadable = unreadableMarkerPids(confirmed, state.platform, confirmedMarkers);
     retainGroupDepartures(confirmed.table);
-    // Each observer confirms its own suspect PIDs, even when the initial scan is shared.
-    // Keep other evidence unchanged and retain start times to protect against PID reuse.
-    snapshot.table = new Map(snapshot.table);
-    snapshot.unreadableMarkerPids = new Set(snapshot.unreadableMarkerPids);
-    for (const pid of unreadablePids) {
-      const previousEntry = snapshot.table.get(pid);
+    // The strict ps observer confirms its own suspect rows. A native procfs
+    // cleanup has a complete second table and must use it for every signal.
+    if (usesLinuxProcfs(state)) {
+      snapshot.table = confirmed.table;
+      snapshot.markerPids = confirmedMarkers;
+      snapshot.unreadableMarkerPids = confirmedUnreadable;
+    } else {
+      snapshot.table = new Map(snapshot.table);
+      snapshot.unreadableMarkerPids = new Set(snapshot.unreadableMarkerPids);
+      for (const pid of unreadablePids) {
+        const entry = confirmed.table.get(pid);
+        if (entry) snapshot.table.set(pid, entry);
+        else snapshot.table.delete(pid);
+        if (confirmedMarkers.has(pid)) snapshot.markerPids.add(pid);
+        else snapshot.markerPids.delete(pid);
+        if (confirmedUnreadable.has(pid)) snapshot.unreadableMarkerPids.add(pid);
+        else snapshot.unreadableMarkerPids.delete(pid);
+      }
+    }
+    for (const [pid, previousEntry] of originalEntries) {
       const entry = confirmed.table.get(pid);
-      if (entry) snapshot.table.set(pid, entry);
-      else snapshot.table.delete(pid);
-      if (confirmedMarkers.has(pid)) snapshot.markerPids.add(pid);
-      else snapshot.markerPids.delete(pid);
-      if (confirmedUnreadable.has(pid)) snapshot.unreadableMarkerPids.add(pid);
-      else snapshot.unreadableMarkerPids.delete(pid);
       // Keep a confirmed negative relevant even if this same identity moved
       // groups. It does not grant ownership of a replacement process.
       if (state.platform === 'linux' && entry?.startTime === previousEntry?.startTime
@@ -1183,11 +1234,12 @@ async function acceptPosixSnapshot(
         const identityRemaining = markerConfirmationDeadline - queryStartedAt;
         // A forced sampler scan can reuse an older in-flight query. Start a new
         // direct lookup only after the marker confirmation callback has completed.
-        const identity: ProcessCommandResult = identityRemaining > 0
-          ? await readPosixIdentityTable(state.dependencies.execFile ?? defaultExecFile, identityRemaining)
-          : { output: null, failure: commandFailure('deadline-exceeded') };
+        let identity: ProcessCommandResult<MarkerOutput>;
+        if (identityRemaining <= 0) identity = { output: null, failure: commandFailure('deadline-exceeded') };
+        else if (usesLinuxProcfs(state)) identity = await queryLinuxMarkers(identityRemaining, new Set());
+        else identity = await readPosixIdentityTable(state.dependencies.execFile ?? defaultExecFile, identityRemaining);
         if (identity.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(identity.query);
-        const identityTable = identity.output === null ? undefined : parseCompletePosixIdentityTable(identity.output);
+        const identityTable = typeof identity.output === 'string' ? parseCompletePosixIdentityTable(identity.output) : identity.output?.table;
         const anchorConfirmed = anchor !== undefined
           && confirmed.table.get(anchor.pid)?.startTime === anchor.startTime
           && identityTable?.get(anchor.pid)?.startTime === anchor.startTime
@@ -1397,6 +1449,14 @@ async function acceptPosixSnapshot(
           markerlessInitialGroupPids.push(pid);
         }
       }
+    }
+    if (usesLinuxProcfs(state) && stage !== 'observation' && stillUnreadable.length === 0) {
+      const unverified = markerlessInitialGroupPids.filter(pid =>
+        state.descendants.get(pid)?.startTime !== snapshot.table.get(pid)?.startTime);
+      if (unverified.length > 0) fail(cleanupUnconfirmed('a live process in the initial group has unconfirmed ownership.'),
+        'initial-group-ownership-unconfirmed', unverified);
+      else if (markerlessKnownPids.length > 0) fail(cleanupUnconfirmed('a known live process no longer has its marker.'),
+        'known-process-marker-missing', markerlessKnownPids);
     }
     if (
       enforceProcessMarker &&
@@ -1639,7 +1699,7 @@ async function readImmediatePosixSnapshot(
     ? readPosixIdentityTable(execFileImpl, Math.max(1, remaining))
     : readObservationMarkerOutput(state, Math.max(1, remaining));
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let result: ProcessCommandResult;
+  let result: ProcessCommandResult<MarkerOutput>;
   try {
     result = await Promise.race([
       Promise.all([lookup, Promise.all(pendingObservations)]).then(([current]) => current),
@@ -1697,7 +1757,8 @@ async function readImmediatePosixSnapshot(
     return undefined;
   }
   const snapshot = successfulPosixSnapshot(state, result.output, queryMetadata);
-  await acceptPosixSnapshot(state, snapshot, stage, deadline);
+  const accepted = await acceptPosixSnapshot(state, snapshot, stage, deadline);
+  if (!accepted && usesLinuxProcfs(state)) throw state.failure ?? cleanupUnconfirmed('Linux process inspection failed.');
   if (Date.now() >= deadline) {
     const diagnostic = {
       ...posixDiagnostic(state, snapshot, stage, 'inspection-deadline-exceeded'),
@@ -1708,13 +1769,15 @@ async function readImmediatePosixSnapshot(
     return undefined;
   }
   // Keep only the first failure and the latest cleanup scan, even if inspection recovers.
-  if (state.failure) state.diagnostics[1] = posixDiagnostic(state, snapshot, stage, 'cleanup-snapshot');
+  if (state.failure && state.diagnostics[1]?.stage !== stage) {
+    state.diagnostics[1] = posixDiagnostic(state, snapshot, stage, 'cleanup-snapshot');
+  }
   return snapshot;
 }
 
 function successfulPosixSnapshot(
   state: ObservationState,
-  output: string,
+  output: MarkerOutput,
   queryMetadata: Pick<PosixProcessSnapshot, 'snapshotStartedAt' | 'snapshotDeadline' | 'markerLookupAttempts' | 'queries'>,
 ): PosixProcessSnapshot {
   const markerScan = state.marker === undefined ? undefined : parsePosixMarkerScan(output);
@@ -1722,7 +1785,7 @@ function successfulPosixSnapshot(
     ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
     : new Set<number>();
   return {
-    table: markerScan?.table ?? parsePosixProcessTable(output),
+    table: typeof output !== 'string' ? output.table : markerScan?.table ?? parsePosixProcessTable(output),
     markerPids,
     unreadableMarkerPids: unreadableMarkerPids(markerScan, state.platform, markerPids),
     markerLookupSucceeded: true,
@@ -1793,11 +1856,22 @@ function createProcessTreeObservation(
     });
     return observation;
   }
-  if (state.coalescePosixMarkerScans) {
+  if (state.coalescePosixMarkerScans || usesLinuxProcfs(state)) {
     const requestedAt = Date.now();
     const timeoutMs = posixCommandTimeout(state.platform);
-    state.initialLookup = readObservationMarkerOutput(state, timeoutMs).then(async (result) => {
-      if (state.disposed || result.output === null) return;
+    state.initialLookup = readObservationMarkerOutput(state, timeoutMs, true).then(async (result) => {
+      if (state.disposed) return;
+      if (result.output === null) {
+        if (usesLinuxProcfs(state)) {
+          await acceptPosixSnapshot(state, {
+            table: new Map(), markerPids: new Set(), unreadableMarkerPids: new Set(), confirmedUnmarkedPids: new Set(),
+            markerLookupSucceeded: false, markerLookupAttempts: 1, markerLookupFailure: result.failure,
+            snapshotStartedAt: requestedAt, snapshotDeadline: requestedAt + timeoutMs,
+            queries: result.query ? [result.query] : [],
+          }, 'observation');
+        }
+        return;
+      }
       const snapshot = successfulPosixSnapshot(state, result.output, {
         snapshotStartedAt: requestedAt,
         snapshotDeadline: requestedAt + timeoutMs,
@@ -1891,6 +1965,10 @@ function safelyOwnedProcessGroup(
     entry.pgid === pgid && !entry.state?.startsWith('Z')
   );
   if (members.length === 0) return undefined;
+  if (usesLinuxProcfs(state) && members.some(([pid, entry]) => {
+    const known = pid === state.pid ? state.root : state.descendants.get(pid);
+    return !snapshot.markerPids.has(pid) || known?.startTime !== entry.startTime;
+  })) return undefined;
   if (state.rootPgidMode === 'owned') {
     const currentLeader = snapshot.table.get(pgid);
     if (
@@ -2104,6 +2182,7 @@ async function terminatePosixProcessTree(
     if (state.marker !== undefined && !current.markerLookupSucceeded) return;
     signalProcessGroup(safelyOwnedProcessGroup(state, current), signal, kill);
     for (const identity of liveIdentities(current).reverse()) {
+      if (usesLinuxProcfs(state) && !current.markerPids.has(identity.pid)) continue;
       signalIdentity(identity, current, signal, kill);
     }
   };
@@ -2140,7 +2219,13 @@ async function terminatePosixProcessTree(
   if (!verified) {
     throw state.failure ?? cleanupUnconfirmed('POSIX termination verification failed.');
   }
-  if (liveIdentities(verified).length > 0) {
+  const remainingIdentities = liveIdentities(verified);
+  if (remainingIdentities.length > 0) {
+    if (usesLinuxProcfs(state) && state.failure) {
+      const marked = remainingIdentities.filter(identity => verified.markerPids.has(identity.pid));
+      if (marked.length) state.diagnostics[1] = posixDiagnostic(state, verified, 'termination-verification',
+        'verified-process-still-running', marked.map(identity => identity.pid));
+    }
     throw state.failure ?? cleanupUnconfirmed('a verified POSIX descendant is still running.');
   }
   if (liveMarkerPids(verified).length > 0) {
