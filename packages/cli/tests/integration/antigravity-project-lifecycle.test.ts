@@ -128,7 +128,8 @@ it('preserves competing owners and local bytes during short-name Antigravity Pro
   await fs.unlink(installed);
   const pending = await apply('sync');
   expect(pending.status, JSON.stringify(pending)).toBe('blocked');
-  expect(pending.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual', message: expect.stringContaining(legacy) }));
+  expect(pending.diagnostics).toContainEqual(expect.objectContaining({ detail: expect.objectContaining({ path: legacy }) }));
+  expect(pending.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual', message: expect.stringContaining(JSON.stringify(legacy)) }));
   expect(await fs.readFile(extra, 'utf8')).toBe('Keep legacy data.\n');
   const backup = path.join(cwd, 'old-plugin-backup');
   await fs.move(legacy, backup);
