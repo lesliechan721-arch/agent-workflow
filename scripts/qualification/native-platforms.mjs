@@ -2,6 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
   acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
@@ -433,7 +434,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     report.reason = redactScope(error?.message ?? 'qualification-failed');
     report.remaining = 'not-run-after-incomplete-scenario';
   } finally {
-    try { await fs.rm(root, { recursive: true, force: true }); report.cleanup = 'completed'; }
+    try { await removeQualificationRoot(root); report.cleanup = 'completed'; }
     catch (error) {
       report.cleanup = 'failed'; report.status = 'failed';
       report.cleanupError = redactScope({ code: error?.code, syscall: error?.syscall, path: error?.path });
@@ -442,8 +443,20 @@ export async function runScope(platform, scope, launcher, options = {}) {
   return report;
 }
 
+export async function removeQualificationRoot(root) {
+  // Windows can keep an executable mapped briefly after its Job has closed.
+  // Bound retries for the entire fixture, including deeply nested packages.
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rm(root, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (process.platform !== 'win32' || attempt === 5 || !['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(error.code)) throw error;
+      await delay((attempt + 1) * 100);
+    }
+  }
+}
+
 async function cleanupClientAcquisition(installRoot, result) {
-  try { await fs.rm(installRoot, { recursive: true, force: true }); result.acquisitionCleanup = 'completed'; }
+  try { await removeQualificationRoot(installRoot); result.acquisitionCleanup = 'completed'; }
   catch (error) {
     result.acquisitionCleanup = 'failed'; result.status = 'failed';
     result.acquisitionCleanupError = redact({ code: error?.code, syscall: error?.syscall, path: error?.path }, installRoot);

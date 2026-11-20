@@ -6,7 +6,7 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary,
+import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, removeQualificationRoot,
   readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
@@ -417,6 +417,33 @@ test('uses actual AW projection bytes for both candidate revisions', async () =>
       }
     }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+// A busy image in a private qualification root failed a Windows run after
+// all 20 OpenCode Project checks passed. A persistent lock must still fail.
+test('removes a Windows qualification executable only after its lock is released', { skip: process.platform !== 'win32' }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-locked-exe-'));
+  const executable = path.join(root, 'client.exe');
+  let child;
+  let closed;
+  let release;
+  try {
+    await fs.copyFile(process.execPath, executable);
+    child = spawn(executable, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0)); setTimeout(() => process.exit(1), 30000)'],
+      { env: isolatedEnvironment(root), stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    closed = once(child, 'close');
+    await once(child, 'spawn');
+    await assert.rejects(removeQualificationRoot(root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+    release = setTimeout(() => child.stdin.end(), 150);
+    await removeQualificationRoot(root);
+    assert.equal((await closed)[0], 0);
+    await assert.rejects(fs.stat(root), { code: 'ENOENT' });
+  } finally {
+    clearTimeout(release);
+    if (child?.exitCode === null) child.kill();
+    await closed?.catch(() => {});
+    await removeQualificationRoot(root);
+  }
 });
 
 test('a real child version mismatch fails before public AW installation and cleans its temporary home', async () => {
