@@ -97,10 +97,11 @@ describe('v4 author profile consumers', () => {
     const { root, pluginRoot, env } = await fixture();
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    manifest.platforms = ['generic', 'codex', 'cursor'];
+    // Antigravity's native Skill qualification covers User scope on every host.
+    manifest.platforms = ['generic', 'codex', 'antigravity'];
     manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
     manifest.managedCommands = { sets: [{ set: 'tools',
-      producer: { kind: 'artifact', platform: 'cursor', artifactId: 'computed' }, mode: 'static',
+      producer: { kind: 'artifact', platform: 'antigravity', artifactId: 'computed' }, mode: 'static',
       entries: [{ key: 'run', variant: 'default', runner: 'node', entry: 'scripts/run.mjs' }],
     }] };
     manifest.extensions = { permissions: [{ name: 'command-permission',
@@ -109,7 +110,7 @@ describe('v4 author profile consumers', () => {
     }] };
     await fs.writeJson(manifestPath, manifest);
     const out = path.join(root, 'native-review');
-    const result = await prepareReviewTarget({ cwd: root, target: pluginRoot, platform: 'cursor', scope: 'project',
+    const result = await prepareReviewTarget({ cwd: root, target: pluginRoot, platform: 'antigravity', scope: 'project',
       out, env });
     expect(result.receipt.issues).toEqual([]);
     expect(result.exitCode).toBe(0);
@@ -119,7 +120,7 @@ describe('v4 author profile consumers', () => {
     }));
     expect(result.receipt.preparation?.every((unit) => unit.outputs.length === 0)).toBe(true);
     expect(await fs.pathExists(path.join(out, 'native'))).toBe(false);
-    const inspected = await inspectReviewTarget({ cwd: root, target: pluginRoot, platform: 'cursor', scope: 'project',
+    const inspected = await inspectReviewTarget({ cwd: root, target: pluginRoot, platform: 'antigravity', scope: 'project',
       materializations: [result.receipt.sourceBindingPath!], env });
     expect(inspected.issues).toContainEqual(expect.objectContaining({ code: 'componentUnmet' }));
     expect(inspected.issues.some((issue) => issue.code === 'dynamicComponentsUnprepared')).toBe(false);
