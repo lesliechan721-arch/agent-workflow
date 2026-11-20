@@ -10,9 +10,12 @@ import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 function object(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('grokObservationInvalid');
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) throw new Error('grokObservationInvalid');
+  return value;
 }
 function rows(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value) || value.length > 4096) throw new Error('grokObservationInvalid');
@@ -25,6 +28,12 @@ function within(root: string, file: unknown): boolean {
 }
 function evidenceDigest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+function isPackageHook(hook: unknown, name: string, root: string): boolean {
+  return isRecord(hook) && hook.event === '(plugin)' && hook.hookType === 'file' && hook.matcher === null
+    && typeof hook.target === 'string' && path.normalize(hook.target) === path.join(root, 'hooks', 'hooks.json')
+    && isRecord(hook.source) && hook.source.type === 'plugin' && hook.source.plugin_name === name
+    && typeof hook.source.path === 'string' && path.normalize(hook.source.path) === root;
 }
 
 /** 1.0.77's list is an install inventory; inspect.enabled is not load evidence. */
@@ -139,6 +148,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   }
   const configEvidence = evidence.slice(3);
   const attributedResources = new Set<Record<string, unknown>>();
+  const hooks: unknown[] | undefined = projectRoot && Array.isArray(inspect.hooks) ? inspect.hooks : undefined;
+  const hookPackages = new Map<unknown, string>();
   const sourceDigests: string[] = [];
   let sourcesComplete = true;
   const sources: NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'] = [];
@@ -177,18 +188,34 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       enabled: typeof plugin.enabled === 'boolean' ? plugin.enabled : null,
       effectiveComponents: resources.map(({ kind, row }) => `${kind}:${String(row.name)}`).sort() });
     if (projectRoot) {
+      // Grok reports this file pointer for a plugin's hooks. Other hook formats
+      // (including global commands) remain part of the frozen scope.
+      const packageRoot = path.normalize(plugin.path);
+      const packageHooks = plugin.scope === 'project' ? hooks?.filter((hook) => isPackageHook(hook, plugin.name as string, packageRoot)) ?? [] : [];
+      if (packageHooks.length === 1) hookPackages.set(packageHooks[0], packageRoot);
       for (const { row } of resources) attributedResources.add(row);
-      sourceDigests.push(evidenceDigest([plugin, resources.map(({ kind, row }) => [kind, row]), ...evidence.slice(evidenceStart)]));
+      sourceDigests.push(evidenceDigest([plugin, resources.map(({ kind, row }) => [kind, row]), packageHooks, ...evidence.slice(evidenceStart)]));
     }
   }
+  // Rule rows have no plugin source. Keep every row in order so execution can
+  // compare the complete inventory after accounting for its own exact writes.
+  const instructions = projectRoot && Array.isArray(inspect.projectInstructions) ? inspect.projectInstructions.map((row: unknown) => ({
+    rulePath: isRecord(row) && row.scope === 'project' && row.fileType === 'rules' && typeof row.path === 'string' && path.isAbsolute(row.path)
+      && path.dirname(path.normalize(row.path)) === path.join(projectRoot, '.grok', 'rules') ? path.normalize(row.path) : null,
+    digest: evidenceDigest(row),
+  })) : undefined;
   // Keep unbound runtime resources, policy and configuration bound to the scope.
   const grokProjectEvidence = projectRoot ? {
     scopeDigest: evidenceDigest([binding.scope, list, {
       ...nativeEvidence, plugins: undefined,
+      hooks: hooks ? [] : nativeEvidence.hooks,
+      projectInstructions: instructions ? [] : nativeEvidence.projectInstructions,
       ...Object.fromEntries(effectiveKinds.map((kind) => [kind,
         effective.filter((entry) => entry.kind === kind && !attributedResources.has(entry.row)).map(({ row }) => row)])),
     }, ...configEvidence]),
-    sourceDigests,
+    sourceDigests, instructions: instructions ?? [],
+    // A bound hook's full row is in its source digest. Keep hook order across packages, too.
+    hookOrder: hooks?.map((hook) => hookPackages.get(hook) ?? evidenceDigest(hook)) ?? [],
   } : undefined;
   const overlaps = [...new Set(sources.filter((source) => sources.some((other) => other !== source && other.name === source.name)).map((source) => source.name))].sort();
   result.prerequisites.nativeSources = { observation: sourcesComplete ? 'complete' : 'unknown', sources, overlaps,

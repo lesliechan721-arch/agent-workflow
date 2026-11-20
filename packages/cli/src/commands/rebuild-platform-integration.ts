@@ -97,9 +97,10 @@ interface UnitPreparation {
 }
 interface GrokProjectPublication {
   projectRoot: string;
-  sourceDigest: string;
+  nativeDigest: string;
   contentDigest: string;
-  owner: Extract<OwnedComponent, { kind: 'owned-directory' }>;
+  owner: Extract<OwnedComponent, { kind: 'owned-directory' | 'owned-text-file' }>;
+  priorRuleDigest?: string;
 }
 interface TargetResolution extends Resolution {
   ordinaryEvidence?: { discovery: string; observations: Map<string, string> };
@@ -414,6 +415,41 @@ export class PlatformRebuildSession {
     const open = platform === 'pi'
       ? batch !== this.closedObservationBatch : this.targets.size === 0 && platform !== 'codex';
     return open && batch ? { ...ctx, ...batch } : ctx;
+  }
+  private recordGrokProjectWrites(prepared: PreparedDeployment<PlatformDriverState>, receipt: DeploymentReceipt,
+    packagePublished: boolean, writtenFiles: ReadonlyMap<string, { digest: string }>): void {
+    const { binding, operation, evidence: { layout } } = prepared.plan;
+    const sources = receipt.after.prerequisites.nativeSources;
+    const evidence = sources?.grokProjectEvidence;
+    if (binding.route !== 'grok-directory' || binding.scope.kind !== 'project' || operation !== 'ensure'
+      || receipt.diagnostics.some((item) => item.severity === 'error') || sources?.observation !== 'complete' || !evidence) return;
+    const { projectRoot } = binding.scope;
+    const { before, packageComponent: owner, bundle, contributions } = prepared.driverState;
+    const nativeIdentity = receipt.after.nativeIdentity;
+    const root = path.normalize(layout.packageRoot);
+    if (packagePublished && before.package === 'absent' && before.ownership === 'absent'
+      && receipt.after.package === 'present' && receipt.after.ownership === 'aw' && bundle
+      && owner?.kind === 'owned-directory' && owner.path === layout.packageRoot && nativeIdentity?.route === 'grok-directory'
+      && nativeIdentity.sourceLocation === layout.packageRoot && !sources.overlaps.includes(nativeIdentity.packageId)) {
+      const index = sources.sources.findIndex((source) => source.name === nativeIdentity.packageId && path.normalize(source.path) === root
+        && source.scope === 'project' && source.origin === 'native' && source.enabled === true);
+      const nativeDigest = evidence.sourceDigests[index];
+      const knownHooks = !evidence.hookOrder.includes(root) || prepared.plan.projections.some((projection) => projection.bundle
+        && projection.components.some((component) => component.relativeOutputs.includes('hooks/hooks.json')));
+      if (nativeDigest && knownHooks) this.grokProjectPublications.set(root, { projectRoot, nativeDigest, contentDigest: bundle.contentDigest, owner });
+    }
+    const prior = before.prerequisites.nativeSources?.grokProjectEvidence?.instructions;
+    for (const { effectId, component } of contributions) {
+      if (component.kind !== 'owned-text-file' || !prior) continue;
+      const written = writtenFiles.get(component.path);
+      const rows = evidence.instructions.filter((row) => row.rulePath === component.path);
+      const previous = prior.filter((row) => row.rulePath === component.path);
+      if (written && rows.length === 1 && previous.length <= 1 && receipt.effects.some((effect) =>
+        effect.id === effectId && effect.status === 'applied' && effect.mutation === 'confirmed')) {
+        this.grokProjectPublications.set(component.path, { projectRoot, nativeDigest: rows[0]!.digest,
+          priorRuleDigest: previous[0]?.digest, contentDigest: written.digest, owner: component });
+      }
+    }
   }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
@@ -865,50 +901,61 @@ export class PlatformRebuildSession {
             diagnostics: before.diagnostics.filter(({ code }) => code !== 'piProjectRegistrationNotVisible') } });
       };
       const matchesAfterGrokPublications = async (current: Awaited<ReturnType<typeof currentMutable>>): Promise<boolean> => {
-        if (artifactValueDigest(current) === artifactValueDigest(mutableBaseline)) return true;
-        if (entry.binding.route !== 'grok-directory' || entry.binding.scope.kind !== 'project'
-          || operation(input) !== 'ensure' || !this.grokProjectPublications.size) return false;
+        const { binding } = entry;
+        const projectRoot = binding.route === 'grok-directory' && binding.scope.kind === 'project' && binding.scope.projectRoot;
+        const publications = projectRoot && operation(input) === 'ensure' ? [...this.grokProjectPublications.values()].filter(
+          (item) => item.projectRoot === projectRoot && item.owner.identity.pluginId !== binding.plugin.pluginId) : [];
+        const baselineDigest = artifactValueDigest(mutableBaseline);
+        if (!publications.length) return artifactValueDigest(current) === baselineDigest;
         const before = mutableBaseline.observation.prerequisites.nativeSources;
         const after = current.observation.prerequisites.nativeSources;
+        const priorEvidence = before?.grokProjectEvidence;
         const scopeEvidence = after?.grokProjectEvidence;
-        if (before?.observation !== 'complete' || after?.observation !== 'complete' || !scopeEvidence
-          || scopeEvidence.scopeDigest !== before.grokProjectEvidence?.scopeDigest) return false;
-        const priorPaths = new Set(before.sources.map(({ path: sourcePath }) => path.normalize(sourcePath)));
-        const paths = after.sources.map(({ path: sourcePath }) => path.normalize(sourcePath));
+        if (before?.observation !== 'complete' || after?.observation !== 'complete' || !scopeEvidence || !priorEvidence
+          || scopeEvidence.scopeDigest !== priorEvidence.scopeDigest) return false;
+        const paths = after.sources.map((source) => path.normalize(source.path));
         if (new Set(paths).size !== paths.length) return false;
-        const kept: typeof after.sources = [];
-        const sourceDigests: string[] = [];
-        const added: GrokProjectPublication[] = [];
-        for (const [index, source] of after.sources.entries()) {
-          const root = paths[index]!;
-          const digest = scopeEvidence.sourceDigests[index]!;
-          const published = this.grokProjectPublications.get(root);
-          if (published?.projectRoot === entry.binding.scope.projectRoot && published.sourceDigest === digest
-            && !priorPaths.has(root) && source.name !== entry.layout.nativeIdentity.packageId) {
-            added.push(published);
+        const addedSources = new Set<string>();
+        const instructions = [...scopeEvidence.instructions];
+        for (const { owner, projectRoot: publishedProject, nativeDigest, contentDigest, priorRuleDigest } of publications) {
+          ctx.signal?.throwIfAborted();
+          if (owner.kind === 'owned-directory') {
+            const index = paths.indexOf(owner.path);
+            if (scopeEvidence.sourceDigests[index] !== nativeDigest || after.sources[index]?.name === entry.layout.nativeIdentity.packageId) return false;
+            if (!before.sources.some((source) => path.normalize(source.path) === owner.path)) addedSources.add(owner.path);
+            const marker = await readSkillOwnerMarker({ skillRoot: owner.path, allowedRoot: owner.allowedRoot,
+              expectedIdentity: owner.identity }).catch(() => null);
+            const observedContent = marker?.nativeProjection?.contentDigest === contentDigest
+              ? await readPlatformPackageContentDigest(owner.path).catch(() => undefined) : undefined;
+            if (observedContent !== contentDigest) return false;
           } else {
-            kept.push(source);
-            sourceDigests.push(digest);
+            const matches = instructions.filter((row) => row.rulePath === owner.path);
+            if (matches.length !== 1 || matches[0]!.digest !== nativeDigest) return false;
+            const index = instructions.indexOf(matches[0]!);
+            const prior = priorEvidence.instructions.find((row) => row.rulePath === owner.path);
+            if (prior?.digest !== nativeDigest) {
+              if (prior?.digest !== priorRuleDigest) return false;
+              instructions.splice(index, 1, ...(prior ? [prior] : []));
+            }
+            // The written hash includes the exact owner header. Grok's size
+            // and token count alone cannot detect a same-length external edit.
+            try {
+              await assertSafeFileMutationPath({ filePath: owner.path, allowedRoot: publishedProject, label: 'Grok project rule' });
+              const bytes = await fs.readFile(owner.path);
+              if (crypto.createHash('sha256').update(bytes).digest('hex') !== contentDigest) return false;
+            } catch { ctx.signal?.throwIfAborted(); return false; }
           }
         }
-        if (!added.length) return false;
-        const normalizedSources = { ...after, sources: kept, configurationEvidence: before.configurationEvidence,
-          grokProjectEvidence: { ...scopeEvidence, sourceDigests } };
-        const observation = { ...current.observation,
-          prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
-        const normalized = { ...current, observation };
-        if (artifactValueDigest(normalized) !== artifactValueDigest(mutableBaseline)) return false;
-        // Accept only still-owned bytes from this operation, including the full package tree.
-        for (const { owner, contentDigest } of added) {
-          ctx.signal?.throwIfAborted();
-          const marker = await readSkillOwnerMarker({ skillRoot: owner.path, allowedRoot: owner.allowedRoot,
-            expectedIdentity: owner.identity }).catch(() => null);
-          const observedContent = marker?.nativeProjection?.contentDigest === contentDigest
-            ? await readPlatformPackageContentDigest(owner.path).catch(() => undefined) : undefined;
-          ctx.signal?.throwIfAborted();
-          if (observedContent !== contentDigest) return false;
+        ctx.signal?.throwIfAborted();
+        if (!addedSources.size && artifactValueDigest(instructions) === artifactValueDigest(scopeEvidence.instructions)) {
+          return artifactValueDigest(current) === baselineDigest;
         }
-        return true;
+        const normalizedSources = { ...after, sources: after.sources.filter((_, index) => !addedSources.has(paths[index]!)),
+          configurationEvidence: before.configurationEvidence, grokProjectEvidence: { ...scopeEvidence, instructions,
+            hookOrder: scopeEvidence.hookOrder.filter((item) => !addedSources.has(item)),
+            sourceDigests: scopeEvidence.sourceDigests.filter((_, index) => !addedSources.has(paths[index]!)) } };
+        const observation = { ...current.observation, prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
+        return artifactValueDigest({ ...current, observation }) === baselineDigest;
       };
       const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
         if (!parallelNativeReads) return await fingerprint(discovery) === initial
@@ -1398,27 +1445,7 @@ export class PlatformRebuildSession {
           }
           if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
             || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
-          if (prepared.plan.binding.route === 'grok-directory' && prepared.plan.binding.scope.kind === 'project'
-            && prepared.plan.operation === 'ensure' && publication?.mutation === 'confirmed'
-            && prepared.driverState.before.package === 'absent' && prepared.driverState.before.ownership === 'absent'
-            && receipt.after.package === 'present' && receipt.after.ownership === 'aw'
-            && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-            const { packageRoot } = prepared.plan.evidence.layout;
-            const nativeIdentity = receipt.after.nativeIdentity;
-            const root = path.normalize(packageRoot);
-            const bundle = prepared.plan.projections.find((projection) => projection.bundle)?.bundle;
-            const owner = prepared.driverState.packageComponent;
-            const nativeSources = receipt.after.prerequisites.nativeSources;
-            const sourceIndex = nativeSources?.sources.findIndex((source) => source.name === nativeIdentity?.packageId
-              && path.normalize(source.path) === root && source.scope === 'project' && source.origin === 'native' && source.enabled === true) ?? -1;
-            const sourceDigest = nativeSources?.grokProjectEvidence?.sourceDigests[sourceIndex];
-            if (bundle && owner?.kind === 'owned-directory' && owner.path === packageRoot && sourceDigest
-              && nativeIdentity?.route === 'grok-directory' && nativeIdentity.sourceLocation === packageRoot
-              && nativeSources?.observation === 'complete' && !nativeSources.overlaps.includes(nativeIdentity.packageId)) {
-              this.grokProjectPublications.set(root, { projectRoot: prepared.plan.binding.scope.projectRoot,
-                sourceDigest, contentDigest: bundle.contentDigest, owner });
-            }
-          }
+          this.recordGrokProjectWrites(prepared, receipt, publication?.mutation === 'confirmed', writtenFiles);
           const piInventoryKey = piProjectInventoryKey(prepared.plan.binding, prepared.plan.evidence.layout.activationPath);
           if (piInventoryKey && piProjectEmptyDeliveryObserved(prepared.plan.binding, prepared.driverState.before)
             && receipt.after.registration === 'present' && receipt.after.ownership === 'aw' && receipt.after.configuration?.activation === 'enabled'

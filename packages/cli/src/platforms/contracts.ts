@@ -208,8 +208,9 @@ export interface RuntimePrerequisites {
     sources: Array<{ name: string; version: string | null; path: string; scope: string;
       origin: 'native' | 'compatibility' | 'unknown'; enabled: boolean | null; effectiveComponents: string[] }>;
     overlaps: string[];
-    /** Operation-local evidence used to recognize a confirmed Grok Project package publication. */
-    grokProjectEvidence?: { scopeDigest: string; sourceDigests: string[] };
+    /** Operation-local evidence for confirmed Grok Project package and rule writes. */
+    grokProjectEvidence?: { scopeDigest: string; sourceDigests: string[]; hookOrder: string[];
+      instructions: Array<{ rulePath: string | null; digest: string }> };
   };
 }
 export interface AgentConsumerObservation {

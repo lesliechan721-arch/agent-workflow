@@ -249,6 +249,8 @@ Copilot Project 仅在无凭据 Hosted 临时环境使用 `COPILOT_ALLOW_ALL=tru
 
 Grok 同源 User 刷新的宿主拒绝仍未取得真实资格。无凭据的 macOS arm64 Grok `1.0.77` 在隔离 User 目录与 AW 同型临时查询目录中，即便写入精确目录拒绝，`inspect --json` 仍报告 `projectTrusted=true`，且 User 登记保持启用。加入独立 Project 插件在其自身目录复现了 `projectTrusted=false` 和 Project 禁用。AW 的 User 查询使用新建 neutral 目录，保留此拒绝场景为未验证。确定性测试仍覆盖同源登记收到原生拒绝时保留安装副本的行为。
 
+Grok Project 组件资格用两个独立的可信临时项目检查批量安装。一组先交付 Hook，另一组先交付主会话规则，两组的第二个插件均要求该前置插件并交付角色。每次安装须一次完成，独立状态能读回两包的实际文件，再同步时输出零改动。组件资格只做安装和清单查询。
+
 Codex 普通状态依据两个作用域的原生清单。资格切换同一真实客户端的两个入口及顺序，并核对正常继承、项目独立启用、宿主拒绝项目配置与共享 User 提供者对依赖的影响。显式 Project 启用与 User 启用同时得到相同原生结果时，独立项目启用仍需证据。Claude 保留精确项目登记与 User 继承的区别。Codex User 专项以回环假 Responses 服务和假凭据运行真实 app-server，核对仅手动 Skill 的原生列表、隐式库存和显式正文，以及三个官方角色的声明名、实际生成引用和宿主加载的指令。该场景不使用外部模型。
 
 OpenCode 普通 status 需要保持目录就绪和可选加载 warning。现有托管调用取证核对普通查询没有进入原生服务路径，显式 `--observe-native` 启动该观察并报告运行结果。

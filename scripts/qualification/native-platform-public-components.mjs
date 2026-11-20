@@ -27,6 +27,11 @@ const specs = [
   { name: 'hook-only', kinds: ['hook'] },
   { name: 'without-skills', kinds: kinds.filter(kind => kind !== 'skill') },
 ];
+const pairPrerequisites = new Map([
+  ['pi-pair', 'single-instruction'],
+  ['grok-hook-pair', 'single-hook'],
+  ['grok-rule-pair', 'single-instruction'],
+]);
 
 // Recover only the trust requests actually observed in this isolated Catalog.
 export function grokTrustTargets(value, dependencies, alreadyAuthorized) {
@@ -166,6 +171,13 @@ async function verifyFixture(ctx, result, spec, revision) {
   return outcome;
 }
 
+function fingerprints(root, files) {
+  return Promise.all(files.map(async file => {
+    const stat = await fs.stat(file, { bigint: true });
+    return { path: path.relative(root, file).split(path.sep).join('/'), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs),
+      sha256: sha256(await fs.readFile(file)) };
+  }));
+}
 
 // Both roots share Pi's settings file. The dependency makes the extension
 // publish before the role, so the second target must observe AW's own write.
@@ -205,12 +217,7 @@ async function piPair(ctx, report, inputs, install, status, sync) {
   const packages = JSON.parse(await fs.readFile(settings, 'utf8')).packages;
   const registered = packages.map(entry => path.basename(typeof entry === 'string' ? entry : entry.source));
   assert.deepEqual(registered, inputs.map(spec => 'aw-matrix-' + spec.name), 'Pi must register each package once, extension first.');
-  const fingerprints = () => Promise.all(paths.map(async file => {
-    const stat = await fs.stat(file, { bigint: true });
-    return { path: path.relative(ctx.root, file).split(path.sep).join('/'), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs),
-      sha256: sha256(await fs.readFile(file)) };
-  }));
-  const before = await fingerprints();
+  const before = await fingerprints(ctx.root, paths);
   const observed = await status();
   checkSettled(observed);
   for (const spec of inputs) await verifyFixture(ctx, observed, spec, 1);
@@ -218,7 +225,7 @@ async function piPair(ctx, report, inputs, install, status, sync) {
   assert.deepEqual(again.data.remainingTargets, []);
   assert.equal(again.data.changes.outputs, 'none');
   for (const id of ids) assert.equal(targetOf(again, ctx, id).execution, 'no-op');
-  assert.deepEqual(await fingerprints(), before, 'A satisfied Pi batch must preserve both packages and the scope settings.');
+  assert.deepEqual(await fingerprints(ctx.root, paths), before, 'A satisfied Pi batch must preserve both packages and the scope settings.');
   Object.assign(report.pair, { registered, filesAfterSync: before, syncOutputs: again.data.changes.outputs });
 }
 
@@ -227,9 +234,10 @@ async function matrix(ctx, report) {
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);
   await aw(['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace);
-  const inputs = report.suite === 'pi-pair' ? [
-    specs.find(spec => spec.name === 'single-instruction'),
-    { ...specs.find(spec => spec.name === 'single-agent'), dependencies: ['single-instruction'] },
+  const prerequisite = pairPrerequisites.get(report.suite);
+  const inputs = prerequisite ? [
+    specs.find(spec => spec.name === prerequisite),
+    { ...specs.find(spec => spec.name === 'single-agent'), dependencies: [prerequisite] },
   ] : platform === 'generic' ? specs : specs.filter(spec => spec.name !== 'without-skills');
   for (const spec of inputs) ctx.dependencies.set(source + '/' + spec.name, (spec.dependencies ?? []).map(name => source + '/' + name));
   await aw(['dev', 'plugin', 'create', inputs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace);
@@ -244,18 +252,26 @@ async function matrix(ctx, report) {
   const sync = () => aw(['plugin', 'sync', '--context', scope, '--yes']);
   const status = () => aw(['plugin', 'status', '--context', scope]);
   if (report.suite === 'pi-pair') return piPair(ctx, report, inputs, install, status, sync);
-  if (report.suite === 'pi-seven') {
-    // Replay the seven independent roots from the first failed Pi User batch.
+  if (report.suite === 'pi-seven' || prerequisite) {
+    // Grok must accept its own prerequisite's Hook or rule before publishing the role.
+    // The Pi scenario replays the seven independent roots of its original batch.
     const installed = await install(ids);
     assert.deepEqual(installed.data.remainingTargets, []);
     assert.deepEqual(installed.data.requirements.roots.toSorted(), ids.toSorted());
+    if (prerequisite) {
+      for (const id of ids) assert.equal(targetOf(installed, ctx, id).execution, 'applied', id);
+    }
     const observed = await status();
     checkSettled(observed);
     for (const spec of inputs) report.cases.push(await verifyFixture(ctx, observed, spec, 1));
+    const files = prerequisite ? report.cases.flatMap(item => item.installed.map(file => path.join(ctx.root, file.path))) : [];
+    const before = await fingerprints(ctx.root, files);
     const unchanged = await sync();
     assert.deepEqual(unchanged.data.remainingTargets, []);
     assert.equal(unchanged.data.changes.outputs, 'none');
+    assert.deepEqual(await fingerprints(ctx.root, files), before);
     report.batch = { roots: ids, installStatus: installed.status, syncOutputs: unchanged.data.changes.outputs };
+    if (prerequisite) report.batch.filesAfterSync = before;
     return;
   }
   // A target with only missing capability starts in a genuinely empty scope.
@@ -382,8 +398,9 @@ async function matrix(ctx, report) {
 
 export async function runComponentQualification({ platform, scope, clientPath, suite = 'matrix', catalog }) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
-  assert(['matrix', 'pi-pair', 'pi-seven', 'candidate', 'frozen'].includes(suite));
+  assert(['matrix', 'pi-seven', 'candidate', 'frozen'].includes(suite) || pairPrerequisites.has(suite));
   if (suite.startsWith('pi-')) assert.equal(platform, 'pi');
+  if (suite.startsWith('grok-')) assert.deepEqual([platform, scope], ['grok', 'project']);
   const artifactIdentity = async () => {
     const files = Object.entries(await candidateFiles()).filter(([name]) => name.startsWith('packages/'));
     return sha256(JSON.stringify(files));
@@ -500,7 +517,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
     const ctx = { root, project, env, aw, result, scope, platform, dependencies };
-    if (suite === 'matrix' || suite.startsWith('pi-')) await matrix(ctx, report);
+    if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';

@@ -350,7 +350,9 @@ async function observePublicComponentSuites(ctx) {
   const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
   const failures = [];
   for (const scope of scopes) {
-    for (const suite of ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate']) {
+    const suites = ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate'];
+    if (ctx.platform === 'grok' && scope === 'project') suites.push('grok-hook-pair', 'grok-rule-pair');
+    for (const suite of suites) {
       try {
         await ctx.check('public-components-' + scope + '-' + suite, async () => {
           const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
