@@ -102,10 +102,61 @@ async function grokTrustFixture(failProject = false) {
     registered.set(plugin, { name: plugin, path: installed, source: approvedSource });
     return aw(retries[0]!);
   };
-  return { cwd, env, aw, projectScript, trustAndRetry };
+  return { cwd, env, aw, projectScript, trustAndRetry, registered, runner };
 }
 
 describe('native recovery dispatch', () => {
+  // Grok reports just the winning package of each name in the project. The
+  // first publication can hide its exact User provider while other writes stay observable.
+  it.each(['unchanged', 'foreign registration', 'edited User source', 'edited User copy', 'edited Project copy', 'reordered sources'] as const)(
+    'rechecks a hidden Grok User provider with %s', async (change) => {
+      const { cwd, env, aw, trustAndRetry, runner, registered } = await grokTrustFixture();
+      const first = await aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user', '--target', 'grok']);
+      const second = await trustAndRetry(first, 'base', 'bundle');
+      expect((await trustAndRetry(second, 'bundle', 'bundle')).status).toBe('success');
+      const base = registered.get('base')!;
+      const projectRoot = path.join(cwd, '.grok/plugins');
+      const firstProject = path.join(projectRoot, 'aw-local-base');
+      const secondProject = path.join(projectRoot, 'aw-local-bundle');
+      const original = await fs.readFile(path.join(base.path, 'skills/base/SKILL.md'), 'utf8');
+      if (change === 'foreign registration') base.source = path.join(cwd, 'third-party-source');
+      const editedRoot = change === 'edited User source' ? base.source : change === 'edited User copy' ? base.path : firstProject;
+      const edited = path.join(editedRoot, 'skills/base/SKILL.md');
+      let firstCompleted = false;
+      let injected = false;
+      const nativeCliRunner = async (invocation: NativeCliInvocation) => {
+        const result = await runner(invocation);
+        if (invocation.args[0] !== 'inspect' || invocation.cwd !== cwd) return result;
+        const snapshot = JSON.parse(result.stdout);
+        for (const plugin of snapshot.plugins) {
+          const candidate = path.join(projectRoot, 'aw-local-' + plugin.name);
+          if (await fs.pathExists(path.join(candidate, '.grok-plugin/plugin.json'))) {
+            plugin.path = candidate;
+            plugin.scope = 'project';
+          }
+        }
+        if (firstCompleted && change.startsWith('edited') && !injected) {
+          await fs.appendFile(edited, 'External edit.\n');
+          injected = true;
+        }
+        if (firstCompleted && change === 'reordered sources') snapshot.plugins.reverse();
+        return { ...result, stdout: JSON.stringify(snapshot) };
+      };
+      const promoted = await runRecovery('install', ['local/base', 'local/bundle'],
+        { cwd, env, cliVersion: '1.0.0', scope: 'project', context: 'project', targets: ['grok'], yes: true },
+        { nativeCliRunner, onInstallProgress: ({ completed }) => { if (completed === 1) firstCompleted = true; } });
+      expect(promoted.targetResults.find((target) => target.pluginId === 'local/base' && target.scope === 'project')?.execution).toBe('applied');
+      const next = promoted.targetResults.find((target) => target.pluginId === 'local/bundle' && target.scope === 'project');
+      if (change === 'unchanged') {
+        expect(next?.execution).toBe('applied');
+        expect(await fs.readFile(path.join(base.path, 'skills/base/SKILL.md'), 'utf8')).toBe(original);
+      } else {
+        expect(next?.blockers.map(({ code }) => code)).toContain('operationPlanStale');
+        expect(await fs.pathExists(secondProject)).toBe(false);
+        if (change.startsWith('edited')) expect(await fs.readFile(edited, 'utf8')).toContain('External edit.');
+      }
+    });
+
   // The next Project package must recognize its dependencies' confirmed writes
   // while still rejecting changes made by someone else between targets.
   it.each([

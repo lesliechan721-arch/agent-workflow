@@ -8,6 +8,7 @@ import { queryNativeDeployment } from './inspection-query.js';
 import { grokUserWorkspace } from '../intent/scope-context.js';
 import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
+import { artifactValueDigest } from '../utils/artifact-plan.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 
@@ -73,6 +74,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(installed.repo_key)
     || typeof installed.version !== 'string' || typeof installed.path !== 'string' || !path.isAbsolute(installed.path)
     || typeof installed.source !== 'string' || !path.isAbsolute(installed.source))) throw new Error('grokRegistrationInvalid');
+  const sharedRegistration = installed && list.some((row) => row !== installed
+    && (row.repo_key === installed.repo_key || row.path === installed.path || row.source === installed.source));
   result.registration = binding.route === 'grok-directory' ? 'not-applicable' : installed ? 'present' : 'absent';
   const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   const hostRoot = entry?.kind === 'cli' ? entry.configRoot : await resolvePlatformConfigRoot('grok', ctx);
@@ -90,7 +93,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
         if (directory === installed.path) result.nativePackage = stat ? 'present' : 'absent';
       }
       if (path.normalize(installed.source as string) !== layout.packageRoot) result.ownership = 'foreign';
-      else if (list.some((row) => row !== installed && (row.repo_key === installed.repo_key || row.path === installed.path || row.source === installed.source))) result.ownership = 'shared';
+      else if (sharedRegistration) result.ownership = 'shared';
       else if (result.ownership === 'aw') {
         const [sourceDigest, installedDigest] = await Promise.all([
           readPlatformPackageContentDigest(layout.packageRoot), readPlatformPackageContentDigest(installed.path as string),
@@ -251,6 +254,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   })) : undefined;
   // Keep unbound runtime resources, policy and configuration bound to the scope.
   const scopeEvidence = {
+    ...(projectRoot && installed && !sharedRegistration && installed.path === path.join(hostRoot, 'installed-plugins', installed.repo_key as string)
+      ? { userRegistrationDigest: artifactValueDigest([installed.path, installed.source]) } : {}),
     scopeDigest: evidenceDigest([binding.scope, scopedList, {
       ...nativeEvidence, plugins: undefined,
       hooks: hooks ? [] : nativeEvidence.hooks,

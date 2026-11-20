@@ -10,6 +10,7 @@ import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { getPhysicalKey } from '../platforms/identity.js';
 import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
 import { piAgentConsumerDiagnostic, piProjectListContainsOnly } from '../platforms/inspection-pi.js';
@@ -110,6 +111,14 @@ interface GrokPublication {
   owner: Extract<OwnedComponent, { kind: 'owned-directory' | 'owned-text-file' }>;
   priorNativeDigest?: string;
   orderAfter?: NonNullable<NativeSources['grokScopeEvidence']>;
+  shadowedUser?: GrokShadowedUser;
+  sourceOrderAfter?: string[];
+}
+interface GrokShadowedUser {
+  installedRoot: string;
+  owner: ReturnType<typeof deploymentPackageComponent>;
+  nativeDigest: string;
+  contentDigest: string;
 }
 type NativeSources = NonNullable<DeploymentObservation['prerequisites']['nativeSources']>;
 interface GrokProjectRetirement {
@@ -141,6 +150,32 @@ function grokSourceDigest(sources: NativeSources, root: string, name: string, sc
     && (!version || source.version === version) && source.scope === scope && source.origin === 'native' && source.enabled === true) {
     return sources.grokScopeEvidence?.sourceDigests[index];
   }
+}
+async function grokUserContentDigest(installedRoot: string, owner: GrokShadowedUser['owner']): Promise<string | undefined> {
+  try {
+    await assertSafeFileMutationPath({ filePath: path.join(installedRoot, '.grok-plugin', 'plugin.json'),
+      allowedRoot: path.dirname(path.dirname(installedRoot)), label: 'Grok installed package' });
+    const marker = await readSkillOwnerMarker({ skillRoot: owner.path, allowedRoot: owner.allowedRoot, expectedIdentity: owner.identity });
+    const digest = marker?.nativeProjection?.contentDigest;
+    if (digest && (await Promise.all([owner.path, installedRoot].map(readPlatformPackageContentDigest))).every((value) => value === digest)) return digest;
+  } catch { /* Unverified bytes cannot explain the change of visible source. */ }
+}
+async function grokUserBehindProject(ctx: ReadContext, binding: DeploymentBinding,
+  before: DeploymentObservation): Promise<Omit<GrokShadowedUser, 'contentDigest'> | undefined> {
+  const sources = before.prerequisites.nativeSources;
+  const registration = sources?.grokScopeEvidence?.userRegistrationDigest;
+  if (binding.route !== 'grok-directory' || before.package !== 'absent' || before.ownership !== 'absent'
+    || sources?.observation !== 'complete' || !registration) return;
+  const name = before.nativeIdentity?.packageId;
+  const user = sources.sources.find((source) => source.name === name && source.scope === 'user');
+  if (!user) return;
+  const nativeDigest = grokSourceDigest(sources, user.path, user.name, 'user', binding.plugin.version);
+  if (!nativeDigest) return;
+  const personal: DeploymentBinding = { ...binding, route: 'grok-cli', scope: { kind: 'user' } };
+  const layout = await getDeploymentLayout(ctx, personal);
+  if (registration !== artifactValueDigest([user.path, layout.packageRoot])) return;
+  const owner = deploymentPackageComponent({ ...personal, physicalKey: getPhysicalKey(layout.physicalIdentity) }, layout);
+  return { installedRoot: user.path, owner, nativeDigest };
 }
 interface TargetResolution extends Resolution {
   ordinaryEvidence?: { discovery: string; observations: Map<string, string> };
@@ -473,7 +508,7 @@ export class PlatformRebuildSession {
     return open && batch ? { ...ctx, ...batch } : ctx;
   }
   private recordGrokWrites(prepared: PreparedDeployment<PlatformDriverState>, receipt: DeploymentReceipt,
-    packagePublished: boolean, writtenFiles: ReadonlyMap<string, { digest: string }>): void {
+    packagePublished: boolean, writtenFiles: ReadonlyMap<string, { digest: string }>, shadowedUser?: GrokShadowedUser): void {
     const { binding, operation, evidence: { layout } } = prepared.plan;
     const sources = receipt.after.prerequisites.nativeSources;
     const evidence = sources?.grokScopeEvidence;
@@ -501,7 +536,9 @@ export class PlatformRebuildSession {
       && owner?.kind === 'owned-directory' && owner.path === layout.packageRoot && identity?.route === binding.route
       && identity.sourceLocation === layout.packageRoot) {
       const newlyInstalled = binding.route === 'grok-directory' && before.package === 'absent' && before.ownership === 'absent'
-        && !priorSources.sources.some((source) => source.name === identity.packageId || path.normalize(source.path) === root);
+        && !priorSources.sources.some((source) => path.normalize(source.path) === root
+          || source.name === identity.packageId && source.path !== shadowedUser?.installedRoot)
+        && (!shadowedUser || !sources.sources.some((source) => source.path === shadowedUser.installedRoot));
       const priorNativeDigest = before.package === 'present' && before.ownership === 'aw' && (refreshed || before.packageVersion)
         ? grokSourceDigest(priorSources, root, identity.packageId, scope, refreshed ? undefined : before.packageVersion) : undefined;
       const nativeDigest = grokSourceDigest(sources, root, identity.packageId, scope, binding.plugin.version);
@@ -509,7 +546,8 @@ export class PlatformRebuildSession {
         && projection.components.some((component) => component.relativeOutputs.includes('hooks/hooks.json')));
       if ((newlyInstalled || priorNativeDigest) && nativeDigest && knownHooks) {
         this.grokPublications.set(root, { scope, scopeRoot, installedRoot, nativeDigest, priorNativeDigest, contentDigest: bundle.contentDigest,
-          owner, orderAfter: evidence });
+          owner, orderAfter: evidence, shadowedUser,
+          sourceOrderAfter: shadowedUser && sources.sources.map((source) => path.normalize(source.path)) });
       }
     }
     const prior = priorSources?.grokScopeEvidence?.instructions;
@@ -838,6 +876,7 @@ export class PlatformRebuildSession {
     const blockedReceipts: DeploymentReceipt[] = [];
     const cleanupResults: CleanupResult[] = [];
     const checks = new Map<string, (batch?: NativeObservationBatch) => Promise<boolean>>();
+    const shadowedUsers = new Map<string, GrokShadowedUser>();
     let initialDiscoveryCheck: (() => Promise<boolean>) | undefined;
     const priorProducers = new Map<string, ProducerIdentity[]>();
     const priorResourceRoots = new Map<string, string[]>();
@@ -949,7 +988,9 @@ export class PlatformRebuildSession {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
       };
+      const shadowedUser = operation(input) === 'ensure' ? await grokUserBehindProject(ctx, entry.binding, entry.observation) : undefined;
       const fingerprintParts = async (discovery?: { value: unknown }) => ({
+        ...(shadowedUser && { grokUserContent: await grokUserContentDigest(shadowedUser.installedRoot, shadowedUser.owner) }),
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
         discovery: discovery ? discovery.value : removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
@@ -971,6 +1012,9 @@ export class PlatformRebuildSession {
         ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
       const initialParts = initialReads?.[0].status === 'fulfilled' ? initialReads[0].value : await fingerprintParts();
+      if (shadowedUser && initialParts.grokUserContent) {
+        shadowedUsers.set(entry.binding.id, { ...shadowedUser, contentDigest: initialParts.grokUserContent });
+      }
       if (!removing && ordinaryEvidence && ordinaryEvidence.discovery !== artifactValueDigest(initialParts.discovery)) {
         throw new Error('operationPlanStale: client discovery changed after the ordinary observation.');
       }
@@ -1046,7 +1090,7 @@ export class PlatformRebuildSession {
           publishedRoots.add(userPackage);
           adjusted = true;
         }
-        for (const { owner, scopeRoot: publishedRoot, installedRoot, nativeDigest, contentDigest, priorNativeDigest, orderAfter } of publications) {
+        for (const { owner, scopeRoot: publishedRoot, installedRoot, nativeDigest, contentDigest, priorNativeDigest, orderAfter, shadowedUser } of publications) {
           ctx.signal?.throwIfAborted();
           if (owner.kind === 'owned-directory') {
             const root = installedRoot ?? owner.path;
@@ -1054,6 +1098,15 @@ export class PlatformRebuildSession {
             if (scopeEvidence.sourceDigests[index] !== nativeDigest || after.sources[index]?.name === entry.layout.nativeIdentity.packageId) return false;
             const priorIndex = priorPaths.indexOf(root);
             const priorDigest = priorEvidence.sourceDigests[priorIndex];
+            if (shadowedUser) {
+              const hidden = shadowedUser.installedRoot;
+              if (paths.includes(hidden) || await grokUserContentDigest(hidden, shadowedUser.owner) !== shadowedUser.contentDigest) return false;
+              if (priorIndex < 0) {
+                if (grokSourceDigest(before, hidden, owner.identity.plugin, 'user') !== shadowedUser.nativeDigest) return false;
+                retiredSources.add(hidden);
+                publishedRoots.add(hidden);
+              }
+            }
             if (priorDigest !== nativeDigest) {
               if (priorDigest !== priorNativeDigest) return false;
               publishedRoots.add(root);
@@ -1100,6 +1153,12 @@ export class PlatformRebuildSession {
         }
         ctx.signal?.throwIfAborted();
         if (!adjusted) return artifactValueDigest(current) === baselineDigest;
+        for (const { sourceOrderAfter } of publications) {
+          if (!sourceOrderAfter) continue;
+          // Sources that remained visible since the Project publication keep their receipt order.
+          if (artifactValueDigest(sourceOrderAfter.filter((root) => paths.includes(root)))
+            !== artifactValueDigest(paths.filter((root) => sourceOrderAfter.includes(root)))) return false;
+        }
         // The reviewed order anchors surviving rows. Each publication's receipt
         // also anchors its new rows against later cross-package moves.
         for (const previous of orderChecks) {
@@ -1617,7 +1676,7 @@ export class PlatformRebuildSession {
           }
           if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
             || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
-          this.recordGrokWrites(prepared, receipt, publication?.mutation === 'confirmed', writtenFiles);
+          this.recordGrokWrites(prepared, receipt, publication?.mutation === 'confirmed', writtenFiles, shadowedUsers.get(prepared.plan.binding.id));
           const piInventoryKey = piProjectInventoryKey(prepared.plan.binding, prepared.plan.evidence.layout.activationPath);
           if (piInventoryKey && piProjectEmptyDeliveryObserved(prepared.plan.binding, prepared.driverState.before)
             && receipt.after.registration === 'present' && receipt.after.ownership === 'aw' && receipt.after.configuration?.activation === 'enabled'

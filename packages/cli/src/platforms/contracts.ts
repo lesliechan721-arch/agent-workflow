@@ -204,6 +204,8 @@ export interface GrokOrderEntry {
 /** Operation-local facts for rechecking confirmed Grok writes within one host scope. */
 interface GrokScopeEvidence {
   scopeDigest: string;
+  /** Exact, exclusive User registration (installed copy and source) for the Project target's name. */
+  userRegistrationDigest?: string;
   sourceDigests: string[];
   hookOrder: GrokOrderEntry[];
   resourceOrder: GrokOrderEntry[][];
