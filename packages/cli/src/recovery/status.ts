@@ -317,11 +317,15 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               supplements.components.push(...dynamicComponents);
               expectedCount += dynamicComponents.length;
             }
+            const supplementIds = new Set(supplements.components.map(({ id }) => id));
             if (currentIds) {
               expectedCount = currentIds.size;
-              const supplementIds = new Set(supplements.components.map(({ id }) => id));
               packageExpectedCount = [...currentIds].filter((id) => !supplementIds.has(id)).length;
             }
+            // Static outputs can be checked directly. A readable dynamic list alone cannot prove none of its entries were lost.
+            const supplementSetUnconfirmed = recordedDelivery?.result === 'intentional-empty-package'
+              && (recordedDelivery.installedComponentIds.length !== supplementIds.size
+                || recordedDelivery.installedComponentIds.some((id) => !supplementIds.has(id)));
             const supplementConflict = supplements.components.some((component) => component.reasonCodes.includes('supplementOwnershipConflict'));
             const supplementMissing = supplements.components.some((component) => component.presence === 'absent');
             const supplementDrift = supplements.components.some((component) => component.reasonCodes.includes('componentContentDrift'));
@@ -348,7 +352,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                   units: inputEvidence.units.filter((unit) => unit.output === 'package') }, env: context.env })));
             const dynamicSupplementsUnconfirmed = dynamicUnits.has('supplement') && !confirmedEmpty
               && !recordedSupplements?.inputMatches && !supplementInputDrift;
-            if (dynamicSupplementsUnconfirmed) warn('dynamicExpectationUnconfirmed');
+            if (dynamicSupplementsUnconfirmed || supplementSetUnconfirmed) warn('dynamicExpectationUnconfirmed');
             const hasPackageExpectation = packageExpectedCount > 0 || !currentIds && dynamicUnits.has('package') && !confirmedEmpty && !confirmedEmptyPackage;
             const inheritsUserNative = demand.targetRequirements?.find((item) => item.pluginId === root.pluginId
               && item.target === platform)?.inheritsUserNative;
@@ -506,7 +510,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             else if (componentMissing || supplementMissing && !dynamicSupplementsUnconfirmed) states.push('absent');
             else if (hasPackageExpectation && ['disabled', 'blocked'].includes(requiredActivation)
               || live.workspaceOpen === 'absent' && live.package === 'present' || inputDrift || supplementDrift || supplementInputDrift || nativeContentDrift) states.push('drifted');
-            else if (dynamicSupplementsUnconfirmed || hasPackageExpectation && !packageExpectationConfirmed) states.push('unknown');
+            else if (dynamicSupplementsUnconfirmed || supplementSetUnconfirmed || hasPackageExpectation && !packageExpectationConfirmed) states.push('unknown');
             else if (!expectedCount) states.push(live.package === 'absent' && ['absent', 'not-applicable'].includes(live.registration) ? 'satisfied' : 'drifted');
             else states.push('satisfied');
           }

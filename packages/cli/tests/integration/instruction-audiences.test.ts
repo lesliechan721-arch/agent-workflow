@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import type { CommandResult } from '../../src/output/public-result.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -20,8 +21,9 @@ it.each([
   { target: 'copilot', scope: 'user', includesMain: true, hasRole: false, dynamicMainOnly: false },
   { target: 'grok', scope: 'project', includesMain: true, hasRole: true, dynamicMainOnly: false },
   { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicMainOnly: false },
+  { target: 'grok', scope: 'user', includesMain: true, hasRole: false, dynamicMainOnly: true },
   { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicMainOnly: true },
-] as const)('projects $target instructions with main=$includesMain, role=$hasRole, and dynamic main-only rule=$dynamicMainOnly', async ({ target, scope, includesMain, hasRole, dynamicMainOnly }) => {
+] as const)('projects $target $scope instructions with main=$includesMain, role=$hasRole, and dynamic main-only rule=$dynamicMainOnly', async ({ target, scope, includesMain, hasRole, dynamicMainOnly }) => {
   installNativeTestQualification({ platforms: [target], discovery: true, executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
@@ -31,6 +33,10 @@ it.each([
   const instruction = 'Keep the input unchanged.';
   const prompt = 'Review the input for correctness.';
   const runsRenderer = hasRole || dynamicMainOnly;
+  const ruleNames = dynamicMainOnly ? scope === 'project' ? ['preserve', 'read-only'] : ['preserve'] : [];
+  const components = dynamicMainOnly ? ruleNames.map((name) => ({ id: `renderer-${name}`, name, kind: 'instruction',
+    content: { title: 'Preserve input', content: instruction, coverage: ['main'] } }))
+    : [{ id: 'renderer-reviewer', name: 'reviewer', kind: 'agent', content: { description: 'Review input.', prompt } }];
   const unrelated = target === 'copilot'
     ? path.join(cwd, '.github', 'agents', 'reviewer.agent.md') : path.join(host, 'agents', 'reviewer.md');
   await fs.ensureDir(path.join(cwd, '.git'));
@@ -38,11 +44,9 @@ it.each([
   await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `
     import fs from 'node:fs';
     const { allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-    const component = ${JSON.stringify(dynamicMainOnly
-      ? { id: 'renderer-preserve', name: 'preserve', kind: 'instruction', content: { title: 'Preserve input', content: instruction, coverage: ['main'] } }
-      : { id: 'renderer-reviewer', name: 'reviewer', kind: 'agent', content: { description: 'Review input.', prompt } })};
+    const components = ${JSON.stringify(components)};
     fs.appendFileSync(${JSON.stringify(trace)}, 'render\\n');
-    console.log(JSON.stringify({ version: 3, components: allowedOutputKinds.includes(component.kind) ? [component] : [], omitted: [], unmet: [] }));
+    console.log(JSON.stringify({ version: 3, components: components.filter(({ kind }) => allowedOutputKinds.includes(kind)), omitted: [], unmet: [] }));
   `);
   await createCatalogSnapshotFixture(source, 'demo', [], 'Instruction audience fixture.', (manifest) => {
     manifest.platforms = [target];
@@ -61,15 +65,22 @@ it.each([
   let marketplaceName: string | undefined;
   let registered = false;
   let nativeWrites = 0;
-  const grokPackage = path.join(cwd, '.grok', 'plugins', 'aw-local-demo');
+  let grokInventory: 'empty' | 'unreadable' | 'foreign' = 'empty';
+  const grokPackage = path.join(cwd, '.grok/plugins/aw-local-demo');
+  const foreignSource = path.join(cwd, 'foreign-plugin-source');
+  const foreignRoot = path.join(host, 'installed-plugins/foreign-root');
   const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
     let stdout = '';
     if (target === 'grok') {
-      if (args.join(' ') === 'plugin list --json') stdout = '[]';
-      else if (args[0] === 'inspect') {
+      if (args.join(' ') === 'plugin list --json') {
+        stdout = grokInventory === 'unreadable' ? '{broken' : JSON.stringify(grokInventory === 'foreign' ? [{
+          name: 'demo', status: 'installed', repo_key: 'foreign-root', version: '1.0.0', path: foreignRoot, source: foreignSource,
+        }] : []);
+      } else if (args[0] === 'inspect') {
         const reportedPath = process.platform === 'win32' ? grokPackage.replace('\\plugins\\', '/plugins\\') : grokPackage;
+        const activeRoot = grokInventory === 'foreign' ? foreignRoot : await fs.pathExists(grokPackage) ? reportedPath : undefined;
         stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true, skills: [], agents: [], mcpServers: [],
-          plugins: await fs.pathExists(grokPackage) ? [{ name: 'demo', scope, path: reportedPath, enabled: true }] : [] });
+          plugins: activeRoot ? [{ name: 'demo', scope, path: activeRoot, enabled: true }] : [] });
       } else throw new Error(`Unexpected Grok request ${args.join(' ')}`);
     } else if (args.join(' ') === 'plugin marketplace list --json') {
       stdout = JSON.stringify(marketplaceRoot ? [{ name: marketplaceName, source: marketplaceRoot }] : []);
@@ -97,9 +108,9 @@ it.each([
     return value;
   };
   const expected = {
-    target, scope, content: 'satisfied', satisfaction: 'installed', installedComponentCount: hasRole ? 2 : 1,
+    target, scope, content: 'satisfied', satisfaction: 'installed', installedComponentCount: dynamicMainOnly ? ruleNames.length : hasRole ? 2 : 1,
     installedComponentIds: hasRole ? expect.arrayContaining(['renderer-reviewer', 'instruction:preserve'])
-      : [dynamicMainOnly ? 'renderer-preserve' : 'instruction:preserve'],
+      : dynamicMainOnly ? expect.arrayContaining(components.map(({ id }) => id)) : ['instruction:preserve'],
     ...(runsRenderer ? {} : { componentGaps: [expect.objectContaining({ componentId: 'instruction:preserve', kind: 'instruction',
       requiredFeatures: [{ feature: 'instruction.coverage', values: ['plugin-agents'] }] })] }),
   };
@@ -109,8 +120,9 @@ it.each([
   const packageRoot = target === 'copilot' ? path.join(marketplaceRoot!, 'plugins', 'demo') : grokPackage;
   const roleFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot', 'agents', 'reviewer.agent.md')
     : path.join(packageRoot, 'agents', 'reviewer.md');
-  const mainFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot', 'rules', 'preserve.md')
-    : path.join(cwd, '.grok', 'rules', 'aw-local-demo-preserve.md');
+  const grokRules = scope === 'user' ? path.join(host, 'rules') : path.join(cwd, '.grok/rules');
+  const mainFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot/rules/preserve.md')
+    : path.join(grokRules, 'aw-local-demo-preserve.md');
   if (hasRole) {
     const body = await fs.readFile(roleFile, 'utf8');
     expect(body).toContain(`${prompt}\n\n${instruction}\n`);
@@ -121,7 +133,8 @@ it.each([
 
   const rendered = runsRenderer ? await fs.readFile(trace, 'utf8') : null;
   const writes = nativeWrites;
-  const projectedFiles = [...(hasRole ? [roleFile] : []), ...(includesMain ? [mainFile] : [])];
+  const projectedFiles = [...(hasRole ? [roleFile] : []), ...(includesMain ? [mainFile] : []),
+    ...ruleNames.slice(1).map((name) => path.join(grokRules, `aw-local-demo-${name}.md`))];
   const readFiles = () => Promise.all(projectedFiles.map(async (file) => ({ contents: await fs.readFile(file, 'utf8'), mtime: (await fs.stat(file)).mtimeMs })));
   const projected = await readFiles();
   const status = await aw('status');
@@ -139,6 +152,7 @@ it.each([
   expect(await readFiles()).toEqual(projected);
   expect(await fs.readFile(unrelated, 'utf8')).toBe('A role from another scope.\n');
 
+  let supplementRecord: string | undefined;
   if (dynamicMainOnly) {
     const records = path.join(env.AW_HOME!, 'platforms', target, 'empty-state');
     const [recordName] = await fs.readdir(records);
@@ -150,6 +164,43 @@ it.each([
     expect(unconfirmed.parseJsonStdout<CommandResult>().data).toMatchObject({ counts: { unconfirmed: 1 }, inSync: null, allSatisfied: null,
       inventory: [{ targetResults: [{ content: 'unknown' }] }] });
     await fs.writeFile(record, evidence);
+    if (scope === 'user') {
+      grokInventory = 'unreadable';
+      const unreadable = (await invoke('status')).parseJsonStdout<CommandResult>();
+      expect(unreadable.data).toMatchObject({ inSync: null, allSatisfied: null, inventory: [{ targetResults: [{ content: 'unknown',
+        blockerCodes: ['nativeObservationFailed'], deploymentObservations: [{ after: { registration: 'unknown' } }] }] }] });
+      grokInventory = 'foreign';
+      const foreignFile = path.join(foreignRoot, 'foreign.txt');
+      await fs.outputFile(foreignFile, 'Foreign installation.\n');
+      const foreign = (await invoke('status')).parseJsonStdout<CommandResult>();
+      expect(foreign.data).toMatchObject({ inSync: false, allSatisfied: false, inventory: [{ targetResults: [{ content: 'conflict',
+        blockerCodes: ['deploymentOwnershipConflict'], deploymentObservations: [{ after: { registration: 'present', ownership: 'foreign' } }] }] }] });
+      expect(await fs.readFile(foreignFile, 'utf8')).toBe('Foreign installation.\n');
+      expect(await readFiles()).toEqual(projected);
+      grokInventory = 'empty';
+    } else {
+      supplementRecord = path.join(env.AW_HOME!, 'platforms', target, 'supplements', recordName!);
+      const complete = await fs.readJson(supplementRecord);
+      for (const outputs of [[], complete.outputs.filter(({ id }: { id: string }) => id === 'renderer-read-only')]) {
+        await fs.writeJson(supplementRecord, { ...complete, outputs });
+        const damaged = await invoke('status');
+        expect(damaged.exitCode).toBe(3);
+        expect(damaged.parseJsonStdout<CommandResult>().data).toMatchObject({ inSync: null, allSatisfied: null,
+          inventory: [{ targetResults: [{ content: 'unknown' }] }] });
+      }
+      const repaired = await aw('sync', 'local/demo', '--yes');
+      expect(repaired.data).toMatchObject({ changes: { outputs: 'none' }, remainingTargets: [], targetResults: [expected] });
+      expect((await aw('status')).data).toMatchObject({ inSync: true, allSatisfied: true, inventory: [{ targetResults: [expected] }] });
+      const oldProof = JSON.parse(evidence.toString('utf8'));
+      delete oldProof.deliveryDigest;
+      delete oldProof.installedComponentIds;
+      await fs.writeJson(record, { ...oldProof, deliveryDigest: artifactValueDigest(oldProof) });
+      const oldStatus = (await invoke('status')).parseJsonStdout<CommandResult>();
+      expect(oldStatus.data).toMatchObject({ inSync: null, allSatisfied: null, inventory: [{ targetResults: [{ content: 'unknown' }] }] });
+      expect((await aw('sync', 'local/demo', '--yes')).data).toMatchObject({ changes: { outputs: 'none' }, remainingTargets: [], targetResults: [expected] });
+      expect((await aw('status')).data).toMatchObject({ inSync: true, allSatisfied: true });
+      expect(await readFiles()).toEqual(projected);
+    }
   }
   if (runsRenderer) {
     const lostFile = dynamicMainOnly ? mainFile : roleFile;
@@ -163,6 +214,16 @@ it.each([
       const foreign = await invoke('status');
       expect(foreign.parseJsonStdout<CommandResult>().data).toMatchObject({ counts: { blocked: 1 }, inSync: false, allSatisfied: false,
         inventory: [{ targetResults: [{ content: 'conflict' }] }] });
+      if (supplementRecord) {
+        const complete = await fs.readJson(supplementRecord);
+        await fs.writeJson(supplementRecord, { ...complete, outputs: [] });
+        const unconfirmedForeign = await invoke('status');
+        expect(unconfirmedForeign.parseJsonStdout<CommandResult>().data).toMatchObject({ inSync: null, allSatisfied: null });
+        const failedRepair = (await invoke('sync', 'local/demo', '--yes')).parseJsonStdout<CommandResult>();
+        expect(failedRepair.status).not.toBe('success');
+        expect(failedRepair.data).toMatchObject({ remainingTargets: [{ pluginId: 'local/demo', target, scope }] });
+        expect(await fs.readFile(lostFile, 'utf8')).toBe('Foreign rule.\n');
+      }
     }
   }
 });

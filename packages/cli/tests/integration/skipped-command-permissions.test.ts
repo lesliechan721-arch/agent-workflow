@@ -16,12 +16,13 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 // Test Value Gate: Public receipts retain the skipped actions across a no-op sync,
 // including when all actual output belongs to a separate supplement.
 it.each([
-  { target: 'claude', producer: 'capability gap' },
-  { target: 'claude', producer: 'author omission' },
-  { target: 'claude', producer: 'scope exclusion' },
-  { target: 'codex', producer: 'author omission' },
-  { target: 'generic', producer: 'unmapped permissions' },
-] as const)('installs independent components on $target when a permission is skipped because of $producer', async ({ target, producer }) => {
+  { target: 'claude', producer: 'capability gap', staticRole: false },
+  { target: 'claude', producer: 'author omission', staticRole: false },
+  { target: 'claude', producer: 'scope exclusion', staticRole: true },
+  { target: 'codex', producer: 'author omission', staticRole: false },
+  { target: 'codex', producer: 'author omission', staticRole: true },
+  { target: 'generic', producer: 'unmapped permissions', staticRole: false },
+] as const)('installs independent components on $target with static role=$staticRole despite $producer', async ({ target, producer, staticRole }) => {
   const isolation = getCurrentSourceTestIsolation();
   const { env } = isolation;
   const cwd = isolation.layout.fixtureCwd;
@@ -56,7 +57,7 @@ it.each([
   `);
   await createCatalogSnapshotFixture(catalog, 'demo', [], 'Command policy fixture.', (manifest) => {
     manifest.platforms = [nativeTarget, 'generic'];
-    manifest.artifacts = { configKeys: [], ...(producer === 'scope exclusion' ? { scopes: ['project'] } : {}) };
+    manifest.artifacts = { configKeys: [], ...(staticRole ? { scopes: [target === 'codex' ? 'user' : 'project'] } : {}) };
     manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     manifest.managedCommands = { packages: [{ key: 'tools', sourceDir: './tools', scope: 'user', platforms: ['claude'] }], sets: [
       { set: 'scheduler', producer: { kind: 'artifact', platform: nativeTarget, artifactId: 'scheduler' }, mode: 'static', entries: [tool] },
@@ -69,7 +70,7 @@ it.each([
       { name: 'portable-only', allow: [policy('tools')], ask: [`echo ${privateArg}`], deny: ['echo forbid'],
         agentOverrides: { [nativeTarget]: null } },
     ] };
-    if (producer === 'scope exclusion') manifest.extensions.agents = [
+    if (staticRole) manifest.extensions.agents = [
       { name: 'role', description: 'Independent role', prompt: 'Only perform the requested work.' },
     ];
   });
@@ -120,7 +121,7 @@ it.each([
   if (codex) {
     expect(sync.data.changes).toMatchObject({ outputs: 'none' });
     expect(status.data.inventory?.[0]?.targetResults).toContainEqual(expect.objectContaining({
-      content: 'satisfied', satisfaction: 'installed', installedComponentCount: 1,
+      content: 'satisfied', satisfaction: 'installed', installedComponentCount: 1, installedComponentIds: [staticRole ? 'agent:role' : 'role'],
     }));
     expect(codex.nativeCliRunner.mock.calls.every(([{ args }]) => args.includes('--version') || args.includes('list'))).toBe(true);
     await fs.remove(file);

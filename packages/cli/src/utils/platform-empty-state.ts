@@ -37,7 +37,8 @@ interface PermissionNotice {
   skippedPermissionActions: PermissionAction[];
 }
 type PlatformDeliveryState = { permissionNotices?: PermissionNotice[] } & (
-  { result: 'intentional-empty' | 'intentional-empty-package' }
+  { result: 'intentional-empty' }
+  | { result: 'intentional-empty-package'; installedComponentIds: string[] }
   | { result: 'capability-gaps'; gaps: ComponentUnmet[]; installedComponentIds: string[] }
 );
 export type PlatformEmptyState = Omit<PlatformInputEvidence, 'kind'> & { kind: 'aw-platform-empty-state' } & PlatformDeliveryState;
@@ -243,10 +244,15 @@ export async function readPlatformDeliveryState(options: { input: PlatformInputE
       }
     }
     const noticeFields = notices.length ? { permissionNotices: notices } : {};
-    if (result !== 'capability-gaps') return gaps === undefined && installedComponentIds === undefined ? { result, ...noticeFields } : undefined;
+    if (result === 'intentional-empty') return gaps === undefined && installedComponentIds === undefined ? { result, ...noticeFields } : undefined;
     if (!Array.isArray(installedComponentIds) || !installedComponentIds.every((id) => typeof id === 'string' && id.length > 0)
-      || new Set(installedComponentIds).size !== installedComponentIds.length || !Array.isArray(gaps)
-      || !gaps.length && !notices.length) return;
+      || new Set(installedComponentIds).size !== installedComponentIds.length) return;
+    if (result === 'intentional-empty-package') {
+      return gaps === undefined && installedComponentIds.length > 0
+        && installedComponentIds.every((id, index) => index === 0 || installedComponentIds[index - 1] < id)
+        ? { result, installedComponentIds, ...noticeFields } : undefined;
+    }
+    if (!Array.isArray(gaps) || !gaps.length && !notices.length) return;
     for (const gap of gaps) {
       if (!gap || typeof gap.id !== 'string' || !gap.id || !COMPONENT_KINDS.includes(gap.kind)
         || gap.name !== undefined && typeof gap.name !== 'string' || gap.componentId !== undefined && typeof gap.componentId !== 'string'
