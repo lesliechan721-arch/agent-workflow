@@ -7,9 +7,136 @@ import test from 'node:test';
 import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { grokTrustTargets } from './native-platform-public-components.mjs';
+import { grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
+
+const publicResponse = (command, data) => ({
+  exitCode: 0, terminationReason: 'complete', stderr: '',
+  stdout: JSON.stringify({ schemaVersion: 2, command, status: 'success', data, diagnostics: [] }),
+});
+
+// A process can fail before its first observation or return a timed-out Windows Job result.
+test('keeps the public command and actual scope when the process has no snapshots', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-source-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: [] }));
+  for (const outcome of ['timeout', 'preflight', 'signal', 'helper-failure', 'invalid-output']) {
+    const command = outcome === 'preflight' ? 'source.add' : 'target.set';
+    const privateMessage = 'private fixture output that must stay out of the report';
+    const result = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args) {
+        const called = args.slice(0, 2).join('.');
+        if (called !== command) return publicResponse(called, { availability: [{ id: 'generic', installations: [] }] });
+        if (outcome === 'preflight') throw new Error(privateMessage);
+        if (outcome === 'signal') return { exitCode: null, signal: 'SIGTERM', terminationReason: 'complete', stdout: privateMessage };
+        if (outcome === 'helper-failure') return { ...publicResponse(called, {}), exitCode: 250,
+          descendantCleanupGuaranteed: true, stderr: privateMessage };
+        if (outcome === 'invalid-output') return { exitCode: 1, terminationReason: 'complete', stdout: privateMessage };
+        return { exitCode: 124, timedOut: true, cancelled: false, terminationReason: 'timeout', descendantCleanupGuaranteed: true,
+          stdout: privateMessage, stderr: privateMessage };
+      },
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.commandFailures?.length, 1);
+    const [failure] = result.commandFailures;
+    assert.equal(failure.command, command);
+    if (command === 'target.set') {
+      assert.equal(failure.scope, 'user');
+    } else assert(!Object.hasOwn(failure, 'scope'));
+    if (outcome === 'timeout') {
+      assert.equal(failure.timedOut, true);
+      assert.equal(failure.terminationReason, 'timeout');
+      assert.equal(failure.descendantCleanupGuaranteed, true);
+    } else if (outcome === 'signal') {
+      assert.equal(failure.exitCode, null);
+      assert.equal(failure.signal, 'SIGTERM');
+    } else if (outcome === 'helper-failure') {
+      assert.equal(failure.exitCode, 250);
+      assert.equal(failure.stage, 'execute');
+      assert(!Object.hasOwn(failure, 'descendantCleanupGuaranteed'));
+    } else if (outcome === 'invalid-output') {
+      assert.equal(failure.exitCode, 1);
+      assert.equal(failure.stage, 'response');
+    }
+    assert(!JSON.stringify(result).includes(privateMessage));
+  }
+});
+
+// Test Value Gate: published evidence must keep each independent Catalog failure and omit private command data.
+test('records separate, redacted failures from the public component Catalog report', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-catalog-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  const roleNames = { 'agent-subagent': ['subagent'], 'codex-enhance': ['codex-explore', 'codex-advisor'] };
+  const names = [...Object.keys(roleNames), 'first-static', 'second-static'];
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: names.map(name => ({
+    name, source: name, dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest',
+  })) }));
+  for (const name of ['first-static', 'second-static']) {
+    const folder = path.join(catalog, name, '.agents-plugin');
+    await fs.mkdir(folder, { recursive: true });
+    await fs.writeFile(path.join(folder, 'plugin.json'), JSON.stringify({ skills: 'skills' }));
+  }
+  const pluginId = name => `qualification-official/${name}`;
+  const targets = Object.entries(roleNames).map(([name, roles]) => ({ pluginId: pluginId(name), scope: 'project',
+    target: 'generic', blockerCodes: [], deploymentReceipts: [], componentGaps: roles.map(role => ({ id: `agent:${role}`,
+      kind: 'agent', name: role, providerPluginId: pluginId(name), reasonCode: 'interface-unsupported', requiredFeatures: ['agent'] })) }));
+  const privateValues = ['/host/private/profile', 'FAKE_ENVIRONMENT=private', 'secret-marker-value', 'fake-credential', 'raw invocation body'];
+  const privateText = privateValues.join(' ');
+  const startTime = 'Sat Nov 21 09:01:02 2026';
+  const affectedProcess = { pid: 43, ppid: 41, startTime, markerMatches: false };
+  const first = { stage: 'observation', reason: 'known-process-marker-missing', rootPid: 41, affectedPids: [43],
+    processes: [...Array.from({ length: 40 }, (_, index) => ({ pid: 100 + index })), { ...affectedProcess, command: privateText }] };
+  const last = { ...first, stage: 'cleanup', reason: 'process-marker-unreadable' };
+
+  const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env }) {
+      const command = args.slice(0, 2).join('.');
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'generic', installations: [] }] });
+      if (command === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+        sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+      }));
+      if (command === 'plugin.status') return publicResponse(command, { targetResults: targets, inSync: true,
+        allSatisfied: true, counts: { pending: 0 } });
+      if (args[2] === pluginId('first-static')) {
+        throw Object.assign(new Error(privateText), { name: 'ProviderProcessCleanupError', env: { credentials: privateText },
+          result: { ...publicResponse(command, { raw: privateText }), stderr: privateText, timedOut: false },
+          publicAwProcessDiagnostics: [first, { ...first, reason: 'intermediate' }, last],
+          publicAwProcessNames: [{ pid: 43, processName: 'grok', startTime, source: 'identity-ps-ucomm', args: [privateText] }],
+          publicAwMarkerRows: [{ pid: 43, queryId: 7, commandForm: 'parenthesized', markerMatches: false,
+            command: privateText, startupEnvironment: { status: 'complete', environmentBytes: 58, environment: privateText } }],
+          qualificationMarkerIdentityConfirmations: { source: 'observer-local-post-marker-identity-query', omitted: 0,
+            records: [{ pid: 43, result: 'present', raw: privateText }] },
+        });
+      }
+      if (args[2] === pluginId('second-static')) {
+        throw Object.assign(new Error(privateText), { processTreeDiagnostics: [{ stage: 'cleanup', rootPid: 74,
+          reason: 'root-marker-missing', affectedPids: [74], processes: [{ pid: 74, command: privateText }] }] });
+      }
+      return publicResponse(command, { targetResults: targets });
+    },
+  });
+  assert.equal(report.status, 'failed');
+  assert.match(report.reason, /Shipped plugin installation failed: first-static, second-static/u);
+  const [cleanup, later] = report.commandFailures;
+  assert.equal(report.commandFailures.length, 2);
+  assert.deepEqual([cleanup.command, cleanup.stage, cleanup.scope, cleanup.pluginIds, cleanup.error],
+    ['plugin.install', 'execute', 'project', [pluginId('first-static')], 'ProviderProcessCleanupError']);
+  assert.equal(cleanup.exitCode, 0);
+  assert.deepEqual(cleanup.processDiagnostics.map(row => row.reason), [first.reason, last.reason]);
+  assert.equal(cleanup.processDiagnostics[0].processes.length, 32);
+  assert.equal(cleanup.processDiagnostics[0].omittedProcesses, 9);
+  assert.deepEqual(cleanup.processDiagnostics[0].processes.find(row => row.pid === 43), affectedProcess);
+  assert.equal(cleanup.processNames[0].processName, 'grok');
+  assert.equal(cleanup.markerRows[0].startupEnvironment.environmentBytes, 58);
+  assert.equal(cleanup.markerIdentityConfirmations.records[0].result, 'present');
+  assert.deepEqual([later.command, later.stage, later.pluginIds, later.processDiagnostics[0].rootPid],
+    ['plugin.install', 'execute', [pluginId('second-static')], 74]);
+  const published = JSON.stringify(report);
+  for (const privateValue of privateValues) assert(!published.includes(privateValue));
+});
 
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
 test('requires OpenCode explicit observation to report a scoped runtime outcome', () => {

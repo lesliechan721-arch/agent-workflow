@@ -33,6 +33,74 @@ const pairPrerequisites = new Map([
   ['grok-user-hook-pair', 'single-hook'],
   ['grok-rule-pair', 'single-instruction'],
 ]);
+const componentCommands = new Set(['target.set', 'source.add', 'source.sync', 'dev.catalog.create', 'dev.catalog.build',
+  'dev.plugin.create', 'plugin.install', 'plugin.remove', 'plugin.status', 'plugin.sync']);
+const rows = (value, limit) => Array.isArray(value) ? value.slice(0, limit) : [];
+
+function failedComponentCommand(args, dependencies) {
+  const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+  const fields = {};
+  for (const field of ['scope', 'context']) {
+    const index = args.indexOf('--' + field);
+    if (index >= 0 && ['project', 'user'].includes(args[index + 1])) fields[field] = args[index + 1];
+  }
+  if (command === 'target.set') fields.scope = 'user';
+  const pluginIds = args.filter(id => dependencies.has(id) && id.length <= 192
+    && /^[a-z\d][a-z\d_.-]*\/[a-z\d][a-z\d_.-]*$/iu.test(id)).slice(0, 16);
+  return { command: componentCommands.has(command) ? command : 'unknown',
+    ...fields, ...(pluginIds.length ? { pluginIds } : {}) };
+}
+
+// These snapshots carry identities, states and timing metadata. Select their
+// fields again at the artifact boundary so extra properties cannot publish raw input.
+function observationFields(value, fields) {
+  return Object.fromEntries(fields.split(' ').flatMap(field => {
+    const fact = value?.[field];
+    if (fact === null || typeof fact === 'boolean' || Number.isFinite(fact)) return [[field, fact]];
+    if (typeof fact === 'string' && (/^[a-z\d_.?+:<>-]{1,128}$/iu.test(fact)
+      || ['startTime', 'knownStartTime'].includes(field) && /^[a-z]{3} [a-z]{3} \d{1,2} \d\d:\d\d:\d\d \d{4}$/iu.test(fact))) return [[field, fact]];
+    return [];
+  }));
+}
+
+const processIdentityFields = 'pid ppid pgid state startTime';
+
+function processObservation(row) {
+  const affectedPids = rows(row.affectedPids, 32).filter(Number.isSafeInteger);
+  const focus = new Set([row.rootPid, ...affectedPids]);
+  const processes = (Array.isArray(row.processes) ? row.processes : [])
+    .toSorted((left, right) => Number(focus.has(right?.pid)) - Number(focus.has(left?.pid)));
+  return { ...observationFields(row, 'capturedAt stage reason rootPid rootPgid rootPgidMode markerLookupSucceeded snapshotStartedAt snapshotDeadline markerLookupAttempts'),
+    affectedPids, processes: rows(processes, 32).map(process => observationFields(process, processIdentityFields + ' present knownStartTime markerMatches')),
+    ...(processes.length > 32 ? { omittedProcesses: processes.length - 32 } : {}),
+    ...(row.lookupFailure ? { lookupFailure: observationFields(row.lookupFailure, 'reason code signal killed') } : {}),
+    ...(row.sentinel ? { sentinel: observationFields(row.sentinel, 'pid knownStartTime present startTime identityMatches markerMatches') } : {}),
+    ...(row.queries ? { queries: rows(row.queries, 8).map(query => observationFields(query,
+      'kind startedAt deadline callbackAt settledAt callbackState completion failureReason')) } : {}) };
+}
+
+function componentProcessEvidence(error, response) {
+  const result = error?.result ?? response;
+  const diagnostics = error?.publicAwProcessDiagnostics?.length ? error.publicAwProcessDiagnostics : error?.processTreeDiagnostics;
+  const names = error?.publicAwProcessNames ?? error?.qualificationProcessNames;
+  const markerRows = error?.publicAwMarkerRows ?? error?.qualificationMarkerRows;
+  const confirmations = error?.qualificationMarkerIdentityConfirmations;
+  return {
+    ...observationFields(result, 'exitCode timedOut cancelled maxBufferExceeded terminationReason'),
+    ...(result?.exitCode === 250 ? {} : observationFields(result, 'descendantCleanupGuaranteed')),
+    ...(typeof result?.signal === 'string' && Object.hasOwn(os.constants.signals, result.signal) ? { signal: result.signal } : {}),
+    ...(diagnostics?.length ? { processDiagnostics: (diagnostics.length === 1 ? [diagnostics[0]]
+      : [diagnostics[0], diagnostics.at(-1)]).map(processObservation) } : {}),
+    ...(names?.length ? { processNames: rows(names, 8).map(row => observationFields(row, 'pid processName unavailable startTime source')) } : {}),
+    ...(markerRows?.length ? { markerRows: rows(markerRows, 8).map(row => ({
+      ...observationFields(row, processIdentityFields + ' queryId queryStartedAt queryCallbackAt queryDeadlineAt unparsedLines source commandForm markerMatches markerAssignmentPresent cacheEvictions queryCandidateCount omittedMatches association'),
+      ...(row.startupEnvironment ? { startupEnvironment: observationFields(row.startupEnvironment,
+        'source sourceQueryId status markerMatches environmentBytes identity binding startedAt finishedAt') } : {}),
+    })) } : {}),
+    ...(confirmations ? { markerIdentityConfirmations: { ...observationFields(confirmations, 'source omitted'),
+      records: rows(confirmations.records, 8).map(row => observationFields(row, 'rootPid pid startTime phase queryStartedAt queryCompletedAt deadline result')) } } : {}),
+  };
+}
 
 // Recover only the trust requests actually observed in this isolated Catalog.
 export function grokTrustTargets(value, dependencies, alreadyAuthorized) {
@@ -491,7 +559,8 @@ async function matrix(ctx, report) {
 }
 
 
-export async function runComponentQualification({ platform, scope, clientPath, traceEntry, suite = 'matrix', catalog }) {
+export async function runComponentQualification({ platform, scope, clientPath, traceEntry, suite = 'matrix', catalog },
+  { executeAw = executePublicAw, executeCommand = execute } = {}) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
   assert(['matrix', 'pi-seven', 'candidate', 'frozen', 'project-inheritance'].includes(suite) || pairPrerequisites.has(suite));
   if (suite === 'project-inheritance') assert.equal(scope, 'project');
@@ -503,6 +572,8 @@ export async function runComponentQualification({ platform, scope, clientPath, t
   };
   const candidateSha256 = await artifactIdentity();
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-components-')));
+  const publicAwFailures = new Map();
+  const publicAwFailureReason = error => publicAwFailures.get(error);
   const report = { suite, level: 'public-AW-install-status-and-files', platform, scope,
     host: process.platform + '-' + process.arch, candidateSha256, cases: [], status: 'failed',
     ...(suite === 'matrix' ? { cells: specs.filter(spec => spec.name.startsWith('single-')).map(spec => ({
@@ -551,7 +622,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     }
     const project = path.join(root, 'project');
     await fs.mkdir(project);
-    assertCommand(await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', project], { cwd: root, env }));
+    assertCommand(await executeCommand({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', project], { cwd: root, env }));
     const dependencies = new Map();
     if (process.platform === 'linux') {
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
@@ -564,13 +635,28 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
-      const response = await executePublicAw(publicAwNodeLauncher(cli, trace), [...args, '--json'],
-        { cwd, env: commandEnv, timeoutMs: 180000 }).finally(async () => {
+      let response;
+      let value;
+      let stage = 'execute';
+      try {
+        response = await executeAw(publicAwNodeLauncher(cli, trace), [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 180000 });
+        // A Windows Job failure can return 250 even after AW has printed a receipt.
+        // Only AW's public exit codes carry command results in this suite.
+        assert(!response.cancelled && !response.timedOut && !response.maxBufferExceeded && !response.signal
+          && [0, 1, 2, 3, 4].includes(response.exitCode) && response.terminationReason === 'complete', 'Public AW process did not complete');
+        stage = 'response';
+        value = JSON.parse(response.stdout);
+        assert.equal(value?.schemaVersion, 2);
+      } catch (error) {
+        const command = failedComponentCommand(args, dependencies);
+        const kind = stage === 'response' ? 'invalid-public-receipt'
+          : error?.name === 'ProviderProcessCleanupError' ? 'ProviderProcessCleanupError' : 'process-failed';
+        (report.commandFailures ??= []).push({ ...command, stage, error: kind, ...componentProcessEvidence(error, response) });
+        publicAwFailures.set(error, `${command.command} ${stage} failed (${kind})`);
+        throw error;
+      } finally {
         if (trace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
-      });
-      assert(!response.cancelled && !response.timedOut && response.terminationReason === 'complete', args.join(' '));
-      const value = JSON.parse(response.stdout);
-      assert.equal(value.schemaVersion, 2);
+      }
       const outcome = { exitCode: response.exitCode, value, stderr: response.stderr };
       const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)
         && args[args.indexOf('--context') + 1] === 'user';
@@ -627,14 +713,15 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     }
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
-    const ctx = { root, project, env, aw, result, scope, platform, dependencies };
+    const ctx = { root, project, env, aw, result, scope, platform, dependencies, publicAwFailureReason };
     if (suite === 'project-inheritance') await qualifyProjectDependencies(ctx, report);
     else if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';
   } catch (error) {
-    report.reason = (error.stack ?? error.message).replaceAll(root, '<isolated>').replaceAll(repoRoot, '<repo>').replaceAll(os.homedir(), '<home>');
+    report.reason = publicAwFailureReason(error)
+      ?? (error.stack ?? error.message).replaceAll(root, '<isolated>').replaceAll(repoRoot, '<repo>').replaceAll(os.homedir(), '<home>');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -269,7 +269,8 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
         report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, skills: verified };
       } catch (error) {
         failures.push(entry.name);
-        const reason = error.message.replaceAll(ctx.root, '<isolated>').replaceAll(repoRoot, '<repo>');
+        const reason = ctx.publicAwFailureReason(error)
+          ?? error.message.replaceAll(ctx.root, '<isolated>').replaceAll(repoRoot, '<repo>');
         report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, error: reason };
       }
     }

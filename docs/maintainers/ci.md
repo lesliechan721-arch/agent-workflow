@@ -186,6 +186,8 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，把本次外层 AW 的标记传给脚本的隔离环境。脚本 runner 同时生成自己的标记并管理自己的进程组。若调用已经带有另一份外层标记，资格工具会在启动前报错。组件报告用 `pluginScriptSupervision` 记录这项测试条件。观察器逐次检查标记和退出情况，当前归属无法确认时保留失败。[资格预加载器](../../scripts/qualification/native-platform-public-plugin-marker.mjs)
 
+公开命令的进程执行抛错、被信号终止、超时或没有返回可解析的 v2 回执时，组件报告在 `commandFailures` 记录命令、失败阶段及实际取得的退出和清理信息。有观察记录时，附上首末快照、脱敏进程名、行形态和身份确认。`scope` 和 `context` 分别记录命令适用的安装范围与请求上下文。`target.set` 写个人偏好，Catalog 来源命令没有插件安装范围。独立 Catalog 插件各自保留失败及已知夹具名称，套件继续按原判定退出。[公共组件资格](../../scripts/qualification/native-platform-public-components.mjs)
+
 Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。原始回执决定该项资格是否通过，后续探测单独记录。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
 跨范围依赖资格在隔离环境先为 User 安装官方 `agent-skill-toolkit` 与其依赖，再为 Project 安装 `aw-development-toolkit`。检查项目首次安装完成、两项依赖的五份个人技能文件保持原样、公开项目目录只包含根插件应交付的技能、独立状态就绪及再次同步零写入。Antigravity 另核对根插件的实际目录短名。Grok 再用一条命令显式安装两个项目包，检查二者都已落盘。仅撤销这两项需求后，按根查询应指出两项待清理依赖。一次普通同步应移除两份项目副本，并保留个人和项目根原有的技能文件。[跨范围资格](../../scripts/qualification/native-platform-public-catalog.mjs)
