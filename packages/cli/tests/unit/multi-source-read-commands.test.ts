@@ -13,6 +13,8 @@ import { runCli } from '../../src/index.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
+import { CatalogLeaseEscapeError, withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
 import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -87,6 +89,39 @@ async function withSuccessfulCodexPluginList<T>(operation: () => Promise<T>): Pr
 }
 
 describe('multi-source read commands', () => {
+  // Test Value Gate: returning a completed receipt must preserve the lease's path boundary and default read cancellation.
+  it('keeps normal read cancellation and rejects protected paths from completed receipts', async () => {
+    const { env } = getCurrentSourceTestIsolation();
+    const source = fixturePath('receipt-lease');
+    await createCatalogSnapshotFixture(source);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'good', type: 'path', primary: true, path: source }] },
+      expectedDigest: (await readCatalogSourcesConfigSnapshot(env)).digest,
+      env,
+    });
+    const operationContext = await resolveCatalogOperationContext({ env, sourceIds: ['good'] });
+    const options = { selector: 'good/demo', cliVersion: '1.0.0', env, operationContext };
+    const readCancellation = new AbortController();
+    await expect(withResolvedCatalogPlugin({
+      ...options,
+      signal: readCancellation.signal,
+      consume: ({ pluginId }) => {
+        readCancellation.abort();
+        return { pluginId };
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    const receiptCancellation = new AbortController();
+    await expect(withResolvedCatalogPlugin({
+      ...options,
+      signal: receiptCancellation.signal,
+      retainCompletedResultOnAbort: true,
+      consume: ({ plugin }) => {
+        receiptCancellation.abort();
+        return { output: plugin.rootDir };
+      },
+    })).rejects.toBeInstanceOf(CatalogLeaseEscapeError);
+  });
+
   it('reports each offline Active source when another source is unavailable', async () => {
     const good = fixturePath('good');
     const bad = fixturePath('bad');

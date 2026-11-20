@@ -61,7 +61,7 @@ const registry = {
         { field: 'description', type: 'non-empty string', required: true },
         { field: 'requires.aw.capabilities', type: 'unique AW capability ID[]', required: false },
         { field: 'dependencies', type: 'unique plugin-name[]; each dependency covers all consumer platforms', required: false },
-        { field: 'platforms', type: 'unique canonical target[]; omitted or [] means all ten targets', required: false, acceptedValues: PLATFORM_TARGETS },
+        { field: 'platforms', type: 'unique canonical target[]; omitted or [] means all canonical targets', required: false, acceptedValues: PLATFORM_TARGETS },
         { field: 'skills', type: 'literal ./skills', required: false },
         { field: 'mcpServers', type: './ plugin-relative path', required: false },
         { field: 'marketplace.category', type: 'non-empty string', required: true },

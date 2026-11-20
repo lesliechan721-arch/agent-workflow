@@ -318,24 +318,6 @@ export async function qualifyPublicPlatformCases(ctx, { pluginId, ready, status 
   if (ctx.platform === 'opencode') await ctx.check('opencode-explicit-optional-load', () => status({
     observeNative: true,
   }));
-  if (ctx.platform === 'gemini') await ctx.check('gemini-native-disable', async () => {
-    const file = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini', 'extensions', 'extension-enablement.json');
-    const before = await fs.readFile(file);
-    try {
-      if (ctx.scope === 'project') await ctx.command(['extensions', 'disable', ctx.pluginName, '--scope', 'Workspace']);
-      else {
-        // 0.67.0's User disable command changes a home-path rule. Use its
-        // native global default-off rule to also disable fresh external cwd.
-        const config = JSON.parse(before);
-        assert(config[ctx.pluginName]?.overrides.includes('*'));
-        config[ctx.pluginName].overrides = ['!*'];
-        await fs.writeFile(file, JSON.stringify(config, null, 2));
-      }
-      const native = await readPublicNativeState(ctx, ctx.project, 1, { active: false });
-      assert.equal(native.present, true, 'Native disable must retain the Gemini registration.');
-      return { native, public: await status({ expected: { ...ready, content: 'drifted', activation: 'disabled' } }) };
-    } finally { await fs.writeFile(file, before); }
-  });
 }
 
 export async function qualifyPiAgentPermission(ctx) {

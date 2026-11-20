@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
@@ -12,7 +13,7 @@ import type { ReadContext } from '../../src/platforms/contracts.js';
 async function fixture() {
   const isolated = getCurrentSourceTestIsolation();
   const ctx: ReadContext = { cwd: isolated.layout.fixtureCwd, env: isolated.env, platform: 'linux', arch: 'x64' };
-  const host = path.join(isolated.env.HOME!, '.gemini/config');
+  const host = resolvePlatformConfigRoot('antigravity', ctx);
   const resolution = await resolveDeployments(ctx, { operation: 'ensure', scope: { kind: 'user' }, recoveryCandidates: [],
     plugin: { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'team/demo', version: '1.0.0' },
     discovery: { platform: 'antigravity', availability: 'available', diagnostics: [], installations: [{ id: 'agy', product: 'cli',

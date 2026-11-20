@@ -4,9 +4,9 @@ import path from 'node:path';
 import { constants } from 'node:fs';
 import { clients, sha256, fixedClientVersion } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
-import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
+import { addOfficialCatalog, qualifyShippedGitInstall } from './native-platform-shipped-git.mjs';
 import { qualifyPiAgentPermission, qualifyPublicPlatformCases } from './native-platform-public-cases.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
@@ -29,7 +29,7 @@ export async function observeNativeWorkingDirectory(ctx) {
 
 // Expose the acquired client to public AW discovery. Only the temporary npm
 // prefix or this scope's private bin is writable; no user launcher is changed.
-export async function preparePublicClientPath(ctx) {
+async function preparePublicClientEntry(ctx) {
   const directory = ctx.clientBin ?? path.join(ctx.root, 'client-bin');
   await fs.mkdir(directory, { recursive: true });
   assert(ctx.launcher.prefix.length <= 1, 'Public AW requires a direct client entry.');
@@ -53,15 +53,40 @@ export async function preparePublicClientPath(ctx) {
     try { await fs.symlink(entry, destination); }
     catch (error) { if (error.code !== 'EEXIST') throw error; assert.equal(await fs.realpath(destination), await fs.realpath(entry)); }
   }
-  const systemDirectories = windows ? [path.join(ctx.env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  return { directory, entry: await fs.realpath(destination) };
+}
+
+export async function preparePublicClientPaths(contexts) {
+  const { env, project } = contexts[0];
+  const clients = [];
+  for (const ctx of contexts) clients.push(await preparePublicClientEntry(ctx));
+  const windows = process.platform === 'win32';
+  const systemDirectories = windows ? [path.join(env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   if (windows) {
     const { resolveWindowsPathCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
-    const git = await resolveWindowsPathCommand('git', ctx.project, ctx.env);
+    const git = await resolveWindowsPathCommand('git', project, env);
     assert(git, 'Public authoring requires the runner Git executable.');
     systemDirectories.push(path.dirname(git));
   }
-  ctx.env.PATH = [directory, path.dirname(process.execPath), ...systemDirectories].join(path.delimiter);
-  return fs.realpath(destination);
+  env.PATH = [...new Set(clients.map(({ directory }) => directory)), path.dirname(process.execPath), ...systemDirectories].join(path.delimiter);
+  return clients.map(({ entry }) => entry);
+}
+
+export async function preparePublicClientPath(ctx) {
+  const [entry] = await preparePublicClientPaths([ctx]);
+  return entry;
+}
+
+export async function assertPublicClientDiscovery(result, ctx, expectedEntry) {
+  const target = result.data.availability.find((item) => item.id === ctx.platform);
+  assert.equal(target?.availability, 'available', `Public AW must find ${ctx.platform}.`);
+  let found = false;
+  for (const product of target.installations) {
+    if (product.product === 'cli' && product.version === fixedClientVersion(ctx.platform) && product.entry?.kind === 'cli'
+      && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
+  }
+  assert(found, `Public AW must discover the acquired fixed-version ${ctx.platform} client.`);
+  return { platform: ctx.platform, version: fixedClientVersion(ctx.platform), availability: target.availability };
 }
 
 async function readGrokSkills(ctx, cwd, revision, present) {
@@ -110,10 +135,6 @@ export async function readSkills(ctx, cwd, revision, present, { requireAbsent = 
   if (ctx.platform === 'opencode') return readPublicOpenCodeSkills(ctx, cwd, revision, present);
   if (ctx.platform === 'claude') await ctx.defer('claude-skill-discovery-interface-unverified');
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
-  if (ctx.platform === 'gemini') {
-    const result = await readGeminiSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
-    return { ...result, level: 'fresh-process-skill-discovery' };
-  }
   if (ctx.platform === 'copilot') {
     const result = await readCopilotSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
     if (requireAbsent) assert.equal(result.present, false, 'Public remove must leave no fixture Skill in Copilot discovery.');
@@ -146,6 +167,10 @@ export async function readSkills(ctx, cwd, revision, present, { requireAbsent = 
   return { level: 'fresh-process-skill-discovery', present, skills };
 }
 
+function grokUserWorkspace(ctx) {
+  return path.join(ctx.env.AW_HOME, 'runtime', 'user');
+}
+
 export async function grokBootstrapSource(ctx, result, pluginId) {
   assert.equal(result.command, 'plugin.install');
   assert.equal(result.status, 'partial');
@@ -161,8 +186,6 @@ export async function grokBootstrapSource(ctx, result, pluginId) {
   assert.equal(target.target, 'grok');
   assert.equal(target.scope, 'user');
   assert.deepEqual(target.blockerCodes, ['nativeTrustRequired']);
-  assert(result.diagnostics.every((item) => ['nativeTrustRequired', 'grokNativeInstallRecovery'].includes(item.code)),
-    'A partial with another failure must not grant host trust.');
   assert.equal(target.deploymentPlans.length, 1);
   assert.equal(target.deploymentReceipts.length, 1);
   const plan = target.deploymentPlans[0];
@@ -171,6 +194,7 @@ export async function grokBootstrapSource(ctx, result, pluginId) {
   assert.equal(plan.products.length, 1);
   assert.equal(plan.products[0].product, 'cli');
   assert.equal(plan.products[0].version, clients.grok.version);
+  assert.equal(plan.products[0].entry?.configRoot, ctx.env.GROK_HOME);
   assert.deepEqual(plan.expected.components, [{ id: `skill:${ctx.skillName}`, kind: 'skill', name: ctx.skillName }]);
   assert.deepEqual(plan.expected.omitted, []);
   assert.deepEqual(plan.expected.unmet, []);
@@ -214,11 +238,27 @@ export async function grokBootstrapSource(ctx, result, pluginId) {
   assert.equal(blocked.mutation, 'none');
   assert(blocked.diagnostics.some((item) => item.code === 'nativeTrustRequired'
     && item.subject?.pluginId === pluginId && item.subject.target === 'grok' && item.subject.scope === 'user'));
-  assert(blocked.diagnostics.every((item) => ['nativeTrustRequired', 'grokNativeInstallRecovery'].includes(item.code)),
-    'Only the known first-install trust boundary may be accepted as bootstrap.');
-  const recovery = result.diagnostics.find(item => item.code === 'grokNativeInstallRecovery');
-  assert.deepEqual(recovery?.subject, { pluginId, target: 'grok', scope: 'user', field: 'nativeSource' });
-  assert.deepEqual(recovery.detail, { reasonCode: 'grokNativeInstallSource', path: source });
+  const locations = new Map([
+    ['grokNativeInstallRecovery', { field: 'nativeSource', reasonCode: 'grokNativeInstallSource', path: source }],
+    ['grokNativeInstallWorkspace', { field: 'workspace', reasonCode: 'grokNativeInstallWorkspace', path: grokUserWorkspace(ctx) }],
+    ['grokNativeInstallConfigRoot', { field: 'nativeConfigRoot', reasonCode: 'grokNativeInstallConfigRoot', path: ctx.env.GROK_HOME }],
+  ]);
+  for (const diagnostics of [result.diagnostics, blocked.diagnostics]) {
+    const seenLocations = new Set();
+    for (const item of diagnostics) {
+      if (item.code === 'nativeTrustRequired') {
+        assert.equal(item.severity, 'error');
+        continue;
+      }
+      const location = locations.get(item.code);
+      assert(location && (item.severity === 'info' || item.severity === 'warning'),
+        'A partial with another failure must not grant host trust.');
+      assert.deepEqual(item.subject, { pluginId, target: 'grok', scope: 'user', field: location.field });
+      assert.deepEqual(item.detail, { reasonCode: location.reasonCode, path: location.path });
+      seenLocations.add(item.code);
+    }
+    assert.equal(seenLocations.size, locations.size, 'The trust recovery must identify the source, workspace and Grok configuration.');
+  }
   const nativeArguments = JSON.stringify(['plugin', 'install', source, '--trust']);
   assert(result.nextActions.some(item => item.kind === 'manual' && item.message.includes(nativeArguments)
     && item.message.includes(`aw plugin sync ${pluginId} --context user --target grok`)),
@@ -232,7 +272,7 @@ export async function grokBootstrapSource(ctx, result, pluginId) {
   assert.equal(manifest.name, ctx.pluginName);
   assert.equal(manifest.version, '0.1.0');
   assert.deepEqual(await fs.readFile(path.join(actualSource, 'skills', ctx.skillName, 'SKILL.md')),
-    await fs.readFile(ctx.publicSkillFile), 'The retained source must contain the complete fixture Skill bytes.');
+    ctx.publicConsumedSkill, 'The retained source must contain the complete expected Grok Skill bytes.');
   return actualSource;
 }
 
@@ -249,18 +289,34 @@ async function grokStatusFiles(ctx) {
   })]));
 }
 
-export async function writePublicFixtureRevision(ctx, plugin, revision) {
+// These products have a manual-policy contract to verify on each supported
+// host. Reuse its real public installation and the fixed CLI acquired for this run.
+function publicManualProbe(platform, scope) {
+  if (scope !== 'user' && !(scope === 'project' && ['claude', 'pi', 'opencode'].includes(platform))) return null;
+  if (platform === 'codex') return './native-platform-codex-behavior.mjs';
+  if (platform === 'claude' || platform === 'antigravity') return './native-platform-claude-antigravity-manual.mjs';
+  if (platform === 'pi' || platform === 'opencode') return './native-platform-pi-opencode-manual.mjs';
+  if (platform === 'copilot' || platform === 'grok') return './native-platform-copilot-grok-manual.mjs';
+  return null;
+}
+
+export async function writePublicFixtureRevision(ctx, plugin, revision, platforms = [ctx.platform]) {
   const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
   const skillPath = path.join(plugin, 'skills', ctx.skillName);
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    manifest.platforms = [ctx.platform]; manifest.skills = './skills'; manifest.version = publicFixtureVersion(revision);
+    manifest.platforms = platforms; manifest.skills = './skills'; manifest.version = publicFixtureVersion(revision);
     ctx.publicSkillFile = revision === 3 ? path.join(ctx.root, 'expected-dynamic-SKILL.md') : path.join(skillPath, 'SKILL.md');
     if (revision === 3) await fs.rm(path.join(plugin, 'skills'), { recursive: true, force: true });
     else await fs.mkdir(skillPath, { recursive: true });
     const projected = `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\nFixture body revision ${revision}.\n`;
-    const manual = ctx.platform === 'codex' && ctx.scope === 'user';
-    ctx.publicConsumedSkill = Buffer.from(projected);
-    const body = manual ? projected.replace('\n---\n', '\ndisable-model-invocation: true\n---\n') : projected;
+    const manual = platforms.length === 1 && publicManualProbe(ctx.platform, ctx.scope);
+    const fields = 'user-invocable: true\ndisable-model-invocation: true';
+    const withFields = value => projected.replace('\n---\n', `\n${value}\n---\n`);
+    const body = manual ? withFields(fields) : projected;
+    const consumed = !manual || ctx.platform === 'codex' ? projected
+      : ctx.platform === 'opencode' ? withFields('metadata:\n  opencode/autoinvoke: "false"')
+      : ['pi', 'antigravity'].includes(ctx.platform) ? withFields('disable-model-invocation: true') : body;
+    ctx.publicConsumedSkill = Buffer.from(consumed);
     await fs.writeFile(ctx.publicSkillFile, body);
     if (revision !== 3) await fs.writeFile(path.join(skillPath, 'README.md'), '# Public acceptance fixture\n\nTests installation and discovery without a model request.\n');
     if (revision === 3) {
@@ -279,7 +335,7 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
-async function requireProductionSkillProfile(ctx) {
+export async function requireProductionSkillProfile(ctx) {
   const { getQualifiedPlatformProfile, getQualifiedKindsForScope } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
   const profile = getQualifiedPlatformProfile(ctx.platform);
   if (getQualifiedKindsForScope(profile, ctx.scope).skill.status !== 'supported'
@@ -288,23 +344,8 @@ async function requireProductionSkillProfile(ctx) {
   }
 }
 
-// Trust only the temporary source and working directories. AW still performs
-// native installation and activation through the unchanged public scenario.
-export async function prepareGeminiFixtureTrust(ctx, workspace) {
-  const hosted = process.env.GITHUB_ACTIONS === 'true';
-  const localFallback = ctx.localMacosFallback === true && process.platform === 'darwin' && ctx.platform === 'gemini';
-  assert(hosted || localFallback, 'Real Gemini public qualification requires Hosted or the authorized local macOS fallback.');
-  const directory = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini');
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(path.join(directory, 'trustedFolders.json'),
-    JSON.stringify(Object.fromEntries([workspace, ctx.project, ctx.neutral].map((location) => [location, 'TRUST_FOLDER'])), null, 2) + '\n');
-  return { level: 'fixture-config', scope: ctx.scope,
-    boundary: localFallback ? 'authorized-local-macos-fallback' : 'hosted-only', host: process.platform, hosted,
-    trusted: 'isolated source workspace and working directories', sessionRequests: 'none', activationOverridesWritten: false };
-}
-
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'antigravity') {
     if (ctx.scope !== 'user' || process.env.GITHUB_ACTIONS !== 'true') await ctx.defer('antigravity-public-aw-limited-to-hosted-user');
     // Other hosts remain blocked until their actual production profile is qualified.
@@ -313,18 +354,8 @@ export async function qualifyPublicAw(ctx) {
   }
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
-  await ctx.check('public-target-discovery', async () => {
-    const result = await ctx.aw(['target', 'set', ctx.platform]);
-    const target = result.data.availability.find((item) => item.id === ctx.platform);
-    assert.equal(target.availability, 'available');
-    let found = false;
-    for (const product of target.installations) {
-      if (product.product === 'cli' && product.version === fixedClientVersion(ctx.platform) && product.entry?.kind === 'cli'
-        && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
-    }
-    assert(found, 'Public AW must discover the acquired fixed-version client.');
-    return { platform: ctx.platform, version: fixedClientVersion(ctx.platform), availability: target.availability };
-  });
+  await ctx.check('public-target-discovery', async () => assertPublicClientDiscovery(
+    await ctx.aw(['target', 'set', ctx.platform]), ctx, expectedEntry));
   // Production qualification remains authoritative. Never inject a candidate
   // profile or use --force to turn a missing capability into public success.
   if (ctx.platform !== 'antigravity') await requireProductionSkillProfile(ctx);
@@ -362,7 +393,6 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'add', 'qualification', '--path', path.join(workspace, '.aw/catalog'), '--no-auto-check', '--primary', '--yes']);
     return { source: 'qualification', plugin: ctx.pluginName, version: '0.1.0' };
   });
-  if (ctx.platform === 'gemini') await ctx.check('explicit-host-fixture-trust', () => prepareGeminiFixtureTrust(ctx, workspace));
   if (ctx.scope === 'project') await ctx.check('explicit-host-project-trust', async () => {
     // Host trust is an explicit isolated fixture, separate from AW --yes.
     if (ctx.platform === 'codex') await fs.writeFile(path.join(ctx.env.CODEX_HOME, 'config.toml'),
@@ -421,8 +451,7 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'sync', 'qualification', '--yes']);
   };
   const syncedRevision = async (revision) => {
-    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes',
-      ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
+    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
     let nativeRefresh;
     if (ctx.platform === 'grok' && ctx.scope === 'user') {
       const target = result.data.targetResults.find(item => item.pluginId === pluginId && item.target === 'grok' && item.scope === 'user');
@@ -455,7 +484,7 @@ export async function qualifyPublicAw(ctx) {
     }));
     await ctx.check('explicit-host-user-plugin-trust', async () => {
       // This grants host trust only to the source just published for this fixture.
-      const native = await ctx.command(['plugin', 'install', ctx.grokPublicSource, '--trust']);
+      const native = await ctx.command(['plugin', 'install', ctx.grokPublicSource, '--trust'], grokUserWorkspace(ctx));
       assert(!native.cancelled && native.terminationReason === 'complete', 'The explicit Grok trust install must complete normally.');
       return { scope: 'user', source: ctx.grokPublicSource, trust: 'explicit-native-install-trust' };
     });
@@ -463,8 +492,7 @@ export async function qualifyPublicAw(ctx) {
   await ctx.check('public-install', async () => {
     const result = ctx.platform === 'grok' && ctx.scope === 'user'
       ? await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'])
-      : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes',
-        ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
+      : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
     return { command: result.command, status: result.status,
       ...(ctx.platform === 'opencode' ? { publication: await capturePublicOpenCodePublication(ctx, result, 1, publicFixtureVersion(1)) } : {}) };
   });
@@ -479,9 +507,11 @@ export async function qualifyPublicAw(ctx) {
   if (ctx.scope === 'user') await ctx.check('public-install-neutral-status', () => status({ cwd: ctx.neutral }));
   await ctx.observe('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
   await ctx.observe('public-install-neutral-skill-observation', () => readSkills(ctx, ctx.neutral, 1, ctx.scope === 'user'));
-  if (ctx.platform === 'codex' && ctx.scope === 'user') {
-    const { qualifyPublicCodexManualSkill } = await import('./native-platform-codex-behavior.mjs');
-    await qualifyPublicCodexManualSkill(ctx);
+  const manualProbe = publicManualProbe(ctx.platform, ctx.scope);
+  if (manualProbe) {
+    const probe = await import(manualProbe);
+    if (ctx.platform === 'codex') await probe.qualifyPublicCodexManualSkill(ctx);
+    else await ctx.check(`public-${ctx.platform}-manual-skill`, () => probe.readPublicManualSkill(ctx));
   }
   await qualifyPublicPlatformCases(ctx, { pluginId, ready, status });
   await ctx.check('public-update', async () => {
@@ -516,6 +546,14 @@ export async function qualifyPublicAw(ctx) {
     return readSkills(ctx, ctx.neutral, 3, false, { requireAbsent: true });
   });
   if (ctx.platform === 'pi' && ctx.scope === 'project') await qualifyPiAgentPermission(ctx);
+  // Grok User authorizes each source separately. Its existing single-package
+  // trust probe already exercises the manual policy on that authorized source.
+  if (ctx.scope === 'user' && ctx.platform !== 'grok') {
+    await ctx.check('public-shipped-git-toolkit-install', async () => {
+      await addOfficialCatalog(ctx);
+      return qualifyShippedGitInstall(ctx);
+    });
+  }
   if (ctx.platform === 'codex' && ctx.scope === 'user') {
     const { qualifyPublicCodexBehavior } = await import('./native-platform-codex-behavior.mjs');
     await qualifyPublicCodexBehavior(ctx);

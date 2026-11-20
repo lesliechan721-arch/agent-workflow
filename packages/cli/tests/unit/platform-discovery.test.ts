@@ -1,11 +1,10 @@
 import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
-import { discoverPlatforms, discoverPlatform, installationInvocation, resolvePlatformConfigRoot, type ReadContext } from '../../src/platforms/discovery.js';
+import { discoverPlatforms, discoverPlatform, resolvePlatformConfigRoot, type ReadContext } from '../../src/platforms/discovery.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../../src/constants.js';
 import { targetsList, targetsSet } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
@@ -24,30 +23,13 @@ async function fixture(): Promise<ReadContext> {
       const name = path.basename(command);
       if (name === 'codex') return { exitCode: 0, stdout: 'codex-cli 0.155.0', stderr: '' };
       if (name === 'claude') return { exitCode: 0, stdout: '2.1.291 (Claude Code)', stderr: '' };
-      if (name === 'gemini') throw new Error('controlled timeout');
+      if (name === 'pi') throw new Error('controlled timeout');
       return { exitCode: 1, stdout: '', stderr: 'must not be exposed' };
     } };
 }
 async function executable(ctx: ReadContext, name: string): Promise<void> {
   const file = path.join(ctx.env!.PATH!, name);
   await fs.writeFile(file, 'controlled probe boundary'); await fs.chmod(file, 0o755);
-}
-
-async function geminiNpmFixture(windows = false, bin = 'bundle/gemini.js') {
-  const ctx = await fixture();
-  const packageRoot = path.join(ctx.env!.PATH!, 'node_modules/@google/gemini-cli');
-  const entry = path.join(packageRoot, bin);
-  const metadata = { name: '@google/gemini-cli', version: '0.67.0', bin: { gemini: bin } };
-  await fs.outputFile(entry, '#!/usr/bin/env node\n', { mode: 0o755 });
-  await fs.outputJson(path.join(packageRoot, 'package.json'), metadata);
-  if (windows) {
-    ctx.platform = 'win32';
-    // Simulate Windows home syntax while keeping npm and Gemini files in this host's isolated tree.
-    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GEMINI_CLI_HOME: ctx.cwd };
-    await fs.outputFile(path.join(ctx.env!.PATH!, 'gemini.cmd'),
-      renderNpmCmdShim(`node_modules\\@google\\gemini-cli\\${bin.replaceAll('/', '\\')}`));
-  } else await fs.symlink(entry, path.join(ctx.env!.PATH!, 'gemini'));
-  return { ctx, packageRoot, entry: await fs.realpath(entry), metadata };
 }
 
 async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
@@ -114,16 +96,16 @@ describe('read-only target discovery and production selection', () => {
   // Test Value Gate: a failed client probe must retain independent observations and all target IDs without changing preferences.
   it('retains available, unsupported, unknown, missing, and generic facts in the public list', async () => {
     const ctx = await fixture();
-    for (const name of ['codex', 'claude', 'gemini']) await executable(ctx, name);
+    for (const name of ['codex', 'claude', 'pi']) await executable(ctx, name);
     const found = await discoverPlatforms(ctx);
     expect(found.map((item) => item.platform)).toEqual([...PLATFORM_TARGETS]);
     expect(Object.fromEntries(found.map((item) => [item.platform, item.availability]))).toMatchObject({
-      codex: 'available', claude: 'unsupported', gemini: 'unknown', copilot: 'missing', generic: 'notApplicable',
+      codex: 'available', claude: 'unsupported', pi: 'unknown', copilot: 'missing', generic: 'notApplicable',
     });
     const listed = await targetsList({ ...ctx, discovery: ctx });
     const result = projectReceipt('target.list', listed);
     expect(result.status).toBe('success');
-    expect((result.data as { availability: unknown[] }).availability).toHaveLength(10);
+    expect((result.data as { availability: unknown[] }).availability).toHaveLength(PLATFORM_TARGETS.length);
     const text = renderPublicResult(result);
     expect(text).toContain('GitHub Copilot CLI'); expect(text).toContain('clientVersionUnsupported');
     expect(text).not.toContain('must not be exposed');
@@ -135,17 +117,17 @@ describe('read-only target discovery and production selection', () => {
     const ctx = await fixture(); await executable(ctx, 'codex'); await executable(ctx, 'claude');
     const location = { ...ctx, scope: 'user' as const };
     await writePreferences(location, { ...createEmptyPreferences(), targets: ['claude'] });
-    const rejected = await targetsSet({ ...ctx, discovery: ctx, targets: ['codex', 'claude', 'gemini'] });
+    const rejected = await targetsSet({ ...ctx, discovery: ctx, targets: ['codex', 'claude', 'pi'] });
     expect(rejected.preferencesChanged).toBe(false);
     expect(publicExitCode(projectReceipt('target.set', rejected))).toBe(3);
     expect(rejected.policy?.targets).toEqual(['claude']);
     expect(projectReceipt('target.set', rejected).nextActions).toContainEqual(expect.objectContaining({
-      argv: ['aw', 'target', 'set', 'claude', 'codex', 'gemini', '--force'],
+      argv: ['aw', 'target', 'set', 'claude', 'codex', 'pi', '--force'],
     }));
-    const forced = await targetsSet({ ...ctx, discovery: ctx, targets: ['codex', 'claude', 'gemini'], force: true });
-    expect(forced.ok).toBe(true); expect(forced.policy?.targets).toEqual(['claude', 'codex', 'gemini']);
-    expect(forced.availability?.find((item) => item.id === 'gemini')?.availability).toBe('missing');
-    expect((await targetsSet({ ...ctx, discovery: ctx, targets: ['claude', 'gemini'] })).ok).toBe(true);
+    const forced = await targetsSet({ ...ctx, discovery: ctx, targets: ['codex', 'claude', 'pi'], force: true });
+    expect(forced.ok).toBe(true); expect(forced.policy?.targets).toEqual(['claude', 'codex', 'pi']);
+    expect(forced.availability?.find((item) => item.id === 'pi')?.availability).toBe('missing');
+    expect((await targetsSet({ ...ctx, discovery: ctx, targets: ['claude', 'pi'] })).ok).toBe(true);
     expect((await targetsSet({ ...ctx, discovery: ctx, targets: [] })).policy?.targets).toEqual([]);
     const invalid = await targetsSet({ ...ctx, discovery: ctx, targets: ['not-an-agent'], force: true });
     expect(invalid.errors[0]?.code).toBe('invalidArguments');
@@ -196,172 +178,6 @@ describe('read-only target discovery and production selection', () => {
     const ctx = await fixture(); await executable(ctx, 'copilot');
     const found = await discoverPlatform('copilot', { ...ctx, runner: async () => ({ exitCode: 0, stdout: '1.0.95 unrelated utility', stderr: '' }) });
     expect(found.availability).toBe('unknown');
-  });
-
-  // Test Value Gate: npm metadata can identify the actual JS entry without a
-  // second CLI startup, but every discovery still needs a fresh native version.
-  it.runIf(process.platform !== 'win32')('identifies a Gemini npm JS entry and reads its version again on the next discovery', async () => {
-    const item = await geminiNpmFixture();
-    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
-    const originalEnv = { ...item.ctx.env };
-    const processFlag = process.env.GEMINI_CLI_NO_RELAUNCH;
-    item.ctx.signal = new AbortController().signal;
-    const calls: string[] = [];
-    let directoryRequests = 0;
-    item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return path.join(item.ctx.cwd, 'unused-cache'); };
-    let version = '0.67.0';
-    item.ctx.runner = async ({ command, args, env, timeoutMs, signal }) => {
-      expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
-      expect(signal).toBe(item.ctx.signal);
-      expect(timeoutMs).toBe(version === '0.67.0' ? 10_000 : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: version === '0.67.0' ? 'true' : 'caller-value' })).toBe(true);
-      if (version === '0.67.0') expect(env === item.ctx.env).toBe(false);
-      else expect(env === item.ctx.env).toBe(true);
-      calls.push(args.at(-1)!);
-      return { exitCode: 0, stdout: args.at(-1) === '--version' ? `${version}\n` : 'Gemini CLI', stderr: '' };
-    };
-    const first = (await discoverPlatform('gemini', item.ctx)).installations[0]!;
-    expect(first).toMatchObject({ availability: 'available', version: '0.67.0' });
-    const native = await installationInvocation(first, item.ctx, ['extensions', 'install', '/frozen-package']);
-    expect(native.env === item.ctx.env).toBe(true);
-    expect(native.args).toEqual([item.entry, 'extensions', 'install', '/frozen-package']);
-    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
-    expect(process.env.GEMINI_CLI_NO_RELAUNCH).toBe(processFlag);
-    version = '0.67.1'; item.metadata.version = version;
-    await fs.outputJson(path.join(item.packageRoot, 'package.json'), item.metadata);
-    expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: '0.67.1' });
-    expect(calls).toEqual(['--version', '--version']);
-    expect(directoryRequests).toBe(0);
-  });
-
-  // Test Value Gate: a shared code compilation directory must not reuse native
-  // version results, alter the caller environment, or reach mutation commands.
-  it.runIf(process.platform !== 'win32')('shares a Darwin Gemini compile directory across fresh version probes', async () => {
-    const item = await geminiNpmFixture();
-    item.ctx.platform = 'darwin';
-    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
-    delete item.ctx.env.NODE_COMPILE_CACHE;
-    delete item.ctx.env.NODE_DISABLE_COMPILE_CACHE;
-    const originalEnv = { ...item.ctx.env };
-    const originalProcessEnv = { ...process.env };
-    const compileDir = path.join(item.ctx.cwd, 'session/native-node-compile-cache');
-    let directoryRequests = 0;
-    item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return compileDir; };
-    let nativeVersions = 0;
-    let cacheAvailable = true;
-    item.ctx.runner = async ({ args, env, timeoutMs }) => {
-      nativeVersions += 1;
-      expect(args).toEqual([item.entry, '--version']);
-      expect(timeoutMs).toBe(10_000);
-      expect(env === item.ctx.env).toBe(false);
-      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: 'true',
-        ...(cacheAvailable ? { NODE_COMPILE_CACHE: compileDir } : {}) })).toBe(true);
-      return { exitCode: 0, stdout: '0.67.0\n', stderr: '' };
-    };
-    const first = await discoverPlatform('gemini', item.ctx);
-    const second = await discoverPlatform('gemini', item.ctx);
-    expect(first.installations[0]?.version).toBe('0.67.0');
-    expect(second.installations[0]?.version).toBe('0.67.0');
-    expect(nativeVersions).toBe(2);
-    expect(directoryRequests).toBe(2);
-    cacheAvailable = false;
-    item.ctx.nativeNodeCompileCacheDir = async () => {
-      directoryRequests += 1;
-      throw Object.assign(new Error('compile directory unavailable'), { code: 'EACCES' });
-    };
-    expect((await discoverPlatform('gemini', item.ctx)).installations[0]?.version).toBe('0.67.0');
-    expect(nativeVersions).toBe(3);
-    expect(directoryRequests).toBe(3);
-    const mutation = await installationInvocation(first.installations[0]!, item.ctx, ['extensions', 'install', '/frozen-package']);
-    expect(mutation.env === item.ctx.env).toBe(true);
-    expect(directoryRequests).toBe(3);
-    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
-    expect(isDeepStrictEqual({ ...process.env }, originalProcessEnv)).toBe(true);
-  });
-
-  it('binds Gemini metadata to the JS entry resolved from its Windows npm shim', async () => {
-    const item = await geminiNpmFixture(true);
-    const originalEnv = { ...item.ctx.env };
-    const calls: string[] = [];
-    item.ctx.runner = async ({ command, args, env, timeoutMs }) => {
-      expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
-      expect(timeoutMs).toBe(10_000);
-      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: 'true' })).toBe(true);
-      expect(env === item.ctx.env).toBe(false);
-      calls.push(args.at(-1)!);
-      return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
-    };
-    const found = await discoverPlatform('gemini', item.ctx);
-    expect(found.availability, JSON.stringify(found)).toBe('available');
-    expect(calls).toEqual(['--version']);
-    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
-  });
-
-  // Invalid metadata must retain the existing independent help identity check.
-  it.runIf(process.platform !== 'win32').each(['missing', 'invalid', 'foreign', 'version-mismatch', 'bin-mismatch', 'escaping-bin'] as const)(
-    'keeps Gemini help identity confirmation for %s npm metadata', async (kind) => {
-      const item = await geminiNpmFixture();
-      item.ctx.platform = 'darwin';
-      let directoryRequests = 0;
-      item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return path.join(item.ctx.cwd, 'unused-cache'); };
-      const file = path.join(item.packageRoot, 'package.json');
-      if (kind === 'missing') await fs.remove(file);
-      else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
-      else {
-        if (kind === 'foreign') item.metadata.name = 'foreign-cli';
-        if (kind === 'version-mismatch') item.metadata.version = '0.67.1';
-        if (kind === 'bin-mismatch') {
-          item.metadata.bin.gemini = 'dist/other.js';
-          await fs.outputFile(path.join(item.packageRoot, 'dist/other.js'), 'Different entry.');
-        }
-        if (kind === 'escaping-bin') item.metadata.bin.gemini = '../gemini-cli/dist/index.js';
-        await fs.outputJson(file, item.metadata);
-      }
-      const calls: string[] = [];
-      item.ctx.runner = async ({ args, env, timeoutMs }) => {
-        expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-        expect(env === item.ctx.env).toBe(true);
-        calls.push(args.at(-1)!);
-        return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
-      };
-      expect((await discoverPlatform('gemini', item.ctx)).availability).toBe('available');
-      expect(calls).toEqual(['--version', '--help']);
-      expect(directoryRequests).toBe(0);
-    },
-  );
-
-  // Test Value Gate: the fixed relaunch behavior belongs only to its exact npm
-  // layout. Native executables and other JS layouts keep the original probe.
-  it.runIf(process.platform !== 'win32').each(['native', 'other-js-entry'] as const)('keeps the default Gemini probe for %s', async (kind) => {
-    const ctx = kind === 'native' ? await fixture() : (await geminiNpmFixture(false, 'dist/index.js')).ctx;
-    if (kind === 'native') await executable(ctx, 'gemini');
-    ctx.runner = async ({ env, timeoutMs }) => {
-      expect(env === ctx.env).toBe(true);
-      expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-      return { exitCode: 0, stdout: 'Gemini CLI 0.67.0', stderr: '' };
-    };
-    expect((await discoverPlatform('gemini', ctx)).availability).toBe('available');
-  });
-
-  // Test Value Gate: declared npm identity cannot replace a valid observed
-  // version or hide a failed independent brand confirmation.
-  it.runIf(process.platform !== 'win32').each([
-    { version: 'invalid-version', help: 'Gemini CLI', reason: 'clientVersionUnknown' },
-    { version: '0.67.1', help: 'Unrelated utility', reason: 'clientIdentityUnconfirmed' },
-  ])('rejects Gemini output $version despite fixed npm metadata', async (output) => {
-    const item = await geminiNpmFixture();
-    const calls: string[] = [];
-    item.ctx.runner = async ({ args, env, timeoutMs }) => {
-      const version = args.at(-1) === '--version';
-      calls.push(args.at(-1)!);
-      expect(timeoutMs).toBe(version ? 10_000 : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-      expect(isDeepStrictEqual(env, version ? { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' } : item.ctx.env)).toBe(true);
-      return { exitCode: 0, stdout: version ? output.version : output.help, stderr: '' };
-    };
-    expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({
-      availability: 'unknown', version: null, reasonCodes: [output.reason],
-    });
-    expect(calls).toEqual(['--version', '--help']);
   });
 
   // Test Value Gate: the official Copilot sentence punctuation must not hide its
@@ -431,16 +247,6 @@ describe('read-only target discovery and production selection', () => {
     const antigravity = await discoverPlatform('antigravity', ctx);
     expect(antigravity.availability).toBe('unknown');
     expect(antigravity.diagnostics[0]?.code).toBe('appDiscoveryUnverified');
-  });
-
-  // Test Value Gate: Gemini's public home override must bind discovery to the actual host namespace and reject relative roots.
-  it('uses the Gemini CLI home override only as an absolute host home', async () => {
-    const ctx = await fixture(); await executable(ctx, 'gemini');
-    const root = path.join(ctx.cwd, 'gemini-home');
-    const runner: ReadContext['runner'] = async () => ({ exitCode: 0, stdout: 'Gemini CLI 0.63.0', stderr: '' });
-    const supported = await discoverPlatform('gemini', { ...ctx, env: { ...ctx.env, GEMINI_CLI_HOME: root }, runner });
-    expect(supported.installations[0]?.entry).toMatchObject({ configRoot: path.join(root, '.gemini') });
-    expect((await discoverPlatform('gemini', { ...ctx, env: { ...ctx.env, GEMINI_CLI_HOME: 'relative-home' }, runner })).availability).toBe('unknown');
   });
 
   // Test Value Gate: an override must select the actual host settings that

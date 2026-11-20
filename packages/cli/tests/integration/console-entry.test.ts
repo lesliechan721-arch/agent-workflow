@@ -1,6 +1,8 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { render } from 'ink-testing-library';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
@@ -56,6 +58,45 @@ describe('console entry', () => {
     expect(launch).toHaveBeenCalledTimes(1);
     expect(mountedController?.snapshot.phase).toBe('disposed');
     expect(captured.readStdout()).toBe('');
+  });
+
+  it('drains an active TUI read before returning the process signal exit code', async () => {
+    const captured = createCapturedCliIo();
+    const entered = deferred<void>();
+    const cancelled = deferred<void>();
+    const release = deferred<void>();
+    const previousListeners = new Set(process.listeners('SIGTERM'));
+    let signalListener: NodeJS.SignalsListener;
+    const launch = async (request: {
+      render: (complete: (result: { exitCode: number }) => void) => ReactElement<{ host: SessionHost }>;
+    }) => {
+      const completed = deferred<{ exitCode: number }>();
+      const element = request.render(completed.resolve);
+      element.props.host.snapshot.controller.dependencies.loadStatus = async (signal) => {
+        signal.addEventListener('abort', () => cancelled.resolve(), { once: true });
+        entered.resolve();
+        await release.promise;
+        throw signal.reason;
+      };
+      // Only deliver the signal to this invocation. Ink and Vitest own their own handlers.
+      const listeners = process.listeners('SIGTERM').filter((listener) => !previousListeners.has(listener));
+      expect(listeners).toHaveLength(1);
+      signalListener = listeners[0]!;
+      const app = render(element);
+      try { return await completed.promise; }
+      finally { app.unmount(); }
+    };
+    let settled = false;
+    const running = runCli(['tui'], { interactive: true, io: captured.io, tuiRunner: { launch } as never })
+      .finally(() => { settled = true; });
+    try {
+      await entered.promise;
+      signalListener!('SIGTERM');
+      await cancelled.promise;
+      expect(settled).toBe(false);
+    } finally { release.resolve(); }
+    expect(await running).toBe(143);
+    expect(process.listeners('SIGTERM')).not.toContain(signalListener!);
   });
 
   it('returns the exit code supplied by the mounted V4 component callback', async () => {

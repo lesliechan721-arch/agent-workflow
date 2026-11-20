@@ -1,4 +1,4 @@
-import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV2, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap } from '@lesliechan721/aw-plugin-core/manifest';
+import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV2, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap, FeatureRequirement } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic, ProductInstallation, DiscoveryResult, ReadContext } from './discovery.js';
 import type { VerifiedResourceClosure } from '../utils/component-resources.js';
 export type { PlatformId, ComponentKind, ExpectedComponentSet, ComponentGap, ResolvedInvocationPolicy } from '@lesliechan721/aw-plugin-core/manifest';
@@ -38,7 +38,7 @@ export interface RenderUnit {
 export type InstallRoute =
   | 'codex-marketplace' | 'claude-marketplace' | 'cursor-workspace-hook'
   | 'antigravity-cli' | 'antigravity-directory' | 'opencode-directory'
-  | 'pi-package' | 'gemini-extension' | 'copilot-marketplace'
+  | 'pi-package' | 'copilot-marketplace'
   | 'grok-cli' | 'grok-directory' | 'generic-skills';
 
 export interface PhysicalIdentity {
@@ -264,6 +264,8 @@ export interface QualifiedPlatformProfile {
   /** Recorded scope limits apply to both runtime and authoring kind views. */
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
     platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
+  /** Native CLI invocation coverage for this host and these activation scopes. */
+  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] };
   agentConsumers: Array<{
     id: string;
     minimumVersion: string;
@@ -305,12 +307,8 @@ export interface MutationOutcome {
   unregisterConfirmed?: true;
 }
 export interface MutationContext extends ReadContext {
-  /** One explicit CLI grant for this exact frozen Gemini plan; never persisted or inferred. */
-  geminiNativeConsent?: FrozenDeploymentPlan;
   /** Operation-local receipts for native actions on a shared registration. */
   nativeEffects?: Map<string, Promise<MutationOutcome>>;
-  /** Checked Gemini configuration baseline, rebased only after this operation's writes. */
-  geminiActivationSnapshot?: { path: string; contentDigest: string | null };
   services: {
     verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean>;
     publishPackage(binding: DeploymentBinding, bundle: NonNullable<ProjectionResult['bundle']>, destination: string,

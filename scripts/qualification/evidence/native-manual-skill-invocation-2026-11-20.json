@@ -1,0 +1,707 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-skill-invocation-evidence",
+  "observedAt": "2026-11-20",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "osVersion": "26.3.1",
+    "node": "v24.14.1"
+  },
+  "extraction": {
+    "inputs": "Native client observations under separate temporary homes and project roots. Only the cited cases and versions were observed on this host.",
+    "models": "Local SDK or loopback fixtures, no external model, no git commit.",
+    "priorToCommit": true
+  },
+  "profiles": {
+    "claude": {
+      "version": "2.1.317",
+      "entrySha256": "09f153b46b5df9e8b3454716d682a91901de020cbca630f61dec1a015b32b5e9",
+      "contract": "https://code.claude.com/docs/en/skills#control-who-invokes-a-skill",
+      "harness": "scripts/qualification/native-platform-claude-antigravity-manual.mjs",
+      "publicUser": {
+        "plugin": "git-toolkit",
+        "sourceDigest": "sha256:3e67683154f8c21f16e9a9ee0b43d1e1c0e1af632975e50f8f7ade344697f4dd",
+        "install": {
+          "level": "public-AW-install-and-deployment-receipt",
+          "execution": "applied",
+          "skills": [
+            "git-commit",
+            "isolating-work-with-git-worktrees",
+            "reconciling-git-merges"
+          ],
+          "gaps": []
+        },
+        "evidence": {
+          "level": "session-command-and-model-context",
+          "target": {
+            "command": "/git-toolkit:git-commit",
+            "visible": true,
+            "automaticCandidate": false,
+            "contextSkills": 15,
+            "automaticControls": [
+              "isolating-work-with-git-worktrees",
+              "reconciling-git-merges"
+            ]
+          },
+          "neutral": {
+            "command": "/git-toolkit:git-commit",
+            "visible": true,
+            "automaticCandidate": false,
+            "contextSkills": 15,
+            "automaticControls": [
+              "isolating-work-with-git-worktrees",
+              "reconciling-git-merges"
+            ]
+          },
+          "skillInvoked": false,
+          "modelTurns": 0
+        },
+        "removed": true
+      },
+      "nativeProject": {
+        "nativeScope": "local",
+        "target": {
+          "command": "/git-toolkit:git-commit",
+          "visible": true,
+          "automaticCandidate": false,
+          "contextSkills": 15,
+          "automaticControls": [
+            "isolating-work-with-git-worktrees",
+            "reconciling-git-merges"
+          ]
+        },
+        "neutral": {
+          "command": "/git-toolkit:git-commit",
+          "visible": false,
+          "automaticCandidate": false,
+          "contextSkills": 13,
+          "automaticControls": []
+        },
+        "removed": true
+      },
+      "harnessFileSha256AtExtraction": "9b93ce5cdb14af4ed29dd371364a9640918d7023fdd9ad60ba19e8cb2605177c",
+      "publicProjectionSha256": "bb61f99389220dbed53f977530fff8fbb37de574c2730c50184de8f582baedcc"
+    },
+    "antigravity": {
+      "version": "1.3.4",
+      "entrySha256": "9da414c0624c27aa2969a86030a070b5341c0657700512eba70b21725ce253f5",
+      "contract": "https://antigravity.google/docs/build-plugins#skills",
+      "harness": "scripts/qualification/native-platform-claude-antigravity-manual.mjs",
+      "publicUser": {
+        "plugin": "git-toolkit",
+        "sourceDigest": "sha256:3e67683154f8c21f16e9a9ee0b43d1e1c0e1af632975e50f8f7ade344697f4dd",
+        "install": {
+          "level": "public-AW-install-and-deployment-receipt",
+          "execution": "applied",
+          "skills": [
+            "git-commit",
+            "isolating-work-with-git-worktrees",
+            "reconciling-git-merges"
+          ],
+          "gaps": []
+        },
+        "evidence": {
+          "level": "native-component-inventory-and-policy-parser",
+          "target": {
+            "version": "0.1.0",
+            "skills": [
+              "git-commit",
+              "isolating-work-with-git-worktrees",
+              "reconciling-git-merges"
+            ]
+          },
+          "neutral": {
+            "version": "0.1.0",
+            "skills": [
+              "git-commit",
+              "isolating-work-with-git-worktrees",
+              "reconciling-git-merges"
+            ]
+          },
+          "parser": {
+            "booleanAccepted": true,
+            "stringRejected": true
+          },
+          "manualCommandVisibility": "unverified",
+          "automaticCandidate": "unverified",
+          "skillInvoked": false,
+          "modelTurns": 0
+        },
+        "removed": true
+      },
+      "nativeUpdate": {
+        "before": {
+          "version": "1.0.0",
+          "skills": [
+            "isolating-work-with-git-worktrees",
+            "reconciling-git-merges"
+          ],
+          "bytesRetainedUntilReplacement": true
+        },
+        "after": {
+          "version": "1.0.1",
+          "skills": [
+            "git-commit",
+            "isolating-work-with-git-worktrees",
+            "reconciling-git-merges"
+          ]
+        },
+        "parser": {
+          "booleanAccepted": true,
+          "stringRejected": true
+        },
+        "sessions": "Authentication was required. Native component inventory and parser were tested."
+      },
+      "harnessFileSha256AtExtraction": "9b93ce5cdb14af4ed29dd371364a9640918d7023fdd9ad60ba19e8cb2605177c",
+      "publicProjectionSha256": "bb61f99389220dbed53f977530fff8fbb37de574c2730c50184de8f582baedcc"
+    },
+    "pi": {
+      "version": "1.5.0",
+      "contract": "https://github.com/earendil-works/pi/blob/v1.5.0/packages/coding-agent/docs/skills.md",
+      "harness": "scripts/qualification/native-platform-pi-opencode-manual.mjs",
+      "input": {
+        "plugin": "git-toolkit",
+        "version": "0.1.0",
+        "artifactDigest": "sha256:3e67683154f8c21f16e9a9ee0b43d1e1c0e1af632975e50f8f7ade344697f4dd",
+        "sourceSkillSha256": "4b611be81b48df6959157dba6d3e7eaeff4e40323487de8f36686fbba6f11240",
+        "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+        "evidence": "independent built AW CLI plus its shipped catalog",
+        "awBuildArtifactDigest": "sha256:08b18ed1ead1c23247714a61a796e4239ce1afcdae22505242ca5217cb34f25a"
+      },
+      "publicCases": [
+        {
+          "scope": "user",
+          "publication": {
+            "result": "success",
+            "ownership": "aw",
+            "actualSkillSha256": "a5cd65b6b1e55d8172e04f1ef36824e38f4ca47cd2af1e1682f74a3009cc63e4",
+            "nativeRoute": "pi-package"
+          },
+          "probe": {
+            "level": "explicit-skill-command-expansion",
+            "invocation": "/skill:git-commit",
+            "modelGuidance": "omitted",
+            "resolvedExactBody": true,
+            "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+            "modelRequests": 0
+          },
+          "neutralVisible": true
+        },
+        {
+          "scope": "project",
+          "publication": {
+            "result": "success",
+            "ownership": "aw",
+            "actualSkillSha256": "a5cd65b6b1e55d8172e04f1ef36824e38f4ca47cd2af1e1682f74a3009cc63e4",
+            "nativeRoute": "pi-package"
+          },
+          "probe": {
+            "level": "explicit-skill-command-expansion",
+            "invocation": "/skill:git-commit",
+            "modelGuidance": "omitted",
+            "resolvedExactBody": true,
+            "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+            "modelRequests": 0
+          },
+          "neutralVisible": false
+        }
+      ],
+      "limitations": [
+        "macOS arm64 CLI only",
+        "OpenCode tested its V2 prompt attachment without a TUI keypress",
+        "No external model or actual Git commit"
+      ],
+      "harnessFileSha256AtExtraction": "7adae3f5230b91aa98dbfbf103f84f2ccce0b8048a2c66de49053b62b6247efe"
+    },
+    "opencode": {
+      "version": "2.0.0",
+      "contract": "https://github.com/anomalyco/opencode/blob/v2.0.0/packages/core/src/skill/instructions.ts",
+      "harness": "scripts/qualification/native-platform-pi-opencode-manual.mjs",
+      "input": {
+        "plugin": "git-toolkit",
+        "version": "0.1.0",
+        "artifactDigest": "sha256:3e67683154f8c21f16e9a9ee0b43d1e1c0e1af632975e50f8f7ade344697f4dd",
+        "sourceSkillSha256": "4b611be81b48df6959157dba6d3e7eaeff4e40323487de8f36686fbba6f11240",
+        "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+        "evidence": "independent built AW CLI plus its shipped catalog",
+        "awBuildArtifactDigest": "sha256:08b18ed1ead1c23247714a61a796e4239ce1afcdae22505242ca5217cb34f25a"
+      },
+      "publicCases": [
+        {
+          "scope": "user",
+          "publication": {
+            "result": "success",
+            "ownership": "aw",
+            "actualSkillSha256": "ad448166e3cd494f360db93e148a93b51e05efe80b79859a5c5ec18e8155150d",
+            "nativeRoute": "opencode-directory"
+          },
+          "probe": {
+            "level": "explicit-skill-attachment",
+            "invocation": "@git-commit",
+            "registeredAutoinvoke": false,
+            "resolvedExactBody": true,
+            "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+            "resume": false,
+            "ordinarySkillControl": {
+              "id": "opencode",
+              "eligibleForModelGuidance": true
+            },
+            "modelGuidance": "omitted-by-registry-policy-in-fixed-v2-runtime",
+            "modelRequests": 0
+          },
+          "neutralVisible": true
+        },
+        {
+          "scope": "project",
+          "publication": {
+            "result": "success",
+            "ownership": "aw",
+            "actualSkillSha256": "ad448166e3cd494f360db93e148a93b51e05efe80b79859a5c5ec18e8155150d",
+            "nativeRoute": "opencode-directory"
+          },
+          "probe": {
+            "level": "explicit-skill-attachment",
+            "invocation": "@git-commit",
+            "registeredAutoinvoke": false,
+            "resolvedExactBody": true,
+            "bodySha256": "30495f0e5b7adf761db977f48890c30834077c0613a1890fce31b799c46c5ab5",
+            "resume": false,
+            "ordinarySkillControl": {
+              "id": "opencode",
+              "eligibleForModelGuidance": true
+            },
+            "modelGuidance": "omitted-by-registry-policy-in-fixed-v2-runtime",
+            "modelRequests": 0
+          },
+          "neutralVisible": false
+        }
+      ],
+      "limitations": [
+        "macOS arm64 CLI only",
+        "OpenCode tested its V2 prompt attachment without a TUI keypress",
+        "No external model or actual Git commit"
+      ],
+      "harnessFileSha256AtExtraction": "7adae3f5230b91aa98dbfbf103f84f2ccce0b8048a2c66de49053b62b6247efe"
+    },
+    "copilot": {
+      "version": "1.0.95",
+      "entrySha256": "35d33e040e8aa0554a02385f02648396ba3b853f026ed1db17d30d051a764e4b",
+      "sourceSkillSha256": "4b611be81b48df6959157dba6d3e7eaeff4e40323487de8f36686fbba6f11240",
+      "contract": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#skill-frontmatter-fields",
+      "harness": "scripts/qualification/native-platform-copilot-grok-manual.mjs",
+      "fixture": "real-source-skill-in-minimal-native-plugin",
+      "scope": "user",
+      "observation": {
+        "level": "loopback-session-behavior",
+        "scope": "user",
+        "slashCommand": "/git-toolkit:git-commit",
+        "explicitSelectionLoadedInstalledBody": true,
+        "ordinaryModelInventoryOmittedSkill": true,
+        "ordinaryInventoryControlPresent": true,
+        "directModelSkillToolDenied": true,
+        "sessionPluginLoading": "explicit-native-plugin-dir-from-marketplace-inventory",
+        "ambientOfflineAcpActivation": "unverified",
+        "provider": "loopback-fixture",
+        "desktopAndProjectScope": "unverified"
+      },
+      "limitations": "The active User Marketplace registration exposes this Skill through skill list. The pinned offline BYOK ACP session did not advertise the ambient plugin without an explicit --plugin-dir, including under fixture-directory trust. Mounting the same discovered plugin path establishes its native policy. Authenticated ambient sessions, TUI and desktop remain unverified.",
+      "harnessFileSha256AtExtraction": "e22f4086ecb7a99044ca3e6ada400301b88de93e182d90ad73ea8347c8cee291"
+    },
+    "grok": {
+      "version": "1.0.77",
+      "entrySha256": "197c66a63e5ac46e07450b0ca21d141ce665050a412180f185dadfae1c7a5b2a",
+      "sourceSkillSha256": "4b611be81b48df6959157dba6d3e7eaeff4e40323487de8f36686fbba6f11240",
+      "contract": "https://docs.x.ai/build/features/skills-plugins-marketplaces#skills",
+      "harness": "scripts/qualification/native-platform-copilot-grok-manual.mjs",
+      "fixture": "real-source-skill-in-minimal-native-plugin",
+      "scope": "user",
+      "observation": {
+        "level": "loopback-session-behavior",
+        "scope": "user",
+        "slashCommand": "/git-commit",
+        "explicitSelectionLoadedInstalledBody": true,
+        "ordinaryModelInventoryOmittedSkill": true,
+        "ordinaryInventoryControlPresent": true,
+        "sessionPluginLoading": "installed-user-plugin",
+        "directModelSkillTool": "unverified",
+        "provider": "loopback-fixture",
+        "desktopAndProjectScope": "unverified"
+      },
+      "limitations": "The actual installed User plugin worked without an extra mount. The probe exercised native headless model inventory and explicit slash selection. Direct model tool requests, desktop and Project are unverified.",
+      "harnessFileSha256AtExtraction": "e22f4086ecb7a99044ca3e6ada400301b88de93e182d90ad73ea8347c8cee291"
+    },
+    "cursor": {
+      "version": "2026.11.05-86047df",
+      "releaseSha256": {
+        "cursor-agent": "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233",
+        "index.js": "932a6744cb9cd5e06b9ef292a1dc58bc17e69f8a4f72c21e7cb572fa0561d15b",
+        "node": "06eb3f5762c2b6890e99d03f931bf01d9b20fd341dec1a8c1ef5c1809e66102b"
+      },
+      "contract": [
+        "https://cursor.com/docs/skills#disabling-automatic-invocation",
+        "https://cursor.com/docs/hooks"
+      ],
+      "harness": "scripts/qualification/native-platform-cursor-skills.py",
+      "directCases": [
+        {
+          "scope": "user",
+          "installed": {
+            "project": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 1
+            },
+            "neutral": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 1
+            }
+          },
+          "policiesInClientRequest": [
+            {
+              "name": "aw-manual-qual",
+              "source": "plugin",
+              "disableModelInvocation": true
+            },
+            {
+              "name": "aw-ordinary-qual",
+              "source": "plugin",
+              "disableModelInvocation": false
+            }
+          ],
+          "updated": {
+            "project": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 2
+            },
+            "neutral": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 2
+            }
+          },
+          "removed": {
+            "project": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            },
+            "neutral": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            }
+          },
+          "explicitSelectionLoadedBody": true
+        },
+        {
+          "scope": "project",
+          "installed": {
+            "project": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 1
+            },
+            "neutral": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            }
+          },
+          "policiesInClientRequest": [
+            {
+              "name": "aw-manual-qual",
+              "source": "plugin",
+              "disableModelInvocation": true
+            },
+            {
+              "name": "aw-ordinary-qual",
+              "source": "plugin",
+              "disableModelInvocation": false
+            }
+          ],
+          "updated": {
+            "project": {
+              "ordinaryVisible": true,
+              "manualVisible": true,
+              "descriptionRevision": 2
+            },
+            "neutral": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            }
+          },
+          "removed": {
+            "project": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            },
+            "neutral": {
+              "ordinaryVisible": false,
+              "manualVisible": false
+            }
+          },
+          "explicitSelectionLoadedBody": true
+        }
+      ],
+      "limitations": {
+        "nativeWorkspaceOpen": true,
+        "workspaceTrust": "isolated fixture only",
+        "authentication": "fixed release test mode and loopback startup stub",
+        "providerCalls": 0,
+        "nativeWirePolicy": "observed",
+        "automaticInvocation": "documented native policy, remote enforcement unverified",
+        "desktop": "unverified"
+      },
+      "harnessFileSha256AtExtraction": "d5441925c7aab7fa440b19e4101aada418a05824b5de533720c55161a3789430",
+      "publicUser": {
+        "plugin": "git-toolkit",
+        "version": "0.1.0",
+        "candidateEntrySha256": "d5c423f974aa0e162133acac71cb4f55b7fc8e082ed252b3830083bab6691e72",
+        "installedSkills": {
+          "git-commit": {
+            "source": "4b611be81b48df6959157dba6d3e7eaeff4e40323487de8f36686fbba6f11240",
+            "installed": "a5cd65b6b1e55d8172e04f1ef36824e38f4ca47cd2af1e1682f74a3009cc63e4",
+            "equalBody": true,
+            "disableModelInvocation": true
+          },
+          "isolating-work-with-git-worktrees": {
+            "source": "6afc38e2114b522adb784dbca0fc5b552af241537bb6cee0fff1c5fb8216219d",
+            "installed": "6afc38e2114b522adb784dbca0fc5b552af241537bb6cee0fff1c5fb8216219d",
+            "equalBody": true,
+            "disableModelInvocation": false
+          },
+          "reconciling-git-merges": {
+            "source": "6eff7cda3f409e442b7542612590480e5894db9aaaa0044d78e4a7d76c7ca9e4",
+            "installed": "6eff7cda3f409e442b7542612590480e5894db9aaaa0044d78e4a7d76c7ca9e4",
+            "equalBody": true,
+            "disableModelInvocation": false
+          }
+        },
+        "workspaceOpen": {
+          "project": true,
+          "neutral": true
+        },
+        "installStatus": "success",
+        "status": "success"
+      }
+    }
+  },
+  "hosted": {
+    "sourceSha": "7c7158db4a208668c7b8c75972dac5fcb5572bdc",
+    "user": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661758960",
+      "versions": {
+        "codex": "0.167.0",
+        "claude": "2.1.317",
+        "pi": "1.5.0",
+        "opencode": "2.0.0",
+        "grok": "1.0.77",
+        "copilot": "1.0.95"
+      },
+      "reports": {
+        "darwin-arm64": {
+          "runner": "macos-15",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "46228e9ddd8cb81761cdb9c7f80d4e792de227af7b0ea00d9c93817e7428aced",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "darwin-x64": {
+          "runner": "macos-15-intel",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "a1863ca63c6e09c2c19afdd9356f4e1f3f93d01c33b066b3fbbfd16b7624134d",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "linux-arm64": {
+          "runner": "ubuntu-24.04-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "d5fa5560a79ddd770f8cf610a009d5ba02d1f1dc5c02af51eb765ee78f638435",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "linux-x64": {
+          "runner": "ubuntu-24.04",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "64e9582297bbe75c544759d6b08bab309911381f8ddc39f3793cb128b9b89ad0",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "win32-arm64": {
+          "runner": "windows-11-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "7f134443a9c857af7f03dd1a7ec70a35a9c756378e2eca73b3fb60cc60ce8e92",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "opencode": "installed-entry",
+            "pi": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode",
+            "pi"
+          ]
+        },
+        "win32-x64": {
+          "runner": "windows-2025",
+          "status": "failed",
+          "attempt": "1",
+          "reportSha256": "d32612ae87ba27b218c652d5588f5abfa1f95e7b4fb39dab05a72a3fcd669fea",
+          "userPolicy": {
+            "claude": "installed-entry",
+            "codex": "installed-entry",
+            "copilot": "explicit-plugin-dir",
+            "grok": "installed-entry",
+            "opencode": "installed-entry"
+          },
+          "shippedGitToolkit": [
+            "claude",
+            "codex",
+            "copilot",
+            "opencode"
+          ]
+        }
+      },
+      "qualification": "Only a passed public manual-policy check on the named client and host is listed. A different client can fail the same run. Copilot used a plugin directory selected from native registration."
+    },
+    "antigravityUser": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661799102",
+      "version": "1.3.4",
+      "reports": {
+        "darwin-arm64": {
+          "runner": "macos-15",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "0136a66a2b6719e5d2fd8e55033416d4c3f79cf97c9302bf19a9ef8ff1099c61",
+          "publicChecksPassed": 20
+        },
+        "darwin-x64": {
+          "runner": "macos-15-intel",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "f56316e6dae3dde5f85f484d56dc37b7002c9f6e8f9ab2b14c19017cd66cb8a7",
+          "publicChecksPassed": 20
+        },
+        "linux-arm64": {
+          "runner": "ubuntu-24.04-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "ebff61be9c824fa100a7fbced7e585dd755620d10af3063c9c2655ec3ac6bfd2",
+          "publicChecksPassed": 20
+        },
+        "linux-x64": {
+          "runner": "ubuntu-24.04",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "dc45945cb1bdd41610424417ea105775b38161b63faefb110643429854bafc34",
+          "publicChecksPassed": 20
+        },
+        "win32-arm64": {
+          "runner": "windows-11-arm",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "9eaf4e4b3d06aa584143065f3baa4af6cf9a9ff0c6a270fc87a282cc87e58b10",
+          "publicChecksPassed": 20
+        },
+        "win32-x64": {
+          "runner": "windows-2025",
+          "status": "passed",
+          "attempt": "1",
+          "reportSha256": "a6a1c3ee8271b77e43ae346376395b785fbd69fd4e0c60febac853ac0880b60f",
+          "publicChecksPassed": 20
+        }
+      },
+      "observed": [
+        "real public User install with three shipped git-toolkit Skills",
+        "effective native inventory and consumer bytes",
+        "boolean policy field validation",
+        "update and remove"
+      ],
+      "manualCommandVisibility": "unverified",
+      "automaticCandidate": "unverified"
+    },
+    "cursorLinux": {
+      "run": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44661758960",
+      "runner": "ubuntu-24.04",
+      "status": "failed",
+      "attempt": "1",
+      "reportSha256": "97d3d729d153e6c88fb17aa042afdce75b7d5129f31eddff01c9bff2d4503a69",
+      "host": "linux-x64",
+      "version": "2026.11.05-86047df",
+      "clientStatus": "observed",
+      "scope": [
+        "user",
+        "project"
+      ],
+      "observed": [
+        "workspaceOpen",
+        "slash selection with body",
+        "ordinary prompt without body",
+        "client policy sent to server",
+        "update and remove"
+      ],
+      "serverEnforcement": "unverified",
+      "reportBoundary": "The Cursor fixture was observed. The separate Antigravity Project inventory check failed in this interface report."
+    }
+  }
+}

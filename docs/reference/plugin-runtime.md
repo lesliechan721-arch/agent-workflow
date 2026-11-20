@@ -212,6 +212,8 @@ feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 
 FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记；values 若有须非空、无重复。满足要求须 status=supported 且包括全部必需值。内容自动推导要求，作者 requires 只能追加，不能撤销。Skill 中声明的工具限制、模型、fork、角色、后台、Hook 等行为字段也必须进入能力判断；仅复制 metadata 不算支持。未声明字段不增加默认执行语义，纯展示字段不增加行为门槛。例如 tools=[] 要求 none，Hook feedback=block 要求该事件的 block。合法但未支持的取值可以进入 unmet，未知 ID/取值则非法。
 
+需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态 Skill 和动态 renderer 的 Skill 都完整交付正文及资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。目标能实施的部分由原生策略执行。缺少相应接口时，安装仍可成功，回执对实际安装的 Skill 给出非阻断提示。其他执行、权限或依赖要求仍按能力检查。[各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
+
 公共 Hook 的合法 matcher 可以保留在源码中。准备时，声明 matcher 的组件自动要求对应 `hook.matcher` 事件值；目标不支持时，静态组件报告具体 unmet，独立组件继续。动态集合返回超出能力的 matcher 则拒绝该批。显式 Native 声明仍须符合该宿主事件的 matcher 语法与允许规则。
 
 稳定原因码包括 client-missing、version-unsupported、interface-unsupported、scope-unsupported、capability-unverified、consumer-missing、consumer-disabled、policy-blocked。AW 的 requires.aw.capabilities 与宿主组件能力不共用集合。
@@ -246,7 +248,7 @@ Agent、Instructions、MCP 和静态声明见[Manifest](manifest-and-config.md#2
 
 Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。protocol=null 或所需反馈没有映射时不能声明 supported。协议定义与真实客户端资格分别判断；旧事件校验入口也消费此 registry，不能维护不同 allowlist。
 
-三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 SKILL.md；宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
+三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
 
 unmet 的 requiredFeatures 保留具体缺失值及 componentId。例如 before_tool 只支持 notify 而要求 block，缺口为 {feature:'hook.common.before_tool',values:['block']}。Instructions 要求 main/plugin-agents 而只支持 main，则成功组件只含 main，关联缺口只含 plugin-agents。模型、工具限制与阻断不能静默删去。依赖或配置缺口可用空 requiredFeatures，能力缺口不能借此隐藏。reasonCode 必须与当前能力依据或登记的配置/依赖原因一致。
 
@@ -357,7 +359,7 @@ AW 固定使用 bundle 内的 Node entry 执行脚本，**以 bundle plugin root
 
 ### 5.2 generic 与通用 Skills 导出
 
-generic 是安装 target 的例外，只承诺通用 Skills 文件及归属，不要求客户端，不声称特定 Agent 加载。其 writer 继续检查精确 owner 和内容，保留 foreign/shared/unknown。通用 Skill 的每个直接子目录必须完整，保留生产 README.md。
+generic 安装根据作者声明的 Skill 名称校验并写入通用目录，writer 核对 owner 和内容，保留 foreign/shared/unknown。每个直接子目录必须完整，保留生产 README.md。每个 Skill 都可保留作者的调用意图。通用文件的自动发现及实际调用取决于以后读取它的客户端，AW 安装结果会提示这一限制。
 
 明确选择 profile 的通用 Skills 导出独立于安装机制；profile 准备不依赖本机客户端，不构成真实加载资格。不得以导出成功声明该 Agent 支持其余组件或本机命令运行。
 

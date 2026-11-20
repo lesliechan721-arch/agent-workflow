@@ -37,7 +37,6 @@ const COMMON_MAPPING: Partial<Record<PlatformId, Partial<Record<HookEvent, strin
   cursor: { session_start: 'sessionStart' },
   opencode: { before_tool: 'before', after_tool: 'after' },
   pi: { before_tool: 'tool_call', after_tool: 'tool_result', session_start: 'session_start' },
-  gemini: { before_tool: 'BeforeTool', after_tool: 'AfterTool', session_start: 'SessionStart' },
   copilot: { before_tool: 'preToolUse', after_tool: 'postToolUse', session_start: 'sessionStart' },
   grok: { before_tool: 'PreToolUse', after_tool: 'PostToolUse', session_start: 'SessionStart' },
 };

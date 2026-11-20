@@ -650,17 +650,19 @@ describe('scoped inventory in Ink', () => {
       { pluginId: 'official/other' }],
       agents: ['codex', 'claude', 'generic'] });
     const previousPreferences = await observePreferences(location);
+    const targetStale = { code: 'operationReviewStale', message: '确认依据已改变。' };
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo', 'official/other'] },
       requestedRoots: ['official/demo', 'official/other'], requestedTargets: [], selection: {
         agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
-      }, blockers: [], errors: [], targetResults: [
+      }, blockers: [], errors: [targetStale], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'missing', blockers: [], requiredBy: ['official/demo'] },
         { pluginId: 'official/demo', agent: 'claude', scope: 'user',
           delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run',
-          observation: 'unknown', blockers: [], requiredBy: ['official/demo'] },
+          observation: 'unknown', blockers: [targetStale], requiredBy: ['official/demo'],
+          recoveryActions: ['aw plugin sync official/demo --context user --target claude'] },
         { pluginId: 'official/demo', agent: 'generic', scope: 'user',
           delivery: null, execution: 'not-run', observation: 'unknown',
           blockers: [{ code: 'deliveryUnsupported', message: 'blocked' }], requiredBy: ['official/demo'] },
@@ -698,6 +700,22 @@ describe('scoped inventory in Ink', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('重试明确失败项（2）'));
     expect(checkedFrame(instance, sizes[0]!)).toContain('检查未确认项（2）');
     expect(checkedFrame(instance, sizes[0]!)).toContain('重试明确失败项（2）');
+    expect(checkedFrame(instance, sizes[0]!)).not.toContain('重新准备本次操作');
+    await press(instance, 'd');
+    const details = await readScopedPages(instance, sizes[0]!);
+    expect(details).toContain('applied · verified');
+    expect(details).not.toContain('本次未执行');
+    const copy = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue();
+    try {
+      await press(instance, 'y');
+      await vi.waitFor(() => expect(copy).toHaveBeenCalled());
+      const fullText = copy.mock.calls[0]![0];
+      expect(fullText).toContain('受阻 operationReviewStale');
+      expect(fullText).toContain('aw plugin sync official/demo --context user --target claude');
+      expect(fullText).not.toContain('全局错误：operationReviewStale');
+      expect(fullText).not.toContain('本次未执行');
+    } finally { copy.mockRestore(); }
+    await press(instance, 'd');
     await focusAction(instance, '重试明确失败项（2）');
     await press(instance, '\r');
     await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(2));
@@ -724,6 +742,7 @@ describe('scoped inventory in Ink', () => {
   it('offers read-only recheck for diagnosed unknowns and retries only a known missing partial pair', async () => {
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo'] },
+      coverage: { scopes: ['user', 'project'] },
       requestedRoots: ['official/demo'], requestedTargets: [], selection: {
         agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
@@ -731,7 +750,7 @@ describe('scoped inventory in Ink', () => {
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'unknown', content: 'unknown',
           blockers: [{ code: 'nativeRecoveryFailed', message: 'diagnosed' }], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'claude', scope: 'user',
+        { pluginId: 'official/demo', agent: 'claude', scope: 'project',
           delivery: { kind: 'native', platform: 'claude' },
           execution: 'failed', observation: 'unknown', content: 'conflict',
           blockers: [{ code: 'deploymentOwnershipUnconfirmed', message: 'external content' }], requiredBy: ['official/demo'] },
@@ -747,7 +766,7 @@ describe('scoped inventory in Ink', () => {
       nativeGroups: [], portableGroups: [] } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn(async () => ({ ...plan,
       plan: { ...plan.plan, context: { dispose: async () => {} } } } as ScopedTuiPlan));
-    const loadScopedStatus = vi.fn().mockResolvedValue(recovery('user'));
+    const loadScopedStatus = vi.fn(async (scope: 'user' | 'project') => recovery(scope));
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus, prepareScopedTask,
       executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt }) });
@@ -774,7 +793,8 @@ describe('scoped inventory in Ink', () => {
     const reads = loadScopedStatus.mock.calls.length;
     await focusAction(instance, '检查未确认项（2）');
     await press(instance, '\r');
-    await vi.waitFor(() => expect(loadScopedStatus.mock.calls.length).toBeGreaterThan(reads));
+    await vi.waitFor(() => expect(new Set(loadScopedStatus.mock.calls.slice(reads).map(([scope]) => scope)))
+      .toEqual(new Set(['user', 'project'])));
     instance.unmount();
   });
 
@@ -818,6 +838,90 @@ describe('scoped inventory in Ink', () => {
     expect(resultDetails).toContain('需求变更：无');
     expect(resultDetails).toContain('输出可能改变：否');
     expect(controller.dependencies.executeScopedTask).toHaveBeenCalledTimes(1);
+    instance.unmount();
+  });
+
+  it.each([
+    { total: 3, partial: false }, { total: 3, partial: true }, { total: 1, partial: false },
+  ])('shows live progress for $total confirmed recovery targets (partial: $partial)', async ({ total, partial }) => {
+    const targets = (['codex', 'claude', 'generic'] as const).slice(0, total).map((agent) => ({
+      pluginId: 'official/demo', agent, scope: 'user' as const, delivery: null,
+    }));
+    const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
+      command: 'sync', ok: !partial, intent: { state: 'valid', roots: ['official/demo'] },
+      requestedRoots: ['official/demo'], requestedTargets: targets,
+      selection: { agents: targets.map(({ agent }) => agent), origin: 'preference', preferences: 'valid' },
+      blockers: [], errors: [], remainingTargets: partial ? [targets[2]!] : [], recoveryActions: [],
+      targetResults: targets.map((target) => partial && target.agent === 'generic'
+        ? { ...target, execution: 'partial', observation: 'unknown', content: 'unknown', requiredBy: [],
+          blockers: [{ code: 'permissionDenied', message: '/private/backend-details' }] }
+        : { ...target, execution: 'applied', observation: 'verified',
+          content: 'satisfied', blockers: [], requiredBy: [] }),
+      declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true };
+    const plan = { kind: 'recovery', scope: 'user', plan: { receipt, command: 'sync',
+      plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+      changes: [], warnings: [], context: { dispose: async () => {} },
+      nativeGroups: [], portableGroups: [] } } as unknown as ScopedTuiPlan;
+    const execution = Promise.withResolvers<{ kind: 'recovery'; receipt: RecoveryReceipt }>();
+    const executeScopedTask = vi.fn(() => execution.promise);
+    const feed = createRebuildProgressFeed();
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
+      loadScopedStatus: vi.fn().mockResolvedValue(recovery('user')),
+      prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask }, feed);
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'user' });
+    const size = sizes[1]!;
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    await press(instance, 'c');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    expect(checkedFrame(instance, size)).not.toContain('正在执行 0');
+    expect(controller.listOperationHistory()).toHaveLength(0);
+    await press(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('正在执行恢复'));
+    feed.setInstallProgress({ completed: 0, running: 1, waitingForDependencies: total === 3 ? 1 : 0,
+      waiting: total === 3 ? 1 : 0 });
+    if (total === 3) {
+      await vi.waitFor(() => {
+        const frame = checkedFrame(instance, size);
+        expect(frame).toContain('已完成 0 · 正在执行 1');
+        expect(frame).toContain('等待依赖 1 · 待执行 1');
+      });
+      feed.setInstallProgress({ completed: 1, running: 2, waitingForDependencies: 0, waiting: 0 });
+      feed.setCurrent({ target: 'Demo', phase: '写入平台插件' });
+      await vi.waitFor(() => {
+        const frame = checkedFrame(instance, size);
+        expect(frame).toContain('已完成 1 · 正在执行 2');
+        expect(frame).toContain('等待依赖 0 · 待执行 0');
+      });
+    } else {
+      await tick();
+      expect(checkedFrame(instance, size)).not.toContain('已完成 0');
+      expect(checkedFrame(instance, size)).not.toContain('等待依赖');
+    }
+    await press(instance, escape);
+    expect(checkedFrame(instance, size)).toContain('正在执行恢复');
+    expect(controller.listOperationHistory()).toHaveLength(0);
+    execution.resolve({ kind: 'recovery', receipt });
+    await vi.waitFor(() => expect(checkedFrame(instance, size)).toContain('恢复结果'));
+    expect(checkedFrame(instance, size)).not.toContain('待执行 0');
+    expect(executeScopedTask).toHaveBeenCalledOnce();
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(total > 1 ? 1 : 0);
+    if (history[0]) {
+      expect(history[0].state).toBe(partial ? 'partial' : 'succeeded');
+      const detail = controller.getOperationDiagnostic(history[0].recordId);
+      expect(detail?.targets).toEqual(targets.map(({ agent, pluginId, scope }) => expect.objectContaining({
+        platform: agent, pluginId, scope, state: partial && agent === 'generic' ? 'failed' : 'completed',
+      })));
+      if (partial) {
+        expect(detail?.diagnostics).toContainEqual(expect.objectContaining({
+          code: 'permissionDenied', target: expect.objectContaining({ platform: 'generic' }),
+        }));
+        expect(JSON.stringify(detail)).not.toContain('/private/backend-details');
+      }
+    }
     instance.unmount();
   });
 
@@ -899,6 +1003,9 @@ describe('scoped inventory in Ink', () => {
       const staleReceipt = structuredClone(base);
       staleReceipt.blockers = [{ code: 'operationReviewStale', message: '确认依据已改变，请重新检查并确认。' }];
       staleReceipt.errors = [...staleReceipt.blockers];
+      staleReceipt.targetResults = [{ pluginId: 'official/demo', agent: 'generic', scope: 'project',
+        delivery: null, execution: 'no-op', observation: 'verified', satisfaction: 'excluded',
+        blockers: [], requiredBy: ['official/demo'] }];
       const cleanPlan = { ...reviewPlan, plan: { ...reviewPlan.plan, receipt: base } } as ScopedTuiPlan;
       const prepareScopedTask = vi.fn().mockResolvedValueOnce(reviewPlan).mockResolvedValue(cleanPlan);
       const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
@@ -916,7 +1023,10 @@ describe('scoped inventory in Ink', () => {
       expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
       await escape(instance);
       await press(instance, 'c');
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+      await vi.waitFor(() => {
+        expect(prepareScopedTask).toHaveBeenCalledTimes(2);
+        expect(instance.lastFrame()).toContain('确认恢复可执行目标');
+      });
       const preparedRequest = prepareScopedTask.mock.calls[1]?.[0];
       await press(instance, '\r');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));

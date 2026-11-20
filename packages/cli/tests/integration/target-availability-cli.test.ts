@@ -21,7 +21,10 @@ describe('target CLI availability protocol', () => {
       return { exitCode, result: JSON.parse(stdout), stderr };
     };
     const listed = await execute(['target', 'list', '--json']);
-    expect(listed.exitCode).toBe(0); expect(listed.result.data.availability).toHaveLength(10);
+    expect(listed.exitCode).toBe(0);
+    expect(listed.result.data.availability.map((target: { id: string }) => target.id).sort()).toEqual([
+      'antigravity', 'claude', 'codex', 'copilot', 'cursor', 'generic', 'grok', 'opencode', 'pi',
+    ]);
     expect(listed.result.data.availability.find((item: { id: string }) => item.id === 'codex')).toMatchObject({ availability: 'available', selected: false });
     const blocked = await execute(['target', 'set', 'codex', 'copilot', '--json']);
     expect(blocked.exitCode).toBe(3); expect(blocked.result.status).toBe('blocked');

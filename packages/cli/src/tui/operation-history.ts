@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { OperationKind } from './controller.js';
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformTarget, Scope } from '../types.js';
 import {
   safeDiagnosticCode,
   sanitizeDiagnosticDetailText,
@@ -35,7 +35,7 @@ export interface SafeOperationDiagnostic {
   stage?: string;
   sourceId?: string;
   safeMessage: string;
-  target?: { pluginId?: string; platform: PlatformName; scope: Scope };
+  target?: { pluginId?: string; platform: PlatformTarget; scope: Scope };
   exitCode?: number;
   causes: Array<{ code?: string; safeMessage: string }>;
   detailLines: string[];
@@ -64,9 +64,10 @@ export interface OperationDiagnosticDetail {
 
 export interface OperationHistoryTarget {
   pluginId?: string;
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
   state: 'completed' | 'kept' | 'failed' | 'skipped';
+  partialDelivery?: true;
   errorCode?: string;
   diagnosticIds: string[];
   effects?: OperationEffectFacts;
@@ -137,8 +138,20 @@ function boundDiagnostics(
   });
 }
 
+/** Keep the full guidance on each target while showing shared actions once in a whole-operation view. */
+export function distinctRecoveryLines(lines: readonly string[], shown: Set<string>): string[] {
+  return lines.filter((line) => {
+    if (!line.startsWith('aw plugin sync ') && !line.startsWith('aw plugin status ') && !line.startsWith('在 TUI 中重新检查 ')
+      && !line.startsWith('从插件详情重新审阅安装位置。')) return true;
+    if (shown.has(line)) return false;
+    shown.add(line);
+    return true;
+  });
+}
+
 function reportContent(record: OperationHistoryRecord): string {
   const { summary } = record;
+  const shownActions = new Set<string>();
   const lines = [
     '# AW TUI operation report',
     '',
@@ -153,6 +166,7 @@ function reportContent(record: OperationHistoryRecord): string {
       '',
       `Target: ${target.pluginId ?? 'unknown'} ${target.platform}/${target.scope}`,
       `Target state: ${target.state}`,
+      ...(target.partialDelivery ? ['Delivery: some outputs verified'] : []),
       ...(target.errorCode ? [`Target code: ${target.errorCode}`] : []),
       ...(target.effects ? [`Target effects: ${JSON.stringify(target.effects)}`] : []),
     );
@@ -166,7 +180,7 @@ function reportContent(record: OperationHistoryRecord): string {
     for (const cause of diagnostic.causes) {
       lines.push(`Cause${cause.code ? ` (${cause.code})` : ''}: ${cause.safeMessage}`);
     }
-    lines.push(...diagnostic.detailLines);
+    lines.push(...distinctRecoveryLines(diagnostic.detailLines, shownActions));
     if (diagnostic.omitted) {
       lines.push(`[omitted: ${diagnostic.omitted.reason}${diagnostic.omitted.count === undefined ? '' : `, ${diagnostic.omitted.count} line(s)`}]`);
     }

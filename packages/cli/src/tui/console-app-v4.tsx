@@ -84,6 +84,7 @@ import {
 } from './components.js';
 import {
   safeDiagnosticCode,
+  sanitizeDiagnosticDetailText,
   sanitizeDiagnosticText,
   type DiagnosticSummaryViewModel,
 } from './diagnostics.js';
@@ -128,8 +129,11 @@ import {
 } from './dependency-graph.js';
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
+import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE,
+  type SkillInvocationControl, type SkillInvocationNoticeReason } from '../utils/skill-invocation-warning.js';
 import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines, componentGapLines } from './deployment-view.js';
-import { projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
+import { inventoryRecoveryActions, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
@@ -164,7 +168,8 @@ import {
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
-import type { RecoveryReceipt, RecoveryTarget } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets, recoverySummaryErrors,
+  type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
@@ -319,14 +324,16 @@ function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[
       if (!target.deploymentExclusions?.length && !target.componentGaps?.length) { unchanged += 1; continue; }
       action = '✓ 当前输出已满足';
     } else action = target.content === 'absent' || target.observation === 'missing' ? '+ 新增安装' : '↻ 同步并修复';
-    const reason = target.blockers[0] || target.reasons?.[0] ? recoveryReason((target.blockers[0] ?? target.reasons![0]!).code)
+    const diagnostic = target.blockers[0] ?? target.reasons?.find(({ code }) => code !== SKILL_INVOCATION_NOTICE);
+    const reason = diagnostic ? recoveryReason(diagnostic.code)
       : target.satisfaction === 'excluded' ? '已关闭此 Agent'
         : target.satisfaction === 'unsupported' ? '插件不支持此 Agent' : undefined;
     const label = `${action} ${recoveryPluginLabel(target.pluginId)}  ${scopeLabel(target.scope)}`;
     const key = target.agent;
     const group = groups.get(key) ?? { label: `→ ${agentLabel(target.agent)}`, targets: [] };
     group.targets.push(`${label}${reason ? ` · ${reason}` : ''}`);
-    if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt)));
+    if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target }))));
     else if (result && target.deploymentObservations) group.targets.push(...deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation)));
     group.targets.push(...deploymentExclusionLines(target.deploymentExclusions ?? []), ...componentGapLines(target.componentGaps ?? []));
     groups.set(key, group);
@@ -377,12 +384,48 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   return [...new Set(lines)].join('\n');
 }
 
+const skillInvocationExplanations: Record<SkillInvocationNoticeReason | 'app', string> = {
+  noBoundExecutor: '通用输出没有绑定执行客户端，无法保证',
+  invocationControlUnsupported: '该客户端不支持',
+  invocationControlUnverified: '尚未验证该客户端能否保证',
+  app: '尚未验证 Codex 桌面 App 能否保证',
+};
+
+function skillInvocationControlLabel({ feature, values }: SkillInvocationControl): string {
+  if (feature === 'skill.invocation.manual' || feature === 'skill.invocation.model') {
+    const invocation = feature === 'skill.invocation.manual' ? '用户显式调用' : '模型自动调用';
+    return values?.length ? values.map((value) => `${value === 'true' ? '允许' : '禁止'}${invocation}`).join('、') : invocation;
+  }
+  return values?.length ? values.map((value) => `${value === 'visible' ? '显示' : '隐藏'} Skill`).join('、') : 'Skill 可见性';
+}
+
+function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], technical = false): string[] {
+  return skillInvocationNotices(diagnostics).flatMap(({ skill, pluginId, platform, scope, reasonCode, controls, message }) => {
+    const position = `! ${pluginId} · ${agentLabel(platform)} · ${scopeLabel(scope)} · ${skill} 已安装。`;
+    if (!controls.length) {
+      return [`${position}${skillInvocationExplanations[reasonCode]}声明的调用限制。`, `  ${sanitizeDiagnosticDetailText(message)}`,
+        ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`] : [])];
+    }
+    const explanations = Object.entries(skillInvocationExplanations).flatMap(([reason, explanation]) => {
+      const affected = controls.filter((control) => (control.product ?? control.reasonCode) === reason).map(skillInvocationControlLabel);
+      return affected.length ? [`${explanation}「${affected.join('、')}」。`] : [];
+    });
+    return [`${position}${explanations.join('')}`,
+      ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`, ...controls.map((control) =>
+        `  ${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product ? ' · Codex 桌面 App' : ''}`)] : [])];
+  });
+}
+
 function scopedResultSummary(receipt: RecoveryReceipt): string {
-  return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope), ...recoveryTargetLines(receipt, true),
-    ...(receipt.declarationChanged ? ['插件清单已保存。'] : []),
-    ...(receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
+  return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope),
+    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? [])),
+    ...recoveryTargetLines(receipt, true),
+    ...(receipt.unconfirmedSavedState === 'intent' ? ['插件清单写入后的内容需要重新检查。']
+      : receipt.declarationChanged ? ['插件清单已保存。'] : []),
+    ...(receipt.unconfirmedSavedState === 'preferences' ? ['Agent 选择写入后的内容需要重新检查。']
+      : receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
     ...(receipt.configChanged ? ['插件设置已保存。'] : []),
-    ...[...new Set([...receipt.errors, ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
+    ...[...new Set([...recoverySummaryErrors(receipt), ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
       .map((reason) => `! ${reason}`),
     ...(receipt.commandResults?.length ? [`命令包：${receipt.commandResults.filter((entry) => entry.errors.length === 0).length} 项完成，${receipt.commandResults.filter((entry) => entry.errors.length > 0).length} 项需处理；详情中可查看恢复方法。`] : []),
   ].join('\n');
@@ -439,11 +482,13 @@ function scopedCommandPlanText(plan: Extract<ScopedTuiPlan, { kind: 'recovery' }
 function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
   if (!technical) return scopedResultSummary(receipt);
   const diagnostics = [...new Map([
-    ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
+    ...recoverySummaryErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
-  const reviewStale = [...receipt.blockers, ...receipt.errors]
-    .some((entry) => entry.code === 'operationReviewStale');
+  const nativeRecovery = inventoryRecoveryActions(receipt.targetResults.filter((target) => !target.deploymentReceipts?.length)
+    .flatMap((target) => [...target.blockers, ...(target.reasons ?? [])])
+    .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'
+      || entry.subject?.field === 'nativeConfigRoot'), receipt);
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -452,13 +497,17 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     `配置变更：${receipt.configChanged ? '是' : '无'}`,
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
     ...diagnostics,
-    ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
-    ...(reviewStale ? ['本次未执行，需要重新准备。'] : []),
+    ...skillInvocationResultLines(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []), true),
+    ...receipt.targetResults.flatMap((target) => (target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
+      .map((reason) => `${reason.code} · ${reason.message}`)),
+    ...(isRecoveryReviewStaleBeforeExecution(receipt) ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
-    ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt), true)
+    ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target })), true)
       : target.deploymentObservations ? deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation), true) : []),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
+    ...nativeRecovery.flatMap((action) => action.kind === 'manual' ? [action.message] : []),
     ...(receipt.commandResults ?? []).flatMap((result) => [
       `命令${result.producer.kind === 'package' ? '包' : '生产者'} ${result.producer.key} · ${result.producer.sourceId}/${result.producer.pluginName} · ${scopeLabel(result.producer.scope)}${result.producer.platform ? ` · ${platformLabel(result.producer.platform)}` : ''} · ${result.state}`,
       ...(result.recoveryActions.some((action) => action.startsWith('aw command package remove '))
@@ -468,7 +517,7 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
       ...result.errors.map((error) => `命令错误：${error.code} · ${error.message}`),
       ...result.recoveryActions.map((action) => `命令恢复：${action}`),
     ]),
-    ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent}`),
+    ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent} · ${scopeLabel(target.scope)}`),
     ...receipt.recoveryActions.map((action) => `恢复：${action}`),
   ].join('\n');
 }
@@ -1744,7 +1793,7 @@ export function resolveConsoleV4ScreenId(
 
 export interface ConsoleExitRequest {
   code: number;
-  reason: 'user' | 'initialError' | 'completed' | 'partial' | 'blocked' | 'stale';
+  reason: 'user' | 'initialError' | 'completed' | 'partial' | 'blocked' | 'stale' | 'interrupted';
 }
 
 export function ConsoleAppV4(props: {
@@ -2748,7 +2797,8 @@ export function ConsoleAppV4(props: {
     || Boolean(route.name === 'portableBlocker' && plugin)
     || Boolean(route.name === 'configUnavailable' && plugin)
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
-      && snapshot.result.operationKind === 'portableInstall'));
+      && (snapshot.result.operationKind === 'portableInstall'
+        || ('summary' in snapshot.result && snapshot.result.summary?.configDiagnostics?.length))));
   const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst && isCharacterInputMode(route, searchFocus)
     || route.name === 'operationReportPreview' && reportSaveMode;
   const canOpenHelp = !tooSmall && !characterInput && !preparationRunning;
@@ -4801,6 +4851,7 @@ export function ConsoleAppV4(props: {
       title = flow.stage === 'preparing' ? '正在准备操作汇总' : '正在执行恢复';
       description = flow.stage === 'preparing' ? '正在检查当前证据。Esc 可取消准备。'
         : '操作已开始。完成后显示每个目标结果。';
+      const installProgress = flow.stage === 'progress' ? snapshot.progress.installProgress : undefined;
       readingText = flow.stage === 'progress' ? [
         ...(snapshot.progress.current
           ? [`${snapshot.progress.current.target} · ${snapshot.progress.current.phase}`] : []),
@@ -4810,8 +4861,12 @@ export function ConsoleAppV4(props: {
       ].join('\n') : undefined;
       content = <Box flexDirection="column">
         <ProgressRow title={title} state="active" />
+        {installProgress ? <>
+          <StaticRow title={`已完成 ${installProgress.completed} · 正在执行 ${installProgress.running}`} compact />
+          <StaticRow title={`等待依赖 ${installProgress.waitingForDependencies} · 待执行 ${installProgress.waiting}`} compact />
+        </> : null}
         {readingText ? readingPage(readingText, size.columns - 6,
-          Math.max(1, pageActionBudget(4))) : null}
+          Math.max(1, pageActionBudget(installProgress ? 6 : 4))) : null}
       </Box>;
     } else if (flow.stage === 'timeout') {
       title = '设置脚本超时';
@@ -4876,17 +4931,16 @@ export function ConsoleAppV4(props: {
           : '本机工具已保存。';
       readingText = flow.receipt ? scopedResultText(flow.receipt, showTechnical)
         : (flow.errorCode ? showTechnical ? flow.errorCode : recoveryReason(flow.errorCode) : undefined) ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
-      const retryTargets = flow.receipt?.targetResults.filter((target) =>
+      const failedPositions = flow.receipt?.targetResults.filter((target) =>
         (target.execution === 'failed' || target.execution === 'partial')
         && (target.observation === 'missing' || target.content === 'absent')) ?? [];
-      const retryKeys = new Set(retryTargets.map((target) => `${target.pluginId}\0${target.agent}\0${target.scope}`));
+      const retryTargets = flow.receipt ? recoveryRetryTargets(flow.receipt, failedPositions) : [];
+      const originalCommand = flow.plan?.kind === 'recovery' ? flow.plan.plan.command : undefined;
+      const retryKeys = new Set(failedPositions.map((target) => `${target.pluginId}\0${target.agent}\0${target.scope}`));
       const unknownTargets = flow.receipt?.targetResults.filter((target) =>
         target.observation === 'unknown'
         && !retryKeys.has(`${target.pluginId}\0${target.agent}\0${target.scope}`)) ?? [];
-      const reviewStale = flow.receipt
-        ? [...flow.receipt.blockers, ...flow.receipt.errors]
-          .some((entry) => entry.code === 'operationReviewStale')
-        : false;
+      const reviewStale = flow.receipt && isRecoveryReviewStaleBeforeExecution(flow.receipt);
       actions = [
         { label: route.name === 'issueDetail' ? '返回问题详情'
           : route.name === 'pluginWriteTask' ? '返回插件任务'
@@ -4900,13 +4954,16 @@ export function ConsoleAppV4(props: {
           kind: 'recovery', scope: flow.scope, selectors: [],
         }) }] : []),
         ...(unknownTargets.length ? [{ label: `检查未确认项（${unknownTargets.length}）`, run: () => {
-          closeScopedFlow(); void props.controller.refreshScopedInventory(flow.scope);
+          closeScopedFlow();
+          for (const scope of new Set(unknownTargets.map((target) => target.scope))) {
+            void props.controller.refreshScopedInventory(scope);
+          }
         } }] : []),
         ...(retryTargets.length ? [{ label: `重试明确失败项（${retryTargets.length}）`, run: () => beginScopedTask({
-          kind: 'recovery', scope: flow.scope, command: flow.receipt!.command as 'sync',
+          kind: 'recovery', scope: flow.scope, command: originalCommand === 'install' ? 'sync' : originalCommand ?? 'sync',
           selectors: [...new Set(retryTargets.map((target) => target.pluginId))],
           targets: [...new Set(retryTargets.map((target) => target.agent))],
-          exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: target.scope })),
+          exactTargets: retryTargets,
         }) }] : []),
       ];
       content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
@@ -8989,7 +9046,9 @@ export function ConsoleAppV4(props: {
           : [])).values()].map((target): ActionItem => ({
             label: `处理 ${props.controller.getPluginOverview(target.pluginId!)!.displayName}`,
             description: '查看这个依赖的问题和可用的恢复操作',
-            run: () => go({ name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
+            run: () => go(target.platform === 'generic'
+              ? { name: 'pluginDetail', pluginId: target.pluginId! }
+              : { name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
           })),
       { label: '重试', description: '重新读取和验证当前状态', run: () => {
         props.controller.retryReviewPreparation();
@@ -9756,11 +9815,18 @@ export function ConsoleAppV4(props: {
                   : '✓ 来源配置已保存'
       : configOperation
       ? blocked
-        ? '× 设置未确认保存'
+        ? resultSummary?.configRetryApply ? '× 插件应用未完成' : '× 设置未确认保存'
         : partial ? resultSummary?.configApplySkippedReason === 'invalidConfig'
-          ? '! 设置已保存，但未应用'
-          : '! 设置已保存，但部分应用失败'
-          : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
+          ? resultSummary.configRetryApply ? '! 配置无效，应用未完成' : '! 设置已保存，但未应用'
+          : resultSummary?.configRetryApply
+            ? resultSummary.configApplied ? '! 部分插件内容已就绪' : '! 插件应用未完成'
+            : resultSummary?.configApplied && (resultSummary.configApplyRetryTargets !== undefined
+              || resultSummary.configGroups?.some((group) => group.applyStatus === 'partial'))
+              ? '! 设置已保存，部分插件内容已就绪'
+              : '! 设置已保存，但部分应用失败'
+          : resultSummary?.configRetryApply
+            ? resultSummary.configApplied ? '✓ 已应用已保存的设置' : '✓ 应用检查完成'
+            : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
           : completedTitle;
@@ -9809,7 +9875,7 @@ export function ConsoleAppV4(props: {
         : configOperation
           ? partial
             ? resultSummary?.message ?? '设置层已经保存；平台应用失败不会回滚设置。'
-            : '设置层已经更新。'
+            : resultSummary?.configRetryApply ? '状态已刷新。' : '设置层已经更新。'
           : '状态已刷新。';
     if (taskOperation && splitTaskReview?.currentScope === 'user') {
       if (!blocked && !partial) title = '✓ 所有项目范围已处理';
@@ -9822,11 +9888,15 @@ export function ConsoleAppV4(props: {
       && 'pluginId' in result.returnRoute
       ? result.returnRoute.pluginId
       : undefined);
-    const configRetryProfiles: ConfigProfileKey[] = configResultPluginId === undefined ? []
+    const configRetries: Array<{ profile: ConfigProfileKey; targets?: PlatformTarget[] }> = configResultPluginId === undefined ? []
       : operationKind === 'configSaveBatch'
-        ? resultSummary?.configGroups?.filter((group) => group.configSaved && group.applyStatus === 'failed'
-          && group.errorCode !== 'invalidConfig').map((group) => group.platform ?? 'common') ?? []
-        : resultSummary?.configApplyRetryAvailable === true ? [resultSummary.configPlatform ?? 'common'] : [];
+        ? resultSummary?.configGroups?.filter((group) => group.configSaved
+          && (group.applyStatus === 'failed' || group.applyStatus === 'partial')
+          && group.errorCode !== 'invalidConfig' && group.retryTargets?.length !== 0)
+          .map((group) => ({ profile: group.platform ?? 'common', targets: group.retryTargets })) ?? []
+        : resultSummary?.configApplyRetryAvailable === true
+          ? [{ profile: resultSummary.configPlatform ?? 'common', targets: resultSummary.configApplyRetryTargets }]
+          : [];
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
@@ -10066,8 +10136,8 @@ export function ConsoleAppV4(props: {
           label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
-          ...configRetryProfiles.map((profile) => ({
-            label: configRetryProfiles.length > 1 ? `重试应用 · ${configLayerLabel({ profile })}` : '重试应用',
+          ...configRetries.map(({ profile, targets }) => ({
+            label: configRetries.length > 1 ? `重试应用 · ${configLayerLabel({ profile })}` : '重试应用',
             description: '先重新显示操作汇总，并重新读取当前状态',
             run: () => beginReview({
               kind: 'configSave',
@@ -10076,6 +10146,7 @@ export function ConsoleAppV4(props: {
               ...configReadOptions({ profile, context: resultSummary?.configContext }),
               apply: true,
               retryApply: true,
+              ...(targets ? { targets } : {}),
               updates: {},
               removeKeys: [],
             }),
@@ -10156,7 +10227,8 @@ export function ConsoleAppV4(props: {
     }
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
-    type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'> & { platform: PlatformTarget };
+    type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'>
+      & { platform: PlatformTarget; partialDelivery?: true };
     const resultTargetName = (target: ResultTarget): string =>
       target.pluginId
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
@@ -10165,6 +10237,20 @@ export function ConsoleAppV4(props: {
     const resultStatus = blocked ? 'error' : partial ? 'warning' : 'success';
     const resultTargets: ResultTarget[] = configOperation ? resultSummary?.configTargets ?? resultSummary?.targets ?? []
       : resultSummary?.targets ?? [];
+    const configInvocationLines = skillInvocationResultLines(resultSummary?.configDiagnostics ?? [], showTechnical);
+    const configInvocationRows = configInvocationLines.flatMap((line) => wrapDisplayText(line, size.columns - 6))
+      .map((line, index) => <Text key={`config-skill:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>);
+    const configGroupRows = resultSummary?.configGroups?.map((group) => {
+      const status = group.notStarted ? 'muted' as const : !group.configSaved ? 'error' as const
+        : group.applyStatus === 'failed' || group.applyStatus === 'partial' ? 'warning' as const : 'success' as const;
+      const outcome = group.notStarted ? '尚未保存' : !group.configSaved ? '保存失败'
+        : group.applyStatus === 'failed' ? '已保存 · 应用失败'
+        : group.applyStatus === 'partial' ? '已保存 · 部分应用'
+          : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
+            : '已保存';
+      return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
+        description={group.errorCode} meta={outcome} status={status} compact />;
+    }) ?? [];
     const commandResults = resultSummary?.commandResults ?? [];
     const retainedCommandPackage = (result: typeof commandResults[number]): boolean =>
       result.producer.kind === 'package' && (resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall');
@@ -10183,8 +10269,21 @@ export function ConsoleAppV4(props: {
         : target.state === 'skipped' ? 1 : target.relation === 'requested' ? 2 : 3;
       return priority(left) - priority(right);
     });
+    const targetResultRows = prioritizedTargets.map((target) => {
+      const state = target.partialDelivery
+        ? { label: '部分完成', status: 'warning' as const }
+        : operationTargetStateLabel(target.state);
+      const relation = target.relation === 'requested' ? '你选择的插件'
+        : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined;
+      const targetDescription = configOperation
+        ? [agentLabel(target.platform), scopeLabel(target.scope), target.errorCode].filter(Boolean).join(' · ')
+        : relation;
+      return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)}
+        description={targetDescription} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
+    });
+    const generalResultRows = [...configInvocationRows, ...configGroupRows, ...targetResultRows, ...commandResultRows];
     const baseResultPaginationTotal = Math.max(
-      resultTargets.length + commandResults.length,
+      generalResultRows.length,
       taskSummary?.rootResults.reduce((count, root) =>
         count + 1 + (taskSummary.requestedTargets.filter((target) =>
           target.pluginId === root.pluginId).length), 0) ?? 0,
@@ -10268,12 +10367,13 @@ export function ConsoleAppV4(props: {
     ].join('\n') : '当前结果已变化。请返回结果摘要。' : [
       ...(taskOperation && splitTaskReview ? splitTaskLines(splitTaskReview) : []),
       resultSummary?.message ?? (blocked ? result.message : '操作结果'),
+      ...configInvocationLines,
       ...(resultSummary?.messages ?? []).map(productResultMessage),
       ...(resultSummary?.changes ?? []),
       ...(resultSummary?.warnings ?? []),
       ...(resultSummary?.recoveryActions ?? []),
       ...prioritizedTargets.map((target) =>
-        `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${operationTargetStateLabel(target.state).label}`),
+        `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${target.partialDelivery ? '部分完成' : operationTargetStateLabel(target.state).label}`),
       ...commandResults.flatMap((result) => [
         `命令生产者 ${result.producer.key} · ${scopeLabel(result.producer.scope)} · ${result.state}`,
         ...(retainedCommandPackage(result) ? [`保留命令包 ${getCommandPackageId(result.producer)} · ${result.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`] : []),
@@ -10341,19 +10441,11 @@ export function ConsoleAppV4(props: {
     const resultActionViewport = actionViewport(actions, true, focus, scrollOffset,
       currentActionViewportLineBudget);
     const resultTargetLimit = Math.max(1, prefixRowLimit(
-      [...prioritizedTargets, ...commandResults].map(() => policy.mode === 'compact' ? 1 : 2),
+      generalResultRows.map(() => policy.mode === 'compact' ? 1 : 2),
       pageActionBudget() - 3 - resultActionViewport.limit - resultExtraRows,
     ));
-    const resultTargetPage = pagedItems(prioritizedTargets.length + commandResults.length, resultTargetLimit);
-    const resultTargetOffset = resultTargetPage.offset;
-    const visibleResultTargets = prioritizedTargets.slice(
-      resultTargetOffset,
-      resultTargetOffset + resultTargetLimit,
-    );
-    const visibleCommandResultRows = commandResultRows.slice(
-      Math.max(0, resultTargetOffset - prioritizedTargets.length),
-      Math.max(0, resultTargetOffset + resultTargetLimit - prioritizedTargets.length),
-    );
+    const resultTargetPage = pagedItems(generalResultRows.length, resultTargetLimit);
+    const visibleResultRows = generalResultRows.slice(resultTargetPage.offset, resultTargetPage.offset + resultTargetLimit);
     const portableTechnicalSummary = showTechnical;
     const portableRows = visiblePortablePairs.map((pair) => {
       const status = blocked || pair.state !== 'verified' ? 'warning' as const : 'success' as const;
@@ -10395,16 +10487,6 @@ export function ConsoleAppV4(props: {
           : resultSummary?.resetDisposition === 'quarantinedDirectory'
             ? `设置路径是目录；已隔离为 ${resultSummary.quarantineBasename ?? '安全隔离目录'}`
             : undefined;
-    const configGroupRows = resultSummary?.configGroups?.map((group) => {
-      const status = !group.configSaved ? 'error' as const
-        : group.applyStatus === 'failed' ? 'warning' as const : 'success' as const;
-      const outcome = !group.configSaved ? '保存失败'
-        : group.applyStatus === 'failed' ? '已保存 · 应用失败'
-          : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
-            : '已保存';
-      return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
-        description={group.errorCode} meta={outcome} status={status} compact />;
-    }) ?? [];
     const taskRootResults = taskSummary?.rootResults ?? [];
     const blockedTaskTargets = new Map((taskSummary?.blockedTargets ?? []).map((entry) => [
       [entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0'), entry,
@@ -10501,7 +10583,7 @@ export function ConsoleAppV4(props: {
     const locationResultRows = [...(taskOperation ? taskLocationRows : batchLocationResultRows), ...commandResultRows];
     const combinedResultRows = [...pluginResultRows, ...locationResultRows];
     const actualResultRows = taskOperation || batchOperation ? combinedResultRows.length
-      : portableOperation ? prioritizedPortablePairs.length : prioritizedTargets.length + commandResults.length;
+      : portableOperation ? prioritizedPortablePairs.length : generalResultRows.length;
     const actualResultPageRows = taskOperation || batchOperation ? taskResultLimit
       : portableOperation ? portableSkillLimit : resultTargetLimit;
     if (!portableResultDetailOpen && actualResultRows > actualResultPageRows) {
@@ -10517,7 +10599,7 @@ export function ConsoleAppV4(props: {
       visibleLocationStart,
       visibleLocationStart + remainingResultRows,
     );
-    if (taskOperation || batchOperation || resultTargets.length > resultTargetLimit
+    if (taskOperation || batchOperation || resultTargetPage.pageCount > 1
       || prioritizedPortablePairs.length > portableSkillLimit) {
       help = '←→ 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
@@ -10569,7 +10651,29 @@ export function ConsoleAppV4(props: {
       {!portableResultDetailOpen && portableSkillPage.pageCount > 1
         ? <Pager page={portableSkillPage.page} pageCount={portableSkillPage.pageCount} columns={size.columns - 2} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'} meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{visibleCommandResultRows}{resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page} pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column">
+      <ResultCard status={resultStatus}
+        title={blockedDependencyFailure ? '依赖安装没有完成'
+          : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'
+            : sourceOperation ? '来源配置写入已完成'
+              : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成'
+                : resultSummary?.message ?? '状态已变化，请重新确认'}
+        meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>
+        {resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}
+        {visibleResultRows}
+        {resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page}
+          pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}
+        {partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped')
+          ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}
+        {configOperation && partial && !invalidConfigResult && configRetries.length > 0
+          ? <Callout status="warning" title="恢复指引" description="选择“重试应用”可以重新审阅未完成的平台。" /> : null}
+        {resultSummary?.elapsedMs !== undefined
+          ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}
+        {visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`}
+          title={productResultMessage(message)} status="muted" compact />)}
+      </ResultCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
+    </Box>;
   } else if (route.name === 'pluginContent' && plugin) {
     const overview = props.controller.getPluginContentOverview(plugin.pluginId);
     const contentState = props.controller.getPluginContentState(plugin.pluginId);

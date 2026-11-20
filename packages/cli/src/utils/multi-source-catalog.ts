@@ -64,6 +64,8 @@ export type WithResolvedMultiSourceCatalogOptions<T> = ResolveMultiSourceCatalog
 
 export type WithResolvedCatalogPluginOptions<T> = ResolveCatalogPluginOptions & {
   consume: (resolution: ResolvedCatalogPlugin) => Promise<T> | T;
+  /** For write callbacks that handle cancellation and return a terminal receipt. */
+  retainCompletedResultOnAbort?: true;
 };
 
 export interface ResolvedCatalogPlugin {
@@ -449,9 +451,10 @@ export async function withResolvedCatalogPlugin<T>(
     ];
     throwIfAborted(options.signal);
     const result = await options.consume(resolvedPlugin);
-    throwIfAborted(options.signal);
+    const resultSignal = options.retainCompletedResultOnAbort ? undefined : options.signal;
+    throwIfAborted(resultSignal);
     const projected = await projectLeaseSafeResult(result, protectedPaths) as LeaseSafeResult<T>;
-    throwIfAborted(options.signal);
+    throwIfAborted(resultSignal);
     return projected;
   } finally {
     if (generation.generationRoot) {

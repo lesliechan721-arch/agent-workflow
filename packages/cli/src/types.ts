@@ -16,6 +16,7 @@ import type {
   SourceIdentity,
   TrackedHookGroupIdentity,
 } from '@lesliechan721/aw-plugin-core/manifest';
+import type { Diagnostic } from './output/public-result.js';
 
 export type ArtifactSurface =
   | { kind: 'platform'; name: PlatformTarget }
@@ -352,6 +353,8 @@ export interface ConfigApplyTargetResult {
   target: ConfigApplyTargetIdentity;
   action: string;
   state: ConfigApplyTargetState;
+  /** Part of this target's output was verified even though applying the full target did not finish. */
+  partialDelivery?: true;
   message?: string;
   errorCode?: string;
   relation?: 'requested' | 'dependency';
@@ -364,7 +367,11 @@ export interface ConfigApplyError {
   message: string;
 }
 
-export type ConfigApplyResult =
+export type ConfigApplyResult = {
+  diagnostics?: Diagnostic[];
+  /** Existing User declarations observed while preparing a Project recovery. */
+  reviewedUserRoots?: readonly string[] | null;
+} & (
   | {
       state: 'skipped';
       reason: 'notRequested' | 'noConfigChange' | 'noEffectiveConfigChange' | 'noVisibleTarget';
@@ -393,7 +400,7 @@ export type ConfigApplyResult =
       targetResults: ConfigApplyTargetResult[];
       errors?: ConfigApplyError[];
       commandResults?: CommandProducerResult[];
-    };
+    });
 
 export interface ConfigFieldEntry {
   key: string;

@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import {
-  assertPlatformCapabilities, assertPluginComponent, getComponentFeatureRequirements, getUnmetFeatureRequirements,
+  assertPlatformCapabilities, assertPluginComponent, getComponentFeatureRequirements, getUnmetFeatureRequirements, isSkillInvocationFeature,
   validatePortableSkillName,
   getHookHandlerContract,
   renderHookDefinitionGroup,
@@ -10,7 +10,7 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentBinding, HostContribution, ProjectionInput, ProjectionResult, StageContext } from './contracts.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getNativePackageName } from './layout.js';
-import { ProjectionFiles, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath } from './projection-files.js';
+import { ProjectionFiles, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath, type ProjectedFile } from './projection-files.js';
 import { projectCodeExtension } from './projection-code-extension.js';
 import { bindPlatformCommandResources } from './projection-command-resources.js';
 import { generateCodexPermissionArtifacts, mergeClaudePermissions } from '../generators/permissions.js';
@@ -61,8 +61,79 @@ function agentMarkdown(input: ProjectionInput, agent: Agent, instructions: Instr
   const metadata: Record<string, unknown> = { name: nameFor(input, agent), description: content.description,
     model: content.model, tools: content.tools };
   if (platform === 'antigravity') metadata.inheritCustomizations = true;
-  const prompt = ['gemini', 'copilot', 'grok'].includes(platform) ? composedAgentPrompt(agent, instructions) : content.prompt;
+  const prompt = ['copilot', 'grok'].includes(platform) ? composedAgentPrompt(agent, instructions) : content.prompt;
   return markdown(metadata, prompt);
+}
+
+function projectSkillInvocation(platform: DeploymentBinding['platform'], component: PluginComponent, original: string,
+  metadata: Record<string, unknown>, files: Map<string, ProjectedFile>): boolean {
+  if (platform === 'codex' && Object.keys(metadata).some((field) =>
+    !['name', 'description', 'license', 'compatibility', 'metadata', 'user-invocable', 'disable-model-invocation'].includes(field))) {
+    throw new Error('platformProjectionSkillMetadataUnsupported');
+  }
+  const hasFields = Object.hasOwn(metadata, 'user-invocable') || Object.hasOwn(metadata, 'disable-model-invocation');
+  if (platform === 'generic') {
+    if (!hasFields && !component.requires?.some(({ feature }) => isSkillInvocationFeature(feature))) return false;
+    const preferences = getComponentFeatureRequirements(component, { skillText: original }).filter(({ feature }) => isSkillInvocationFeature(feature));
+    metadata.metadata = { ...(metadata.metadata as Record<string, unknown> | undefined),
+      ...Object.fromEntries(preferences.map(({ feature, values }) => [feature, [...(values ?? [])].sort().join(',')])) };
+    delete metadata['user-invocable'];
+    delete metadata['disable-model-invocation'];
+    return true;
+  }
+  if (!hasFields) return false;
+  const invocation = getComponentFeatureRequirements({ ...component, requires: [] }, { skillText: original });
+  const manual = invocation.find((requirement) => requirement.feature === 'skill.invocation.manual');
+  const model = invocation.find((requirement) => requirement.feature === 'skill.invocation.model');
+  const manualField = platform === 'claude' || platform === 'copilot' || platform === 'grok';
+  let changed = false;
+  if (manual) {
+    const visible = manual.values?.includes('true') === true;
+    if (manualField) {
+      changed = metadata['user-invocable'] !== visible;
+      metadata['user-invocable'] = visible;
+    } else {
+      if (!visible) metadata.metadata = { ...(metadata.metadata as Record<string, unknown> | undefined),
+        'skill.invocation.manual': 'false', 'skill.visibility': 'hidden' };
+      delete metadata['user-invocable'];
+      changed = true;
+    }
+  }
+  if (!model) return changed;
+  const implicit = model.values?.includes('true') === true;
+  if (platform === 'codex') {
+    const yamlFile = files.get('agents/openai.yaml');
+    const definition = yamlFile ? YAML.parse(yamlFile.bytes.toString('utf8')) as Record<string, unknown> : {};
+    if (!definition || typeof definition !== 'object' || Array.isArray(definition)) throw new Error('platformProjectionSkillPolicyInvalid');
+    const policy = (definition.policy ?? {}) as Record<string, unknown>;
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('platformProjectionSkillPolicyInvalid');
+    if (Object.hasOwn(policy, 'allow_implicit_invocation') && policy.allow_implicit_invocation !== implicit) throw new Error('platformProjectionSkillPolicyConflict');
+    definition.policy = { ...policy, allow_implicit_invocation: implicit };
+    files.set('agents/openai.yaml', { bytes: Buffer.from(YAML.stringify(definition)), mode: 0o644 });
+  } else if (platform === 'opencode') {
+    const native = (metadata.metadata ?? {}) as Record<string, unknown>;
+    const key = 'opencode/autoinvoke';
+    if (Object.hasOwn(native, key) && String(native[key]).trim().toLowerCase() !== String(implicit)) throw new Error('platformProjectionSkillPolicyConflict');
+    metadata.metadata = { ...native, [key]: String(implicit) };
+  } else {
+    if (metadata['disable-model-invocation'] !== !implicit) changed = true;
+    metadata['disable-model-invocation'] = !implicit;
+    return changed;
+  }
+  delete metadata['disable-model-invocation'];
+  return true;
+}
+
+/** Translate the author's invocation fields while preserving the complete document body. */
+export function projectSkillDocument(platform: DeploymentBinding['platform'], component: PluginComponent, name: string,
+  bytes: Buffer, files: Map<string, ProjectedFile> = new Map()): Buffer {
+  const original = bytes.toString('utf8');
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(original)!;
+  const metadata = YAML.parse(match[1]!) as Record<string, unknown>;
+  const rename = metadata.name !== name;
+  metadata.name = name;
+  const changed = projectSkillInvocation(platform, component, original, metadata, files);
+  return changed || rename ? Buffer.from(`---\n${YAML.stringify(metadata)}---\n${original.slice(match[0].length)}`) : bytes;
 }
 
 function projectSkills(input: ProjectionInput, files: ProjectionFiles, components: PluginComponent[]): void {
@@ -73,34 +144,7 @@ function projectSkills(input: ProjectionInput, files: ProjectionFiles, component
     const root = input.renderUnit.output === 'generic' ? name : `skills/${name}`;
     const skillFiles = new Map(Object.entries(component.content.files).map(([relative, resource]) => [relative, resourceBytes(input, component.id, relative, resource)]));
     const skillFile = skillFiles.get('SKILL.md')!;
-    const original = skillFile.bytes.toString('utf8');
-    const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(original)!;
-    const metadata = YAML.parse(match[1]!) as Record<string, unknown>;
-    let changed = metadata.name !== name;
-    metadata.name = name;
-    if (input.binding.platform === 'codex') {
-      if (Object.keys(metadata).some((field) => !['name', 'description', 'license', 'compatibility', 'metadata', 'user-invocable', 'disable-model-invocation'].includes(field))) throw new Error('platformProjectionSkillMetadataUnsupported');
-      const invocation = getComponentFeatureRequirements({ ...component, requires: [] }, { skillText: original });
-      if (Object.hasOwn(metadata, 'user-invocable')) {
-        if (!invocation.find((requirement) => requirement.feature === 'skill.invocation.manual')?.values?.includes('true')) throw new Error('platformProjectionSkillVisibilityUnsupported');
-        delete metadata['user-invocable'];
-        changed = true;
-      }
-      if (Object.hasOwn(metadata, 'disable-model-invocation')) {
-        const implicit = invocation.find((requirement) => requirement.feature === 'skill.invocation.model')?.values?.includes('true') ?? false;
-        const yamlFile = skillFiles.get('agents/openai.yaml');
-        const definition = yamlFile ? YAML.parse(yamlFile.bytes.toString('utf8')) as Record<string, unknown> : {};
-        if (!definition || typeof definition !== 'object' || Array.isArray(definition)) throw new Error('platformProjectionSkillPolicyInvalid');
-        const policy = (definition.policy ?? {}) as Record<string, unknown>;
-        if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('platformProjectionSkillPolicyInvalid');
-        if (Object.hasOwn(policy, 'allow_implicit_invocation') && policy.allow_implicit_invocation !== implicit) throw new Error('platformProjectionSkillPolicyConflict');
-        definition.policy = { ...policy, allow_implicit_invocation: implicit };
-        skillFiles.set('agents/openai.yaml', { bytes: Buffer.from(YAML.stringify(definition)), mode: 0o644 });
-        delete metadata['disable-model-invocation'];
-        changed = true;
-      }
-    }
-    if (changed) skillFiles.set('SKILL.md', { ...skillFile, bytes: Buffer.from(`---\n${YAML.stringify(metadata)}---\n${original.slice(match[0].length)}`) });
+    skillFiles.set('SKILL.md', { ...skillFile, bytes: projectSkillDocument(input.binding.platform, component, name, skillFile.bytes, skillFiles) });
     for (const [relative, file] of [...skillFiles].sort(([a], [b]) => a.localeCompare(b, 'en'))) {
       files.add(`${root}/${relative}`, file.bytes, [component.id], file.mode);
     }
@@ -181,12 +225,6 @@ function projectHooks(input: ProjectionInput, files: ProjectionFiles, hooks: Hoo
 function projectRules(input: ProjectionInput, files: ProjectionFiles, instructions: Instruction[]): void {
   const platform = input.binding.platform;
   if (platform === 'codex' || platform === 'claude' || platform === 'grok') return;
-  if (platform === 'gemini') {
-    if (instructions.some((instruction) => instruction.content.paths?.length)) throw new Error('platformProjectionInstructionPathsUnsupported');
-    const main = instructions.filter((instruction) => instruction.content.coverage.includes('main'));
-    if (main.length) files.add('AW_CONTEXT.md', main.map((instruction) => instruction.content.content).join('\n\n'), main.map((instruction) => instruction.id));
-    return;
-  }
   for (const instruction of instructions) {
     const name = nameFor(input, instruction);
     if (platform === 'cursor') {
@@ -209,15 +247,15 @@ function projectMcp(input: ProjectionInput, files: ProjectionFiles, mcps: Mcp[])
     const content = component.content;
     if ((platform === 'antigravity' || platform === 'pi') && content.type === 'sse') throw new Error('platformProjectionMcpTransportUnsupported');
     let server: unknown = structuredClone(content);
-    if (platform === 'gemini' || platform === 'antigravity') {
+    if (platform === 'antigravity') {
       server = content.type === 'stdio'
         ? { command: content.command, ...(content.args ? { args: [...content.args] } : {}), ...(content.env ? { env: { ...content.env } } : {}) }
-        : { [platform === 'antigravity' ? 'serverUrl' : content.type === 'http' ? 'httpUrl' : 'url']: content.url,
+        : { serverUrl: content.url,
           ...(content.headers ? { headers: { ...content.headers } } : {}) };
     }
     return [nameFor(input, component), server];
   }));
-  if (!mcps.length || ['pi', 'opencode', 'gemini'].includes(platform)) return servers;
+  if (!mcps.length || ['pi', 'opencode'].includes(platform)) return servers;
   const relative = platform === 'cursor' || platform === 'copilot' ? 'mcp.json'
     : platform === 'antigravity' ? 'mcp_config.json' : '.mcp.json';
   files.json(relative, { mcpServers: servers }, mcps.map((component) => component.id));
@@ -233,11 +271,6 @@ function projectManifest(input: ProjectionInput, files: ProjectionFiles, selecte
     return;
   }
   const has = (kind: PluginComponent['kind']): boolean => selected.some((component) => component.kind === kind);
-  if (platform === 'gemini') {
-    files.json('gemini-extension.json', { ...metadata, ...(has('mcp') ? { mcpServers: servers } : {}),
-      ...(files.files.has('AW_CONTEXT.md') ? { contextFileName: 'AW_CONTEXT.md' } : {}) });
-    return;
-  }
   if (platform === 'copilot') {
     files.json('plugin.json', { $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json', ...metadata });
     return;
@@ -338,7 +371,7 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
     ids.add(component.id);
     let skillText: string | undefined;
     if (component.kind === 'skill') skillText = resourceBytes(input, component.id, 'SKILL.md', component.content.files['SKILL.md']!).bytes.toString('utf8');
-    const requirements = getComponentFeatureRequirements(component, { skillText });
+    const requirements = getComponentFeatureRequirements(component, { skillText, deliveryOnly: true });
     if (input.capabilities.kinds[component.kind].status !== 'supported' || getUnmetFeatureRequirements(requirements, input.capabilities).length) {
       throw new Error('platformProjectionCapabilityUnsupported');
     }
@@ -370,7 +403,7 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
         const name = nameFor(input, agent);
         const relative = input.binding.platform === 'copilot' ? `com.github.copilot/agents/${name}.agent.md` : `agents/${name}.md`;
         files.add(relative, agentMarkdown(input, agent, instructions), [agent.id,
-          ...(['gemini', 'copilot'].includes(input.binding.platform) ? instructions.filter((instruction) => instruction.content.coverage.includes('plugin-agents')).map((instruction) => instruction.id) : [])]);
+          ...(input.binding.platform === 'copilot' ? instructions.filter((instruction) => instruction.content.coverage.includes('plugin-agents')).map((instruction) => instruction.id) : [])]);
       }
       const servers = projectMcp(input, files, selected.filter((component): component is Mcp => component.kind === 'mcp'));
       if (!['pi', 'opencode'].includes(input.binding.platform)) {

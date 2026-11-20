@@ -48,6 +48,7 @@ export async function runConsoleController(context: CliExecutionContext): Promis
           output: context.tuiOutput,
           render: (complete) => createElement(SessionConsoleApp, {
             host,
+            processInterruption: context.interruption,
             onExit: ({ code } = { code: 0, reason: 'user' }) => complete({ exitCode: code }),
           }),
         });

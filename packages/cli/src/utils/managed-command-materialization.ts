@@ -37,10 +37,12 @@ import {
   syncManagedCommandPackage,
   validateManagedCommandResource,
   type InstalledCommandSet,
+  type ManagedCommandPackageEvidence,
 } from './managed-command-store.js';
 import { resolveCanonicalRepoProjectKey } from './state-paths.js';
 import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import { readSafeOperationError } from './safe-operation-diagnostic.js';
 import { AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH, AW_RUNTIME_NATIVE_RECEIPT_PATH } from '@lesliechan721/aw-plugin-core';
 
@@ -298,6 +300,7 @@ export async function syncPluginManagedCommandPackage(options: {
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
   managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
+  expectedPackage?: ManagedCommandPackageEvidence;
 }): Promise<CommandProducerResult> {
   const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: options.packageKey } });
   const key = getCommandPackageId(producer);
@@ -309,11 +312,10 @@ export async function syncPluginManagedCommandPackage(options: {
         candidate = await prepareManagedCommandPackage(options);
         const old = await listManagedCommandPackages(options.env);
         const previousIds = old.packages.find((entry) => entry.id === key)?.sets.flatMap((set) => set.commandIds) ?? [];
-        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env });
+        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env, expectedPackage: options.expectedPackage });
         return { producer, state: 'completed' as const, commandIds: synced.commandIds, removedCommandIds: previousIds.filter((id) => !synced.commandIds.includes(id)), errors: [], recoveryActions: [] };
       } catch (error) {
-        if (options.signal?.aborted || error instanceof Error && error.name === 'AbortError'
-          || readSafeOperationError(error)) throw error;
+        if (recoveryInterruptionCode(error, options.signal) || readSafeOperationError(error)) throw error;
         return { producer, state: 'failed' as const, commandIds: [], removedCommandIds: [], errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command package sync ${producer.sourceId}/${producer.pluginName} ${producer.key} --scope ${producer.scope} --yes`] };
       } finally { await candidate?.cleanup(); }
     })();

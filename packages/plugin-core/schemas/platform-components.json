@@ -19,7 +19,6 @@
         "cursor",
         "opencode",
         "pi",
-        "gemini",
         "copilot",
         "grok",
         "generic"
@@ -4426,7 +4425,6 @@
             "cursor",
             "opencode",
             "pi",
-            "gemini",
             "copilot",
             "grok"
           ]
@@ -4483,7 +4481,6 @@
             "cursor",
             "opencode",
             "pi",
-            "gemini",
             "copilot",
             "grok"
           ]

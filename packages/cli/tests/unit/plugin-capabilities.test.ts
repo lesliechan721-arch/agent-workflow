@@ -42,9 +42,9 @@ describe('plugin capabilities command', () => {
       }),
       expect.objectContaining({
         field: 'platforms',
-        acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'],
-        profiles: 'codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic',
-        requires: expect.stringContaining('all ten canonical targets'),
+        acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'],
+        profiles: 'codex, claude, antigravity, cursor, opencode, pi, copilot, grok, generic',
+        requires: expect.stringContaining('all canonical targets'),
       }),
       expect.objectContaining({
         field: 'skills',

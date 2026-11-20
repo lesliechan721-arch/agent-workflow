@@ -178,7 +178,8 @@ describe('native intentional empty currentness', () => {
       units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
     const before = await digest();
     await fs.outputFile(path.join(rootDir, 'unrelated.txt'), 'surplus bundle data');
-    profile.features['skill.invocation.model']!.values = ['false'];
+    const modelInvocation = profile.skillInvocation!.features.find(({ feature }) => feature === 'skill.invocation.model')!;
+    modelInvocation.values = ['false'];
     profile.kinds.agent = { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] };
     expect(await digest()).toBe(before);
     await fs.appendFile(skill, 'Changed Skill instructions.\n');
@@ -187,7 +188,7 @@ describe('native intentional empty currentness', () => {
     await fs.writeFile(attachment, Buffer.from([0xff, 0x02]));
     const afterAttachment = await digest();
     expect(afterAttachment).not.toBe(afterBody);
-    profile.features['skill.invocation.model']!.values = ['true'];
+    modelInvocation.values = ['true'];
     expect(await digest()).not.toBe(afterAttachment);
   });
 });

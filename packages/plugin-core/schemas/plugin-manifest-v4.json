@@ -37,7 +37,6 @@
           "cursor",
           "opencode",
           "pi",
-          "gemini",
           "copilot",
           "grok",
           "generic"
@@ -134,9 +133,6 @@
               "$ref": "#/$defs/configPlatformProfile"
             },
             "generic": {
-              "$ref": "#/$defs/configPlatformProfile"
-            },
-            "gemini": {
               "$ref": "#/$defs/configPlatformProfile"
             },
             "copilot": {
@@ -449,7 +445,6 @@
                 "cursor",
                 "opencode",
                 "pi",
-                "gemini",
                 "copilot",
                 "grok"
               ]
@@ -476,7 +471,6 @@
                 "cursor",
                 "opencode",
                 "pi",
-                "gemini",
                 "copilot",
                 "grok"
               ]
@@ -534,7 +528,6 @@
               "cursor",
               "opencode",
               "pi",
-              "gemini",
               "copilot",
               "grok"
             ]
@@ -786,32 +779,6 @@
           ]
         },
         "pi": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [],
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "allow": {
-                  "$ref": "#/$defs/permissionCommands"
-                },
-                "ask": {
-                  "$ref": "#/$defs/permissionCommands"
-                },
-                "deny": {
-                  "$ref": "#/$defs/permissionCommands"
-                }
-              }
-            }
-          ]
-        },
-        "gemini": {
           "anyOf": [
             {
               "type": "null"
@@ -1581,57 +1548,6 @@
               },
               "uniqueItems": true
             },
-            "gemini": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "event",
-                  "feedback",
-                  "command"
-                ],
-                "properties": {
-                  "event": {
-                    "enum": [
-                      "BeforeTool",
-                      "AfterTool",
-                      "SessionStart",
-                      "SessionEnd",
-                      "BeforeAgent",
-                      "AfterAgent"
-                    ]
-                  },
-                  "matcher": {
-                    "type": "string"
-                  },
-                  "command": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
-                  },
-                  "feedback": {
-                    "enum": [
-                      "notify",
-                      "context",
-                      "block"
-                    ]
-                  },
-                  "requires": {
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/$defs/featureRequirement"
-                    },
-                    "uniqueItems": true
-                  }
-                }
-              },
-              "uniqueItems": true
-            },
             "copilot": {
               "type": "array",
               "items": {
@@ -1944,9 +1860,6 @@
             "generic": {
               "$ref": "#/$defs/fileRules"
             },
-            "gemini": {
-              "$ref": "#/$defs/fileRules"
-            },
             "copilot": {
               "$ref": "#/$defs/fileRules"
             },
@@ -2028,7 +1941,6 @@
                     "cursor",
                     "opencode",
                     "pi",
-                    "gemini",
                     "copilot",
                     "grok",
                     "generic"
@@ -2071,7 +1983,6 @@
                     "cursor",
                     "opencode",
                     "pi",
-                    "gemini",
                     "copilot",
                     "grok",
                     "generic"
@@ -2148,16 +2059,6 @@
           ]
         },
         "generic": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "boolean"
-            }
-          ]
-        },
-        "gemini": {
           "anyOf": [
             {
               "type": "string"
@@ -7494,47 +7395,6 @@
             }
           ]
         },
-        "gemini": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "title": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "content": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "paths": {
-                  "$ref": "#/$defs/stringArray"
-                },
-                "coverage": {
-                  "type": "array",
-                  "items": {
-                    "enum": [
-                      "main",
-                      "plugin-agents",
-                      "other-agents"
-                    ]
-                  },
-                  "uniqueItems": true,
-                  "minItems": 1
-                }
-              },
-              "required": []
-            }
-          ]
-        },
         "copilot": {
           "anyOf": [
             {
@@ -7866,46 +7726,6 @@
           ]
         },
         "pi": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "description": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "prompt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "tools": {
-                  "$ref": "#/$defs/stringArray"
-                },
-                "model": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "promptMode": {
-                  "enum": [
-                    "host-default",
-                    "append",
-                    "replace"
-                  ]
-                }
-              },
-              "required": []
-            }
-          ]
-        },
-        "gemini": {
           "anyOf": [
             {
               "type": "null"
@@ -8288,49 +8108,6 @@
           ]
         },
         "pi": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "event": {
-                  "enum": [
-                    "before_tool",
-                    "after_tool",
-                    "session_start"
-                  ]
-                },
-                "matcher": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "command": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "feedback": {
-                  "enum": [
-                    "notify",
-                    "context",
-                    "block"
-                  ]
-                },
-                "requires": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/featureRequirement"
-                  },
-                  "uniqueItems": true
-                }
-              },
-              "required": []
-            }
-          ]
-        },
-        "gemini": {
           "anyOf": [
             {
               "type": "null"

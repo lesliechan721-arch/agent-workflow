@@ -5,7 +5,7 @@ import { resolvePlatformConfigRoot } from './discovery.js';
 import type { ComponentKind, DeploymentBinding, InstallRoute, NativeIdentity, PhysicalIdentity, PluginIdentity, ReadContext, RenderUnit, Resolution, ResolveRequest, ScopeRef } from './contracts.js';
 
 const ALL_KINDS: ComponentKind[] = ['skill', 'mcp', 'agent', 'hook', 'instruction'];
-const SHARED_USER_PACKAGES = new Set<DeploymentBinding['platform']>(['codex', 'claude', 'gemini', 'copilot']);
+const SHARED_USER_PACKAGES = new Set<DeploymentBinding['platform']>(['codex', 'claude', 'copilot']);
 export function hasSharedUserPackage(platform: DeploymentBinding['platform']): boolean {
   return SHARED_USER_PACKAGES.has(platform);
 }
@@ -35,7 +35,6 @@ export function getInstallRoute(platform: DeploymentBinding['platform'], scope: 
     case 'antigravity': return scope.kind === 'user' && product.entry?.kind === 'cli' ? 'antigravity-cli' : 'antigravity-directory';
     case 'opencode': return 'opencode-directory';
     case 'pi': return 'pi-package';
-    case 'gemini': return 'gemini-extension';
     case 'copilot': return 'copilot-marketplace';
     case 'grok': return scope.kind === 'user' ? 'grok-cli' : 'grok-directory';
     case 'generic': return 'generic-skills';
@@ -76,9 +75,6 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
         kinds = kinds.filter((kind) => kind !== 'agent');
         supplementRoot = path.join(activationPath, 'agents');
       }
-      break;
-    case 'gemini-extension':
-      activationPath = scope.kind === 'user' ? hostRoot : path.join(scopeRoot, '.gemini');
       break;
     case 'cursor-workspace-hook':
       namespaceRoot = scope.kind === 'user' ? hostRoot : path.join(scopeRoot, '.cursor');

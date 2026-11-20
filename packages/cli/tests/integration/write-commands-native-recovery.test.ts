@@ -524,10 +524,11 @@ describe('five namespaced write commands', () => {
     expect(runtime.installed).toEqual(new Set());
     expect(runtime.nativeCliRunner.mock.calls.filter(([invocation]) => invocation.args.includes('plugin')
       && !invocation.args.includes('list'))).toEqual([]);
-    await expect(fs.pathExists(path.join(counterRoot, 'render-count-alpha.txt')))
-      .resolves.toBe(false);
-    await expect(fs.pathExists(path.join(counterRoot, 'pre-apply-alpha.txt')))
-      .resolves.toBe(false);
+    await expect(fs.pathExists(codexLayout.marketplaceRoot!)).resolves.toBe(false);
+    for (const { name } of definitions) {
+      await expect(fs.pathExists(path.join(counterRoot, `render-count-${name}.txt`))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(counterRoot, `pre-apply-${name}.txt`))).resolves.toBe(false);
+    }
 
     const result = await installFixturePlugin(['team/alpha', 'team/beta'], {
       cwd: isolation.layout.fixtureCwd,

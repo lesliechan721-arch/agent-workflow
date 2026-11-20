@@ -7,7 +7,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { assertCommand, execute, repoRoot, sha256 } from './native-platform-runtime.mjs';
+import { assertCommand, execute, repoRoot } from './native-platform-runtime.mjs';
+import { officialSource } from './native-platform-shipped-git.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 
 const fixtureToken = 'aw-native-qualification-fixture-credential';
@@ -336,15 +337,8 @@ async function installedRole(ctx, listed, source, { plugin, skill, role }) {
 }
 
 export async function qualifyPublicCodexBehavior(ctx) {
-  const source = 'qualification-official';
+  const source = officialSource;
   const installed = await ctx.check('public-codex-official-role-materialization', async () => {
-    const catalog = path.join(ctx.root, 'official-candidate');
-    await fs.cp(path.join(repoRoot, 'packages/cli/plugins-dist'), catalog, { recursive: true });
-    const identity = `sha256:${sha256('aw-native-qualification-official-candidate')}`;
-    await fs.writeFile(path.join(catalog, '.aw-generated.json'), JSON.stringify({ schemaVersion: 1, kind: 'catalog',
-      workspaceIdentity: identity, sourceIdentity: identity }), { flag: 'wx' });
-    await ctx.aw(['source', 'add', source, '--path', catalog, '--no-auto-check', '--yes']);
-    await ctx.aw(['source', 'sync', source, '--yes']);
     // This public operation installs two renderers and verifies both native deployments.
     await ctx.aw(['plugin', 'install', `${source}/codex-enhance`, '--scope', 'user', '--target', 'codex', '--yes'],
       ctx.project, { timeoutMs: 180_000 });

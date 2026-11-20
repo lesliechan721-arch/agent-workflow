@@ -1,8 +1,14 @@
 import path from 'node:path';
+import os from 'node:os';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
+import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
+import { runCli } from '../../src/index.js';
+import { createCapturedCliIo, runCliEntry } from '../helpers/cli-entry.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import fs from 'fs-extra';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -17,7 +23,8 @@ import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from 
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
-import type { NativeCliRunner } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
+import type { CommandResult } from '../../src/output/public-result.js';
 
 // The real adapter publishes and inspects the package. The Pi command boundary
 // reports registration only; it does not report activation, trust or loading.
@@ -60,7 +67,7 @@ async function runPublicLifecycle(...args: Parameters<typeof executePublicLifecy
   });
 }
 
-async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'; targets?: string[]; sourceId?: string; name?: string }={}) {
+async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'; targets?: string[]; sourceId?: string; name?: string; platforms?: Array<'generic' | 'pi' | 'claude'>; scriptBody?: string; manualSkill?: boolean }={}) {
   const isolation=getCurrentSourceTestIsolation();
   const sourceId = options.sourceId ?? 'team';
   const name = options.name ?? 'demo';
@@ -68,20 +75,22 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
   const source=path.join(isolation.layout.fixtureCwd, `public-source-${sourceId}`);
   await fs.ensureDir(cwd); await git(cwd, ['init', '--quiet']);
   const root=path.join(source, 'plugins', name);
-  for(const folder of ['skills', 'generic/skills', 'pi/skills']) {
-    await fs.outputFile(path.join(root, folder, name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
+  const platforms = options.platforms ?? ['generic', 'pi'];
+  for(const folder of ['skills', ...platforms.map((platform) => `${platform}/skills`)]) {
+    const policy = options.manualSkill ? 'user-invocable: true\ndisable-model-invocation: true\n' : '';
+    await fs.outputFile(path.join(root, folder, name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n${policy}---\nUse ${name}.\n`);
     await fs.outputFile(path.join(root, folder, name, 'README.md'), 'Use demo.\n');
   }
   if(options.script) await fs.outputFile(path.join(root, 'pre-apply.mjs'), "import fs from 'node:fs'; const input = JSON.parse(fs.readFileSync(0, 'utf8'));\n"
-    + (options.script === 'fail-pi' ? "if (input.target.platform === 'pi') process.exit(7);\n" : ''));
+    + (options.scriptBody ?? '') + (options.script === 'fail-pi' ? "if (input.target.platform === 'pi') process.exit(7);\n" : ''));
   await createDependencyCatalogSnapshotFixture(source, [{
     name, configureManifest: (manifest) => {
-      manifest.platforms=['generic', 'pi']; manifest.skills='./skills'; delete manifest.extensions;
+      manifest.platforms=platforms; manifest.skills='./skills'; delete manifest.extensions;
       if(options.script) manifest.scripts={ preApply: { path: './pre-apply.mjs' } };
     }
   }]);
   const plugin=await readPluginManifest(root, { mode: 'bundle' });
-  for(const target of ['generic', 'pi']) await fs.outputJson(path.join(root, target, 'skills', name, 'aw-plugin-requirements.json'),
+  for(const target of platforms) await fs.outputJson(path.join(root, target, 'skills', name, 'aw-plugin-requirements.json'),
     createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities??[]));
   const catalog=path.join(source, 'catalog-manifest.json');
   await fs.writeJson(catalog, { ...await fs.readJson(catalog), entries: [await createCatalogManifestV7Entry(plugin, root)] });
@@ -104,6 +113,192 @@ describe('public plugin lifecycle', () => {
     await fs.chmod(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 0o755);
     isolation.env.PATH = `${bin}${path.delimiter}${isolation.env.PATH ?? ''}`;
   });
+  it('publishes a manual Skill and reports the invocation limit in text and the v2 receipt', async () => {
+    const { location, output } = await fixture({ targets: ['generic'], platforms: ['generic'], manualSkill: true });
+    const installed = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes'], location);
+    expect(installed.exitCode, installed.stdout + installed.stderr).toBe(0);
+    expect(installed.stdout.match(/Warning · team\/demo \/ generic \/ project/gu)).toHaveLength(1);
+    expect(installed.stdout).toContain('no bound host');
+    expect(installed.stdout).toContain('skill.invocation.manual=true');
+    expect(installed.stdout).toContain('skill.invocation.model=false');
+    expect(installed.stderr).not.toContain('skillInvocationPolicyNotGuaranteed');
+    await expect(fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).resolves.toContain('Use demo.');
+
+    const synced = await runCliEntry(['plugin', 'sync', 'team/demo', '--context', 'project', '--rebuild', '--yes', '--json'], location);
+    expect(synced.exitCode, synced.stdout + synced.stderr).toBe(0);
+    const receipt = synced.parseJsonStdout<CommandResult<LifecycleData>>();
+    expect(receipt).toMatchObject({ schemaVersion: 2, status: 'success', data: { remainingTargets: [],
+      targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'generic', scope: 'project', blockerCodes: [] })] },
+      nextActions: [] });
+    expect(receipt.diagnostics.filter(({ code }) => code === 'skillInvocationPolicyNotGuaranteed')).toEqual([
+      expect.objectContaining({ severity: 'warning', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project', field: 'skill.demo' },
+        detail: { reasonCode: 'noBoundExecutor', skillInvocationControls: expect.arrayContaining([
+          { feature: 'skill.invocation.manual', values: ['true'], reasonCode: 'noBoundExecutor' },
+          { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'noBoundExecutor' },
+          { feature: 'skill.visibility', values: ['visible'], reasonCode: 'noBoundExecutor' },
+        ]) } }),
+    ]);
+  });
+
+  it('retains a delivered Skill warning when an independent platform fails', async () => {
+    const { location, output } = await fixture({ targets: ['generic', 'pi'], manualSkill: true, script: 'fail-pi' });
+    const installed = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes', '--json'],
+      { ...location, nativeCliRunner: piRunner });
+    expect(installed.exitCode, installed.stdout + installed.stderr).toBe(4);
+    const receipt = installed.parseJsonStdout<CommandResult<LifecycleData>>();
+    expect(receipt).toMatchObject({ status: 'partial', data: { remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }] },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
+          subject: { pluginId: 'team/demo', target: 'generic', scope: 'project', field: 'skill.demo' } }),
+        expect.objectContaining({ severity: 'error', subject: expect.objectContaining({ target: 'pi' }) }),
+      ]) });
+    await expect(fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).resolves.toContain('Use demo.');
+  });
+  it.each([
+    { cores: 4, overlap: true }, { cores: 1, overlap: false },
+  ])('overlaps independent Claude and Pi installs only with capacity (cores=$cores)', async ({ cores, overlap }) => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const events: string[] = [];
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'] });
+    const activeInstalls = new Set<string>();
+    const gate = Promise.withResolvers<void>();
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
+    let timer: NodeJS.Timeout | undefined;
+
+    const runner: NativeCliRunner = async (invocation) => {
+      const pi = ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase());
+      const run = pi ? piRunner : claude.nativeCliRunner;
+      const host = pi ? 'pi' : 'claude';
+      if (!invocation.args.includes('install')) return run(invocation);
+      events.push('start-install-' + host);
+      activeInstalls.add(host);
+      try {
+        if (activeInstalls.size === 2) { clearTimeout(timer); gate.resolve(); }
+        else timer ??= setTimeout(() => { events.push('install-gate-expired'); gate.resolve(); }, 3000);
+        await gate.promise;
+        return await run(invocation);
+      } finally {
+        activeInstalls.delete(host);
+        events.push('end-install-' + host);
+      }
+    };
+    try {
+      const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, { nativeCliRunner: runner });
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+      const claudeStart = events.indexOf('start-install-claude');
+      const piStart = events.indexOf('start-install-pi');
+      const claudeEnd = events.indexOf('end-install-claude');
+      const piEnd = events.indexOf('end-install-pi');
+      expect(Math.min(claudeStart, piStart, claudeEnd, piEnd), events.join(', ')).toBeGreaterThanOrEqual(0);
+      expect(Math.max(claudeStart, piStart) < Math.min(claudeEnd, piEnd), events.join(', ')).toBe(overlap);
+      expect(events.includes('install-gate-expired'), events.join(', ')).toBe(!overlap);
+      expect(result.data).toMatchObject({ targetResults: expect.arrayContaining([
+        expect.objectContaining({ target: 'claude', execution: 'applied', content: 'satisfied' }),
+        expect.objectContaining({ target: 'pi', execution: 'applied', content: 'satisfied' }),
+      ]) });
+    } finally { clearTimeout(timer); gate.resolve(); parallelism.mockRestore(); }
+  });
+
+  it('runs each preApply alone before its host writes', async () => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true });
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const runScript = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
+    const completedScripts: string[] = [];
+    let activeScripts = 0;
+    let activeWrites = 0;
+    const script = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(async (invocation, options) => {
+      const host = JSON.parse(invocation.stdin!).target.platform;
+      expect(activeScripts).toBe(0);
+      expect(activeWrites).toBe(0);
+      activeScripts++;
+      try {
+        const result = await runScript(invocation, options);
+        completedScripts.push(host);
+        return result;
+      } finally { activeScripts--; }
+    });
+    const installs: string[] = [];
+    const runner: NativeCliRunner = async (invocation) => {
+      const pi = ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase());
+      const run = pi ? piRunner : claude.nativeCliRunner;
+      const host = pi ? 'pi' : 'claude';
+      if (!['add', 'install', 'enable'].some((command) => invocation.args.includes(command))) return run(invocation);
+      expect(activeScripts).toBe(0);
+      expect(completedScripts).toContain(host);
+      if (invocation.args.includes('install')) installs.push(host);
+      activeWrites++;
+      try { return await run(invocation); }
+      finally { activeWrites--; }
+    };
+    try {
+      const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, { nativeCliRunner: runner });
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+      expect(completedScripts.sort()).toEqual(['claude', 'pi']);
+      expect(installs.sort()).toEqual(['claude', 'pi']);
+      const status = await runPublicPluginStatus(['team/demo'], location, { nativeCliRunner: runner });
+      expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
+        expect.objectContaining({ target: 'claude', content: 'satisfied' }), expect.objectContaining({ target: 'pi', content: 'satisfied' }),
+      ]) })] });
+    } finally { parallelism.mockRestore(); script.mockRestore(); }
+  });
+
+  it('rechecks the package after preApply writes there and finishes the other host', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const cwd = path.join(isolation.layout.fixtureCwd, 'public-project');
+    await fs.ensureDir(cwd);
+    const pi = await getNativeTestLayout({ platform: 'pi', pluginId: 'team/demo', scope: 'project', env: isolation.env, cwd });
+    const foreignFile = path.join(pi.packageRoot, 'foreign.txt');
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true,
+      scriptBody: `if (input.target.platform === 'pi') {
+        fs.mkdirSync(${JSON.stringify(pi.packageRoot)}, { recursive: true });
+        fs.writeFileSync(${JSON.stringify(foreignFile)}, 'from preApply');
+      }` });
+    const runner: NativeCliRunner = (invocation) => ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())
+      ? piRunner(invocation) : claude.nativeCliRunner(invocation);
+    const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, { nativeCliRunner: runner });
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('partial');
+    expect(result.data).toMatchObject({ targetResults: expect.arrayContaining([
+      expect.objectContaining({ target: 'pi', execution: 'failed' }),
+      expect.objectContaining({ target: 'claude', execution: 'applied', observation: 'verified', content: 'satisfied' }),
+    ]) });
+    expect(await fs.readFile(foreignFile, 'utf8')).toBe('from preApply');
+    expect(await fs.readdir(pi.packageRoot)).toEqual(['foreign.txt']);
+  });
+
+  it.each([false, true])('stops the other host when its peer cannot clean up preApply (SIGINT %s)', async (interrupt) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true });
+    const controller = new AbortController();
+    const interruption = { signal: controller.signal, exitCode: 130 as const, cleanupFailed: false };
+    const scripts: string[] = [];
+    const writes: string[] = [];
+    const script = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(async (invocation) => {
+      scripts.push(JSON.parse(invocation.stdin!).target.platform);
+      if (interrupt) controller.abort(Object.assign(new Error('SIGINT'), { name: 'AbortError' }));
+      throw attachSafeOperationError(new Error('Unconfirmed descendants'), { code: 'pluginProcessCleanupFailed',
+        safeMessage: 'Plugin process cleanup could not be confirmed.' });
+    });
+    try {
+      const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, {
+        interruption, signal: controller.signal, nativeCliRunner: async (invocation) => {
+          if (['add', 'install', 'enable'].some((command) => invocation.args.includes(command))) writes.push(invocation.command);
+          return ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())
+            ? piRunner(invocation) : claude.nativeCliRunner(invocation);
+        },
+      });
+      expect(scripts).toHaveLength(1);
+      expect(writes).toEqual([]);
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'processCleanupUnconfirmed' }));
+      expect(result.data).toMatchObject({ changes: { outputs: 'unknown' }, targetResults: expect.arrayContaining([
+        expect.objectContaining({ target: scripts[0], execution: 'partial', content: 'unknown' }),
+        expect.objectContaining({ target: scripts[0] === 'pi' ? 'claude' : 'pi', execution: 'not-run' }),
+      ]) });
+    } finally { script.mockRestore(); }
+  });
+
   it('retains every producer result when removing Active and retired plugins together', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -176,7 +371,20 @@ describe('public plugin lifecycle', () => {
       const catalog = path.join(source, 'catalog-manifest.json');
       await fs.writeJson(catalog, { ...await fs.readJson(catalog), catalogVersion: '1.0.1' });
     }
-    if (failureStage === 'fetch') await fs.remove(second.source);
+    if (failureStage === 'fetch') {
+      await fs.remove(second.source);
+      const args = ['plugin', 'sync', '--context', 'project', '--refresh'];
+      const review = await runCliEntry([...args, '--json'], { ...location, nativeCliRunner: piRunner });
+      expect(review.exitCode, review.stdout).toBe(3);
+      expect(review.parseJsonStdout()).toMatchObject({
+        status: 'blocked', data: { changes: { sources: 'none', outputs: 'none' },
+          confirmation: { required: true, provided: false, effects: [expect.objectContaining({ code: 'changeSource' })] } },
+        nextActions: [
+          expect.objectContaining({ kind: 'command', argv: ['aw', ...args], requiresConfirmation: true }),
+          expect.objectContaining({ kind: 'command', argv: ['aw', 'source', 'sync', 'beta'] }),
+        ],
+      });
+    }
     let interrupted = false;
     const result = await runPublicLifecycle('sync', plugins, { ...location, refresh: true, yes: true }, {
       debugLogger: { log: async (event) => {
@@ -208,6 +416,58 @@ describe('public plugin lifecycle', () => {
     expect(await fs.pathExists(output)).toBe(true);
   });
 
+  it.each([false, true])('preserves a verified generic target when the Pi install is interrupted (cleanup failed: %s)', async (cleanupFailed) => {
+    const { location, output } = await fixture({ targets: ['generic', 'pi'] });
+    const signal = 'SIGINT';
+    const previous = new Set(process.listeners(signal));
+    const capture = createCapturedCliIo();
+    let handler: NodeJS.SignalsListener;
+    let genericFinished = false;
+    let piStarted = false;
+    const interrupt = () => {
+      if (genericFinished && piStarted) handler(signal);
+    };
+    const running = runCli(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes', '--json'], {
+      cwd: location.cwd, env: location.env, interactive: false, io: capture.io,
+      nativeCliRunner: async (invocation) => {
+        if (invocation.args[0] !== 'install') return piRunner(invocation);
+        // Pi has persisted its registration but has not returned a result to AW.
+        await piRunner(invocation);
+        piStarted = true;
+        interrupt();
+        if (!invocation.signal!.aborted) await new Promise<void>((resolve) => invocation.signal!.addEventListener('abort', () => resolve(), { once: true }));
+        if (cleanupFailed) throw new NativeCliError({ invocation, stdout: '', stderr: '', exitCode: 1,
+          cleanupError: new Error('The controlled Pi process did not confirm cleanup.') });
+        throw invocation.signal!.reason;
+      },
+      debugLogger: { log(event) {
+        if (event.data?.name === 'recovery.child.execute' && event.data.phase === 'success') {
+          genericFinished = true;
+          interrupt();
+        }
+      } },
+    });
+    // In this Vitest process deliver SIGINT only to the current CLI handler.
+    const listeners = process.listeners(signal).filter((entry) => !previous.has(entry));
+    expect(listeners).toHaveLength(1);
+    handler = listeners[0]!;
+    expect(await running).toBe(cleanupFailed ? 1 : 130);
+    const result: Awaited<ReturnType<typeof runPublicLifecycle>> = JSON.parse(capture.readStdout());
+    expect(result).toMatchObject({ status: 'partial', data: {
+      changes: { requirements: 'changed', outputs: 'changed' },
+      targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi', execution: 'partial', observation: 'unknown' }),
+        expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })]),
+      remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }],
+    } });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted' }));
+    expect(result.nextActions.filter((action) => action.kind === 'command').map((action) => action.argv)).toEqual([
+      ['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'pi'],
+    ]);
+    expect(await fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).toContain('Use demo.');
+    const retried = await runPublicLifecycle('sync', ['team/demo'], { ...location, targets: ['pi'], yes: true });
+    expect(retried, JSON.stringify(retried)).toMatchObject({ status: 'success', data: { remainingTargets: [] } });
+  });
+
   it('shows removal effects and observed targets before changing a requirement', async () => {
     const { location, output } = await fixture();
     expect((await runPublicLifecycle('install', ['team/demo'], location)).status).toBe('success');
@@ -237,19 +497,34 @@ describe('public plugin lifecycle', () => {
     expect((await readCatalogGenerationState(location.env)).sources.team?.active).toBeUndefined();
   });
 
-  it('does not activate a first source or save requirements before script confirmation', async () => {
-    const { location, output }=await fixture({ active: false, script: true });
-    const result=await runPublicLifecycle('install', ['team/demo'], location);
-    expect(result.status).toBe('blocked');
-    expect((result.data as LifecycleData).confirmation).toMatchObject({ required: true, provided: false, effects: [expect.objectContaining({ code: 'runPreApply' })] });
-    expect(Object.values((result.data as LifecycleData).changes)).toEqual(['none', 'none', 'none', 'none', 'none']);
+  it('returns the original install request without activating a first source or saving requirements before script confirmation', async () => {
+    const { location, output } = await fixture({ active: false, script: true });
+    const args = ['plugin', 'install', 'demo', '--scope', 'project', '--context', 'project',
+      '--target', 'generic', '--script-timeout', '10000'];
+    const runtime = { ...location, nativeCliRunner: piRunner };
+    const review = await runCliEntry([...args, '--json'], runtime);
+    expect(review.exitCode, review.stdout).toBe(3);
+    const result = review.parseJsonStdout<Awaited<ReturnType<typeof runPublicLifecycle>>>();
+    expect(result).toMatchObject({ status: 'blocked', data: {
+      requirements: { state: 'absent', roots: [] },
+      changes: { sources: 'none', requirements: 'none', config: 'none', preferences: 'none', outputs: 'none' },
+      confirmation: { required: true, provided: false, effects: [expect.objectContaining({
+        code: 'runPreApply', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' },
+      })] },
+    }, nextActions: [{ kind: 'command', argv: ['aw', ...args], requiresConfirmation: true, reason: expect.stringContaining('--yes') }] });
     expect(await observeIntent(location)).toEqual({ state: 'absent' });
     expect((await readCatalogGenerationState(location.env)).sources.team?.active).toBeUndefined();
     expect(await fs.pathExists(output)).toBe(false);
-    const installed=await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true });
-    expect(installed.status, JSON.stringify(installed)).toBe('success');
-    expect((installed.data as LifecycleData).changes).toMatchObject({ sources: 'changed', requirements: 'changed', outputs: 'changed' });
-    expect(await fs.pathExists(output)).toBe(true);
+
+    const action = result.nextActions[0]!;
+    if (action.kind !== 'command') throw new Error('Expected a confirmation command.');
+    const confirmed = await runCliEntry([...action.argv.slice(1), '--yes', '--json'], runtime);
+    expect(confirmed.exitCode, confirmed.stdout).toBe(0);
+    expect(confirmed.parseJsonStdout()).toMatchObject({ status: 'success', data: {
+      changes: { sources: 'changed', requirements: 'changed', outputs: 'changed' },
+      targetResults: [expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })] } });
+    expect(await observeIntent(location)).toMatchObject({ state: 'valid', value: { roots: [{ pluginId: 'team/demo' }] } });
+    expect(await fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).toContain('Use demo.');
   });
 
   it('filters one install without changing the saved target policy and retains unknown native status', async () => {

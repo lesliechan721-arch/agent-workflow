@@ -44,6 +44,7 @@ const receipt = {
   skillObservation: { status: 'unverified', reason: 'not-requested-before-core-observation', grading: 'optional; explicit-returned-content-or-location-mismatch-is-failure' },
 };
 let input;
+let skillName;
 let password;
 let child;
 let closePromise;
@@ -154,11 +155,14 @@ async function readInput() {
     if (Buffer.byteLength(text) > 32 * 1024) fail('scope-input-limit');
   }
   try { input = JSON.parse(text); } catch { fail('scope-input-invalid'); }
+  skillName = /^skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/SKILL\.md$/u.exec(input?.skillRelativePath)?.[1];
   if (!input || !['root', 'cwd', 'fixtureDirectory', 'executable'].every(key => typeof input[key] === 'string' && path.isAbsolute(input[key]))
-    || typeof input.expectedPresent !== 'boolean' || input.nativePluginId !== 'aw-qualification-aw-qualification'
-    || input.skillRelativePath !== 'skills/aw-qualification/SKILL.md'
+    || typeof input.expectedPresent !== 'boolean' || !/^aw-[a-z0-9][a-z0-9._-]{1,120}$/u.test(input.nativePluginId ?? '')
+    || !skillName || skillName.length > 64
     || typeof input.skillBase64 !== 'string' || !/^[a-f0-9]{64}$/u.test(input.skillSha256 ?? '')
-    || !/^[a-f0-9]{64}$/u.test(input.indexSha256 ?? '')) fail('scope-input-invalid');
+    || !/^[a-f0-9]{64}$/u.test(input.indexSha256 ?? '')
+    || (input.manualSkill !== undefined && input.manualSkill !== true)
+    || (input.manualSkill && !input.expectedPresent)) fail('scope-input-invalid');
   if (await fs.realpath(input.root) !== input.root || await fs.realpath(input.cwd) !== input.cwd
     || !within(input.root, input.cwd) || !within(input.root, input.fixtureDirectory)
     || !within(input.root, input.executable)) fail('scope-input-path-invalid');
@@ -324,7 +328,7 @@ async function observeNativeSkill(url) {
   if (result.unavailable) { observation.reason = result.unavailable; return; }
   const response = result.value;
   if (!response || !Array.isArray(response.data)) { observation.reason = 'response-shape-invalid'; return; }
-  const matches = response.data.filter(item => item?.id === 'aw-qualification' || item?.name === 'aw-qualification');
+  const matches = response.data.filter(item => item?.id === skillName || item?.name === skillName);
   observation.matchCount = matches.length;
   observation.locationMatchesRequestedCwd = samePath(response.location?.directory, input.cwd);
   observation.nativeMatches = matches.map(item => ({
@@ -349,7 +353,7 @@ async function observeNativeSkill(url) {
   observation.locationExactMatch = samePath(item.location, expectedLocation)
     && await fs.realpath(item.location) === await fs.realpath(expectedLocation);
   observation.contentExactMatch = item.content === expectedContent;
-  if (matches.length !== 1 || !observation.locationMatchesRequestedCwd || item.id !== 'aw-qualification' || item.name !== 'aw-qualification'
+  if (matches.length !== 1 || !observation.locationMatchesRequestedCwd || item.id !== skillName || item.name !== skillName
     || !observation.locationExactMatch || !observation.contentExactMatch) {
     observation.status = 'failed';
     observation.reason = 'explicit-AW-registry-entry-does-not-match-current-projection';
@@ -357,6 +361,71 @@ async function observeNativeSkill(url) {
   }
   observation.status = 'observed';
   observation.reason = 'current-AW-location-and-body-exactly-observed; model-adoption-unverified';
+  if (input.manualSkill) {
+    if (item.autoinvoke !== false || !item.description) fail('scope-manual-skill-policy-mismatch');
+    const ordinary = response.data.find(candidate => candidate.id === 'opencode');
+    if (!ordinary?.description || ordinary.autoinvoke === false) fail('scope-manual-skill-guidance-control-mismatch');
+    receipt.manualSkill = await observeManualSkill(url, item);
+    receipt.manualSkill.ordinarySkillControl = { id: ordinary.id, eligibleForModelGuidance: true };
+  }
+}
+
+async function requestManualSkillApi(url, endpoint, body) {
+  const operation = { method: 'POST', endpoint: endpoint.replace(/ses_[a-zA-Z0-9]+/u, ':sessionID'),
+    expectedStatus: 200, responseStatus: null, completed: false };
+  receipt.requests.push(operation);
+  const payload = JSON.stringify(body);
+  let request;
+  try {
+    return await until(new Promise((resolve, reject) => {
+      request = http.request(new URL(endpoint, url), {
+        method: 'POST', agent: false,
+        headers: { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`, Accept: 'application/json',
+          'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      }, response => {
+        operation.responseStatus = response.statusCode;
+        if (response.statusCode !== 200) { response.resume(); reject(new Error('scope-manual-skill-api-status')); return; }
+        const chunks = [];
+        let bytes = 0;
+        response.on('data', chunk => {
+          bytes += chunk.length;
+          if (bytes > outputLimit) { response.destroy(); reject(new Error('scope-manual-skill-api-output-limit')); return; }
+          chunks.push(chunk);
+        });
+        response.on('error', () => reject(new Error('scope-manual-skill-api-response-failed')));
+        response.on('end', () => {
+          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); operation.completed = true; }
+          catch { reject(new Error('scope-manual-skill-api-json-invalid')); }
+        });
+      });
+      request.on('error', () => reject(new Error('scope-manual-skill-api-request-failed')));
+      request.end(payload);
+    }), operationDeadline, 'scope-manual-skill-api-timeout');
+  } finally { request?.destroy(); }
+}
+
+async function observeManualSkill(url, item) {
+  const session = await requestManualSkillApi(url, '/api/session', {
+    title: 'AW offline skill qualification', location: { directory: input.cwd },
+  });
+  const id = session?.data?.id;
+  if (typeof id !== 'string' || !/^ses_[A-Za-z0-9]+$/u.test(id) || !samePath(session?.data?.location?.directory, input.cwd)) {
+    fail('scope-manual-skill-session-invalid');
+  }
+  // This is the structured attachment produced by @ selection. The pinned API
+  // admits it and resolves its exact bytes while resume:false leaves the agent idle.
+  const text = `@${item.id}`;
+  const prompt = await requestManualSkillApi(url, `/api/session/${id}/prompt`, {
+    text, skills: [{ id: item.id, mention: { start: 0, end: text.length, text } }], resume: false,
+  });
+  const attachment = prompt?.data?.payload?.skills;
+  const prefix = `<skill_content name="${item.name}">\n# Skill: ${item.name}\n\n${item.content.trim()}\n\nBase directory for this skill: ${path.dirname(item.location)}\n`;
+  if (prompt?.data?.type !== 'user' || prompt.data.sessionID !== id || prompt.data.payload.text !== text || attachment?.length !== 1
+    || attachment[0]?.id !== item.id || attachment[0]?.name !== item.name || !attachment[0]?.text?.startsWith(prefix)) {
+    fail('scope-manual-skill-attachment-mismatch');
+  }
+  return { level: 'explicit-skill-attachment', invocation: text, registeredAutoinvoke: item.autoinvoke,
+    resolvedExactBody: true, bodySha256: sha256(item.content), resume: false };
 }
 
 async function observe(response) {

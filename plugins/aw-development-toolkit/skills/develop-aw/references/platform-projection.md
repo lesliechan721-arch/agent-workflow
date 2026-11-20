@@ -16,13 +16,13 @@
 
 ## 平台、scope 与能力
 
-PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。具体 Agent 使用原生包或原生扩展；generic 仅输出通用 Skills。平台允许范围来自 Manifest platforms，省略或空数组允许全部，未知和重复 ID 拒绝。声明允许不代表真实运行；依赖仍须覆盖消费者平台。
+PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。具体 Agent 使用原生包或原生扩展；generic 仅输出通用 Skills。平台允许范围来自 Manifest platforms，省略或空数组允许全部，未知和重复 ID 拒绝。声明允许不代表真实运行；依赖仍须覆盖消费者平台。
 
 静态与动态资源归一化为 Skills、MCP、Agents、Hooks、Instructions。同一正文只维护一份，平台负责包装和已核验字段映射。命令、模型、工具限制与权限均需实际等价；Pi Agents 只声明角色，由用户已有兼容消费者执行，不生成执行工具。
 
-平台能力同时包含 kinds 和 features 的 supported/unsupported/unverified、交付方式、具体取值与原因。类别不足用派生 component.kind.<kind> 表达；它不增加默认调用行为。脚本只输出实际可支持部分，未满足部分保留具体 feature/values；不能将未知能力提升为支持。generic 不声称宿主调用或运行能力。
+平台能力同时包含 kinds 和 features 的 supported/unsupported/unverified、交付方式、具体取值与原因。类别不足用派生 component.kind.<kind> 表达；它不增加默认调用行为。宿主能接收普通 Skill 时，返回完整 Skill 和作者声明的调用字段。手动调用、自动调用与可见性取值用于原生投影和安装后提示，不能单独作为省略 Skill 的理由。其他必要能力不足时仍报告具体 feature/values。generic 交付文件，实际调用行为取决于读取它们的客户端。
 
-实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Gemini/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
+实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
 
 核对安装态时，从公开原生命令/API 取得对应状态；本地配置只补充显式条目、scope、归属和内容，不能覆盖原生结果。共享包的当前项目 enabled 不证明独立项目安装；查询未提供的事实保留 unknown。字段和观察副作用通过 aw plugin status --json 查看原生事实与 configuration 补充；显式 --observe-native 可启动原生观察服务并加载插件代码。
 

@@ -18,7 +18,7 @@ const skill = (description: string, body = 'PRIVATE-BODY') => `---\nname: inspec
 describe('TUI static source content', () => {
   // Test Value Gate: catalog browsing cannot claim frozen dynamic outputs or leak prompts, commands, MCP credentials, and renderer bodies.
   it('lists static declarations and marks the dynamic component set unknown without executing scripts', async () => {
-    const value = await fixture({ platforms: ['codex', 'cursor', 'gemini', 'generic'], skills: './skills', mcpServers: './mcp.json',
+    const value = await fixture({ platforms: ['codex', 'cursor', 'grok', 'generic'], skills: './skills', mcpServers: './mcp.json',
       extensions: { agents: [{ name: 'reviewer', description: 'Review safely.', prompt: 'PRIVATE-PROMPT', agentOverrides: { cursor: null } }],
         instructions: [{ name: 'rules', title: 'Rules', content: 'PRIVATE-INSTRUCTIONS', coverage: ['main'] }],
         hooks: [{ id: 'guard', event: 'before_tool', feedback: 'block', command: 'PRIVATE-COMMAND' }] },
@@ -30,7 +30,7 @@ describe('TUI static source content', () => {
     const overview = await value.read();
     expect(overview).toMatchObject({ evidence: 'catalogBundle', coverage: 'partial', pluginVersion: '2.4.0', catalogVersion: '9.1.0' });
     expect(overview.items.map((item) => item.type)).toEqual(expect.arrayContaining(['skill', 'agent', 'instruction', 'hook', 'mcpServer', 'renderer']));
-    expect(overview.items.find((item) => item.type === 'agent')?.tools).toEqual(['Codex', 'Gemini CLI', 'Generic']);
+    expect(overview.items.find((item) => item.type === 'agent')?.tools).toEqual(['Codex', 'Grok Build', 'Generic']);
     expect(overview.items.find((item) => item.type === 'skill')?.description).toBe('Inspect safely.');
     expect(overview.notices.join(' ')).toContain('动态组件集合尚未准备');
     expect(JSON.stringify(overview)).not.toContain('PRIVATE-');

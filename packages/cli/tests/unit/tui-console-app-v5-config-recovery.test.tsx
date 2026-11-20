@@ -48,9 +48,10 @@ function configExecution(intent: OperationIntent, errorCode = 'runtimeApplyFaile
     scope: 'user', platform: group.platform, status: 'succeeded', configSaved: true,
     applyRequested: false, applyStatus: 'notRequested',
   })) };
-  if (errorCode === 'invalidConfig') return { configWrite: 'succeeded', overallState: 'partial',
+  const configWrite = intent.kind === 'configSave' && intent.retryApply ? 'notStarted' : 'succeeded';
+  if (errorCode === 'invalidConfig') return { configWrite, overallState: 'partial',
     apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] } };
-  return { configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial', targetResults: [{
+  return { configWrite, overallState: 'partial', apply: { state: 'partial', targetResults: [{
     target: { platform: 'codex', scope: 'user' }, state: 'failed', errorCode,
   }] } };
 }
@@ -126,7 +127,8 @@ describe('ConsoleAppV4', () => {
     await confirmReview(partialInstance, partial);
     await nextTurn(4);
     expect(partialScreens).toContain('C13');
-    expect(partialInstance.lastFrame()).toContain('部分应用失败');
+    expect(partialInstance.lastFrame()).toContain('插件应用未完成');
+    expect(partialInstance.lastFrame()).not.toContain('设置已保存');
     expect(partialInstance.lastFrame()).toContain('重试应用');
 
     const resetScreens = new Set<ConsoleV4ScreenId>();
@@ -803,7 +805,7 @@ describe('ConsoleAppV4', () => {
 
     expect(value.snapshot.result).toMatchObject({ state: 'partial' });
     expect(value.snapshot.router.current.route.name).toBe('result');
-    expect(instance.lastFrame()).toContain('设置已保存，但部分应用失败');
+    expect(instance.lastFrame()).toContain('插件应用未完成');
     expect(instance.lastFrame()).toContain('所有项目');
     expect(instance.lastFrame()).toContain('重试应用');
     expect(instance.lastFrame()).toContain('返回修改');
@@ -841,7 +843,7 @@ describe('ConsoleAppV4', () => {
       state: 'partial',
       summary: { configApplied: false },
     });
-    expect(instance.lastFrame()).toContain('设置已保存，但未应用');
+    expect(instance.lastFrame()).toContain('配置无效，应用未完成');
     expect(instance.lastFrame()).toContain('当前配置仍无效');
     expect(instance.lastFrame()).not.toContain('部分应用失败');
     expect(instance.lastFrame()).not.toContain('重试应用');

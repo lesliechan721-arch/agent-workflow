@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { assertCommand, execute, prepareEnvironment, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
+import { executePublicAw } from './native-platform-public-process.mjs';
 
 export const interfaceDistributions = Object.freeze({
   cursor: Object.freeze({ version: '2026.11.05-86047df',
@@ -234,9 +235,10 @@ export async function runInterfaceProbes(options) {
     createdAt: new Date().toISOString(), environment: { platform: process.platform, arch: process.arch },
     run: { id: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, sha: process.env.GITHUB_SHA },
     boundary: { hostedOnly: true, host: 'ubuntu-24.04 x64', qualification: 'unverified', scope: 'unverified',
-      credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
-      network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
-      clientProcessContract: 'verified-observed for every executed command, including the exact approved read-only /skills query; original deadlines, marker/identity and normal descendant exit/cleanup retained',
+      credentials: 'empty temporary runtime whitelist', stdin: 'EOF for interface commands; isolated PTY for Cursor fixture',
+      sessions: 'Cursor fixture startup, local metadata request and explicit Skill attachment', models: 'synthetic Cursor model inventory with no provider behind it',
+      network: 'blocking HTTP(S)/ALL proxies for interface commands; fixture proxy forwards only to its own loopback port',
+      clientProcessContract: 'verified-observed for interface commands; ordinary POSIX observation for the Cursor fixture; deadlines, marker/identity and normal descendant exit/cleanup retained',
       autoUpdate: 'AGY_CLI_DISABLE_AUTO_UPDATE=true in the isolated whitelist; generic DISABLE_AUTOUPDATER is not sufficient for the pinned client',
       localManagement: 'Antigravity Linux x64 candidate User management and Project ordinary Skill effective-scope investigation. Exact -p /skills --output-format json is explicitly approved as a local read-only command, not a natural language prompt or model turn. No Agent canary, public AW or model session is run.' }, clients: [] };
   try {
@@ -275,6 +277,14 @@ export async function runInterfaceProbes(options) {
         }
         Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute,
           platform === 'antigravity' ? { localManagement: true } : {}));
+        if (platform === 'cursor' && client.status === 'observed') {
+          const fixture = fileURLToPath(new URL('./native-platform-cursor-skills.py', import.meta.url));
+          const result = await executePublicAw({ executable: '/usr/bin/python3', prefix: [fixture] },
+            ['--executable', launcher.executable, '--entry', launcher.prefix[0], '--node', process.execPath],
+            { cwd: project, env, stdin: '', timeoutMs: 180_000, nativeClient: 'cursor' });
+          assertCommand(result);
+          client.nativeSkillFixture = { processMode: result.containmentMode, ...JSON.parse(result.stdout) };
+        }
         client.entriesAfter = await Promise.all(entries.map(async entry => ({
           path: entry.path, sha256: sha256(await fs.readFile(entry.path)),
         })));

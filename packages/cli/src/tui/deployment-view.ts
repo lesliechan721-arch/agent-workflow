@@ -1,6 +1,7 @@
 import type { FrozenDeploymentPlan, DeploymentExclusion } from '../platforms/contracts.js';
 import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploymentExclusion, PublicComponentGap } from '../commands/public-lifecycle-result.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { agentLabel, scopeLabel } from './glossary.js';
 
 const stateLabels: Record<string, string> = { present: '存在', absent: '缺失', unknown: '未知', 'not-applicable': '不适用',
@@ -96,7 +97,11 @@ export function deploymentResultLines(receipts: readonly PublicDeploymentResult[
     `  包${stateLabel(receipt.after.package)} · 登记${stateLabel(receipt.after.registration)} · ${reloadLabels[receipt.reload] ?? receipt.reload}`,
     ...nativeSourceLines(receipt.after),
     ...configurationLines(receipt.after),
-    ...receipt.diagnostics.map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`),
+    ...new Set([...receipt.diagnostics, ...receipt.effects.flatMap((effect) => effect.diagnostics
+      .filter((entry) => entry.subject?.field === 'nativeSource'))]
+      // The result shows these once per actual Skill and location, outside deployment details.
+      .filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
+      .map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`)),
   ]);
 }
 

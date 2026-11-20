@@ -27,23 +27,15 @@
 
 `aw plugin status [plugins...] --observe-native` 显式允许对所选的 OpenCode 目标启动一次满足 V2 接口最低条件的私有本地服务，观察插件加载。OpenCode 使用 `--standalone`，缺少加载证据时保留未知。启动可加载插件代码，创建日志、状态和缓存，读取既有认证并按现有配置访问外部服务。进入 OpenCode 原生观察路径时，文本与 JSON 诊断均包含 `nativeObservationSideEffects`。普通 status 和 TUI 保持只读，使用已有证据判断安装状态。精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
-普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
+普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。待确认的 install 或 sync 保留原插件、位置、目标与行为选项。回执的 `requiresConfirmation: true` 提示用户审阅影响后显式加 `--yes`。TUI 保留其 Review 确认。
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
-
-`plugin install`、`plugin sync`、`plugin config apply` 及带 `--apply` 的配置写命令接受独立的 `--native-consent`。该选项仅授权本次冻结插件、来源、版本与所选 scope 计划中的 Gemini 原生安装或更新。Gemini 可能持久保存源目录与当前工作区的信任，并接受扩展许可；AW 不保存全局自动批准设置。普通 `--yes`、环境变量、旧回执与 TUI Review 确认均不提供此许可。授权事实在生命周期的 `data.request.nativeConsent`、配置结果的 `data.nativeConsent` 中表示；显式授权时保留 `nativeConsentGranted` warning，说明持久信任副作用，该字段不表示原生动作已经完成。
-
-没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。Gemini CLI `0.67.0` 保留已验证的受限自动许可路径；当前其他版本的跨流提示缺少可验证的完整授权边界，安装及更新在原生命令启动前返回 `nativeConsentProtocolUnconfirmed` 和绑定冻结来源、工作区的人工许可步骤；普通资格及只读观察仍可继续。固定版本路径的未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展授权。无法在刷新卸载之前确认完整许可和配置合同，则停止并提供人工原生处理及后续 sync 步骤，不先卸载再试探许可。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
-
-Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副本完整摘要核验后，以原生卸载、重装更新实际副本，并保留原有全局及项目激活。原生目录中的 `.env`、额外或改写文件、弱 owner 会以 `nativeRefreshDataUnconfirmed` 阻断，原目录保留；先保存或处理这些本地数据，不能用 `--yes`、`--native-consent` 或 force 越过该保护。重装后的实际包体必须匹配冻结投影，无法确认时报告 `nativeInstallContentPostcheckFailed` 和部分结果，保留 AW 源包与已核验的激活规则。修复现场后，在同一工作区使用上述带 `--native-consent` 的 sync 恢复；已保存的配置和需求不会回滚。
-
-普通 Gemini sync 每次比较实际原生副本与本次冻结包体；AW 源包已更新，也不能省略落后副本的 refresh。副本 owner、包体或数据无法确认时保持未完成。处理阻断数据或修复安装现场后，普通许可 sync 会按新读取的副本状态重试，不要求重新发布源包；status 的旧副本显示 drifted，无法确认的副本显示 unknown。
 
 `aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口。显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。同时声明 Node 构建和动态 renderer 时，源码校验提示组件仍需构建验证，`aw dev catalog publish plan` 按发布合同校验构建后的组件。 [Catalog 发布计划](catalog.md#41-发布命令接口与两阶段授权)
 
 ### 1.1 本机 target 选择
 
-`aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
+`aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
 
 `aw target set ...` 在保存前检查新增选择。新增 missing、unsupported 或 unknown 且没有 `--force` 时，整体不保存，返回 blocked/3，并列出需强制选择的项及重试命令。非法 ID 始终为参数错误/2。保留已有选择、取消选择及 `--none` 不因可用性受阻；先取消再选择属于新增。
 
@@ -69,7 +61,17 @@ type Diagnostic = {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
-  detail?: { reasonCode: string; path?: string; configKey?: string };
+  detail?: {
+    reasonCode: string;
+    path?: string;
+    configKey?: string;
+    skillInvocationControls?: Array<{
+      feature: 'skill.invocation.manual' | 'skill.invocation.model' | 'skill.visibility';
+      values?: Array<'true' | 'false' | 'visible' | 'hidden'>;
+      reasonCode: 'noBoundExecutor' | 'invocationControlUnsupported' | 'invocationControlUnverified';
+      product?: 'app';
+    }>;
+  };
   subject?: {
     pluginId?: string;
     sourceId?: string;
@@ -98,7 +100,7 @@ type Confirmation = {
 - `command` 是已解析的稳定命令 ID，例如 `plugin.install`、`source.sync`、`dev.catalog.publish.apply`；无法识别命令时为 null，不把任意输入回显成命令 ID。
 - `data` 始终是对象。不同业务有明确的类型；列表通常使用 `items`。请求尚未完成归一化、且未执行业务变更时，允许使用严格的空对象 `{}`，即使命令 ID 已经识别。已完成的空列表才输出 `[]`，不能用它替代尚未取得的事实。
 - `status` 描述这次调用是否完成；`data` 描述插件、来源、配置等业务事实。插件尚未就绪不等于 status 查询执行失败。
-- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 仅包含可信细分 reasonCode、本次恢复所需的安全文件位置 path 和配置键 configKey；不回显配置值、凭据、原生 stderr 或异常栈。subject 仍承载相关插件、来源、target 与 scope。
+- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey 或 Skill 调用控制。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
 - 业务对象自身的 schemaVersion、Manifest schema 和配置定义版本位于相应 data 内，与顶层输出协议版本分别管理。
 - data 使用显式投影，不直接 JSON.stringify 内部 backend、Error、renderer context 或整个服务对象。单次请求内部的锁、进程句柄和授权对象不属于输出协议。
 
@@ -142,7 +144,7 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
 
-`plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Gemini、Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
 
@@ -157,7 +159,6 @@ type LifecycleData = {
     targets: string[];
     targetOrigin: 'argument' | 'preference' | 'none';
     mode: 'apply' | 'requirements-only' | 'outputs-only';
-    nativeConsent?: boolean; // 本次是否显式提供 Gemini 原生许可，不表示执行成功。
   };
   confirmation: Confirmation | null;
   changes: {
@@ -186,6 +187,12 @@ type LifecycleData = {
 };
 ```
 
+安装、同步、重建或配置应用交付 Skill 后，如果该位置无法保证声明的显式调用、模型自动调用或可见性要求，`diagnostics` 按实际插件、Skill、平台和范围给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 给出每项未能保证的控制、声明值与原因，区分未绑定执行客户端、客户端不支持和能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。CLI 文本和 TUI 结果显示同一事实。警告本身不影响成功状态或退出码，也不会使已交付目标进入重试。遇到其他失败时，仍报告实际未完成项。
+
+独立运行 `plugin config apply` 时，`configWrite` 为 `notStarted`。中断回执保留当时已解析的请求、已完成的确认以及已有的应用结果。收到 SIGINT 或 SIGTERM 后等待清理并分别退出 130 或 143，清理无法确认时退出 1。如果所有目标已完成并通过核验，收尾时收到信号仍保留成功回执和已交付 Skill 的警告。
+
+配置应用的文本回执按插件、平台和范围列出每个位置的状态和已有错误码，也列出命令包的归属、名称、范围和状态。同一目标若有部分输出已读回、其余输出仍失败，`data.apply.targetResults[]` 保留 `state: "failed"` 和失败原因，并附 `partialDelivery: true`。已交付 Skill 的提示保留在对应的 `diagnostics` 中。此时回执引导用户检查未完成的输出。仅需恢复项目位置、公开同步命令会重跑已完成的个人位置时，回执指向 TUI 中的项目选择。
+
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
@@ -197,6 +204,10 @@ type LifecycleData = {
 plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指定依赖插件时，inventory 返回其真实目标、requiredBy 和提供者关系，不把它加入直接需求。counts 仅统计可见目标；allSatisfied/inSync 仍描述整个授权读取上下文，明确不满足为 false，未完整观察为 null。可选 coverage.requestComplete 描述本次选择及必要依赖、共享与碰撞检查是否完整；本次请求可完成而全局汇总仍未知，未选目标未观察不独自使请求失败。
 
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
+
+安装或同步收到进程中断信号时，回执保留已保存的声明、偏好以及各目标的执行结果。已验证目标继续显示 `applied/verified` 或 `no-op/verified`，尚未派发的目标显示 `not-run`，已启动但效果无法确认的目标保留不确定影响。等待写锁时也可以中断。`remainingTargets` 和重试命令仅列出本次尚未完成的位置。进程树清理无法确认时，诊断包含 `processCleanupUnconfirmed`，退出码为 1。
+
+安装或同步在首次写入前发现整批确认依据已改变时，回执按原顺序列出目标和依赖，标记各个待执行位置为 `not-run`。恢复提示要求按原插件、范围、平台和选项重新准备。声明或偏好已保存但读回不符时，回执保留已提交的事实与待观察位置，先提示在原检查范围查看状态。部分执行后，已经核实无需修改的目标也算有效结果。依赖的恢复命令使用当初声明它的根和所需平台。同一根和平台在 User、Project 都待恢复时，一条 Project 同步命令涵盖两处。如果只有 Project 待恢复，且普通同步还会执行 User 声明，回执提示在 TUI 选择该插件的项目位置。
 
 联合安装已完成写入，但最终读取本次目标状态失败时，回执返回 `partial` 和 `statusUnavailable`，保留已确认的变更。若全部目标已写完，`remainingTargets` 为空。`nextActions` 提供 `aw plugin status --context <user|project> --json` 供调用方只读复查。
 

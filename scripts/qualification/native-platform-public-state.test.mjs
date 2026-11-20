@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { preparePublicClientPath } from './native-platform-public-aw.mjs';
+import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { clients } from './native-platform-runtime.mjs';
@@ -93,12 +93,48 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
   const entry = path.join(root, 'acquired-entry');
   await fs.writeFile(entry, 'isolated client fixture');
   const clientBin = path.join(root, 'private-bin');
-  const ctx = { root, clientBin, platform: 'gemini', env: { PATH: '/unrelated/client-bin' },
+  const ctx = { root, clientBin, platform: 'claude', env: { PATH: '/unrelated/client-bin' },
     launcher: { executable: process.execPath, prefix: [entry] } };
   assert.equal(await preparePublicClientPath(ctx), entry);
   assert.deepEqual(ctx.env.PATH.split(path.delimiter), [clientBin, path.dirname(process.execPath),
     '/usr/bin', '/bin', '/usr/sbin', '/sbin']);
-  assert.equal(await fs.realpath(path.join(clientBin, 'gemini')), entry);
+  assert.equal(await fs.realpath(path.join(clientBin, 'claude')), entry);
+});
+
+// Test Value Gate: batch discovery must preserve both acquisition prefixes,
+// including the original npm package identity behind the Windows Pi shim.
+test('exposes both acquired clients in one isolated public PATH', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-batch-path-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const claudeBin = path.join(root, 'claude-tool');
+  const piBin = path.join(root, 'pi-tool');
+  const piPackage = path.join(piBin, 'node_modules', ...clients.pi.package.split('/'));
+  const piEntry = path.join(piPackage, 'cli.js');
+  const claudeEntry = path.join(root, 'acquired-claude');
+  const runnerGit = path.join(root, 'runner-git');
+  const unrelated = path.join(root, 'unrelated');
+  await fs.mkdir(piPackage, { recursive: true });
+  await fs.mkdir(runnerGit);
+  await fs.writeFile(path.join(runnerGit, 'git.exe'), 'Git fixture');
+  await fs.writeFile(claudeEntry, 'Claude fixture');
+  await fs.writeFile(piEntry, '#!/usr/bin/env node\n');
+  await fs.writeFile(path.join(piPackage, 'package.json'), JSON.stringify({ name: clients.pi.package, bin: { pi: 'cli.js' } }));
+  const env = { PATH: [unrelated, runnerGit].join(path.delimiter), PATHEXT: '.exe;.cmd', SystemRoot: root };
+  const base = { root, env, project: root };
+  const [claude, pi] = await preparePublicClientPaths([
+    { ...base, platform: 'claude', clientBin: claudeBin, launcher: { executable: claudeEntry, prefix: [] } },
+    { ...base, platform: 'pi', clientBin: piBin, launcher: { executable: process.execPath, prefix: [piEntry] } },
+  ]);
+  const directories = env.PATH.split(path.delimiter);
+  assert.deepEqual(directories.slice(0, 2), [claudeBin, piBin]);
+  assert(!directories.includes(unrelated));
+  assert.deepEqual(await fs.readFile(claude), await fs.readFile(claudeEntry));
+  if (process.platform === 'win32') {
+    const { resolveWindowsPathCommand, resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
+    assert.equal(await fs.realpath(await resolveWindowsPathCommand('claude', root, env)), claude);
+    const launcher = await resolveWindowsNpmCommand({ command: 'pi', binName: 'pi', packageName: clients.pi.package, cwd: root, env });
+    assert.deepEqual(launcher, { command: process.execPath, argsPrefix: [await fs.realpath(piEntry)] });
+  } else assert.equal(pi, await fs.realpath(piEntry));
 });
 
 function removalFixture(platform = 'codex', scope = 'user', {

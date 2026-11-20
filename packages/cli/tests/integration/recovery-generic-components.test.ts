@@ -28,14 +28,16 @@ describe('generic complete component expectations', () => {
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 fs.appendFileSync(${JSON.stringify(calls)}, 'render\\n');
-const skill = (id, text) => ({id, kind:'skill', name:id, content:{files:{
-  'SKILL.md':{text:'---\\nname: '+id+'\\ndescription: Fixture skill.\\n---\\n'+text+'\\n'},
+const skill = (id, text, policy = '') => ({id, kind:'skill', name:id, content:{files:{
+  'SKILL.md':{text:'---\\nname: '+id+'\\ndescription: Fixture skill.\\n'+policy+'---\\n'+text+'\\n'},
   'README.md':{text:'Fixture skill.\\n'}
 }}});
 const gap = id => ({id, kind:'skill', name:id, requiredFeatures:[{feature:'skill.execution',values:['isolated-context']}], reasonCode:'interface-unsupported'});
 const mode = context.config.values.mode;
 console.log(JSON.stringify({version:3,
-  components: mode === 'initial' ? [skill('tool','Original tool.'),skill('keeper','Original keeper.')] : mode === 'mixed' ? [skill('fresh','New independent skill.')] : [],
+  components: mode === 'initial' ? [skill('tool','Original tool.'),skill('keeper','Original keeper.')] : mode === 'mixed' ? [skill('fresh','New independent skill.')]
+    : mode === 'manual' ? [skill('fresh','New independent skill.'), skill('tool','Now delivered by explicit request.',
+      'user-invocable: true\\ndisable-model-invocation: true\\n')] : [],
   omitted:[], unmet: mode === 'unmet' ? [gap('tool'),gap('keeper')] : mode === 'mixed' ? [gap('tool')] : []}));
 `);
     await createCatalogSnapshotFixture(source, 'demo', [], 'Generic components fixture.', (manifest) => {
@@ -109,6 +111,18 @@ console.log(JSON.stringify({version:3,
     const partialStatus = await read();
     expect(partialStatus.allSatisfied).not.toBe(true);
     expect(partialStatus.inventory![0]!.targetResults[0]!.componentGaps).toEqual([expect.objectContaining({ id: 'tool' })]);
+
+    // Recover an existing installation with retained old bytes when its new
+    // revision can be delivered and only the host invocation policy is unknown.
+    await configure('manual');
+    const upgraded = await runRecovery('sync', [], options);
+    expect(upgraded.ok, JSON.stringify(upgraded)).toBe(true);
+    expect(upgraded.targetResults).toContainEqual(expect.objectContaining({ agent: 'generic', execution: 'applied', content: 'satisfied' }));
+    const updated = await fs.readFile(path.join(output, 'tool/SKILL.md'), 'utf8');
+    expect(updated).toContain('Now delivered by explicit request.');
+    expect(updated).toContain('skill.invocation.model');
+    expect(await fs.readFile(path.join(output, 'fresh/SKILL.md'), 'utf8')).toContain('New independent skill.');
+    expect((await read()).allSatisfied).toBe(true);
 
     await configure('empty');
     const empty = await prepare();

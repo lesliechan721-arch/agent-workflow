@@ -69,6 +69,11 @@ describe('platform component contract', () => {
     expect(() => assertPlan(plan([sourceSkill]))).toThrow(/outside declared inputs/u);
     for (const file of ['../escape', '/host/file', 'scripts/aw-runtime-config.mjs', '.aw-runtime-config.json']) expect(() => assertPlan(plan([{ ...skill, content: { files: { ...skill.content.files, [file]: { text: 'bad' } } } }]))).toThrow();
   });
+  it('rejects an inline Skill name that differs from its component name', () => {
+    expect(() => assertPlan(plan([{ ...skill, name: 'renamed' }]))).toThrow(
+      /SKILL\.md frontmatter\.name "check".*component "new-skill".*"renamed"/u,
+    );
+  });
   it('checks registered values and treats missing features as unsupported', () => {
     const profile = capabilities(); delete profile.features['mcp.transport'];
     expect(getUnmetFeatureRequirements([{ feature: 'mcp.transport', values: ['sse'] }], profile)).toEqual([{ feature: 'mcp.transport', values: ['sse'] }]);
@@ -107,6 +112,40 @@ describe('platform component contract', () => {
     expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual(requirements.filter((entry) => !entry.feature.startsWith('component.kind.')));
     assertPlan(plan([restricted]));
   });
+  it('delivers static and rendered Skills when only invocation preferences are unavailable', () => {
+    const profile = capabilities();
+    profile.features = {};
+    const controlled: PluginComponent = { ...skill, requires: [{ feature: 'skill.invocation.model', values: ['false'] }],
+      content: { files: { 'SKILL.md': { text: skillText.replace('description:', 'user-invocable: false\ndescription:') } } } };
+    expect(getUnmetFeatureRequirements(getComponentFeatureRequirements(controlled), profile)).toEqual([
+      { feature: 'skill.invocation.model', values: ['false'] }, { feature: 'skill.invocation.manual', values: ['false'] },
+      { feature: 'skill.visibility', values: ['hidden'] },
+    ]);
+    assertPlan(plan([controlled]), profile);
+    expect(partitionStaticPluginComponents([controlled], profile)).toMatchObject({ components: [controlled], unmet: [] });
+    const restricted: PluginComponent = { ...controlled, requires: [...controlled.requires!, { feature: 'skill.tools', values: ['none'] }] };
+    expect(() => assertPlan(plan([restricted]), profile)).toThrow(/skill.tools/u);
+    expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual([{ feature: 'skill.tools', values: ['none'] }]);
+  });
+  it.each([
+    ['true', 'false', 'true', 'true', 'visible'],
+    ['"  TRUE  "', '"  Off  "', 'true', 'true', 'visible'],
+    ['"  No  "', '"  on  "', 'false', 'false', 'hidden'],
+    ['0', '1', 'false', 'false', 'hidden'],
+  ])('interprets explicit Skill invocation controls %s and %s', (manualValue, disableModelValue, manual, model, visibility) => {
+    const text = skillText.replace('description:', `user-invocable: ${manualValue}\ndisable-model-invocation: ${disableModelValue}\ndescription:`);
+    expect(getComponentFeatureRequirements(skill, { skillText: text })).toEqual([
+      { feature: 'component.kind.skill' },
+      { feature: 'skill.invocation.manual', values: [manual] },
+      { feature: 'skill.visibility', values: [visibility] },
+      { feature: 'skill.invocation.model', values: [model] },
+    ]);
+  });
+  it('rejects invalid Skill invocation controls before interpreting them', () => {
+    const text = skillText.replace('description:', 'user-invocable: "  enabled  "\ndisable-model-invocation: 2\ndescription:');
+    expect(() => getComponentFeatureRequirements(skill, { skillText: text }))
+      .toThrow(/Invalid Skill frontmatter:.*user-invocable.*disable-model-invocation/u);
+  });
   it('normalizes five static kinds, preserves overridden IDs, records gaps and rejects links', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-components-')); roots.push(root);
     await fs.ensureDir(path.join(root, 'skills/check')); await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), skillText);
@@ -123,6 +162,11 @@ describe('platform component contract', () => {
     expect(() => assertPlatformComponentPlan(plan([skill]), { platform: 'codex', allowedOutputKinds: ['skill'], platformCapabilities: profile, staticComponents: result.components })).toThrow(/duplicate component name/u);
     await fs.symlink('/tmp', path.join(root, 'skills/check/escape'));
     await expect(normalizeStaticPluginComponents({ pluginRoot: root, manifest, platform: 'codex', capabilities: profile })).rejects.toThrow(/ordinary/u);
+    await fs.unlink(path.join(root, 'skills/check/escape'));
+    await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), skillText.replace('name: check', 'name: renamed'));
+    await expect(normalizeStaticPluginComponents({ pluginRoot: root, manifest, platform: 'codex', capabilities: profile })).rejects.toThrow(
+      /SKILL\.md frontmatter\.name "renamed".*component "skill:check".*"check"/u,
+    );
   });
 });
 function context(): PlatformRenderContextV2 {

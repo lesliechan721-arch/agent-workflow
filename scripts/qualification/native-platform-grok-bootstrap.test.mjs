@@ -5,8 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { grokBootstrapSource } from './native-platform-public-aw.mjs';
 
-// Public DTO shape: commands/public-lifecycle-result.ts. The trust bootstrap
-// outcome also matches the fixed r33 staged Grok report; no client is started.
+// The public receipt summarizes informational locations as warnings. The
+// blocked native registration keeps their original severity.
 async function bootstrapFixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-grok-bootstrap-boundary-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -25,11 +25,13 @@ async function bootstrapFixture(t) {
   await fs.writeFile(publicSkillFile, skillText);
   await fs.writeFile(sourceSkillFile, skillText);
 
-  const ctx = { pluginName, skillName, publicSkillFile, env: { AW_HOME: awHome } };
+  const configRoot = path.join(root, 'grok');
+  const workspace = path.join(awHome, 'runtime', 'user');
+  const ctx = { pluginName, skillName, publicSkillFile, publicConsumedSkill: Buffer.from(skillText),
+    env: { AW_HOME: awHome, GROK_HOME: configRoot } };
   const bindingId = `sha256:${'a'.repeat(64)}`;
   const physicalKey = `sha256:${'c'.repeat(64)}`;
   const activationKey = `sha256:${'d'.repeat(64)}`;
-  const configRoot = path.join(root, 'grok');
   const executable = path.join(root, 'client', 'grok');
   const productId = JSON.stringify(['grok', 'cli', executable, configRoot]);
   const products = [{ id: productId, product: 'cli', version: '1.0.77', availability: 'available', reasonCodes: [],
@@ -44,8 +46,14 @@ async function bootstrapFixture(t) {
   const trustDiagnostic = { code: 'nativeTrustRequired', severity: 'error', message: 'Complete host trust and retry.', subject };
   const recovery = { code: 'grokNativeInstallRecovery', severity: 'warning', message: 'The AW source is kept for explicit host recovery.',
     subject: { ...subject, field: 'nativeSource' }, detail: { reasonCode: 'grokNativeInstallSource', path: source } };
-  const blocked = { id: effects[1].id, status: 'blocked', mutation: 'none', diagnostics: [trustDiagnostic,
-    recovery] };
+  const locations = [
+    { code: 'grokNativeInstallWorkspace', severity: 'info', subject: { ...subject, field: 'workspace' },
+      detail: { reasonCode: 'grokNativeInstallWorkspace', path: workspace } },
+    { code: 'grokNativeInstallConfigRoot', severity: 'info', subject: { ...subject, field: 'nativeConfigRoot' },
+      detail: { reasonCode: 'grokNativeInstallConfigRoot', path: configRoot } },
+  ];
+  const blocked = { id: effects[1].id, status: 'blocked', mutation: 'none',
+    diagnostics: [trustDiagnostic, recovery, ...locations] };
   const receipt = { bindingId, products, after: { physicalKey, package: 'present', registration: 'absent', ownership: 'aw',
     consumers: [{ productId, activationKey, activation: 'unknown', load: 'not-observed' }],
     components: [{ id: componentId, presence: 'unknown', reasonCodes: ['nativeTrustRequired'] }],
@@ -66,7 +74,7 @@ async function bootstrapFixture(t) {
     requirements: { state: 'valid', roots: [pluginId], digest: `sha256:${'e'.repeat(64)}` },
     targetResults: [target], remainingTargets: [{ pluginId, target: 'grok', scope: 'user' }],
     coverage: { scopes: ['user', 'project'], currentProject: true, otherProjects: 'unobserved' },
-  }, diagnostics: [trustDiagnostic, recovery], nextActions: [{ kind: 'manual',
+  }, diagnostics: [trustDiagnostic, recovery, ...locations.map((item) => ({ ...structuredClone(item), severity: 'warning' }))], nextActions: [{ kind: 'manual',
     message: `Run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}. Then run aw plugin sync ${pluginId} --context user --target grok.` }] };
   return { root, ctx, result, pluginId, source, sourceSkillFile, skillText, receipt, blocked, target };
 }
@@ -95,8 +103,19 @@ test('does not return a trust source for unsafe or unrelated partial results', a
     ['another public failure while the native receipt still reports only trust', async (fixture) => {
       const failure = { code: 'nativeCommandFailed', severity: 'error', message: 'The native command failed.',
         subject: { pluginId: fixture.pluginId, target: 'grok', scope: 'user' } };
-      fixture.target.blockerCodes.push(failure.code);
       fixture.result.diagnostics.push(failure);
+    }],
+    ['workspace in the public hint belongs to another location', async (fixture) => {
+      fixture.result.diagnostics.find((item) => item.code === 'grokNativeInstallWorkspace').detail.path = fixture.root;
+    }],
+    ['config directory in the blocked registration belongs to another user', async (fixture) => {
+      fixture.blocked.diagnostics.find((item) => item.code === 'grokNativeInstallConfigRoot').detail.path = fixture.root;
+    }],
+    ['a location warning is attached to a different plugin', async (fixture) => {
+      fixture.result.diagnostics.find((item) => item.code === 'grokNativeInstallConfigRoot').subject.pluginId = 'other/plugin';
+    }],
+    ['an additional registration failure is labelled as a location hint', async (fixture) => {
+      fixture.blocked.diagnostics.find((item) => item.code === 'grokNativeInstallWorkspace').severity = 'error';
     }],
   ];
   for (const [name, change] of cases) await t.test(name, async (subtest) => {

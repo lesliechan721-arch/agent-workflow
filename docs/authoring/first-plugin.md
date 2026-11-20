@@ -99,7 +99,7 @@ aw dev plugin create "$plugin" \
 - `schemaVersion: 4`：Manifest 协议版本，当前工具拒绝其他版本。
 - `name`：插件名称（全小写连字符命名）。
 - `version`：单插件产物版本（严格的语义化版本号）。
-- `platforms`：支持的平台列表。缺省或空数组表示支持全部十个平台；显式声明时仅允许从 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic` 中选择。
+- `platforms`：支持的平台列表。缺省或空数组表示支持全部九个平台；显式声明时仅允许从 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic` 中选择。
 - `skills: "./skills"`：指向包含静态 Skill 树的相对目录路径（注意：此处是目录路径字符串，非对象映射）。
 - `extensions`：声明指令、权限、Hook 与 Agent 角色等扩展数组。
 

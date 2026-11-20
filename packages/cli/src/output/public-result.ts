@@ -2,6 +2,8 @@ import { describeNativeToolClosure, type NativeToolChange } from '../utils/nativ
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
+import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
+import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
 
@@ -18,7 +20,7 @@ export interface Diagnostic {
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
-  detail?: { reasonCode: string; path?: string; configKey?: string };
+  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }
@@ -48,6 +50,7 @@ export function safePublicMessage(message: string, code = 'commandFailed'): stri
 }
 export function renderPublicResult(result: CommandResult<object>, verbose = false): string {
   const data = result.data as Record<string, unknown>;
+  const configMutation = result.command?.startsWith('plugin.config.') && typeof data.configWrite === 'string';
   const lines = [`${result.status.toUpperCase()}  ${(result.command ?? 'Command').replaceAll('.', ' ')}`];
   const request = data.request as { plugins?: string[]; scope?: string; context?: string; targets?: string[]; mode?: string } | undefined;
   if (request) {
@@ -67,6 +70,14 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   if (result.command === 'dev.plugin.capabilities' && data.capabilities) lines.push(...renderPluginCapabilities(data as unknown as PluginCapabilitiesResult));
   else if (Array.isArray(data.capabilities)) lines.push(`Capabilities: ${data.capabilities.join(', ')}`);
+  if (configMutation) {
+    if (!data.pluginId && typeof data.plugin === 'string') lines.push(`plugin: ${data.plugin}`);
+    const context = data.context as { context?: string; projectRoot?: string } | undefined;
+    if (context && typeof context === 'object' && context.context) {
+      lines.push(`context: ${context.context}`);
+      if (context.projectRoot) lines.push(`Project: ${context.projectRoot}`);
+    }
+  }
   for (const key of ['pluginId', 'sourceId', 'scope', 'context', 'platform', 'catalogVersion', 'configWrite', 'outputRoot', 'out', 'sourceBindingPath', 'specDirectory', 'metadataPath', 'workspaceRoot', 'removed', 'deleted', 'resetDisposition', 'name', 'description', 'outcome', 'activeChanged']) {
     const value = data[key];
     if (value !== undefined && value !== null && typeof value !== 'object') lines.push(`${key}: ${String(value)}`);
@@ -83,8 +94,23 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
     if (field.storedValue !== undefined && field.storedSourceLayer) lines.push(`  stored=${field.storedSourceLayer} ${display(field.storedValue)}`);
   }
   else if (configFields && typeof configFields === 'object') for (const [key, field] of Object.entries(configFields as Record<string, { type?: string; title?: string; sensitive?: boolean; required?: boolean }>)) lines.push(`${key}: ${field.type ?? 'value'}${field.required ? ' (required)' : ''}${field.sensitive ? ' (sensitive)' : ''}${field.title ? ` — ${field.title}` : ''}`);
-  const apply = data.apply as { state?: string; reason?: string; targetResults?: Array<{ state: string; target: { platform: string; scope: string } }> } | undefined;
-  if (apply) { lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`); for (const target of apply.targetResults ?? []) lines.push(`${target.target.platform}/${target.target.scope}: ${target.state}`); }
+  const apply = data.apply as {
+    state?: string; reason?: string;
+    targetResults?: Pick<ConfigApplyTargetResult, 'target' | 'state' | 'partialDelivery' | 'errorCode'>[];
+    commandResults?: Array<Pick<CommandProducerResult, 'producer' | 'state'> & { blockerCodes?: string[] }>;
+  } | undefined;
+  if (apply) {
+    lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`);
+    for (const { target, state, partialDelivery, errorCode } of apply.targetResults ?? []) {
+      const position = `${target.pluginId ?? target.pluginName} ${target.platform}/${target.scope}`;
+      lines.push(`${position}: ${state}${partialDelivery ? ' (some outputs verified)' : ''}${errorCode ? ` [${errorCode}]` : ''}`);
+    }
+    for (const { producer, state, blockerCodes } of apply.commandResults ?? []) {
+      const position = [producer.platform, producer.scope].filter(Boolean).join('/');
+      const name = `${producer.sourceId}/${producer.pluginName} ${producer.kind}:${producer.key}`;
+      lines.push(`${name} ${position}: ${state}${blockerCodes?.length ? ` [${blockerCodes.join(', ')}]` : ''}`);
+    }
+  }
 
   const snapshot = data.snapshot as { state?: string; path?: string } | undefined;
   if (snapshot?.state) lines.push(`Snapshot: ${snapshot.state}${verbose && snapshot.path ? ` (${snapshot.path})` : ''}`);
@@ -177,10 +203,26 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   if (data.preview === true || data.dryRun === true) lines.push('Preview only. No content was deleted.');
   const confirmation = data.confirmation as Confirmation | null | undefined;
-  if (confirmation?.required) for (const effect of confirmation.effects) lines.push(`Effect: ${effect.message}`);
+  if (configMutation && (confirmation?.required || result.diagnostics.some(({ code }) =>
+    code === 'operationInterrupted' || code === 'processCleanupUnconfirmed'))) {
+    if (confirmation) lines.push(`Confirmation: required=${confirmation.required ? 'yes' : 'no'}, provided=${confirmation.provided ? 'yes' : 'no'}`);
+    else if (confirmation === null) lines.push('Confirmation: not prepared');
+  }
+  if (confirmation?.required) for (const effect of confirmation.effects) {
+    const subject = effect.subject;
+    const position = configMutation ? [subject?.pluginId ?? subject?.sourceId, subject?.target, subject?.scope, subject?.field].filter(Boolean) : [];
+    lines.push(`Effect: ${effect.message}${configMutation ? ` [${[...position, effect.impact].join(' / ')}]` : ''}`);
+  }
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
-  for (const diagnostic of result.diagnostics.filter((entry) => entry.detail)) {
-    const detail = diagnostic.detail!;
+  for (const diagnostic of result.diagnostics) {
+    const { detail } = diagnostic;
+    if (!detail) continue;
+    if (diagnostic.code === SKILL_INVOCATION_NOTICE) {
+      const position = [diagnostic.subject?.pluginId, diagnostic.subject?.target, diagnostic.subject?.scope].filter(Boolean).join(' / ');
+      lines.push(`Warning · ${position} · ${diagnostic.message}`);
+      if (verbose) lines.push(`  Reason: ${detail.reasonCode}`);
+      continue;
+    }
     lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
     if (detail.path) lines.push(`  Location: ${detail.path}`);
     if (detail.configKey) lines.push(`  Config key: ${detail.configKey}`);

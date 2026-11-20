@@ -9,9 +9,9 @@ import type { PlatformDriverState } from '../../src/platforms/lifecycle.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createSkillOwnerMarkerContent, SKILL_OWNER_MARKER, writeOwnedTextFile } from '../../src/utils/ownership.js';
 import { deploymentPackageComponent, inspectDeployment, inspectStaticSupplements } from '../../src/platforms/inspection.js';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { createNativeLifecycleServices } from '../../src/platforms/lifecycle-native-services.js';
-import { geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { readCodexConfigFile, upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import type { OwnedComponent } from '../../src/utils/ownership.js';
 
@@ -20,7 +20,7 @@ const confirmed: MutationOutcome = { changed: true, mutation: 'confirmed' };
 function fixture(route: DeploymentBinding['route'] = 'antigravity-cli'): LifecyclePrepareInput {
   const platform = route === 'generic-skills' ? 'generic' : route === 'cursor-workspace-hook' ? 'cursor' : route === 'pi-package' ? 'pi'
     : route === 'codex-marketplace' ? 'codex' : route === 'claude-marketplace' ? 'claude' : route === 'copilot-marketplace' ? 'copilot'
-      : route === 'gemini-extension' ? 'gemini' : route.startsWith('grok-') ? 'grok' : 'antigravity';
+      : route.startsWith('grok-') ? 'grok' : 'antigravity';
   const binding: DeploymentBinding = { id: 'binding', plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/demo', version: '1.0.0' },
     platform, scope: { kind: 'user' }, route, physicalKey: 'physical', activationKey: 'activation', renderUnitIds: ['package'],
     consumers: [{ id: 'client', product: 'cli', version: '1.3.4', availability: 'available', reasonCodes: [], entry: { kind: 'cli', executable: '/fake/client', configRoot: root } }] };
@@ -284,8 +284,8 @@ describe('native platform lifecycle', () => {
     expect(receipt.effects).toMatchObject([{ status: 'applied', mutation: 'confirmed' }]);
   });
 
-  it('requires frozen global User intent before preparing Gemini project activation', () => {
-    const input = fixture('gemini-extension');
+  it('requires frozen global User intent before preparing Copilot project activation', () => {
+    const input = fixture('copilot-marketplace');
     input.binding.scope = { kind: 'project', projectRoot: path.join(root, 'project') };
     const result = preparePlatformLifecycle(input);
     expect(result.status).toBe('blocked');
@@ -716,7 +716,7 @@ describe('platform inspection and native activation', () => {
   async function environment(): Promise<{ cwd: string; env: NodeJS.ProcessEnv }> {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-platform-inspection-'));
     temporary.push(cwd);
-    return { cwd, env: { HOME: cwd, USERPROFILE: cwd, GEMINI_CLI_HOME: cwd, AW_HOME: path.join(cwd, 'aw'), CODEX_HOME: path.join(cwd, 'codex') } };
+    return { cwd, env: { HOME: cwd, USERPROFILE: cwd, AW_HOME: path.join(cwd, 'aw'), CODEX_HOME: path.join(cwd, 'codex') } };
   }
 
   it('observes required static supplements as present, drifted, missing or foreign without modifying them', async () => {
@@ -767,7 +767,7 @@ describe('platform inspection and native activation', () => {
     const ctx = await environment();
     const binding = fixture().binding;
     binding.route = 'antigravity-directory';
-    binding.consumers[0]!.entry = { kind: 'directory', configRoot: path.join(ctx.cwd, '.gemini/config') };
+    binding.consumers[0]!.entry = { kind: 'directory', configRoot: resolvePlatformConfigRoot('antigravity', ctx) };
     const layout = await getDeploymentLayout(ctx, binding);
     binding.physicalKey = layout.renderUnits[0]!.physicalKey;
     await fs.ensureDir(layout.packageRoot);
@@ -789,7 +789,7 @@ describe('platform inspection and native activation', () => {
   it('keeps native registration unknown when a read-only probe fails', async () => {
     const ctx = await environment();
     const binding = fixture().binding;
-    binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/agy', configRoot: path.join(ctx.cwd, '.gemini/config') };
+    binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/agy', configRoot: resolvePlatformConfigRoot('antigravity', ctx) };
     binding.physicalKey = (await getDeploymentLayout(ctx, binding)).renderUnits[0]!.physicalKey;
     const runner = vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: 'arbitrary unsafe log' }));
     const observation = await inspectDeployment({ ...ctx, runner }, binding);
@@ -938,33 +938,6 @@ describe('platform inspection and native activation', () => {
       await pending;
     }
     expect(await pending).toMatchObject({ ownership: testCase.ownership, registration: testCase.registration });
-  });
-
-  it('keeps Gemini native activation when supplemental metadata or home-only rules disagree', async () => {
-    const ctx = await environment();
-    const input = fixture('gemini-extension');
-    input.binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/gemini', configRoot: path.join(ctx.cwd, '.gemini') };
-    const layout = await getDeploymentLayout(ctx, input.binding);
-    input.binding.physicalKey = layout.renderUnits[0]!.physicalKey;
-    await fs.outputFile(path.join(layout.packageRoot, SKILL_OWNER_MARKER), createSkillOwnerMarkerContent(deploymentPackageComponent(input.binding, layout).identity));
-    const installed = path.join(ctx.cwd, '.gemini/extensions/demo');
-    const metadataPath = path.join(installed, '.gemini-extension-install.json');
-    await fs.outputJson(metadataPath, { type: 'local', source: layout.packageRoot });
-    await fs.outputJson(path.join(installed, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
-    await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${geminiScopePattern(ctx.cwd)}`] } });
-    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stderr: JSON.stringify([
-      { name: 'demo', path: installed, isActive: true },
-    ]), stdout: '' }));
-    const observation = await inspectDeployment({ ...ctx, runner }, input.binding);
-    expect(observation).toMatchObject({ registration: 'present', ownership: 'aw' });
-    expect(observation.consumers[0]?.activation).toBe('enabled');
-    expect(observation.configuration?.activation).toBe('absent');
-    await fs.writeJson(metadataPath, { type: 'local', source: '/foreign' });
-    expect((await inspectDeployment({ ...ctx, runner }, input.binding)).ownership).toBe('foreign');
-    await fs.writeFile(metadataPath, '{invalid');
-    expect(await inspectDeployment({ ...ctx, runner }, input.binding)).toMatchObject({ registration: 'present', ownership: 'unknown',
-      consumers: [{ activation: 'enabled' }] });
-    expect(runner.mock.calls.every(([call]) => call.args.join(' ') === 'extensions list --output-format json')).toBe(true);
   });
 
   it('observes user Codex activation from a neutral directory instead of the calling project overlay', async () => {

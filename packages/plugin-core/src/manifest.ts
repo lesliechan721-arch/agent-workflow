@@ -6,7 +6,7 @@ import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 export type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 4 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 20
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 21
 
 // Metadata-only imports must not pay for schema compilation.
 let manifestValidator: ValidateFunction<PluginManifestSourceV4> | undefined

@@ -57,7 +57,7 @@ test('uses batch permissions and always returns the complete owned collection', 
 // Test Value Gate: real declared roles can be projected without exporting Codex models or tools;
 // unavailable Pi consumers produce unmet, and never an execution tool.
 test('offers neutral roles on other hosts and records missing execution consumers', async () => {
-  for (const platform of ['claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+  for (const platform of ['claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
     const plan = await renderArtifactPlan(context({}, platform));
     assert.deepEqual(plan.components.map((item) => item.id), roleIds);
     assert.deepEqual(plan.unmet.map((item) => [item.id, item.reasonCode]), skillIds.map((id) => [id, 'dependency-unmet']));

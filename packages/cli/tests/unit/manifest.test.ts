@@ -956,7 +956,7 @@ describe('manifest utils', () => {
       artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } },
     };
     manifest.artifacts = { configKeys: ['enabled'] };
-    for (const platforms of [['claude'], ['codex', 'claude'], ['gemini', 'copilot', 'grok']]) {
+    for (const platforms of [['claude'], ['codex', 'claude'], ['copilot', 'grok']]) {
       manifest.platforms = platforms;
       await writeFixturePluginManifest(repoRoot, manifest);
       await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({

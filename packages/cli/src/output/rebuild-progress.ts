@@ -1,4 +1,5 @@
 import type { RebuildActionName } from '../types.js';
+import type { InstallTaskProgress } from '../recovery/install-concurrency.js';
 import type { CommandEvent, CommandNotice, RebuildActionEvent } from './model.js';
 import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
 import { TARGET_DISPLAY_NAMES } from '../platforms/discovery.js';
@@ -42,6 +43,7 @@ export interface RebuildProgressCurrent {
 
 export interface RebuildProgressSnapshot {
   current?: RebuildProgressCurrent;
+  installProgress?: InstallTaskProgress;
   messages: string[];
   startedAtMs?: number;
   elapsedMs?: number;
@@ -51,6 +53,7 @@ export interface RebuildProgressFeed {
   addEvent: (event: CommandEvent) => void;
   addNotice: (notice: CommandNotice) => void;
   setCurrent: (current: RebuildProgressCurrent, message?: string) => void;
+  setInstallProgress: (progress: InstallTaskProgress) => void;
   clearCurrent: () => void;
   get: () => RebuildProgressSnapshot;
   subscribe: (listener: (snapshot: RebuildProgressSnapshot) => void) => () => void;
@@ -105,6 +108,7 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
   function publish(next: RebuildProgressSnapshot): void {
     snapshot = {
       ...(next.current ? { current: next.current } : {}),
+      ...(next.installProgress ? { installProgress: next.installProgress } : {}),
       messages: next.messages.slice(-limit),
     };
     for (const listener of listeners) listener(snapshot);
@@ -122,12 +126,12 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
         const target = `${event.source.plugin} · 命令包 ${data.packageKey} · ${event.source.scope === 'user' ? '个人默认' : '当前项目'}`;
         const phase = data.phase === 'start' ? '刷新命令包'
           : data.phase === 'success' ? '命令包已完成' : '命令包失败';
-        publish({ current: { target, phase }, messages: [...snapshot.messages, `${target} · ${phase}`] });
+        publish({ ...snapshot, current: { target, phase }, messages: [...snapshot.messages, `${target} · ${phase}`] });
         return;
       }
       if (!isRebuildActionEvent(event)) return;
       const entry = actionLine(event);
-      publish({ current: entry.current, messages: [...snapshot.messages, entry.line] });
+      publish({ ...snapshot, current: entry.current, messages: [...snapshot.messages, entry.line] });
     },
     addNotice(notice) {
       const line = projectTuiNotice(notice);
@@ -148,9 +152,17 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
     },
     setCurrent(current, message) {
       publish({
+        ...snapshot,
         current,
         messages: message ? [...snapshot.messages, message] : snapshot.messages,
       });
+    },
+    setInstallProgress(progress) {
+      const previous = snapshot.installProgress;
+      if (progress.completed + progress.running + progress.waiting + progress.waitingForDependencies < 2
+        || (previous?.completed === progress.completed && previous.running === progress.running
+          && previous.waiting === progress.waiting && previous.waitingForDependencies === progress.waitingForDependencies)) return;
+      publish({ ...snapshot, installProgress: { ...progress } });
     },
     clearCurrent() {
       seenNoticeKeys.clear();

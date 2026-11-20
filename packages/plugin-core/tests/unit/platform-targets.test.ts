@@ -16,8 +16,8 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   return { schemaVersion: 4, name: 'consumer', version: '1.0.0', description: 'Platform fixture.', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, ...overrides };
 }
 describe('canonical platform registry', () => {
-  it('defaults to ten targets and distinguishes Native installation from the generic Portable writer', () => {
-    const expected = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'];
+  it('defaults to nine targets and distinguishes Native installation from the generic Portable writer', () => {
+    const expected = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
     expect(PLATFORM_TARGETS).toEqual(expected);
     for (const platforms of [undefined, []]) {
       const parsed = validatePluginManifest('/tmp/consumer', manifest({ platforms }));
@@ -26,17 +26,21 @@ describe('canonical platform registry', () => {
     }
     expect(NATIVE_PLATFORM_TARGETS).not.toContain('generic');
     expect(PORTABLE_PLATFORM_TARGETS).toEqual(['generic']);
-    expect([...resolveSupportedPlatforms(validatePluginManifest('/tmp/consumer', manifest({ platforms: ['grok', 'gemini'] })))]).toEqual(['grok', 'gemini']);
+    expect([...resolveSupportedPlatforms(validatePluginManifest('/tmp/consumer', manifest({ platforms: ['grok', 'pi'] })))]).toEqual(['grok', 'pi']);
   });
   it.each([null, '', 'codex', [''], ['unknown'], ['claude-code'], ['agent-skills'], ['codex', 'codex']])('rejects invalid platform input %#', (platforms) => {
     expect(() => assertPluginManifestStructure(manifest({ platforms }))).toThrow();
     expect(() => normalizePlatformTargets(platforms)).toThrow();
   });
-  it('keeps transitive dependency platform requirements complete', () => {
-    expect(() => assertPluginDependencyPlatformCoverage({ source: 'example', consumer: { name: 'consumer', platforms: ['codex', 'gemini'] }, dependency: { name: 'dependency', platforms: ['codex'] }, path: ['root', 'consumer', 'dependency'] })).toThrow(/gemini.*root -> consumer -> dependency/u);
+  it('rejects unknown keys in Manifest config profiles', () => {
+    const config = { schemaVersion: 5, fields: {}, platforms: { unknown: {} } };
+    expect(() => assertPluginManifestStructure(manifest({ config }))).toThrow(/\/config\/platforms/u);
   });
-  it('uses new platform keys in config, templates, resource selectors and entry overrides', () => {
-    for (const platform of ['gemini', 'copilot', 'grok'] as const) {
+  it('keeps transitive dependency platform requirements complete', () => {
+    expect(() => assertPluginDependencyPlatformCoverage({ source: 'example', consumer: { name: 'consumer', platforms: ['codex', 'pi'] }, dependency: { name: 'dependency', platforms: ['codex'] }, path: ['root', 'consumer', 'dependency'] })).toThrow(/pi.*root -> consumer -> dependency/u);
+  });
+  it('uses supported platform keys in config, templates, resource selectors and entry overrides', () => {
+    for (const platform of ['copilot', 'grok'] as const) {
       const parsed = validatePluginManifest('/tmp/consumer', manifest({ platforms: [platform],
         config: { schemaVersion: 5, fields: { selection: { type: 'string', default: 'common' } }, platforms: { [platform]: { fields: { selection: { type: 'string', default: platform } } } } },
         buildConfig: { templates: { vars: { HOST: { [platform]: platform } }, include: ['resources/*.md'] }, fileRules: { [platform]: { include: ['**'], exclude: [] } }, generatedSkillRuntimeFiles: [{ skill: 'check', target: 'scripts/check.mjs', platforms: [platform] }] },
@@ -48,15 +52,15 @@ describe('canonical platform registry', () => {
     }
   });
   it('requires renderer config keys to exist in each selected platform profile', () => {
-    const raw = manifest({ platforms: ['gemini'], config: { schemaVersion: 5, fields: {}, platforms: { gemini: { fields: { onlyHere: { type: 'boolean' } } } } }, artifacts: { configKeys: ['onlyHere'] }, scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } });
+    const raw = manifest({ platforms: ['pi'], config: { schemaVersion: 5, fields: {}, platforms: { pi: { fields: { onlyHere: { type: 'boolean' } } } } }, artifacts: { configKeys: ['onlyHere'] }, scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } });
     expect(() => validatePluginManifest('/tmp/consumer', raw)).not.toThrow();
-    expect(() => validatePluginManifest('/tmp/consumer', { ...raw, platforms: ['gemini', 'copilot'] })).toThrow(/unknown config key/u);
+    expect(() => validatePluginManifest('/tmp/consumer', { ...raw, platforms: ['pi', 'copilot'] })).toThrow(/unknown config key/u);
   });
   it('rejects fixed target declarations and checks static runtime resource inventory', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-platforms-')); roots.push(root);
     await fs.ensureDir(path.join(root, 'skills/check')); await fs.writeFile(path.join(root, 'skills/check/SKILL.md'), '---\nname: check\ndescription: Check.\n---\nCheck.\n');
-    const raw = manifest({ platforms: ['gemini'], skills: './skills', buildConfig: { generatedSkillRuntimeFiles: [{ skill: 'check', target: 'scripts/check.mjs', platforms: ['gemini'] }] } });
-    await expect(validateSourcePluginManifest(root, raw)).resolves.toMatchObject({ platforms: ['gemini'] });
+    const raw = manifest({ platforms: ['pi'], skills: './skills', buildConfig: { generatedSkillRuntimeFiles: [{ skill: 'check', target: 'scripts/check.mjs', platforms: ['pi'] }] } });
+    await expect(validateSourcePluginManifest(root, raw)).resolves.toMatchObject({ platforms: ['pi'] });
     await expect(validateSourcePluginManifest(root, { ...raw, buildConfig: { generatedSkillRuntimeFiles: [{ skill: 'missing', target: 'scripts/check.mjs' }] } })).rejects.toThrow(/static Skill key/u);
     expect(() => assertPluginManifestStructure(manifest({ artifacts: { targets: [] } }))).toThrow();
   });

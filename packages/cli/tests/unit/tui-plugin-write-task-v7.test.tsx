@@ -155,19 +155,28 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
         value.push({ name: 'pluginWriteTask', pluginId, goal: 'restore', targetKeys: [userKey] });
         const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
         await vi.waitFor(() => expect(prepared).toHaveLength(1));
-        if (corrupt) {
-          expect(prepared[0]!.blockExecution).toBe(true);
-          expect(prepared[0]!.receipt.selection.preferences).toBe('invalid');
-          expect(prepared[0]!.receipt.requestedTargets).toEqual([]);
+        const { receipt, blockExecution, joint } = prepared[0]!;
+        const enabled = !corrupt && savedAgents.some((agent) => agent === 'codex');
+        const target = { pluginId, agent: 'codex', scope: 'user', delivery: null };
+        expect(joint?.children).toEqual([]);
+        expect(receipt.requestedTargets).toEqual(enabled ? [target] : []);
+        expect(receipt.remainingTargets).toEqual(enabled ? [target] : []);
+        if (enabled) {
+          expect(receipt.targetResults).toMatchObject([{ ...target, execution: 'not-run',
+            observation: 'unknown', content: 'unknown', blockers: [{ code: 'sourceActiveUnavailable', pluginId }] }]);
         } else {
-          expect(prepared[0]!.receipt.selection).toMatchObject({ agents: ['codex'], origin: 'argument' });
-          expect(prepared[0]!.receipt.targetResults).toEqual([]);
-          expect(prepared[0]!.nativeGroups).toEqual([]);
-          const blockers = prepared[0]!.receipt.blockers.map((entry) => entry.code);
-          if (savedAgents.some((agent) => agent === 'codex')) {
+          expect(receipt.targetResults).toEqual([]);
+        }
+        if (corrupt) {
+          expect(blockExecution).toBe(true);
+          expect(receipt.selection.preferences).toBe('invalid');
+        } else {
+          expect(receipt.selection).toMatchObject({ agents: ['codex'], origin: 'argument' });
+          const blockers = receipt.blockers.map((entry) => entry.code);
+          if (enabled) {
             expect(blockers).not.toContain('invalidExactTargets');
           } else {
-            expect(prepared[0]!.blockExecution).toBe(true);
+            expect(blockExecution).toBe(true);
             expect(blockers).toContain('invalidExactTargets');
             if (savedAgents.length === 0) expect(blockers).toContain('targetsNotConfigured');
           }

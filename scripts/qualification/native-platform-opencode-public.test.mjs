@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { prepareEnvironment, sha256 } from './native-platform-runtime.mjs';
-import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication } from './native-platform-opencode-public.mjs';
+import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeManualSkill } from './native-platform-opencode-public.mjs';
 import { publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { readSkills } from './native-platform-public-aw.mjs';
 
@@ -25,7 +25,7 @@ async function fixture(t, scope) {
   await fs.writeFile(entry, 'fixed-native-entry-fixture; never-executed');
   const commands = [];
   const queries = [];
-  const behavior = { unavailableSkill: false, staleSkillSha256: null, error: null, receiptReason: null };
+  const behavior = { unavailableSkill: false, staleSkillSha256: null, error: null, receiptReason: null, manualSkill: undefined };
   const ctx = { root, project, neutral, scope, platform: 'opencode', pluginName: 'aw-qualification', skillName: 'aw-qualification',
     launcher: { executable: entry, prefix: [] }, env: await prepareEnvironment(root), recordCommand(command) { commands.push(command); } };
   await preparePublicOpenCodeObservation(ctx, {
@@ -51,9 +51,11 @@ async function fixture(t, scope) {
           serverExitCode: 0, serverSignal: null, fallbackTermUsed: false, fallbackKillUsed: false, groupDrainChecked: !windows },
         observation: { expectedPresent: input.expectedPresent, location: { matchesRequestedCwd: true },
           nativeMatches: input.expectedPresent ? [{ source: { type: 'local', path: input.fixtureDirectory }, state: { status: 'active' } }] : [],
-          skillBytes: input.expectedPresent ? { exactMatch: true, sha256: behavior.staleSkillSha256 ?? sha256(expected), entrySha256: input.indexSha256 } : null },
+          skillBytes: input.expectedPresent ? { exactMatch: true, sha256: behavior.staleSkillSha256 ?? sha256(expected),
+            bodySha256: sha256(body), entrySha256: input.indexSha256 } : null },
         skillObservation: behavior.unavailableSkill || !input.expectedPresent ? { status: 'unverified', reason: 'optional-Skill-unavailable' }
-          : { status: 'observed', nativeMatches: [{ location: path.join(input.fixtureDirectory, input.skillRelativePath) }], contentSha256: sha256(body) } };
+          : { status: 'observed', nativeMatches: [{ location: path.join(input.fixtureDirectory, input.skillRelativePath) }], contentSha256: sha256(body) },
+        ...(input.manualSkill && behavior.manualSkill ? { manualSkill: behavior.manualSkill } : {}) };
       return { ...processResult(), exitCode: behavior.receiptReason ? 1 : 0, stdout: JSON.stringify(value), stderr: '' };
     },
   });
@@ -173,4 +175,23 @@ test('OpenCode public required reads retain failures and only optional loading s
   await assert.rejects(readPublicNativeState(ctx, ctx.project, 1, { active: true }), /process inspection failed/);
   assert.equal(value.commands.at(-1).processFailure, 'process inspection failed');
   assert.deepEqual(value.commands.at(-1).processDiagnostics, [{ reason: 'marker-missing' }]);
+});
+
+// Test Value Gate: a matching inventory and Skill body alone cannot qualify
+// manual invocation. The required query must include the registered policy and attachment.
+test('OpenCode public manual qualification requires policy and resolved attachment evidence', async t => {
+  const { ctx, behavior, queries, writeRevision } = await fixture(t, 'user');
+  await writeRevision(1);
+  await assert.rejects(readPublicOpenCodeManualSkill(ctx, ctx.project), /manual-skill-policy-unverified/);
+  behavior.manualSkill = { registeredAutoinvoke: false, resolvedExactBody: false, resume: false,
+    bodySha256: sha256('Independent public fixture body 1.\n') };
+  await assert.rejects(readPublicOpenCodeManualSkill(ctx, ctx.project), /manual-skill-attachment-unverified/);
+  behavior.manualSkill.resolvedExactBody = true;
+  behavior.manualSkill.resume = true;
+  await assert.rejects(readPublicOpenCodeManualSkill(ctx, ctx.project), /manual-skill-model-boundary-unverified/);
+  behavior.manualSkill.resume = false;
+  await assert.rejects(readPublicOpenCodeManualSkill(ctx, ctx.project), /manual-skill-guidance-control-unverified/);
+  behavior.manualSkill.ordinarySkillControl = { id: 'opencode', eligibleForModelGuidance: true };
+  assert.deepEqual(await readPublicOpenCodeManualSkill(ctx, ctx.project), behavior.manualSkill);
+  assert(queries.every(query => query.manualSkill === true));
 });

@@ -1,7 +1,7 @@
 import YAML from 'yaml';
-import { getHookHandlerContract, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { getComponentFeatureRequirements, getHookHandlerContract, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput } from './contracts.js';
-import { ProjectionFiles, nativeComponentName } from './projection-files.js';
+import { ProjectionFiles, nativeComponentName, resourceBytes } from './projection-files.js';
 import { getDeploymentResourceKey } from './layout.js';
 import { COMMAND_RESOURCE_SHELL_HELPER, commandResourceExpression } from './projection-command-resources.js';
 
@@ -82,7 +82,11 @@ function projectOpenCode(input: ProjectionInput, files: ProjectionFiles, compone
     const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(skill)!;
     const frontmatter = YAML.parse(match[1]!) as Record<string, unknown>;
     if (Object.keys(frontmatter).some((field) => !['name', 'description', 'license', 'compatibility', 'metadata'].includes(field))) throw new Error('platformProjectionSkillMetadataUnsupported');
-    const definition = { id: name, name, description: frontmatter.description, content: skill.slice(match[0].length) };
+    const source = resourceBytes(input, component.id, 'SKILL.md', component.content.files['SKILL.md']!).bytes.toString('utf8');
+    const model = getComponentFeatureRequirements({ ...component, requires: [] }, { skillText: source })
+      .find((requirement) => requirement.feature === 'skill.invocation.model');
+    const definition = { id: name, name, description: frontmatter.description, content: skill.slice(match[0].length),
+      ...(model ? { autoinvoke: model.values?.includes('true') === true } : {}) };
     lines.push(`  registrations.push(await ctx.skill.transform((editor) => {`,
       `    if (editor.get(${JSON.stringify(name)})) throw new Error('Native skill name conflict');`,
       `    editor.add({ ...${JSON.stringify(definition)}, location: fileURLToPath(new URL(${JSON.stringify(`./skills/${name}/SKILL.md`)}, import.meta.url)) });`, '  }));');

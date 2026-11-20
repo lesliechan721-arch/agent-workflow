@@ -33,7 +33,7 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 ~~~text
 解析合法请求、共同配置与依赖
-  → 逐平台 discover/resolve/inspect，收集独立阻断
+  → 并行读取独立平台的 discover/resolve/inspect，按原目标顺序收集结果
   → 按真实 RenderUnit 取得完整静态/动态集合与命令闭包
   → project 到私有 staging，冻结字节、位置、缺口和删除影响
   → Review 或直接 CLI 现有确认
@@ -44,9 +44,13 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
   → 汇总保存事实、平台、产品面与组件结果
 ~~~
 
-这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount；移除只检查本次请求释放的依赖，不回收无关历史残留。
+同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
-`OperationPlan` 只用于 Review、stale fingerprint 比较和 Receipt。真实执行继续由 rebuild executor 使用已准备的 target 和 live evidence 完成；不存在通用 `OperationAction` executor。
+`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
+
+独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。需要扫描多个宿主的现有登记时，读取会等这些位置的写入结束，以免把正在更新的清单当作损坏。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
+
+收到中断时停止派发，收拢已经开始的操作，再释放本次持有的资源。回执保留已保存的声明、已验证的目标和待恢复的精确位置。已经发出但无法确认结果的写入保留未知影响，未开始的目标记为 `not-run`。进程退出取决于子进程清理结果，见 [CLI 退出码](../../reference/cli.md#3-状态与进程退出码)。
 
 Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和输出证据。联合准备阶段复用本轮已读取的需求；仅刷新现有输出时，安装现场观察也在本轮复用。这些内存数据不跨执行检查边界复用。直接 CLI `--yes` 与 TUI 使用同一个 `requiresConfirmation` 和 `sharedImpact` descriptor；共享替换或重建必须说明可能影响其它项目。Execute 在同一 `AW_HOME` mutation lock 内重读 Active metadata 与 Review digest；source config 或 Active digest 改变时，在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或要求新 Review。这项检查不访问远端 branch。
 
@@ -56,9 +60,11 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 ## 依赖与部分成功
 
-插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
+插件依赖来自 manifest `dependencies`，在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图。安装按目标及其实际 provider scope 建立依赖。提供者完成写入并通过所需的现场校验后，对应消费者才可以执行。独立部署可以先完成，命令按稳定的依赖优先顺序报告结果。
 
 dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。对允许跨 scope 复用的布局，User 需要的共同依赖由 User 提供；scope 独立的 Native 布局在各自 scope 物化。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
+
+只同步项目根时，如果它复用的个人依赖已核验健康，重试会跳过该依赖的安装脚本。同时选择个人根且它也需要这项依赖时，该依赖的个人安装脚本执行一次。generic 核对 AW 所有权、内容摘要，以及升级时已确认移除的旧 Skill。共享个人包的原生平台核对依赖文件与宿主登记，项目仍执行自己的启用步骤。安装脚本可能改变依赖。首次安装、同步和重建都会在脚本之后、消费者写入之前重新核对它实际使用的直接和间接依赖，包括经多条路径复用的个人依赖。核对失败只阻断依赖它的写入，独立目标可以完成。显式选择该个人插件时仍按普通同步处理。
 
 依赖执行顺序只在本次命令内存在。内部后端结果保留 relation、requiredBy、安全后端状态和恢复建议；统一 CLI 生命周期 data 保留请求的所有目标、阻断与未完成项，不公开持久计划、锁或来源内部证据。精确匹配的现有 shared native 可复用，不建立 ownership ledger。
 
@@ -104,7 +110,7 @@ CLI/TUI 共用 adapter 注册表和发现结果。实际入口、配置根、版
 
 discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻断真实依赖分组，其他平台继续。参数错误、共同强配置损坏、无法取得唯一锁、共同授权缺失和用户中断仍可整体停止。共享发布失败只阻断其消费者，不回滚其他平台成功。
 
-包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实。Grok 许可、Pi Agents 消费者授权和 Gemini 安装同意各有自己的门禁。OpenCode 可选运行观测不影响目录交付。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
+包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实。Grok 许可与 Pi Agents 消费者授权各有自己的门禁。OpenCode 可选运行观测不影响目录交付。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
 
 原生动作回执与后续只读状态分开：Pi Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 
@@ -122,7 +128,7 @@ AW 固定使用 bundle 内的 Node entry，以 plugin root 为 cwd，继承 `PAT
 
 同一命令中，纯激活共享包的附属目标可复用该包已成功执行的 preApply；它没有独立组件、配置输入或补足变化时，不因多选一个 scope 重复执行。具有独立资源或配置输入的目标仍各自执行。主目标的环境校验和 provider 切换保护保持，不能仅因原生 effects 为空跳过；失败结果不能作为成功记录复用。
 
-preApply 只能在 TUI Review 明确确认或直接 CLI `--yes` 后开始，JSON、noninteractive 或内部非 direct-CLI 调用不能绕过该门禁。普通字段或整层删除确认不等于脚本授权。target 的 schema、config、artifact 和 ownership 只读 preflight 必须先成功。preApply 成功后才可为该 target 执行 stale cleanup、native/artifact write、postcheck 和 receipt。`reinstall` 也先运行 preApply，再 cleanup，并复用同一 target preflight。
+preApply 需要 TUI Review 的明确确认或直接 CLI 的 `--yes`。内部原生写入入口收到缺少脚本授权的请求时，先返回相应诊断，连本次写入的动态 renderer 也不会启动。审批范围按实际目标和动作核对，普通字段或整层删除确认不能授权脚本。target 的 schema、config、artifact 和 ownership 只读 preflight 必须先成功。preApply 成功后才可为该 target 执行 stale cleanup、native/artifact write、postcheck 和 receipt。`reinstall` 也先运行 preApply，再 cleanup，并复用同一 target preflight。
 
 preApply 失败时，该 target 不执行任何 AW-owned cleanup 或 write，receipt 记录稳定且脱敏的失败，并提供 `sync` 或 `reinstall` 恢复。其它 target 继续执行。AW 不回滚脚本已成功完成的外部动作，也不增加外部副作用 ownership、journal、补偿或 cleanup 能力。
 

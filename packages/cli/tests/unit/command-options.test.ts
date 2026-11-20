@@ -73,7 +73,7 @@ describe('write command options', () => {
 
   // Test Value Gate: native recovery must reach every registered concrete platform, while generic keeps its own writer.
   it('accepts concrete Agents as rebuild platforms and rejects generic', () => {
-    for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+    for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
       expect(normalizeInstallCommandOptions({ platform }).platform).toBe(platform);
     }
     expect(() => normalizeInstallCommandOptions({ platform: 'generic' })).toThrow('Unsupported platform');

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs'
-import { readGeminiSkills } from './native-platform-gemini-skills.mjs'
 import { qualifyOpenCode } from './native-platform-opencode.mjs'
 
 const version = revision => `1.0.${revision}`
@@ -272,97 +271,6 @@ async function qualifyClaude(ctx) {
   })
 }
 
-function output(result) {
-  // Gemini writes extension inventory to stderr and Skill discovery to stdout.
-  return `${result.stdout}\n${result.stderr}`
-}
-
-async function geminiInventory(ctx, cwd, revision, enabled = true) {
-  const text = output(await ctx.command(['extensions', 'list'], cwd))
-  const header = new RegExp(`^([✓✗]) ${escapeRegExp(ctx.pluginName)} \\(${escapeRegExp(version(revision))}\\)\\r?$`, 'mu')
-  const match = header.exec(text)
-  assert(match, 'Gemini must list the current fixture version.')
-  const block = text.slice(match.index + match[0].length).split(/^[✓✗] /mu)[0]
-  const user = /^ Enabled \(User\): (true|false)\r?$/mu.exec(block)
-  const workspace = /^ Enabled \(Workspace\): (true|false)\r?$/mu.exec(block)
-  assert(user && workspace, 'Gemini must report effective User and Workspace activation.')
-  assert.equal(user[1], ctx.scope === 'user' ? 'true' : 'false')
-  assert.equal(workspace[1], String(enabled))
-  assert.equal(match[1], enabled ? '✓' : '✗')
-  const source = /^ Source: (.+) \(Type: local\)\r?$/mu.exec(block)
-  assert(source, 'Gemini must identify its local source.')
-  samePath(source[1], ctx.bundle, 'Gemini extension source')
-  return { level: 'activation-inventory', name: ctx.pluginName, version: version(revision), enabled }
-}
-
-async function geminiSkills(ctx, cwd, revision, present) {
-  return readGeminiSkills(ctx, cwd, description(revision), present)
-}
-
-async function qualifyGemini(ctx) {
-  await ctx.check('fixture-trust', async () => {
-    const home = ctx.env.GEMINI_CLI_HOME
-    assert.equal(typeof home, 'string')
-    await writeFixture(ctx, path.join(home, '.gemini', 'trustedFolders.json'),
-      `${JSON.stringify(Object.fromEntries([ctx.bundle, ctx.project, ctx.neutral].map(directory => [directory, 'TRUST_FOLDER'])), null, 2)}\n`)
-    return { level: 'fixture-config', trusted: 'isolated source and working directories' }
-  })
-  await ctx.check('install', async () => {
-    await ctx.command(['extensions', 'install', ctx.bundle, '--consent', '--skip-settings'])
-    if (ctx.scope === 'project') {
-      await ctx.command(['extensions', 'disable', ctx.pluginName, '--scope', 'User'])
-      await ctx.command(['extensions', 'enable', ctx.pluginName, '--scope', 'Workspace'])
-    }
-    return geminiInventory(ctx, ctx.project, 1)
-  })
-  if (ctx.scope === 'project') await ctx.check('fixture-project-activation', async () => {
-    // User disable covers the home only. The fixed client's native rule makes
-    // this extension disabled by default; its later Workspace rule stays intact.
-    const filename = fixturePath(ctx, path.join(ctx.env.GEMINI_CLI_HOME, '.gemini', 'extensions', 'extension-enablement.json'))
-    const config = JSON.parse(await readFile(filename, 'utf8'))
-    assert(config && typeof config === 'object' && !Array.isArray(config), 'Gemini activation config must be an object.')
-    const entry = config[ctx.pluginName]
-    assert(entry && typeof entry === 'object' && !Array.isArray(entry), 'Gemini did not create the expected activation entry.')
-    const overrides = array(entry.overrides, 'Gemini activation overrides')
-    assert(overrides.length > 0 && overrides.every(rule => typeof rule === 'string'), 'Gemini activation rules must be nonempty strings.')
-    const before = [...overrides]
-    assert(!overrides.includes('!*') || overrides[0] === '!*' && overrides.filter(rule => rule === '!*').length === 1,
-      'Gemini has an unexpected global activation rule. Check the fixed client configuration.')
-    if (overrides[0] !== '!*') overrides.unshift('!*')
-    await writeFixture(ctx, filename, `${JSON.stringify(config, null, 2)}\n`)
-    return { level: 'fixture-native-extension-enablement', name: ctx.pluginName, before, overrides: [...overrides] }
-  })
-  await ctx.observe('skill-discovery', async () => geminiSkills(ctx, ctx.project, 1, true))
-  await ctx.check('target-scope', async () => geminiInventory(ctx, ctx.project, 1, true))
-  await ctx.check('neutral-scope', async () => {
-    // Keep neutral outside GEMINI_CLI_HOME: 0.67.0 leaked project activation there.
-    const relative = path.relative(ctx.env.GEMINI_CLI_HOME, ctx.neutral)
-    assert(relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative),
-      'Gemini neutral cwd must be outside its effective home to test the known scope leak.')
-    return geminiInventory(ctx, ctx.neutral, 1, ctx.scope === 'user')
-  })
-  await ctx.render(2)
-  await ctx.check('refresh', async () => {
-    await ctx.command(['extensions', 'update', ctx.pluginName], ctx.project, { input: 'y\n' })
-    const inventory = await geminiInventory(ctx, ctx.project, 2, true)
-    await geminiInventory(ctx, ctx.neutral, 2, ctx.scope === 'user')
-    return inventory
-  })
-  await ctx.observe('skill-refresh', async () => geminiSkills(ctx, ctx.project, 2, true))
-  await ctx.check('remove', async () => {
-    await ctx.command(['extensions', 'uninstall', ctx.pluginName])
-    for (const cwd of [ctx.project, ctx.neutral]) {
-      const inventory = output(await ctx.command(['extensions', 'list'], cwd))
-      assert(!new RegExp(`^[✓✗] ${escapeRegExp(ctx.pluginName)} \\(`, 'mu').test(inventory))
-    }
-    return { level: 'extension-inventory', installed: false }
-  })
-  await ctx.observe('skill-removal', async () => {
-    for (const cwd of [ctx.project, ctx.neutral]) await geminiSkills(ctx, cwd, 2, false)
-    return { level: 'skill-discovery', present: false }
-  })
-}
-
 async function grokInspect(ctx, cwd = ctx.project) {
   const result = await jsonCommand(ctx, ['inspect', '--json'], cwd)
   return {
@@ -596,7 +504,6 @@ export async function qualifyClient(ctx) {
     codex: qualifyCodex,
     pi: qualifyPi,
     claude: qualifyClaude,
-    gemini: qualifyGemini,
     grok: qualifyGrok,
     copilot: qualifyCopilot,
     opencode: qualifyOpenCode,

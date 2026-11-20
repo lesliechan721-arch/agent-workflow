@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
+import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getComponentFeatureRequirements, getPlatformFeatureRegistry, type PlatformId, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
@@ -27,7 +28,7 @@ async function fixture(platform: PlatformId, components: PluginComponent[], outp
     binding: {
       id: 'binding', platform, plugin: { sourceId: 'source', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'source/example', version: '1.2.3' },
       scope: { kind: 'user' }, route: ({ codex: 'codex-marketplace', claude: 'claude-marketplace', cursor: 'cursor-workspace-hook',
-        antigravity: 'antigravity-directory', opencode: 'opencode-directory', pi: 'pi-package', gemini: 'gemini-extension',
+        antigravity: 'antigravity-directory', opencode: 'opencode-directory', pi: 'pi-package',
         copilot: 'copilot-marketplace', grok: 'grok-cli', generic: 'generic-skills' } as const)[platform],
       consumers: [{ id: 'consumer', product: platform === 'generic' ? 'generic' : 'cli', version: '1.2.3', availability: platform === 'generic' ? 'notApplicable' : 'available', reasonCodes: [],
         entry: platform === 'generic' ? { kind: 'generic', root: path.join(root, 'home/.agents/skills') } : { kind: 'cli', executable: path.join(root, 'client'), configRoot: path.join(root, 'client-home') } }],
@@ -82,7 +83,7 @@ describe('platform projection', () => {
   it.each([
     ['codex', '.codex-plugin/plugin.json'], ['claude', '.claude-plugin/plugin.json'],
     ['cursor', '.cursor-plugin/plugin.json'], ['antigravity', '.antigravity-plugin/plugin.json'],
-    ['opencode', 'package.json'], ['pi', 'package.json'], ['gemini', 'gemini-extension.json'],
+    ['opencode', 'package.json'], ['pi', 'package.json'],
     ['copilot', 'plugin.json'], ['grok', '.grok-plugin/plugin.json'],
   ] as const)('generates the %s package and preserves complete skill resources', async (platform, manifest) => {
     const { input, ctx } = await fixture(platform, [skill]);
@@ -115,7 +116,7 @@ describe('platform projection', () => {
     expect(result.components[0]!.nativeName).toBe('aw-source-example-review');
   });
 
-  it.each(['grok', 'gemini', 'copilot'] as const)('combines the same input instruction text into %s agents', async (platform) => {
+  it.each(['grok', 'copilot'] as const)('combines the same input instruction text into %s agents', async (platform) => {
     const { input, ctx } = await fixture(platform, [agent, instruction]);
     if (platform === 'grok') input.renderUnit.kinds = ['agent'];
     const result = await projectPlatform(ctx, input);
@@ -135,11 +136,11 @@ describe('platform projection', () => {
   });
 
   it('rejects escaped Skill paths and mapped native-name collisions without writing outside staging', async () => {
-    const { input, ctx, root } = await fixture('claude', [skill]);
+    const { input, ctx, root } = await fixture('claude', [skill, agent]);
     input.components = [{ ...skill, content: { files: { ...skill.content.files, '../escape': { text: 'unsafe' } } } }];
     await expect(projectPlatform(ctx, input)).rejects.toThrow(/Invalid/u);
     expect(await fs.pathExists(path.join(root, 'escape'))).toBe(false);
-    input.components = [skill, { ...skill, id: 'second', name: 'CHECK' }];
+    input.components = [agent, { ...agent, id: 'second', name: 'REVIEW' }];
     await expect(projectPlatform(ctx, input)).rejects.toThrow('platformProjectionNameConflict');
   });
 
@@ -155,17 +156,40 @@ describe('platform projection', () => {
     expect((await projectPlatform(ctx, input)).bundle).toBeNull();
   });
 
-  it.each([['true', false], ['"yes"', false], ['1', false], ['false', true]] as const)(
-    'maps Codex automatic invocation control %s to its native Skill policy', async (value, implicit) => {
+  it('carries explicit invocation requirements through Generic even without host fields', async () => {
+    const controlled: PluginComponent = { ...skill, requires: [
+      { feature: 'skill.invocation.model', values: ['true', 'false'] }, { feature: 'skill.visibility' },
+    ] };
+    const { input, ctx } = await fixture('generic', [controlled], 'generic');
+    const profile = getQualifiedPlatformProfile('generic');
+    input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
+    const result = await projectPlatform(ctx, input);
+    const text = await fs.readFile(path.join(result.supplements[0]!.stagingPath, 'SKILL.md'), 'utf8');
+    expect(YAML.parse(text.split('---')[1]!).metadata).toEqual({ 'skill.invocation.model': 'false,true', 'skill.visibility': '' });
+  });
+
+  it.each([
+    ['true', 'true', false, true],
+    ['"yes"', 'true', false, true],
+    ['1', 'true', false, true],
+    ['"  true  "', '"  YeS  "', false, true],
+    ['false', 'false', true, false],
+    ['"  OfF  "', '"  nO  "', true, false],
+  ] as const)(
+    'maps Codex invocation controls %s and %s to the projected Skill', async (disableModel, manual, implicit, visible) => {
       const controlled: PluginComponent = { ...skill, content: { files: {
-        'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: true\ndisable-model-invocation: ${value}\n---\nRun explicitly.\n` },
+        'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: ${manual}\ndisable-model-invocation: ${disableModel}\n---\nRun explicitly.\n` },
       } } };
       const { input, ctx } = await fixture('codex', [controlled]);
       const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
       input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
       const result = await projectPlatform(ctx, input);
-      const policy = await fs.readFile(path.join(result.bundle!.stagingRoot, 'skills/check/agents/openai.yaml'), 'utf8');
-      expect(policy).toContain(`allow_implicit_invocation: ${implicit}`);
+      const skillRoot = path.join(result.bundle!.stagingRoot, 'skills/check');
+      const definition = YAML.parse(await fs.readFile(path.join(skillRoot, 'agents/openai.yaml'), 'utf8'));
+      expect(definition.policy.allow_implicit_invocation).toBe(implicit);
+      const projected = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
+      const { metadata } = YAML.parse(projected.split('---')[1]!);
+      expect(metadata?.['skill.visibility']).toBe(visible ? undefined : 'hidden');
     },
   );
 
@@ -180,6 +204,22 @@ describe('platform projection', () => {
     expect(await fs.readFile(file, 'utf8')).toBe('console.log("frozen");');
     if (process.platform !== 'win32') expect((await fs.stat(file)).mode & 0o111).toBe(0o111);
   });
+
+  it.each(['claude', 'copilot', 'grok', 'antigravity', 'pi', 'opencode'] as const)(
+    'emits the %s native automatic invocation policy for accepted author boolean spellings', async (platform) => {
+      const controlled: PluginComponent = { ...skill, content: { files: {
+        'SKILL.md': { text: '---\nname: check\ndescription: Check input.\nuser-invocable: "yes"\ndisable-model-invocation: 1\n---\nRun explicitly.\n' },
+      } } };
+      const { input, ctx } = await fixture(platform, [controlled]);
+      const result = await projectPlatform(ctx, input);
+      const projected = await fs.readFile(path.join(result.bundle!.stagingRoot, 'skills/check/SKILL.md'), 'utf8');
+      const metadata = YAML.parse(projected.split('---')[1]!);
+      if (platform === 'opencode') expect(metadata.metadata['opencode/autoinvoke']).toBe('false');
+      else expect(metadata['disable-model-invocation']).toBe(true);
+      if (['claude', 'copilot', 'grok'].includes(platform)) expect(metadata['user-invocable']).toBe(true);
+      else expect(metadata).not.toHaveProperty('user-invocable');
+    },
+  );
 
   it('keeps Cursor workspace loading outside the package and bound to project activation', async () => {
     const { input, ctx, root } = await fixture('cursor', [skill]);
@@ -211,14 +251,12 @@ describe('platform projection', () => {
     expect(handlers.get('before_agent_start')!({ systemPrompt: 'Host prompt.' }).systemPrompt).toBe('Host prompt.\n\nPreserve the source files.');
   });
 
-  it.each([
-    ['gemini', 'gemini-extension.json', 'httpUrl'], ['antigravity', 'mcp_config.json', 'serverUrl'],
-  ] as const)('uses the documented %s remote MCP transport field', async (platform, relative, urlKey) => {
+  it('uses the Antigravity remote MCP transport field', async () => {
     const mcp: PluginComponent = { id: 'mcp:docs', name: 'docs', kind: 'mcp', content: { type: 'http', url: 'https://example.test/mcp', headers: { 'X-Client': 'aw' } } };
-    const { input, ctx } = await fixture(platform, [mcp]);
+    const { input, ctx } = await fixture('antigravity', [mcp]);
     const result = await projectPlatform(ctx, input);
-    const config = await fs.readJson(path.join(result.bundle!.stagingRoot, relative));
-    expect(config.mcpServers.docs).toEqual({ [urlKey]: 'https://example.test/mcp', headers: { 'X-Client': 'aw' } });
+    const config = await fs.readJson(path.join(result.bundle!.stagingRoot, 'mcp_config.json'));
+    expect(config.mcpServers.docs).toEqual({ serverUrl: 'https://example.test/mcp', headers: { 'X-Client': 'aw' } });
   });
 
   it('wraps Antigravity Hook groups and keeps conditional rules out of always-on Instructions', async () => {

@@ -555,6 +555,58 @@ describe('ConsoleAppV4', () => {
     expect(executeScopedTask).toHaveBeenCalledTimes(1);
   });
 
+  // Test Value Gate: a single target can succeed with a visible warning without emitting queue progress.
+  it.each(['install', 'sync'] as const)('retains an installed Skill warning after successful single-target %s', async (command) => {
+    const pluginId = 'official/agent-lab';
+    const loaded = loadResult();
+    if (command === 'sync') {
+      const installed = loaded.payload.targets.find((target) => target.pluginId === pluginId && target.platform === 'codex')!;
+      updatePlacement(installed, 'user', { state: 'ready', components: [{ kind: 'ownership', key: 'fixture', state: 'present' }] });
+    }
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => {
+      const receipt = scopedReceipt(request);
+      const target = { ...scopedTarget(pluginId, 'codex', 'applied', 'verified'), scope: request.scope };
+      receipt.requestedTargets = [{ pluginId, agent: target.agent, scope: target.scope, delivery: target.delivery }];
+      receipt.targetResults = [{ ...target, reasons: [{
+        code: 'skillInvocationPolicyNotGuaranteed', message: 'The installed Skill cannot guarantee disabled model invocation.',
+        subject: { pluginId, target: target.agent, scope: target.scope, field: 'skill.commit' },
+        detail: { reasonCode: 'invocationControlUnverified', skillInvocationControls: [
+          { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+        ] },
+      }] }];
+      return scopedPlan(request, receipt);
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), prepareScopedTask });
+    await value.load();
+    value.push(command === 'install' ? { name: 'pluginDetail', pluginId } : { name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 120, rows: 32 }} />);
+    await nextTurn(2);
+    if (command === 'install') {
+      await focusAction(instance, '添加插件…');
+      await input(instance, '\r', '\r');
+    } else {
+      await input(instance, 'm', ' ', 'c');
+      await focusAction(instance, '其他维护方式');
+      await input(instance, '\r');
+      await focusAction(instance, '同步已保存使用设置');
+      await input(instance, '\r');
+    }
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'recovery', command, selectors: [pluginId] }), expect.any(AbortSignal));
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    expect(instance.lastFrame()).toContain('禁止模型自动调用');
+    expect(instance.lastFrame()).not.toContain('重试明确失败项');
+    expect(await readScopedDetails(instance)).toContain('skill.invocation.model=false · invocationControlUnverified · Codex 桌面 App');
+
+    const history = value.listOperationHistory();
+    expect(history).toEqual([expect.objectContaining({ state: 'succeeded', code: 'operationSucceeded', diagnosticCount: 1 })]);
+    const detail = value.getOperationDiagnostic(history[0]!.recordId)!;
+    expect(detail.targets).toMatchObject([{ pluginId, platform: 'codex', state: 'completed', diagnosticIds: [detail.diagnostics[0]!.id] }]);
+    expect(value.previewOperationReport(history[0]!.recordId)?.content)
+      .toContain('skill.invocation.model=false · invocationControlUnverified · product=app');
+  });
+
   it.each(['install', 'refreshAndSync'] as const)(
     'retries a reloaded partial target with reinstall after a failed %s',
     async (originalAction) => {

@@ -9,7 +9,7 @@
 ### 环境要求
 
 - **Node.js**：`>= 22.0.0`
-- **支持平台**：Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini、Copilot、Grok、Generic
+- **支持平台**：Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Copilot、Grok、Generic
 
 ### 全局安装 CLI
 

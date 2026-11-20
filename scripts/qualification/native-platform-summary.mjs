@@ -20,6 +20,14 @@ try {
   }
   const excluded = report.clients.filter(client => client.status === 'excluded');
   if (excluded.length) lines.push('', `Excluded units: ${excluded.map(client => `${cell(client.platform)} (${cell(client.reason)})`).join(', ')}. Exclusion is not a passing qualification.`);
+  if (report.mixedPublicAw) {
+    const { platforms, scope, status, reason, checks } = report.mixedPublicAw;
+    lines.push('', '### Mixed native install', '',
+      `${platforms.map(({ platform, version }) => `${cell(platform)} ${cell(version)}`).join(' and ')} in one ${cell(scope)} batch. **${cell(status)}**`,
+      '', '| Required check | Result | Reason |', '| --- | --- | --- |',
+      ...checks.map(check => `| ${cell(check.id)} | ${cell(check.status)} | ${cell(check.reason)} |`));
+    if (reason) lines.push('', cell(reason));
+  }
   if (observations.length) lines.push('', '### Non-blocking observations', '',
     '| Client | Input | Scope | Observation | Status | Reason |', '| --- | --- | --- | --- | --- | --- |', ...observations);
   lines.push('', 'The core result requires lifecycle, consumer content, scope, process safety and cleanup evidence. Public AW runs also require each applicable status and native permission check. Skill discovery and loading observations apply to the recorded client, scope and invocation path.', '');

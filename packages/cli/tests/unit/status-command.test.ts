@@ -35,7 +35,7 @@ const nativeProfiles = [
   ['codex', 'codex', 'codex-cli 0.167.0'], ['claude', 'claude', '2.1.317 (Claude Code)'],
   ['cursor', 'cursor-agent', 'Cursor Agent 2026.11.05-86047df'], ['antigravity', 'agy', 'Antigravity 1.3.4'],
   ['opencode', 'opencode', 'opencode 2.2.6'], ['pi', 'pi', 'pi coding agent 1.5.0'],
-  ['gemini', 'gemini', 'Gemini CLI 0.67.0'], ['copilot', 'copilot', 'GitHub Copilot 1.0.95'],
+  ['copilot', 'copilot', 'GitHub Copilot 1.0.95'],
   ['grok', 'grok', 'Grok 1.0.77'],
 ] as const;
 

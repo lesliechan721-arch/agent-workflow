@@ -7,7 +7,7 @@ aw target set codex
 aw plugin install agent-skill-toolkit --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。以上是 AW 分发安装方式，不是通用工具的运行依赖。使用其它方式取得完整包时，同时提供 `agent-content` 内容方法；单独复制源码目录不等于取得完整运行包。
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。以上是 AW 分发安装方式，不是通用工具的运行依赖。使用其它方式取得完整包时，同时提供 `agent-content` 内容方法；单独复制源码目录不等于取得完整运行包。
 
 | Skill | 用户结果 |
 | --- | --- |

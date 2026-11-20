@@ -54,6 +54,7 @@ import {
 } from '../utils/plugin-config.js';
 import { readRecoveryStatus, type RecoveryStatus } from '../recovery/status.js';
 import { readJointDemand, type JointDemandSnapshot } from '../recovery/joint-demand.js';
+import { RecoveryInterruptedError } from '../recovery/interruption.js';
 import type { RecoveryTarget } from '../recovery/receipt.js';
 import { catalogSourceErrorCode, sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import {
@@ -66,6 +67,7 @@ import { prepareTargetsPlan, executeTargetsPlan, prepareIntentPlan, executeInten
 import {
   applyPluginConfigWrite,
   applyPluginConfig,
+  ConfigApplyInterruptedError,
   preparePluginConfigApply,
   disposePluginConfigApply,
   resolveConfigPreApplyAuthorization,
@@ -79,6 +81,7 @@ import { inventoryCatalogSourceReferences } from '../utils/catalog-source-refere
 import {
   operationEvidenceMatches,
   operationEvidenceFingerprint,
+  configApplyHasCompletedWork,
   TuiConfigInvalidStoreError,
   TuiController,
   TuiOperationBlockedError,
@@ -2255,7 +2258,14 @@ export function createTuiControllerDependencies(
         const refreshed = await activateRecoverySourcesAndReprepare(plan.plan, { runtime: context });
         return { kind: 'recoveryReview', plan: { kind: 'recovery', scope: plan.scope, plan: refreshed } };
       }
-      const receipt = await executeRecovery(plan.plan, { yes: true, runtime: context });
+      const receipt = await executeRecovery(plan.plan, {
+        yes: true,
+        runtime: progressFeed ? { ...context, onInstallProgress: progressFeed.setInstallProgress } : context,
+      }).catch((error: unknown) => {
+        if (!(error instanceof RecoveryInterruptedError)) throw error;
+        if (context.interruption && error.code === 'processCleanupUnconfirmed') context.interruption.cleanupFailed = true;
+        return error.receipt;
+      });
       return { kind: 'recovery', receipt };
     },
     loadPluginContent,
@@ -2953,7 +2963,15 @@ export function createTuiControllerDependencies(
               group.config.preApplyAuthorization ?? []);
             const results: ConfigSaveBatchExecutionResult['groups'] = [];
             const packageInfo = await readCliPackageInfo();
+            let interrupted = false;
             for (const group of intent.groups) {
+              if (interrupted) {
+                results.push({
+                  scope: 'user', platform: group.platform, status: 'notStarted',
+                  configSaved: false, applyRequested: intent.apply, applyStatus: intent.apply ? 'notStarted' : 'notRequested',
+                });
+                continue;
+              }
               const groupIntent = configSaveBatchGroupIntent(intent, group);
               const reviewedGroup = reviewedBatch.groups.find((item) => item.platform === group.platform);
               if (!reviewedGroup) {
@@ -3060,15 +3078,16 @@ export function createTuiControllerDependencies(
                     ? 'succeeded' as const
                     : result.apply.state === 'skipped'
                       ? 'notNeeded' as const
-                      : 'failed' as const;
+                      : configApplyHasCompletedWork(result.apply) ? 'partial' as const : 'failed' as const;
+                const applyIncomplete = applyStatus === 'failed' || applyStatus === 'partial';
                 results.push({
                   scope: 'user', platform: group.platform,
-                  status: applyStatus === 'failed' ? 'failed' : 'succeeded',
+                  status: applyIncomplete ? 'failed' : 'succeeded',
                   configSaved,
                   applyRequested: intent.apply,
                   applyStatus,
                   execution: { ...result, operationRebuildResults },
-                  ...(applyStatus === 'failed' ? {
+                  ...(applyIncomplete ? {
                     errorCode: result.apply.state === 'unavailable'
                       ? result.apply.error?.code ?? result.apply.reason
                       : result.apply.targetResults.find((target) => target.errorCode)?.errorCode
@@ -3076,6 +3095,13 @@ export function createTuiControllerDependencies(
                   } : {}),
                 });
               } catch (error) {
+                const interruption = error instanceof ConfigApplyInterruptedError ? error : undefined;
+                if (interruption) {
+                  interrupted = true;
+                  if (context.interruption && interruption.code === 'processCleanupUnconfirmed') {
+                    context.interruption.cleanupFailed = true;
+                  }
+                }
                 configSaved = (error as { configWrite?: unknown })?.configWrite === 'succeeded';
                 const errorCode = typeof error === 'object' && error !== null
                   && 'code' in error && typeof error.code === 'string'
@@ -3086,10 +3112,14 @@ export function createTuiControllerDependencies(
                   status: 'failed',
                   configSaved,
                   applyRequested: intent.apply,
-                  applyStatus: intent.apply ? 'failed' : 'notRequested',
+                  applyStatus: !intent.apply ? 'notRequested'
+                    : configApplyHasCompletedWork(interruption?.apply) ? 'partial' : 'failed',
                   errorCode,
-                  ...(operationRebuildResults.length > 0
-                    ? { execution: { operationRebuildResults } }
+                  ...(interruption || operationRebuildResults.length > 0
+                    ? { execution: {
+                        operationRebuildResults,
+                        ...(interruption ? { apply: interruption.apply, operationDiagnostic: interruption.operationDiagnostic } : {}),
+                      } }
                     : {}),
                 });
               }
@@ -3219,6 +3249,12 @@ export function createTuiControllerDependencies(
                       });
                 return { ...result, operationRebuildResults };
               },
+            }).catch((error: unknown) => {
+              if (error instanceof ConfigApplyInterruptedError && context.interruption
+                && error.code === 'processCleanupUnconfirmed') {
+                context.interruption.cleanupFailed = true;
+              }
+              throw error;
             });
           }
           throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');

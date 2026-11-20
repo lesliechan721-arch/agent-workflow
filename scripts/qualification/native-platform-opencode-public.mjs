@@ -5,7 +5,7 @@ import { execute, assertCommand, repoRoot, sha256 } from './native-platform-runt
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { assertOpenCodeQueryResult, copyOpenCodeExecutable } from './native-platform-opencode.mjs';
 
-const skillRelativePath = 'skills/aw-qualification/SKILL.md';
+const skillRelativePathFor = ctx => `skills/${ctx.skillName}/SKILL.md`;
 const queryChild = path.join(repoRoot, 'scripts/qualification/native-platform-opencode-query.mjs');
 
 function stateFor(ctx) {
@@ -40,8 +40,7 @@ async function isolatedFile(ctx, filename) {
 
 export async function preparePublicOpenCodeObservation(ctx, { runGit = execute, runQuery = executePublicAw } = {}) {
   assert.equal(ctx.platform, 'opencode');
-  assert.equal(ctx.pluginName, 'aw-qualification');
-  assert.equal(ctx.skillName, 'aw-qualification');
+  assert.match(ctx.skillName, /^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
   assert(!Object.hasOwn(ctx.env, 'OPENCODE_CONFIG_DIR'), 'opencode-config-dir-override-present');
   ctx.env.OPENCODE_DISABLE_MODELS_FETCH = '1';
   ctx.env.OPENCODE_DISABLE_AUTOUPDATE = '1';
@@ -74,8 +73,8 @@ async function currentPackage(ctx, revision, version) {
   assert.equal(metadata.name, ctx.pluginName, 'opencode-public-package-identity-mismatch');
   assert.equal(metadata.version, version, 'native-management-version-mismatch');
   assert(['dependencies', 'optionalDependencies', 'peerDependencies'].every(key => Object.keys(metadata[key] ?? {}).length === 0), 'opencode-public-external-dependency-present');
-  const skill = await isolatedFile(ctx, path.join(publication.packageDirectory, skillRelativePath));
-  const expected = await fs.readFile(ctx.publicSkillFile);
+  const skill = await isolatedFile(ctx, path.join(publication.packageDirectory, skillRelativePathFor(ctx)));
+  const expected = ctx.publicConsumedSkill ?? await fs.readFile(ctx.publicSkillFile);
   assert.deepEqual(skill.bytes, expected, 'dynamic-consumer-content-mismatch');
   assert.deepEqual(expected, publication.expectedSkill, 'opencode-public-fixture-revision-mismatch');
   const entry = await isolatedFile(ctx, path.join(publication.packageDirectory, 'index.mjs'));
@@ -101,7 +100,7 @@ export async function capturePublicOpenCodePublication(ctx, result, revision, ve
   assert(samePath(after.nativeIdentity.sourceLocation, state.expectedPackageDirectory), 'opencode-public-source-location-mismatch');
   const packageDirectory = await fs.realpath(after.nativeIdentity.sourceLocation);
   assert.equal(packageDirectory, await fs.realpath(state.expectedPackageDirectory), 'opencode-public-source-location-mismatch');
-  const expectedSkill = await fs.readFile(ctx.publicSkillFile);
+  const expectedSkill = ctx.publicConsumedSkill ?? await fs.readFile(ctx.publicSkillFile);
   // This records the actual public deployment. No candidate projection or
   // hand-installed Native package can satisfy the public publication boundary.
   state.publication = { revision, version, packageDirectory, expectedSkill };
@@ -127,7 +126,7 @@ export function capturePublicOpenCodeRemoval(ctx, result, pluginId) {
   state.removed = true;
 }
 
-export async function readPublicOpenCodeState(ctx, cwd, revision, { active, absent = false, version }) {
+export async function readPublicOpenCodeState(ctx, cwd, revision, { active, absent = false, version, manualSkill = false }) {
   const state = stateFor(ctx);
   state.records.delete(cwd);
   const publication = state.publication;
@@ -138,14 +137,16 @@ export async function readPublicOpenCodeState(ctx, cwd, revision, { active, abse
   const expected = current?.expected ?? publication.expectedSkill;
   const indexSha256 = current ? sha256(current.entry.bytes) : publication.indexSha256;
   const command = { native: 'opencode-public-observation', cwd, revision, version, expectedPresent: active,
-    query: ['POST /api/plugin/await-activation', 'GET /api/plugin', ...(active ? ['GET /api/skill (optional)'] : [])] };
+    query: ['POST /api/plugin/await-activation', 'GET /api/plugin', ...(active ? ['GET /api/skill'] : []),
+      ...(manualSkill ? ['POST /api/session', 'POST /api/session/:sessionID/prompt (resume:false)'] : [])] };
   let result;
   try {
     result = await state.runQuery({ executable: process.execPath, prefix: [queryChild] }, [], {
       cwd, env: ctx.env, timeoutMs: 25_000, captureProcessNames: true,
       stdin: JSON.stringify({ root: ctx.root, cwd, fixtureDirectory: publication.packageDirectory, executable: state.executable,
-        nativePluginId: state.nativePluginId, expectedPresent: active, skillRelativePath,
-        skillBase64: expected.toString('base64'), skillSha256: sha256(expected), indexSha256 }),
+        nativePluginId: state.nativePluginId, expectedPresent: active, skillRelativePath: skillRelativePathFor(ctx),
+        skillBase64: expected.toString('base64'), skillSha256: sha256(expected), indexSha256,
+        ...(manualSkill ? { manualSkill: true } : {}) }),
     });
   } catch (error) {
     ctx.recordCommand({ ...command, processFailure: error?.message ?? 'opencode-public-query-failed',
@@ -172,10 +173,25 @@ export async function readPublicOpenCodeState(ctx, cwd, revision, { active, abse
     const after = await currentPackage(ctx, revision, version);
     assert.equal(sha256(after.entry.bytes), indexSha256, 'opencode-public-consumer-entry-changed');
   }
+  if (manualSkill) {
+    const observation = receipt.manualSkill;
+    assert.equal(observation?.registeredAutoinvoke, false, 'opencode-manual-skill-policy-unverified');
+    assert.equal(observation.resolvedExactBody, true, 'opencode-manual-skill-attachment-unverified');
+    assert.equal(observation.bodySha256, receipt.observation.skillBytes.bodySha256, 'opencode-manual-skill-attachment-unverified');
+    assert.equal(observation.resume, false, 'opencode-manual-skill-model-boundary-unverified');
+    assert.equal(observation.ordinarySkillControl?.eligibleForModelGuidance, true, 'opencode-manual-skill-guidance-control-unverified');
+  }
   state.records.set(cwd, { revision, version, active, absent, receipt, indexSha256 });
   return { level: 'native-management-state', active, present: active,
     ...(active ? { version, packagePath: publication.packageDirectory, source: 'fresh-Native-plugin-inventory',
-      content: receipt.observation.skillBytes } : {}), scope: ctx.scope };
+      content: receipt.observation.skillBytes } : {}), scope: ctx.scope,
+    ...(manualSkill ? { manualSkill: receipt.manualSkill } : {}) };
+}
+
+export async function readPublicOpenCodeManualSkill(ctx, cwd) {
+  const { revision, version } = stateFor(ctx).publication;
+  const result = await readPublicOpenCodeState(ctx, cwd, revision, { version, active: true, manualSkill: true });
+  return result.manualSkill;
 }
 
 export function readPublicOpenCodeSkills(ctx, cwd, revision, present) {

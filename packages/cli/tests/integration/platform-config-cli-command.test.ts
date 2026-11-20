@@ -81,7 +81,6 @@ async function fixture(withSkill = false) {
   return { cwd, env, file, run };
 }
 
-// Test Value Gate: exercise argv, platform schema selection, the real atomic document, and save/apply receipts.
 describe('platform configuration CLI', () => {
   beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true }); });
   it('uses common by default, compiles platform presets, and keeps project context in the user store', async () => {

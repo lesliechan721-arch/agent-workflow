@@ -107,7 +107,9 @@ describe('public Copilot discovery budget', () => {
       targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'copilot', scope: 'project',
         execution: 'applied', observation: 'verified' })] },
       ...(failure ? { diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
-        ...(scenario === 'timeout with unconfirmed cleanup' ? {} : { subject: { pluginId: 'team/demo', target: 'copilot', scope: 'project' } }),
+        ...(scenario === 'timeout with unconfirmed cleanup'
+          ? { message: expect.stringContaining('process cleanup could not be confirmed') }
+          : { subject: { pluginId: 'team/demo', target: 'copilot', scope: 'project' } }),
         detail: { reasonCode: failure } })]),
         nextActions: [expect.objectContaining({ argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'], requiresConfirmation: false })] }
         : { nextActions: [] }) });

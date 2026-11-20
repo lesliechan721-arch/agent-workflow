@@ -23,6 +23,65 @@ async function invoke(args: string[], options: Parameters<typeof runCli>[1] = {}
 }
 
 describe('public CLI result boundary', () => {
+  // Test Value Gate: a Project sync can rerun User scripts for the same
+  // source-qualified plugin and platform, even after User output was verified.
+  it.each(['completed', 'partial'] as const)('keeps a %s User delivery outside a Project-only config retry', (userDelivery) => {
+    const row = (pluginId: string, platform: string, scope: 'user' | 'project', state: 'completed' | 'failed') => ({
+      target: { pluginId, pluginName: pluginId.split('/')[1], platform, scope }, action: 'refresh', state,
+      ...(state === 'failed' ? { errorCode: 'preApplyExited' } : {}),
+    });
+    const project = row('team/demo', 'generic', 'project', 'failed');
+    const packageProducer = { kind: 'package', sourceId: 'team', sourceIdentity: 'fixture', pluginName: 'demo', key: 'tools' };
+    const result = projectReceipt('plugin.config.apply', { configWrite: 'notStarted', overallState: 'partial',
+      apply: { state: 'partial', targetResults: [
+        userDelivery === 'partial' ? { ...row('team/demo', 'generic', 'user', 'failed'), partialDelivery: true }
+          : row('team/demo', 'generic', 'user', 'completed'),
+        project, project,
+        row('team/demo', 'pi', 'project', 'failed'),
+        row('other/demo', 'generic', 'project', 'failed'),
+        row('team/both', 'generic', 'user', 'failed'), row('team/both', 'generic', 'project', 'failed'),
+      ], commandResults: [
+        { producer: { ...packageProducer, scope: 'user' }, state: 'completed', commandIds: [], removedCommandIds: [], errors: [] },
+        { producer: { ...packageProducer, scope: 'project' }, state: 'failed', commandIds: [], removedCommandIds: [], errors: [] },
+      ] },
+    });
+    const commands = result.nextActions.flatMap((action) => action.kind === 'command' ? [action.argv] : []);
+    expect(commands).not.toContainEqual(['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'generic']);
+    expect(commands).toHaveLength(4);
+    expect(commands).toEqual(expect.arrayContaining([
+      ['aw', 'command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'project'],
+      ['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'pi'],
+      ['aw', 'plugin', 'sync', 'other/demo', '--context', 'project', '--target', 'generic'],
+      ['aw', 'plugin', 'sync', 'team/both', '--context', 'project', '--target', 'generic'],
+    ]));
+    const manual = result.nextActions.flatMap((action) => action.kind === 'manual' ? [action.message] : []);
+    expect(manual.filter((message) => message.includes('Project') && message.includes('team/demo') && message.includes('generic'))).toHaveLength(1);
+    if (userDelivery === 'partial') expect(manual.some((message) => message.includes('team/demo (generic/user)'))).toBe(true);
+  });
+
+  // A reviewed User root may be visited by Project sync even when config apply
+  // only recorded a Project target. Dependencies are not standalone sync roots.
+  it('uses declared-root evidence for project config recovery and keeps it internal', () => {
+    const result = projectReceipt('plugin.config.apply', { configWrite: 'notStarted', overallState: 'partial',
+      apply: { state: 'partial', reviewedUserRoots: ['team/shared'], targetResults: [
+        { target: { pluginId: 'team/shared', pluginName: 'shared', platform: 'generic', scope: 'project' },
+          action: 'refresh', state: 'failed', relation: 'requested', errorCode: 'preApplyExited' },
+        { target: { pluginId: 'team/project-only', pluginName: 'project-only', platform: 'generic', scope: 'project' },
+          action: 'refresh', state: 'failed', relation: 'requested', errorCode: 'preApplyExited' },
+        { target: { pluginId: 'other/provider', pluginName: 'provider', platform: 'generic', scope: 'project' },
+          action: 'refresh', state: 'failed', relation: 'dependency', requiredBy: ['other/root'], errorCode: 'preApplyExited' },
+      ] },
+    });
+    expect(result.data).not.toHaveProperty('apply.reviewedUserRoots');
+    expect(result.nextActions.filter((action) => action.kind === 'command')).toMatchObject([{
+      argv: ['aw', 'plugin', 'sync', 'team/project-only', '--context', 'project', '--target', 'generic'], requiresConfirmation: true,
+    }]);
+    expect(result.nextActions).toEqual(expect.arrayContaining([
+      { kind: 'manual', message: expect.stringContaining('Project location for team/shared on generic') },
+      { kind: 'manual', message: expect.stringContaining('declared root that requires other/provider') },
+    ]));
+  });
+
   // Test Value Gate: explicit runtime observation only discloses startup when it enters a supporting route.
   it.each([false, true])('keeps user-only status free of app-server startup (observeNative=%s)', async (observeNative) => {
     const { env, layout } = getCurrentSourceTestIsolation();

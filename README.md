@@ -72,27 +72,27 @@ aw plugin status --context user
 
 | 插件 | 适用场景 | 支持平台 |
 | --- | --- | --- |
-| [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、制作轻量决策原型、记录重要决策 | 十平台，按组件能力判定 |
-| [`dev-workflow`](plugins/dev-workflow/) | 结构化全流程开发交付，协调设计、实施、测试与审查 | 十平台，按组件能力判定 |
-| [`human-content`](plugins/human-content/) | 解释复杂资料，输出保留原意的图表、文档或交互式阅读页 | 十平台，按组件能力判定 |
-| [`frontend-design`](plugins/frontend-design/) | 选择视觉方向，设计与打磨网页排版、交互与响应式细节 | 十平台，按组件能力判定 |
-| [`browser-use`](plugins/browser-use/) | 网页浏览器自动化交互与信息检索能力 | 十平台，按组件能力判定 |
-| [`git-toolkit`](plugins/git-toolkit/) | 创建规范本地原子提交、隔离 worktree、协调合并冲突 | 十平台，按组件能力判定 |
-| [`agent-subagent`](plugins/agent-subagent/) | 选择通用委派配置并管理外部子代理执行 | 十平台，按组件能力判定 |
-| [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中组织大范围只读探索与技术咨询；依赖 `agent-subagent` | 十平台，按组件能力判定 |
+| [`decision-kit`](plugins/decision-kit/) | 澄清关键歧义、制作轻量决策原型、记录重要决策 | 九平台，按组件能力判定 |
+| [`dev-workflow`](plugins/dev-workflow/) | 结构化全流程开发交付，协调设计、实施、测试与审查 | 九平台，按组件能力判定 |
+| [`human-content`](plugins/human-content/) | 解释复杂资料，输出保留原意的图表、文档或交互式阅读页 | 九平台，按组件能力判定 |
+| [`frontend-design`](plugins/frontend-design/) | 选择视觉方向，设计与打磨网页排版、交互与响应式细节 | 九平台，按组件能力判定 |
+| [`browser-use`](plugins/browser-use/) | 网页浏览器自动化交互与信息检索能力 | 九平台，按组件能力判定 |
+| [`git-toolkit`](plugins/git-toolkit/) | 创建规范本地原子提交、隔离 worktree、协调合并冲突 | 九平台，按组件能力判定 |
+| [`agent-subagent`](plugins/agent-subagent/) | 选择通用委派配置并管理外部子代理执行 | 九平台，按组件能力判定 |
+| [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中组织大范围只读探索与技术咨询；依赖 `agent-subagent` | 九平台，按组件能力判定 |
 
 ### Agent 内容、Skill 与插件作者工具
 
 | 插件 | 适用场景 | 支持平台 |
 | --- | --- | --- |
-| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、整理与只读评审 AGENTS.md、Prompt 与 Role 说明 | 十平台，按组件能力判定 |
-| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建 Agent Skill、设计 Eval 测试用例与技能架构评审 | 十平台，按组件能力判定 |
-| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建与维护 AW Catalog 及 Plugin Source，提供物化与分析工具 | 十平台，按组件能力判定 |
-| [`aw-skill-eval-runner`](plugins/aw-skill-eval-runner/) | 准备并执行 AW Skill 自动化评测（Eval），验证模型表现 | 十平台，按组件能力判定 |
+| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、整理与只读评审 AGENTS.md、Prompt 与 Role 说明 | 九平台，按组件能力判定 |
+| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建 Agent Skill、设计 Eval 测试用例与技能架构评审 | 九平台，按组件能力判定 |
+| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建与维护 AW Catalog 及 Plugin Source，提供物化与分析工具 | 九平台，按组件能力判定 |
+| [`aw-skill-eval-runner`](plugins/aw-skill-eval-runner/) | 准备并执行 AW Skill 自动化评测（Eval），验证模型表现 | 九平台，按组件能力判定 |
 
 ---
 
-十个声明目标为 Codex、Claude、Antigravity、Cursor、OpenCode、Pi、Gemini、Copilot、Grok 与 Generic。实际可用组件取决于固定平台能力与本机资格；角色、托管命令及模型运行要求仍按各插件说明判断。
+九个声明目标为 Codex、Claude、Antigravity、Cursor、OpenCode、Pi、Copilot、Grok 与 Generic。实际可用组件取决于固定平台能力与本机资格；角色、托管命令及模型运行要求仍按各插件说明判断。
 
 ## 使用示例
 

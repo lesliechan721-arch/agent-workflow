@@ -9,7 +9,7 @@ import { observePreferences, selectAgents, resolvePreferencesPath } from '../int
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import type { RecoveryDiagnostic, RecoveryReceipt } from '../recovery/receipt.js';
 
-export interface IntentCommandOptions { scope: Scope; cwd: string; env?: NodeJS.ProcessEnv; token?: AwHomeMutationToken }
+export interface IntentCommandOptions { scope: Scope; cwd: string; env?: NodeJS.ProcessEnv; token?: AwHomeMutationToken; signal?: AbortSignal }
 export interface IntentAddResult { changed: boolean; roots: string[]; errors: RecoveryDiagnostic[]; state?: PluginIntent }
 
 function exactId(selector: string): string {
@@ -47,7 +47,7 @@ export async function addRequirements(options: IntentCommandOptions & {
     return { changed: false, roots, errors: [diagnostic('invalidArguments')] };
   }
   try {
-    return await withAwHomeMutationLock({ env: options.env, token: options.token, action: async (token) => {
+    return await withAwHomeMutationLock({ env: options.env, token: options.token, signal: options.signal, action: async (token) => {
       const current = await observeIntent(options);
       if (current.state !== 'valid' && current.state !== 'absent') {
         return { changed: false, roots, errors: [diagnostic('pluginIntentStateInvalid')] };
@@ -93,10 +93,12 @@ export async function addRequirements(options: IntentCommandOptions & {
       const changed = calculateIntentDigest(next) !== calculateIntentDigest(current.state === 'valid'
         ? current.value : createEmptyIntent());
       if (!changed || options.dryRun) return { changed, roots, errors: [], state: next };
+      options.signal?.throwIfAborted();
       const saved = await writeIntent({ ...options, token }, next);
       return { changed: saved.changed, roots, errors: [], state: saved.value };
     } });
   } catch (error) {
+    options.signal?.throwIfAborted();
     return { changed: false, roots, errors: [diagnostic(errorCode(error, 'sourceUnavailable'))] };
   }
 }
@@ -146,15 +148,17 @@ export async function intentRemove(options: IntentCommandOptions & {
     roots = [...new Set(requested.map(exactId))];
   } catch { return intentReceipt('intent:remove', options, { changed: false, roots: [...requested], errors: [diagnostic('invalidArguments')] }); }
   try {
-    const saved = await withAwHomeMutationLock({ env: options.env, token: options.token, action: async (token) => {
+    const saved = await withAwHomeMutationLock({ env: options.env, token: options.token, signal: options.signal, action: async (token) => {
       const current = await observeIntent(options);
       if (current.state !== 'valid' && current.state !== 'absent') throw new Error('pluginIntentStateInvalid');
       let next = current.state === 'valid' ? current.value : createEmptyIntent();
       for (const root of roots) next = removeIntentRoot(next, root);
+      options.signal?.throwIfAborted();
       return writeIntent({ ...options, token }, next);
     } });
     return intentReceipt('intent:remove', options, { changed: saved.changed, roots, errors: [] });
   } catch (error) {
+    options.signal?.throwIfAborted();
     return intentReceipt('intent:remove', options, { changed: false, roots, errors: [diagnostic(errorCode(error, 'pluginIntentStateInvalid'))] });
   }
 }

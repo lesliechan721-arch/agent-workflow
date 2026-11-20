@@ -23,7 +23,7 @@ test('public package and self-contained reading resources are present', async ()
   assert.equal(m.schemaVersion, 4);
   assert.equal(m.name, 'human-content');
   assert.equal(m.skills, './skills');
-  assert.deepEqual(m.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic']);
+  assert.deepEqual(m.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic']);
   assert.equal(Object.hasOwn(m, 'distributions'), false);
   const runtimeRoots = bundled ? m.platforms.map((platform) => path.join(manifestRoot, platform, 'skills'))
     : [path.resolve(manifestRoot, m.skills)];

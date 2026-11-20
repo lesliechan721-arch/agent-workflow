@@ -1,7 +1,7 @@
 import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js';
 import type { ManagedCommands, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
 
-export type PlatformName = 'codex' | 'claude' | 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'gemini' | 'copilot' | 'grok';
+export type PlatformName = 'codex' | 'claude' | 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'copilot' | 'grok';
 export type PortablePlatformTarget = 'generic';
 export type PlatformTarget = PlatformName | 'generic';
 export type PlatformId = PlatformTarget;

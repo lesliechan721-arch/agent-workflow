@@ -45,7 +45,7 @@ export function unknownDeployment(binding: DeploymentBinding, code = 'deployment
     diagnostics: [{ code, severity: 'warning', message: 'The deployment could not be fully observed. Check permissions and client status before a change.', subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } }] };
 }
 export function deploymentPackageComponent(binding: DeploymentBinding, layout: DeploymentLayout): OwnedComponent {
-  const shared = ['codex-marketplace', 'claude-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route);
+  const shared = ['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(binding.route);
   return { kind: 'owned-directory', path: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
     identity: { owner: 'agent-workflows', plugin: getNativePackageName(binding.plugin), pluginId: binding.plugin.pluginId,
       sourceId: binding.plugin.sourceId, platform: binding.platform, scope: shared ? 'user' : binding.scope.kind,
@@ -97,7 +97,7 @@ async function inspectRelativeOutput(root: string, output: string): Promise<'pre
 
 async function inspectPackageVersion(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout): Promise<string | undefined> {
   const relative = binding.platform === 'pi' || binding.platform === 'opencode' ? 'package.json'
-    : binding.platform === 'gemini' ? 'gemini-extension.json' : binding.platform === 'copilot' ? 'plugin.json'
+    : binding.platform === 'copilot' ? 'plugin.json'
       : `.${binding.platform}-plugin/plugin.json`;
   try {
     if (await inspectRelativeOutput(layout.packageRoot, relative) !== 'present') return undefined;

@@ -10,7 +10,6 @@
     "cursor",
     "opencode",
     "pi",
-    "gemini",
     "copilot",
     "grok",
     "generic"
@@ -1042,7 +1041,6 @@
           "cursor": null,
           "opencode": null,
           "pi": null,
-          "gemini": null,
           "copilot": null,
           "grok": null,
           "generic": null
@@ -1108,7 +1106,6 @@
           "cursor": null,
           "opencode": null,
           "pi": null,
-          "gemini": null,
           "copilot": null,
           "grok": null,
           "generic": null

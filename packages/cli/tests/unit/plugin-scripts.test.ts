@@ -297,9 +297,11 @@ describe('preApply script', () => {
     30_000,
   );
 
-  it.skipIf(process.platform === 'win32').each([false, true])(
-    'exits with a clear failure when interrupted process cleanup fails (public CLI: %s)',
-    async (publicCli) => {
+  it.skipIf(process.platform === 'win32').each([
+    [false, 'cleanup-failure'], [true, 'cleanup-failure'], [true, 'wait-lock'], [true, 'wait-confirmed-lock'],
+  ] as const)(
+    'returns the signal or cleanup failure exit code (public CLI: %s, stage: %s)',
+    async (publicCli, stage) => {
       const plugin = await createPlugin();
       const awHome = path.join(plugin.rootDir, 'aw-home');
       const continuedPath = path.join(plugin.rootDir, 'continued');
@@ -311,7 +313,7 @@ describe('preApply script', () => {
         plugin.rootDir,
         awHome,
         continuedPath,
-        readyPath,
+        readyPath, stage,
       ], {
         cwd: path.resolve(fileURLToPath(new URL('../..', import.meta.url))),
         env: {
@@ -331,10 +333,24 @@ describe('preApply script', () => {
       host.stderr?.on('data', (chunk: string) => { stderr += chunk; });
       const exited = waitForChildExit(host);
 
-      await waitForFile(readyPath, () => `stdout: ${stdout}\nstderr: ${stderr}`);
+      await waitForFile(readyPath, () => `stdout: ${stdout}\nstderr: ${stderr}`, publicCli ? 20_000 : 10_000);
       host.kill('SIGTERM');
 
-      expect(await exited, stdout + stderr).toEqual({ code: 1, signal: null });
+      const outcome = await exited;
+      if (stage !== 'cleanup-failure') {
+        expect(outcome, stderr).toEqual({ code: 143, signal: null });
+        const result = JSON.parse(stdout);
+        expect(result).toMatchObject({ command: 'plugin.install', status: 'blocked',
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationInterrupted' })]),
+          data: { changes: { requirements: 'none', outputs: 'none' } } });
+        if (stage === 'wait-confirmed-lock') expect(result.data).toMatchObject({
+          targetResults: [expect.objectContaining({ target: 'generic', execution: 'not-run' })],
+          remainingTargets: [{ pluginId: 'local/demo', scope: 'project', target: 'generic' }],
+        });
+        expect(await fs.pathExists(continuedPath)).toBe(true);
+        return;
+      }
+      expect(outcome, stdout + stderr).toEqual({ code: 1, signal: null });
       expect(stderr).toContain(publicCli ? 'processCleanupUnconfirmed' : 'preApply process cleanup failed after SIGTERM.');
       expect(await fs.pathExists(continuedPath)).toBe(publicCli);
       if (publicCli) expect(JSON.parse(stdout)).toMatchObject({ command: 'plugin.install', status: 'partial', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'processCleanupUnconfirmed' })]) });

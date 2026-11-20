@@ -5,7 +5,7 @@ import { preparePublicConfigConfirmation } from './commands/public-config-confir
 import { createPublicCommandInterruption } from './commands/public-interruption.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
 import { projectReceipt } from './output/receipt-projection.js';
-import { geminiNativeConsentDiagnostic } from './output/native-consent.js';
+import { SKILL_INVOCATION_NOTICE } from './utils/skill-invocation-warning.js';
 import { runPublicLifecycle } from './commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from './commands/public-plugin-query.js';
 import fs from 'node:fs';
@@ -72,6 +72,7 @@ import {
 } from './utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
+  ConfigApplyInterruptedError,
   applyPluginConfig,
   buildConfigMutationReceipt,
   configWriteStateForError,
@@ -83,6 +84,7 @@ import {
   inventoryLegacyConfigReferences,
 } from './utils/catalog-source-references.js';
 import {
+  CatalogLeaseEscapeError,
   parsePluginId,
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -107,6 +109,7 @@ import type {
   PlatformTarget,
   Scope,
 } from './types.js';
+import { recoveryInterruptionCode } from './recovery/interruption.js';
 import { materializePortableSkillsToDirectory, PortableCommandError } from './portable/commands.js';
 import {
   createReviewInspectionFailure,
@@ -279,7 +282,6 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueStdin?: boolean;
   preset?: string;
   yes?: boolean;
-  nativeConsent?: boolean;
   apply?: boolean;
   scriptTimeout?: string;
 }
@@ -305,7 +307,9 @@ function configMutationFailure(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' } {
+): { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded'; apply?: ConfigApplyInterruptedError['apply'] } {
+  if (error instanceof ConfigApplyInterruptedError) return { code: error.code, message: error.operationDiagnostic.safeMessage,
+    configWrite: error.configWrite, apply: error.apply };
   const configWrite = (error as { configWrite?: unknown })?.configWrite === 'succeeded' ? 'succeeded' : configWriteStateForError(error);
   if (error instanceof CommanderError) {
     return {
@@ -343,7 +347,7 @@ function configMutationFailure(
 function writeConfigMutationFailureReceipt(
   write: (text: string) => void,
   request: PreparsedConfigMutationJsonRequest,
-  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' },
+  failure: ReturnType<typeof configMutationFailure>,
 ): void {
   let plugin: string | undefined;
   try {
@@ -356,10 +360,11 @@ function writeConfigMutationFailureReceipt(
   }
   writeJsonReceipt(write, buildConfigMutationReceipt(request.command, {
     ok: false,
-    overallState: 'failed',
+    overallState: failure.apply ? 'partial' : 'failed',
     configWrite: failure.configWrite,
+    ...(failure.apply ? { apply: failure.apply } : {}),
     ...(plugin ? { plugin } : {}),
-    errors: [failure],
+    errors: [{ code: failure.code, message: failure.message }],
   }));
 }
 
@@ -774,12 +779,9 @@ function writeConfigApplyNotice(
     plugin: string;
     overallState: RebuildReceiptOverallState;
     apply: import('./types.js').ConfigApplyResult;
-    otherProjectsMayRequireSync: boolean;
     warnings: string[];
-    nativeConsent?: boolean;
   },
 ): void {
-  if (receipt.nativeConsent) writeLine(write, geminiNativeConsentDiagnostic().message);
   const sanitizeMessage = (message: string): string => redactString(message)
     .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
     .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
@@ -794,7 +796,9 @@ function writeConfigApplyNotice(
           ? `失败原因：${entry.errorCode}。`
           : '未提供安全失败原因。';
       const command = `aw plugin sync ${receipt.plugin} --rebuild --target ${entry.target.platform} --context ${entry.target.scope}`;
-      const recovery = entry.errorCode === 'invalidConfig'
+      const recovery = entry.partialDelivery
+        ? ' 部分输出已验证。请检查尚未完成的输出后再重新准备应用。'
+        : entry.errorCode === 'invalidConfig'
         ? ` 请修复无效配置后运行 ${command}。`
         : entry.errorCode === 'preApplyAuthorizationRequired'
           || entry.errorCode === 'sharedNativeConfigApplyConfirmationRequired'
@@ -838,9 +842,11 @@ function writeConfigApplyNotice(
     writeTargetFailures();
   } else {
     const completed = targetResults.filter((entry) => entry.state === 'completed').length;
-    const failed = targetResults.filter((entry) => entry.state === 'failed').length;
+    const partiallyDelivered = targetResults.filter((entry) => entry.partialDelivery).length;
+    const failed = targetResults.filter((entry) => entry.state === 'failed' && !entry.partialDelivery).length;
     const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
-    writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；失败 ${failed} 个；跳过 ${skipped} 个。`);
+    const partialSummary = partiallyDelivered > 0 ? `部分完成 ${partiallyDelivered} 个；` : '';
+    writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；${partialSummary}失败 ${failed} 个；跳过 ${skipped} 个。`);
     writeTargetFailures();
   }
   writeWarnings(write, receipt.warnings);
@@ -1917,21 +1923,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       awHomeMutationToken: AwHomeMutationToken,
       catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
-    _apply = false,
+    options?: { retainCompletedResultOnAbort?: true },
   ) => (async () => {
     const parsed = parsePluginId(selector);
     return withAwHomeMutationLock({
       env: context.env,
+      signal: context.signal,
       action: async (awHomeMutationToken) => {
         const catalogOperationContext = await resolveCatalogOperationContext({
           ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
           env: context.env,
+          signal: context.signal,
         });
         return withResolvedCatalogPlugin({
           selector,
           cliVersion: resolveCliVersion(),
           operationContext: catalogOperationContext,
           env: context.env,
+          signal: context.signal,
+          retainCompletedResultOnAbort: options?.retainCompletedResultOnAbort,
           consume: (resolution) => consume(
             resolution,
             awHomeMutationToken,
@@ -2401,11 +2411,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file');
   const configMutation = (command: Command): Command => configCommand(command)
     .option('--apply', 'refresh existing affected outputs after saving', false)
-    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .option('-y, --yes', 'confirm reviewed output changes', false);
   const configContext = async (context: CliExecutionContext, rawOptions: RawConfigOptions, apply = rawOptions.apply === true) => {
-    if (rawOptions.nativeConsent && !apply) throw new WriteCommandRequestError('--native-consent requires --apply or config apply.');
     const requested = rawOptions.context === undefined ? apply ? undefined : 'user'
       : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
     const work = await resolveWorkContext({ cwd: context.cwd, context: requested });
@@ -2545,20 +2553,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const confirmation = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
               context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
               nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest } })
               : { required: false, provided: rawOptions.yes === true, effects: [] };
             const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
               scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
               cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
                 ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) },
               awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
               apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
-              ...writeReceipt, confirmation, nativeConsent: rawOptions.nativeConsent === true, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
               pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
               context: work, platform: platform ?? 'common',
               ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
@@ -2566,7 +2574,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 action: command === 'unset' ? 'unset' as const : 'set' as const, scope: 'user' as const,
                 ...(writeReceipt.staleRemovedKeys?.includes(key!) ? { stale: true as const } : {}) }],
             });
-          }, rawOptions.apply === true));
+          }));
         if (!receipt) return;
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else {
@@ -2601,7 +2609,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
               context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
               nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
-              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+              rebuildRuntime: { ...context, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
               sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
             return { ...receipt, confirmation };
           } });
@@ -2614,7 +2622,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             return resetStore(null, error instanceof Error ? error : new Error(String(error)));
           }
         });
-        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt, nativeConsent: rawOptions.nativeConsent === true,
+        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
           ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
           context: work, platform: platform ?? 'common' });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
@@ -2628,29 +2636,53 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   contextualCommand(config.command('apply').argument('<plugin>'))
     .option('--target <target>', 'limit existing-output refresh to this platform target', collectUniqueOption)
-    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .action(async (selector: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:apply', rawOptions);
       const work = await configContext(context, rawOptions, true);
       const targets = rawOptions.target?.map((target) => normalizeWriteRequest(() => parsePlatformTargetValue(target)));
+      let resolved: { plugin: string; pluginId: string; sourceId: string } | undefined;
+      let confirmed: Confirmation | undefined;
       const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(context, selector,
         async ({ plugin, pluginId, source }, awHomeMutationToken) => {
+          const identity = { plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId };
+          resolved = identity;
           const confirmation = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, targets, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, rebuildRuntime: context });
-          return { confirmation, ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
+          confirmed = confirmation;
+          const applied = await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
-            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
-          command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
-          context: work,
-        }; }, true));
-      const result = buildConfigMutationReceipt('config:apply', { ...receipt, nativeConsent: rawOptions.nativeConsent === true,
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+          }).catch((error: unknown) => {
+            if (!(error instanceof ConfigApplyInterruptedError)) throw error;
+            const { code, message } = configMutationFailure(error, context.env, context.cwd);
+            return { configWrite: error.configWrite, overallState: 'partial' as const,
+              apply: error.apply, errors: [{ code, message }] };
+          });
+          return { ...applied, ...identity, confirmation, context: work };
+        }, { retainCompletedResultOnAbort: true })).catch((error: unknown) => {
+          if (error instanceof CatalogLeaseEscapeError) throw error;
+          const code = recoveryInterruptionCode(error, context.signal);
+          if (!code) throw error;
+          if (!resolved) parsePluginId(selector);
+          const message = code === 'processCleanupUnconfirmed' ? 'Process cleanup could not be confirmed.'
+            : 'The command was interrupted before configuration apply completed.';
+          return { ...(resolved ?? { plugin: selector }), confirmation: confirmed ?? null,
+            context: work, configWrite: 'notStarted' as const,
+            overallState: 'failed' as const, errors: [{ code, message }] };
+        });
+      const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
       else {
-        writeLine(io.stdout, `配置应用：${result.ok ? '完成' : '部分失败'}。`);
-        writeConfigApplyNotice(io.stderr, { ...result, warnings: [] });
+        const outcome = result.ok ? '完成' : result.overallState === 'partial' ? '部分失败' : '失败';
+        writeLine(io.stdout, `配置应用：${outcome}。`);
+        if ('apply' in result && result.apply) {
+          writeConfigApplyNotice(io.stderr, { ...result, apply: result.apply, warnings: [] });
+        } else if ('errors' in result) {
+          for (const error of result.errors ?? []) writeLine(io.stderr, error.message);
+        }
       }
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
@@ -2785,8 +2817,7 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
       .option('--delete-config', 'Delete all local plugin configuration')
       .option('--keep-dependencies', 'Keep orphan dependency output during normal removal')
       .option('--force', 'Bypass the dependency guard; with --only outputs, recover provably owned damaged output');
-    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout')
-      .option('--native-consent', 'Authorize this Gemini operation; may persist source-folder and current-workspace trust');
+    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout');
     if (name === 'sync') cmd.option('--rebuild', 'Rebuild selected owned output').option('--refresh', 'Refresh required Catalog sources');
     cmd.action(async (plugins: string[], raw: Record<string, unknown>) => {
       io.result?.(await runPublicLifecycle(name, plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context(`plugin.${name}`, raw)));
@@ -2940,10 +2971,14 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
   const resolvedCommand = resolveRegisteredCommand(program, awArgs);
   const selected = resolvedCommand.command;
   const id = selected && selected !== program ? commandId(selected) : null;
-  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync',
+  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync', 'plugin.config.apply',
     'dev.plugin.create', 'dev.plugin.validate', 'dev.plugin.remove', 'dev.plugin.status',
     'dev.skill.create', 'dev.skill.validate'].includes(id ?? '');
-  if (controlledInterrupt) { commandOptions.interruption = interruption; commandOptions.signal = interruption.signal; }
+  if (controlledInterrupt) {
+    commandOptions.interruption = interruption;
+    commandOptions.signal = id === 'plugin.config.apply' && options.signal
+      ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal;
+  }
   if (id === 'command.run' && !presentation.help) return runManagedCommandCli(['run', ...argv.slice(resolvedCommand.index + 1)], { ...context, interactive: false }, { cliEntry: fileURLToPath(import.meta.url), cliVersion: resolveCliVersion() });
   let confirmation: Confirmation | null = null;
   const emit = (result: CommandResult<object>, invalid = false): number => {
@@ -2955,10 +2990,19 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
         argv: ['aw', 'dev', 'catalog', 'create', ...(typeof workspaceRoot === 'string' ? ['--workspace-root', workspaceRoot] : [])],
         reason: 'Create a Catalog Workspace explicitly before running authoring commands.', requiresConfirmation: false });
     }
+    interruption.cleanupFailed ||= result.diagnostics.some((entry) => entry.code === 'processCleanupUnconfirmed');
+    if (interruption.exitCode || interruption.cleanupFailed) {
+      const code = interruption.cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted';
+      if (!result.diagnostics.some((entry) => entry.code === code && !entry.subject)) {
+        result.diagnostics.push({ code, severity: 'error', message: interruption.cleanupFailed
+          ? 'Process cleanup could not be confirmed.'
+          : 'The command was interrupted. Completed changes are retained in the result.' });
+      }
+    }
     io.stdout(json ? `${JSON.stringify(result)}\n` : renderPublicResult(result, awArgs.includes('--verbose') || awArgs.includes('-v')));
-    for (const diagnostic of result.diagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
+    for (const diagnostic of result.diagnostics) if (json || diagnostic.code !== SKILL_INVOCATION_NOTICE) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
     if (options.diagnostics?.verbose || awArgs.includes('--verbose')) for (const line of stderr) io.stderr(`${safePublicMessage(line.trim())}\n`);
-    return interruption.exitCode ? interruption.cleanupFailed ? 1 : interruption.exitCode : publicExitCode(result, invalid);
+    return interruption.cleanupFailed ? 1 : interruption.exitCode ?? publicExitCode(result, invalid);
   };
   if (presentation.version) return emit(commandResult('version', { version: resolveCliVersion(), resultSchemaVersion: CLI_OUTPUT_SCHEMA_VERSION }));
   if (selected && presentation.help || argv.length === 0 && !context.interactive || selected === program && json) {
@@ -2976,12 +3020,20 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     }
     if (json) return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'invalidOptionCombination', severity: 'error', message: 'tui cannot use --json.' }] }), true);
     if (!context.interactive) return emit(commandResult('tui', {}, { status: 'blocked', diagnostics: [{ code: 'interactiveTerminalRequired', severity: 'error', message: 'The TUI requires an interactive terminal.' }] }));
-    const tuiContext = createCliExecutionContext({ ...options, io, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
+    const tuiContext = createCliExecutionContext({ ...options, io, interruption,
+      signal: options.signal ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
+    const stopListening = interruption.listen();
     try { return await runActionWithContext(tuiContext, async () => {
       const { runConsoleController } = await import('./commands/console.js');
-      return runConsoleController(tuiContext);
+      const code = await runConsoleController(tuiContext);
+      if (interruption.cleanupFailed) {
+        io.stderr('processCleanupUnconfirmed: Process cleanup could not be confirmed.\n');
+        return 1;
+      }
+      return interruption.exitCode ?? code;
     }); }
     catch (error) { return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'tuiFailed', severity: 'error', message: safePublicMessage(error instanceof Error ? error.message : String(error)) }] })); }
+    finally { stopListening(); }
   }
   // Only these adapters carry cancellation through every long-running child.
   // Other routes retain Node's normal signal termination until their domain
@@ -3027,7 +3079,6 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
       if (typeof logs.stderr === 'string') io.stderr(redactString(logs.stderr));
     }
     const result = projectReceipt(id!, receipt, { yes: awArgs.includes('--yes') || awArgs.includes('-y'), exitCode, confirmation });
-    if (interruption.exitCode) result.diagnostics.push({ code: interruption.cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted', severity: 'error', message: interruption.cleanupFailed ? 'Process cleanup could not be confirmed after interruption.' : 'The command was interrupted. Completed changes are retained in the result.' });
     if (result.status === 'success' && ['dev.plugin.create', 'dev.skill.create'].includes(id!)) {
       const data = result.data as Record<string, unknown>;
       const name = typeof data.pluginName === 'string' ? data.pluginName : selected?.args[0];

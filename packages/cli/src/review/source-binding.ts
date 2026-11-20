@@ -621,7 +621,7 @@ export async function resolvePortablePluginProfileConfig(options: {
         ...resolved.sources,
       }, issues: [], stores: {},
     }
-    return { config, digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), values: config.values, sources: config.sources }) }
+    return { config, digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), values: config.values, sources: config.sources }) }
   }
   const config = await resolveArtifactRenderConfig({
     referencePlugins: options.plugins,
@@ -640,7 +640,7 @@ export async function resolvePortablePluginProfileConfig(options: {
   }
   return {
     config,
-    digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), values: config.values, sources: config.sources }),
+    digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), values: config.values, sources: config.sources }),
   }
 }
 
@@ -673,7 +673,7 @@ export async function resolvePortableProfileBindingInputs(options: {
     platform: options.platform,
     scope: options.scope,
     inputDigest: `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), config: configDigests }))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), config: configDigests }))
       .digest('hex')}`,
   }, providerConfigs: configDigests }
 }
@@ -696,7 +696,9 @@ async function currentWorkspaceProfile(options: {
   offlineConfig?: ReviewProfileConfig
 }): Promise<AwSourceBindingProfile> {
   for (const unit of options.binding.preparation) {
-    const current = toPlatformCapabilitiesView(getAuthoringPlatformCapabilities(unit.platform, unit.renderScope))
+    const current = toPlatformCapabilitiesView(getAuthoringPlatformCapabilities(unit.platform, unit.renderScope, {
+      activationScope: options.binding.profile.scope, portable: options.binding.profile.kind === 'portable',
+    }))
     if (unit.profileId !== getQualifiedPlatformProfile(unit.platform).id || unit.capabilitiesDigest !== artifactValueDigest(current)) {
       throw new Error('The bound platform capability profile changed; prepare again.')
     }

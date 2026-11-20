@@ -42,6 +42,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify shipped Catalog User capability matrix
+        if: matrix.suite == 'integration' && matrix.node == '24'
+        run: node scripts/qualification/shipped-catalog-user.mjs
       - run: pnpm test:${{ matrix.suite }}
       - run: pnpm test:types
         if: matrix.suite == 'unit'

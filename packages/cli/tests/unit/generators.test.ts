@@ -258,7 +258,7 @@ describe('local-plugin generator', () => {
     const repoRoot = await makeTempRepo();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     const platforms = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi',
-      'gemini', 'copilot', 'grok', 'generic'] as const;
+      'copilot', 'grok', 'generic'] as const;
     plugin.manifest.platforms = [...platforms];
     await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'README.md'),
       '# Commit\n\nCommit workflow fixture.\n');

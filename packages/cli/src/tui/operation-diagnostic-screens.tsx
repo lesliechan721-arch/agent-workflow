@@ -1,11 +1,12 @@
-import type {
-  OperationDiagnosticDetail,
-  OperationEffectFacts,
-  OperationEffectState,
-  OperationHistorySummary,
+import {
+  distinctRecoveryLines,
+  type OperationDiagnosticDetail,
+  type OperationEffectFacts,
+  type OperationEffectState,
+  type OperationHistorySummary,
 } from './operation-history.js';
 import type { TuiStatus } from './theme.js';
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformTarget, Scope } from '../types.js';
 import { agentLabel } from './glossary.js';
 
 interface DetailLine {
@@ -49,7 +50,7 @@ function effectLines(effects: OperationEffectFacts): DetailLine[] {
   );
 }
 
-function targetLabel(target: { pluginId?: string; platform: PlatformName; scope: Scope }): string {
+function targetLabel(target: { pluginId?: string; platform: PlatformTarget; scope: Scope }): string {
   const scope = target.scope === 'project' ? '当前项目' : '所有项目';
   const platform = agentLabel(target.platform);
   return [target.pluginId, platform, scope].filter((value): value is string => Boolean(value)).join(' · ');
@@ -67,6 +68,7 @@ export function operationHistoryMeta(summary: OperationHistorySummary): string {
 }
 
 function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine[] {
+  const shownActions = new Set<string>();
   const lines: DetailLine[] = [
     { title: '操作代码', meta: detail.summary.code },
     ...effectLines(detail.summary.effects),
@@ -84,7 +86,7 @@ function operationDiagnosticLines(detail: OperationDiagnosticDetail): DetailLine
         title: cause.safeMessage,
         ...(cause.code ? { meta: cause.code } : {}),
       })),
-      ...diagnostic.detailLines.map((line) => ({ title: line })),
+      ...distinctRecoveryLines(diagnostic.detailLines, shownActions).map((line) => ({ title: line })),
       ...(diagnostic.omitted ? [{
         title: '部分安全详情未保留',
         meta: diagnostic.omitted.count === undefined

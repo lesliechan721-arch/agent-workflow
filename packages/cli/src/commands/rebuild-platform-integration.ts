@@ -2,9 +2,10 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { createMarketplaceManifestEntry, normalizeStaticPluginComponents, resolveInvocationPolicy, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
-import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationContext, MutationOutcome, PreparedDeployment,
+import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, resolveInvocationPolicy, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
   PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
+import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
@@ -12,8 +13,6 @@ import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymen
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
 import { piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
-import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
-  geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
 import { cursorHookEntryCommand, cursorHooks } from '../platforms/cursor-workspace-hook.js';
 import { ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
@@ -22,7 +21,7 @@ import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type PreparedPlatformComponents } from '../utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from '../utils/component-command-preparation.js';
-import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, writeOwnedTextFile,
+import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, renderOwnedTextFile, writeOwnedTextFile,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
 import type { CleanupResult } from '../utils/ownership.js';
 import { createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
@@ -33,10 +32,13 @@ import { assertManagedCommandBindingIdentities, captureManagedCommandBindingReco
 import { captureNativeToolChanges, type NativeToolChange } from '../utils/native-tool-review.js';
 import { captureManagedCommandReviewEvidence } from '../utils/managed-command-review.js';
 import { readClaudeSettings } from '../adapters/helpers.js';
+import { skillInvocationWarning } from '../utils/skill-invocation-warning.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import { parseOwnedTextHeader, readSkillOwnerMarker } from '../utils/ownership.js';
 import type { RebuildExecutionContext, RebuildIntegration } from './rebuild-integration.js';
 import { applyPlannedOperationAction, isNativeActivationOnlyTarget } from './rebuild-integration.js';
+import { recoveryInterruptionCode } from '../recovery/interruption.js';
+import type { InstallResource } from '../recovery/install-concurrency.js';
 import type { DesiredTarget } from './rebuild-operations.js';
 
 type TargetInput = Parameters<RebuildIntegration['buildTarget']>[0];
@@ -45,11 +47,44 @@ export interface PreparedPlatformTarget {
   plans: FrozenDeploymentPlan[];
   readonly blockedReceipts: readonly DeploymentReceipt[];
   readonly cleanupResults: readonly CleanupResult[];
+  readonly writesManagedCommands?: boolean;
+  privatePackage?: { prepare(): Promise<void>; dispose(): Promise<void> };
   captureNativeToolChanges(): Promise<NativeToolChange[]>;
-  verify(): Promise<void>;
+  verify(batch?: NativeObservationBatch): Promise<void>;
   canVerifyAtExecution(): boolean;
   execute(options?: { verifyBeforeExecution: true }): Promise<DeploymentReceipt[]>;
-  postcheck(receipts: readonly DeploymentReceipt[], options?: { refresh: true }): Promise<void>;
+  postcheck(receipts: readonly DeploymentReceipt[], options?: { refresh?: true; deliveredSkillsOnly?: true }): Promise<void>;
+}
+/** Resources touched by the frozen adapter plans, including host-managed writes. */
+export function nativeInstallResources(plans: readonly FrozenDeploymentPlan[]): InstallResource[] {
+  if (!plans.length) return [{ kind: 'exclusive' }];
+  const paths = new Set<string>();
+  for (const plan of plans) {
+    const { binding, evidence } = plan;
+    const { layout } = evidence;
+    paths.add(layout.packageRoot);
+    for (const { component } of evidence.ownership) {
+      if ('path' in component) paths.add(component.path);
+      else if (component.kind === 'shared-config' && component.locator.kind === 'claude-permissions') paths.add(component.locator.settingsPath);
+      else if (component.kind === 'shared-config' && component.locator.kind === 'cursor-workspace-hook') paths.add(component.locator.hooksPath);
+    }
+    for (const projection of plan.projections) {
+      for (const supplement of projection.supplements) paths.add(supplement.destination);
+    }
+    if (layout.marketplaceRoot) {
+      for (const file of evidence.marketplace?.files ?? []) paths.add(path.join(layout.marketplaceRoot, file.relativePath));
+    }
+    // These routes publish an entire, plugin-specific directory. activationPath
+    // is its parent and is never replaced by the directory publisher.
+    if (binding.route === 'opencode-directory' || binding.route === 'antigravity-directory' || binding.route === 'grok-directory') continue;
+    paths.add(layout.activationPath);
+    if (binding.route === 'pi-package' || binding.route === 'cursor-workspace-hook') continue;
+    for (const consumer of binding.consumers) {
+      if (!consumer.entry || consumer.entry.kind === 'generic') return [{ kind: 'exclusive' }];
+      paths.add(consumer.entry.configRoot);
+    }
+  }
+  return [...paths].map((value) => ({ kind: 'path', value }));
 }
 interface UnitPreparation {
   unit: RenderUnit;
@@ -62,7 +97,7 @@ interface TargetResolution extends Resolution {
 }
 
 function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string): boolean {
-  return ['gemini-extension', 'antigravity-cli', 'grok-cli'].includes(binding.route)
+  return ['antigravity-cli', 'grok-cli'].includes(binding.route)
     && after.nativePackageContentDigest !== contentDigest;
 }
 
@@ -74,6 +109,30 @@ function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentO
     && ['enabled', 'not-applicable'].includes(requiredDeploymentActivation(binding, after, requireIndependentActivation))
     && (binding.route !== 'cursor-workspace-hook' || after.workspaceOpen === 'present')
     && (binding.route !== 'claude-marketplace' || after.scopeRegistration === undefined || after.scopeRegistration === 'present');
+}
+
+function componentSupplementFiles(plan: FrozenDeploymentPlan): HostContribution[] {
+  return plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
+    unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
+    .filter((contribution) => contribution.kind === 'owned-file'));
+}
+
+export function nativeDeploymentHasVerifiedComponentWrite(plan: FrozenDeploymentPlan, receipt: DeploymentReceipt): boolean {
+  const { after, effects, unmet } = receipt;
+  if (receipt.bindingId !== plan.binding.id || after.physicalKey !== plan.binding.physicalKey) return false;
+  const delivered = after.components.filter(({ id, presence, reasonCodes }) => presence === 'present' && !reasonCodes.length
+    && !unmet.some((gap) => (gap.componentId ?? gap.id) === id));
+  if (!delivered.length) return false;
+
+  const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
+  const supplementFiles = componentSupplementFiles(plan);
+  return plan.effects.some((effect) => {
+    if (!effects.some(({ id, status, mutation }) => id === effect.id && status === 'applied' && mutation === 'confirmed')) return false;
+    const deliversComponents = effect.kind === 'publish-package'
+      ? !plan.evidence.retainPackage && bundle && packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest, true)
+      : effect.kind === 'write-supplement' && supplementFiles.some((file) => file.destination === effect.destination);
+    return deliversComponents && effect.componentIds.some((id) => delivered.some((component) => component.id === id));
+  });
 }
 
 function recheckCopilotMarketplaceTimeout(receipt: DeploymentReceipt, fresh: DeploymentObservation): void {
@@ -211,7 +270,7 @@ async function requireWritable(component: OwnedComponent, executor: OwnedCompone
   const inspection = await inspectOwnedComponents({ components: [component], executor });
   if (!['present', 'absent'].includes(inspection.components[0]!.state)) throw new Error('operationPlanStale: deployment ownership changed.');
 }
-async function publishDirectory(source: string, component: OwnedComponent, nativeProjection?: NativeProjectionEvidence): Promise<{ mutation: 'confirmed'; changed: true }> {
+async function publishDirectory(source: string, component: OwnedComponent, nativeProjection?: NativeProjectionEvidence, staged?: string): Promise<{ mutation: 'confirmed'; changed: true }> {
   if (component.kind !== 'owned-directory') throw new Error('deploymentPackageOwnerInvalid');
   await requireWritable(component);
   await assertSafeFileMutationPath({ filePath: path.join(component.allowedRoot, '.aw-publication-probe'),
@@ -221,7 +280,18 @@ async function publishDirectory(source: string, component: OwnedComponent, nativ
   const backup = `${staging}.previous`;
   let moved = false;
   try {
-    await fs.copy(source, candidate, { dereference: false });
+    if (staged && nativeProjection) {
+      // A queued package can outlive its staging step. Verify its bytes before
+      // consuming it and keep the final rename on the destination filesystem.
+      if (await readPlatformPackageContentDigest(staged) !== nativeProjection.contentDigest) {
+        throw new Error('operationPlanStale: staged native package content changed.');
+      }
+      try { await fs.rename(staged, candidate); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+        await fs.copy(staged, candidate, { dereference: false });
+      }
+    } else await fs.copy(source, candidate, { dereference: false });
     await writeSkillOwnerMarker({ skillRoot: candidate, allowedRoot: staging, identity: component.identity, nativeProjection });
     await requireWritable(component);
     if (await fs.pathExists(component.path)) { await fs.move(component.path, backup); moved = true; }
@@ -236,7 +306,7 @@ async function publishDirectory(source: string, component: OwnedComponent, nativ
 async function sharedReferences(context: RebuildExecutionContext, binding: DeploymentBinding,
   observation: Awaited<ReturnType<ReturnType<typeof getAgentPluginAdapter>['inspect']>>,
   layout: Awaited<ReturnType<typeof getDeploymentLayout>>): Promise<PreparationEvidence['sharedReferences']> {
-  if (!['codex-marketplace', 'claude-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route)) return 'none';
+  if (!['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(binding.route)) return 'none';
   const view = context.sharedReferenceView;
   const same = (reference: NonNullable<typeof view>['desired'][number]): boolean => reference.pluginId === binding.plugin.pluginId
     && reference.sourceIdentity === binding.plugin.sourceIdentity && reference.platform === binding.platform
@@ -246,24 +316,6 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
   if (view && [...view.desired, ...view.observed].some((reference) => same(reference) && !current(reference))) return 'present';
   const host = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   if (!host || host.kind !== 'cli' || observation.registration === 'unknown') return 'unknown';
-  if (binding.route === 'gemini-extension') {
-    try {
-      const ctx = readContext(context, binding.scope.kind === 'project' ? binding.scope.projectRoot : layout.packageRoot);
-      const snapshot = await readGeminiActivationSnapshot(ctx);
-      const rules = geminiActivationRules(snapshot, layout.nativeIdentity.packageId);
-      await assertGeminiProjectRules(ctx, binding, rules);
-      const home = geminiExtensionPaths(ctx).home;
-      const userActivation = geminiUserActivation(snapshot, layout.nativeIdentity.packageId, home);
-      if (userActivation === 'unknown') return 'unknown';
-      if (binding.scope.kind === 'project' && observation.registration === 'present' && userActivation) return 'present';
-      const currentPattern = binding.scope.kind === 'project' ? geminiScopePattern(binding.scope.projectRoot) : null;
-      if (rules.some((rule) => {
-        const pattern = rule.startsWith('!') ? rule.slice(1) : rule;
-        return pattern !== '*' && pattern !== geminiScopePattern(home) && pattern !== currentPattern;
-      })) return 'present';
-      return view?.desiredComplete && view.scopes.includes('user') ? 'none' : 'unknown';
-    } catch { return 'unknown'; }
-  }
   if (binding.route === 'claude-marketplace') {
     try {
       const installed = await jsonObject(path.join(host.configRoot, 'plugins', 'installed_plugins.json'));
@@ -315,8 +367,10 @@ export class PlatformRebuildSession {
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
     sourceId: string; sourceIdentity: string; assertStable(): Promise<void>;
-    geminiActivationSnapshot?(): MutationContext['geminiActivationSnapshot'];
-    acceptMarketplaceRegistration(): Promise<void>; rebase(geminiExpected?: MutationContext['geminiActivationSnapshot']): Promise<DeploymentObservation> }>();
+    acceptMarketplaceRegistration(): Promise<void>;
+    rebase(writtenFiles?: ReadonlyMap<string, { digest: string; componentIds: string[] }>): Promise<{
+      observation: DeploymentObservation; verifiedSupplementIds: string[];
+    }> }>();
   private readonly requestedOperations = new Map<string, TargetInput>();
   private readonly marketplaceTargets = new Set<DesiredTarget>();
   private marketplaceCandidatesFrozen = false;
@@ -336,19 +390,6 @@ export class PlatformRebuildSession {
   }
   setOwnershipExecutor(executor: OwnedComponentExecutor): void { this.ownership = executor; }
   private root(): Promise<string> { return this.staging ??= fs.mkdtemp(path.join(os.tmpdir(), 'aw-deployment-')); }
-  private nativeReadContext(input: TargetInput): ReadContext {
-    const ctx = readContext(this.context, input.cwd);
-    if (input.platform === 'gemini') ctx.nativeNodeCompileCacheDir = async () => {
-      const pending = this.root();
-      try { return path.join(await pending, 'native-node-compile-cache'); }
-      catch (error) {
-        // An optional cache allocation must not poison later required staging.
-        if (this.staging === pending) this.staging = undefined;
-        throw error;
-      }
-    };
-    return ctx;
-  }
   private ordinaryReadContext(ctx: ReadContext, platform: TargetInput['platform']): ReadContext {
     const batch = this.context.nativeObservationBatch;
     // A locked re-Review starts its own observation batch. Cached targets of
@@ -376,7 +417,8 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = this.ordinaryReadContext(this.nativeReadContext(input), input.platform);
+        const ctx = input.readOnlyInspectionPlan && input.observationBatch ? { ...readContext(this.context, input.cwd), ...input.observationBatch }
+          : this.ordinaryReadContext(readContext(this.context, input.cwd), input.platform);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -414,7 +456,7 @@ export class PlatformRebuildSession {
     for (const target of targets) {
       if (target.identity.scope !== 'project' || !target.operationActions?.some((action) => action.kind === 'runPreApply')) continue;
       const plans = target.platformDeployment?.plans ?? [];
-      if (!plans.length || plans.some((plan) => !['codex-marketplace', 'claude-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(plan.binding.route)
+      if (!plans.length || plans.some((plan) => !['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(plan.binding.route)
         || plan.effects.some((effect) => effect.physicalKey !== plan.binding.physicalKey)
         || plan.projections.some((projection) => projection.supplements.length > 0)
         || !plan.evidence.renderUnits?.some((unit) => unit.output === 'package' && unit.renderScope.kind === 'user'))) continue;
@@ -549,12 +591,13 @@ export class PlatformRebuildSession {
     if (this.context.nativeObservationBatch) this.closedObservationBatch = this.context.nativeObservationBatch;
     const result = await target;
     if (verifyInitial) await verifyInitial();
-    else await result.platformDeployment?.verify();
+    else await result.platformDeployment?.verify(input.observationBatch);
     return result;
   }
   private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
-    const ctx = this.nativeReadContext(input);
-    const ordinaryCtx = this.ordinaryReadContext(ctx, input.platform);
+    const ctx = readContext(this.context, input.cwd);
+    const ordinaryCtx = input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
+      : this.ordinaryReadContext(ctx, input.platform);
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
@@ -634,7 +677,7 @@ export class PlatformRebuildSession {
     const plans: FrozenDeploymentPlan[] = [];
     const blockedReceipts: DeploymentReceipt[] = [];
     const cleanupResults: CleanupResult[] = [];
-    const checks = new Map<string, () => Promise<boolean>>();
+    const checks = new Map<string, (batch?: NativeObservationBatch) => Promise<boolean>>();
     let initialDiscoveryCheck: (() => Promise<boolean>) | undefined;
     const priorProducers = new Map<string, ProducerIdentity[]>();
     const priorResourceRoots = new Map<string, string[]>();
@@ -726,19 +769,18 @@ export class PlatformRebuildSession {
       const inspected = await inspectOwnedComponents({ components, executor: this.ownership });
       const managedCommandReview = await captureManagedCommandReviewEvidence({ binding: entry.binding,
         renderUnits: entry.layout.renderUnits, components: units.flatMap((unit) => unit.prepared.expected.components), projections });
-      const currentMutable = async () => {
-        const observation = await adapter.inspect(ctx, entry.binding);
+      const currentMutable = async (batch?: NativeObservationBatch) => {
+        const observation = await adapter.inspect(batch ? { ...ctx, ...batch } : ctx, entry.binding);
         return { observation, references: await sharedReferences(this.context, entry.binding, observation, entry.layout),
-          geminiActivation: entry.binding.route === 'gemini-extension' ? geminiActivationEvidence(await readGeminiActivationSnapshot(ctx)) : undefined,
           paths: await Promise.all(components.map(async (component) => 'path' in component ? pathEvidence(component.path) : {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
       };
-      const fingerprintParts = async (discovery?: { value: unknown }) => ({
+      const fingerprintParts = async (discovery?: { value: unknown }, batch?: NativeObservationBatch) => ({
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
         discovery: discovery ? discovery.value : removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
-          consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(ctx),
+          consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(batch ? { ...ctx, ...batch } : ctx),
         sharedReferenceView: this.context.sharedReferenceView,
         layout: await getDeploymentLayout(ctx, entry.binding),
         config: await Promise.all(units.map((unit) => resolveArtifactRenderConfig({ ...sourceIdentity(input), pluginName: input.plugin.manifest.name,
@@ -751,7 +793,7 @@ export class PlatformRebuildSession {
       });
       // Discovery and inspection are independent reads for these routes. Settle
       // both before comparing or throwing, while preserving immutable priority.
-      const parallelNativeReads = ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(entry.binding.route);
+      const parallelNativeReads = ['copilot-marketplace', 'pi-package'].includes(entry.binding.route);
       const initialReads = parallelNativeReads
         ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
@@ -760,32 +802,32 @@ export class PlatformRebuildSession {
         throw new Error('operationPlanStale: client discovery changed after the ordinary observation.');
       }
       const initial = artifactValueDigest(initialParts);
-      const fingerprint = async (discovery?: { value: unknown }): Promise<string> => artifactValueDigest(await fingerprintParts(discovery));
+      const fingerprint = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<string> =>
+        artifactValueDigest(await fingerprintParts(discovery, batch));
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
       const ordinaryObservation = ordinaryEvidence?.observations.get(entry.binding.id);
       if (ordinaryObservation !== undefined && ordinaryObservation !== artifactValueDigest(mutableBaseline.observation)) {
         throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
       }
-      const preparationObservation = entry.binding.route === 'gemini-extension' || entry.binding.route === 'antigravity-cli'
+      const preparationObservation = entry.binding.route === 'antigravity-cli'
         ? mutableBaseline.observation : entry.observation;
-      const check = async (discovery?: { value: unknown }): Promise<boolean> => {
-        if (!parallelNativeReads) return await fingerprint(discovery) === initial
-          && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
-        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable()]);
+      const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
+        if (!parallelNativeReads) return await fingerprint(discovery, batch) === initial
+          && artifactValueDigest(await currentMutable(batch)) === artifactValueDigest(mutableBaseline);
+        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery, batch), currentMutable(batch)]);
         if (immutableRead.status === 'rejected') throw immutableRead.reason;
         if (immutableRead.value !== initial) return false;
         if (mutableRead.status === 'rejected') throw mutableRead.reason;
         return artifactValueDigest(mutableRead.value) === artifactValueDigest(mutableBaseline);
       };
-      checks.set(entry.binding.id, () => check());
-      if (resolution.bindings.length === 1 && ['gemini-extension', 'pi-package'].includes(entry.binding.route)) {
+      checks.set(entry.binding.id, (batch) => check(undefined, batch));
+      if (resolution.bindings.length === 1 && entry.binding.route === 'pi-package') {
         initialDiscoveryCheck = () => check({ value: initialParts.discovery });
       }
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
-        ...(entry.binding.route === 'gemini-extension' ? { geminiActivationSnapshot: () => mutableBaseline.geminiActivation } : {}),
         assertStable: async () => {
           if (!await checks.get(entry.binding.id)!()) throw new Error('operationPlanStale: deployment evidence changed before source registration.');
         },
@@ -811,7 +853,7 @@ export class PlatformRebuildSession {
           // registration. The reviewed package, references and bytes stay frozen.
           mutableBaseline = current;
         },
-        rebase: async (geminiExpected) => {
+        rebase: async (writtenFiles) => {
           const reads = parallelNativeReads
             ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
           if (reads?.[0].status === 'rejected') throw reads[0].reason;
@@ -823,11 +865,17 @@ export class PlatformRebuildSession {
           }
           if (reads?.[1].status === 'rejected') throw reads[1].reason;
           const mutable = reads?.[1].status === 'fulfilled' ? reads[1].value : await currentMutable();
-          if (artifactValueDigest(mutable.geminiActivation ?? null) !== artifactValueDigest(geminiExpected ?? mutableBaseline.geminiActivation ?? null)) {
-            throw new Error('operationPlanStale: Gemini activation changed outside the checked native mutation.');
-          }
           mutableBaseline = mutable;
-          return mutable.observation;
+          // The same rebase already hashes the exact paths. Match the owner's
+          // header and the desired bytes without opening each file again.
+          const verifiedSupplementIds = writtenFiles?.size ? components.flatMap((component, index) => {
+            if (component.kind !== 'owned-text-file') return [];
+            const written = writtenFiles.get(component.path);
+            const observed = mutable.paths[index];
+            return written && observed && typeof observed === 'object' && 'digest' in observed && observed.digest === written.digest
+              ? written.componentIds : [];
+          }) : [];
+          return { observation: mutable.observation, verifiedSupplementIds };
         } });
       const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
@@ -853,29 +901,11 @@ export class PlatformRebuildSession {
             ? (enabled as Record<string, unknown>)[entry.layout.nativeIdentity.registrationId!] === true : 'unknown';
         }
       }
-      if (entry.binding.route === 'gemini-extension') {
-        evidence.userActivationEnabled = 'unknown';
-        const view = this.context.sharedReferenceView;
-        try {
-          const snapshot = await readGeminiActivationSnapshot(ctx, mutableBaseline.geminiActivation);
-          const rules = geminiActivationRules(snapshot, entry.layout.nativeIdentity.packageId);
-          await assertGeminiProjectRules(ctx, entry.binding, rules);
-          const actual = geminiUserActivation(snapshot, entry.layout.nativeIdentity.packageId, geminiExtensionPaths(ctx).home);
-          if (actual !== 'unknown' && preparationObservation.registration !== 'unknown'
-            && (entry.binding.scope.kind === 'user' || view?.desiredComplete && view.scopes.includes('user'))) {
-            // Shared User renderScope does not establish User demand. A fresh
-            // project starts disabled globally; an existing global intent stays.
-            evidence.userActivationEnabled = preparationObservation.registration === 'present' ? actual : entry.binding.scope.kind === 'user'
-              || view?.desired.some((reference) => reference.scope === 'user' && reference.platform === 'gemini'
-                && reference.pluginId === entry.binding.plugin.pluginId && reference.sourceIdentity === entry.binding.plugin.sourceIdentity) === true;
-          }
-        } catch { /* Invalid or ambiguous native configuration remains blocked. */ }
-      }
-      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot', 'gemini'].includes(entry.binding.platform)) {
+      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
         const plannedUser = [...this.requestedOperations.values()].find((request) => request.scope === 'user'
           && request.platform === input.platform && sourceIdentity(request).sourceIdentity === entry.binding.plugin.sourceIdentity
           && sourceIdentity(request).pluginId === entry.binding.plugin.pluginId);
-        if (plannedUser && (entry.binding.platform !== 'gemini' || typeof evidence.userActivationEnabled === 'boolean')) {
+        if (plannedUser) {
           evidence.userActivationEnabled = !['remove', 'cleanup'].includes(operation(plannedUser));
         }
       }
@@ -912,11 +942,11 @@ export class PlatformRebuildSession {
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
     let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
-    const verifyChecks = async (selected: Iterable<() => Promise<boolean>>): Promise<void> => {
-      for (const check of selected) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
+    const verifyChecks = async (selected: Iterable<(batch?: NativeObservationBatch) => Promise<boolean>>, batch?: NativeObservationBatch): Promise<void> => {
+      for (const check of selected) if (!await check(batch)) throw new Error('operationPlanStale: deployment evidence changed.');
       for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
     };
-    const verify = (): Promise<void> => verifyChecks(checks.values());
+    const verify = (batch?: NativeObservationBatch): Promise<void> => verifyChecks(checks.values(), batch);
     const canVerifyAtExecution = (): boolean => {
       const prepared = deployments[0];
       if (!prepared || deployments.length !== 1 || plans.length !== 1 || plans[0] !== prepared.plan || blockedReceipts.length
@@ -927,13 +957,36 @@ export class PlatformRebuildSession {
         && driverState.before.package === 'absent' && driverState.before.ownership === 'absent'
         && plan.evidence.sharedReferences === 'none' && plan.evidence.ownership.every((item) => item.state === 'absent')
         && plan.effects.every((effect) => ['publish-package', 'register'].includes(effect.kind));
-      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(plan.binding.route)
+      const checkedBatch = this.context.batchInstallPlatform === plan.binding.platform && plan.binding.platform !== 'codex';
+      return plan.operation === 'ensure' && (checkedBatch || ['copilot-marketplace', 'pi-package'].includes(plan.binding.route))
         && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && !plan.expected.unmet.length
         && driverState.before.package !== 'unknown' && (driverState.before.registration !== 'unknown' || hiddenEmptyPiProject)
         && ['absent', 'aw', 'shared'].includes(driverState.before.ownership)
         && plan.effects.every((effect) => ['publish-package', 'register', 'refresh', 'activate'].includes(effect.kind));
     };
-    target.platformDeployment = { deployments, plans, blockedReceipts, cleanupResults,
+    let privateStaging: string | undefined;
+    let stagedPackage: string | undefined;
+    const packagePlan = plans.length === 1 ? plans[0] : undefined;
+    const bundle = packagePlan?.projections.find((projection) => projection.bundle)?.bundle;
+    // Registration mutates a shared client. Copy independent bytes outside its
+    // namespace first; publication still checks the original frozen live plan.
+    const privatePackage = packagePlan && bundle && packagePlan.operation === 'ensure'
+      && ['pi-package', 'claude-marketplace'].includes(packagePlan.binding.route)
+      && packagePlan.effects.some((effect) => effect.kind === 'publish-package') ? {
+        prepare: async () => {
+          privateStaging = await fs.mkdtemp(path.join(await this.root(), 'private-package-'));
+          stagedPackage = path.join(privateStaging, input.plugin.manifest.name);
+          await fs.copy(bundle.stagingRoot, stagedPackage, { dereference: false });
+        },
+        dispose: async () => {
+          if (privateStaging) await fs.remove(privateStaging);
+          privateStaging = undefined;
+          stagedPackage = undefined;
+        },
+      } : undefined;
+    target.platformDeployment = { deployments, plans, blockedReceipts, cleanupResults, privatePackage,
+      writesManagedCommands: [...preparedUnits.values()].some((unit) => unit.finalized.commandCandidates.length > 0)
+        || [...priorProducers.values()].some((producers) => producers.length > 0),
       canVerifyAtExecution,
       captureNativeToolChanges: async () => {
         const signature = artifactValueDigest(deployments.map(({ plan }) => ({ bindingId: plan.binding.id,
@@ -961,15 +1014,15 @@ export class PlatformRebuildSession {
         for (const { plan } of deployments) {
           if (!['ensure', 'reinstall'].includes(plan.operation) || !plan.expected.components.length) continue;
           const receipt = receipts.find((entry) => entry.bindingId === plan.binding.id);
-          if (!receipt) continue;
+          if (!receipt || options?.deliveredSkillsOnly && plan.evidence.retainPackage) continue;
           const after = options?.refresh ? await adapter.inspect(ctx, plan.binding) : receipt.after;
-          const supplementFiles = plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
-            unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
-            .filter((contribution) => contribution.kind === 'owned-file'));
+          const supplementFiles = componentSupplementFiles(plan);
           const supplementIds = new Set(supplementFiles.flatMap((contribution) => contribution.componentIds));
-          const supplements = await inspectStaticSupplements(ctx, plan.binding,
-            plan.expected.components.filter((component) => supplementIds.has(component.id)));
-          after.components = [...after.components.filter((component) => !supplementIds.has(component.id)), ...supplements.components];
+          if (!options?.deliveredSkillsOnly) {
+            const supplements = await inspectStaticSupplements(ctx, plan.binding,
+              plan.expected.components.filter((component) => supplementIds.has(component.id)));
+            after.components = [...after.components.filter((component) => !supplementIds.has(component.id)), ...supplements.components];
+          }
           if (options?.refresh) {
             receipt.after = after;
             receipt.diagnostics.push(...after.diagnostics);
@@ -978,15 +1031,48 @@ export class PlatformRebuildSession {
             .flatMap((projection) => projection.components.map((component) => component.id)));
           const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
           const requiredActivation = requiredDeploymentActivation(plan.binding, after, requireIndependentActivation);
-          if (!requireIndependentActivation && requiredActivation === 'enabled') {
+          if (!options?.deliveredSkillsOnly && !requireIndependentActivation && requiredActivation === 'enabled') {
             receipt.diagnostics = receipt.diagnostics.filter((entry) => entry.code !== 'codexProjectActivationUnconfirmed');
           }
           const nativeContentIncomplete = bundle && nativeCopyIncomplete(plan.binding, after, bundle.contentDigest);
+          // Partial execution already verified the frozen plan and recorded each package publication.
+          const publication = options?.deliveredSkillsOnly && plan.effects.find((effect) => effect.kind === 'publish-package');
           const packageIncomplete = bundle && (!packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest, requireIndependentActivation)
-            || await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundle.contentDigest);
+            || (options?.deliveredSkillsOnly
+              ? !plan.evidence.contentMatches && !receipt.effects.some((effect) => publication && effect.id === publication.id
+                && effect.status === 'applied' && effect.mutation === 'confirmed')
+              : await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundle.contentDigest));
           const delivered = new Set(after.components.filter((component) => component.presence === 'present' && !component.reasonCodes.length)
             .map((component) => component.id));
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id) || !delivered.has(component.id));
+          if (bundle && !packageIncomplete && !plan.evidence.retainPackage) {
+            for (const unitId of plan.binding.renderUnitIds) {
+              const unit = preparedUnits.get(unitId);
+              if (!unit?.finalized.skills.length) continue;
+              const capabilityInput = { binding: plan.binding, renderUnit: unit.unit,
+                observation: after, profile: getQualifiedPlatformProfile(input.platform) };
+              const capabilities = adapter.capabilities(capabilityInput);
+              const cliReaders = unit.unit.consumers.filter(({ product }) => product === 'cli');
+              // Only attribute a shared package's limitation to Desktop if the same
+              // check passes for its CLI readers and an App reader was observed.
+              const codexCliCapabilities = plan.binding.platform === 'codex'
+                && cliReaders.some(({ availability }) => availability === 'available')
+                && unit.unit.consumers.some(({ product, availability }) => product === 'app' && availability === 'available')
+                && unit.unit.consumers.every(({ product, availability, entry }) => product === 'app'
+                  || product === 'cli' && availability === 'available' && entry?.kind === 'cli')
+                ? adapter.capabilities({ ...capabilityInput, renderUnit: { ...unit.unit, consumers: cliReaders } }) : undefined;
+              for (const skill of unit.finalized.skills) {
+                if (!packageIds.has(skill.componentId) || !delivered.has(skill.componentId)) continue;
+                const component = unit.prepared.expected.components.find((item) => item.id === skill.componentId)!;
+                const requested = getComponentFeatureRequirements(component, { skillText: skill.tree.files['SKILL.md']!.toString('utf8') });
+                const warning = skillInvocationWarning(component.name, requested,
+                  { pluginId: plan.binding.plugin.pluginId, target: plan.binding.platform, scope: plan.binding.scope.kind },
+                  capabilities, codexCliCapabilities);
+                if (warning) receipt.diagnostics.push(warning);
+              }
+            }
+          }
+          if (options?.deliveredSkillsOnly) continue;
           const inputDigest = supplementInputDigests.get(plan.binding.id);
           if (inputDigest && [...supplementIds].every((id) => delivered.has(id))
             && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
@@ -1012,9 +1098,7 @@ export class PlatformRebuildSession {
               ? 'codexProjectActivationUnconfirmed'
               : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',
-            message: code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension'
-              ? `The actual Gemini copy does not confirm the frozen package bytes. In the same workspace, review and run aw plugin sync ${plan.binding.plugin.pluginId} --context ${plan.binding.scope.kind} --target gemini --native-consent.`
-              : code === 'nativeInstallContentPostcheckFailed'
+            message: code === 'nativeInstallContentPostcheckFailed'
                 ? 'The installed native copy does not confirm the frozen package bytes. Check status and sync the affected target.'
                 : code === 'grokProjectAuthorizationDenied'
                   ? 'Grok denied authorization for the selected project. Review the project in Grok before syncing.'
@@ -1040,21 +1124,20 @@ export class PlatformRebuildSession {
         cleanupResults.length = 0;
         const receipts: DeploymentReceipt[] = [...blockedReceipts];
         for (const prepared of deployments) {
+          const supplementFiles = componentSupplementFiles(prepared.plan);
+          const writtenFiles = new Map<string, { digest: string; componentIds: string[] }>();
           const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
             .some((resolution) => resolution.state === 'failed' || resolution.state === 'unmet'));
           let receipt: DeploymentReceipt;
-          const executionContext = { ...ctx,
-            ...(this.context.nativeConsent === true && prepared.plan.binding.route === 'gemini-extension'
-              ? { geminiNativeConsent: prepared.plan } : {}),
-            geminiActivationSnapshot: structuredClone(this.mutableChecks.get(prepared.plan.binding.id)?.geminiActivationSnapshot?.()) };
-          const nativeServices = createNativeLifecycleServices(executionContext, prepared.plan.evidence);
-          try { receipt = await adapter.lifecycle.execute({ ...executionContext, nativeEffects: this.nativeEffects, inspect: (binding) => adapter.inspect(ctx, binding), services: {
+          const peers = prepared.plan.binding.route === 'codex-marketplace' ? [...this.mutableChecks.values()].filter((check) =>
+            check.physicalKey !== prepared.plan.binding.physicalKey && check.marketplaceRoot === prepared.plan.evidence.layout.marketplaceRoot
+            && check.sourceId === prepared.plan.binding.plugin.sourceId && check.sourceIdentity === prepared.plan.binding.plugin.sourceIdentity) : [];
+          const nativeServices = createNativeLifecycleServices(ctx, prepared.plan.evidence, peers.length ? async () => {
+            for (const peer of peers) await peer.assertStable();
+          } : undefined);
+          try { receipt = await adapter.lifecycle.execute({ ...ctx, nativeEffects: this.nativeEffects, inspect: (binding) => adapter.inspect(ctx, binding), services: {
             ...nativeServices,
             registerMarketplace: async (binding, identity) => {
-              const peers = binding.route === 'codex-marketplace' ? [...this.mutableChecks.values()].filter((check) =>
-                check.physicalKey !== binding.physicalKey && check.marketplaceRoot === prepared.plan.evidence.layout.marketplaceRoot
-                && check.sourceId === binding.plugin.sourceId && check.sourceIdentity === binding.plugin.sourceIdentity) : [];
-              for (const peer of peers) await peer.assertStable();
               const outcome = await nativeServices.registerMarketplace(binding, identity);
               if (outcome.mutation === 'confirmed') {
                 ctx.codexObservationSession?.invalidate(prepared.plan.evidence.layout.marketplaceName ?? undefined);
@@ -1077,7 +1160,7 @@ export class PlatformRebuildSession {
                   inputDigest: inputDigests.get(prepared.plan.binding.id)!, contentDigest: bundle.contentDigest,
                   preparation: prepared.plan.expected.unmet.length || commandPreparationFailed ? 'partial' : 'complete',
                   physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity,
-                });
+                }, stagedPackage);
                 this.published.set(prepared.plan.binding.physicalKey, publication);
               }
               return publication;
@@ -1086,7 +1169,12 @@ export class PlatformRebuildSession {
               await requireWritable(component, this.ownership);
               if (component.kind === 'owned-directory') return publishDirectory(contribution.stagingPath, component);
               if (component.kind === 'owned-text-file') {
-                await writeOwnedTextFile({ ...component, content: await fs.readFile(contribution.stagingPath, 'utf8') });
+                const content = await fs.readFile(contribution.stagingPath, 'utf8');
+                await writeOwnedTextFile({ ...component, content });
+                if (supplementFiles.includes(contribution)) {
+                  writtenFiles.set(component.path, { componentIds: contribution.componentIds,
+                    digest: crypto.createHash('sha256').update(renderOwnedTextFile(content, component.identity)).digest('hex') });
+                }
               } else if (component.kind === 'shared-config' && component.locator.kind === 'cursor-workspace-hook') {
                 const locator = component.locator;
                 const value = await jsonObject(locator.hooksPath);
@@ -1113,7 +1201,7 @@ export class PlatformRebuildSession {
               return { mutation: result.removed.length ? 'confirmed' : 'none', changed: result.removed.length > 0 };
             },
           } }, prepared); } catch (error) {
-            const diagnostic = { code: 'platformExecutionFailed', severity: 'error' as const,
+            const diagnostic = { code: recoveryInterruptionCode(error) ?? 'platformExecutionFailed', severity: 'error' as const,
               message: error instanceof Error ? error.message : String(error),
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } };
             receipt = { bindingId: prepared.plan.binding.id, effects: prepared.plan.effects.map((effect) => ({
@@ -1122,6 +1210,7 @@ export class PlatformRebuildSession {
               unmet: [], reload: 'unknown', diagnostics: [diagnostic] };
           }
           receipts.push(receipt);
+          if (receipt.diagnostics.some(({ code }) => code === 'processCleanupUnconfirmed')) return receipts;
           if ((prepared.plan.operation === 'remove' || prepared.plan.operation === 'cleanup'
             || prepared.plan.expected.components.length === 0 && prepared.plan.expected.unmet.length === 0)
             && prepared.plan.evidence.sharedReferences !== 'none' && receipt.after.package === 'present') {
@@ -1140,9 +1229,14 @@ export class PlatformRebuildSession {
           const publication = receipt.effects.find((result) => result.id === publish?.id && result.status === 'applied');
           try {
             if (receipt.effects.some((effect) => effect.mutation !== 'none')) {
-              for (const [bindingId, check] of this.mutableChecks) if (check.physicalKey === prepared.plan.binding.physicalKey
-                || executionContext.geminiActivationSnapshot && check.geminiActivationSnapshot?.()?.path === executionContext.geminiActivationSnapshot.path) {
-                const fresh = await check.rebase(executionContext.geminiActivationSnapshot);
+              for (const [bindingId, check] of this.mutableChecks) if (check.physicalKey === prepared.plan.binding.physicalKey) {
+                const { observation: fresh, verifiedSupplementIds } = await check.rebase(bindingId === receipt.bindingId ? writtenFiles : undefined);
+                if (verifiedSupplementIds.length) {
+                  receipt.after.components = [
+                    ...receipt.after.components.filter(({ id }) => !verifiedSupplementIds.includes(id)),
+                    ...verifiedSupplementIds.map((id) => ({ id, presence: 'present' as const, reasonCodes: [] })),
+                  ];
+                }
                 if (bindingId === receipt.bindingId && prepared.plan.binding.route === 'copilot-marketplace'
                   && publication?.mutation === 'confirmed') {
                   recheckCopilotMarketplaceTimeout(receipt, fresh);
@@ -1150,7 +1244,7 @@ export class PlatformRebuildSession {
               }
             }
           } catch (error) {
-            receipt.diagnostics.push({ code: 'operationPlanStale', severity: 'error', message: error instanceof Error ? error.message : String(error),
+            receipt.diagnostics.push({ code: recoveryInterruptionCode(error) ?? 'operationPlanStale', severity: 'error', message: error instanceof Error ? error.message : String(error),
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
             continue;
           }
@@ -1198,7 +1292,7 @@ export class PlatformRebuildSession {
               || receipt.after.package === 'absent' && receipt.after.registration === 'not-applicable'
               || receipt.after.scopeRegistration === 'absent'
               || prepared.plan.binding.scope.kind === 'project'
-                && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(prepared.plan.binding.route)
+                && ['codex-marketplace', 'copilot-marketplace'].includes(prepared.plan.binding.route)
                 && receipt.after.configuration?.activation === 'absent'
               || receipt.after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
             if (emptyState && !prepared.plan.expected.components.length && !receipt.unmet.length

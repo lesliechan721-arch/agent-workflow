@@ -1,6 +1,6 @@
 import type { Scope } from '../types.js';
 import { addRequirements, intentAdd, intentRemove } from '../commands/intent-command.js';
-import { calculateIntentDigest } from '../intent/intent-codec.js';
+import { calculateIntentDigest, canonicalPluginId } from '../intent/intent-codec.js';
 import { observeIntent, resolveIntentPath,
   type IntentLocation, type IntentObservation } from '../intent/intent-store.js';
 import { normalizeAgents, observePreferences, resetTargets, setAgents,
@@ -10,7 +10,12 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
-import type { RecoveryReceipt } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
+  recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+import { projectSkillInvocationHistory } from './diagnostic-projection.js';
+import { safeDiagnosticCode } from './diagnostics.js';
+import { recoveryReason } from './glossary.js';
+import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
 
 export interface TargetsPlan {
   kind: 'targets';
@@ -33,6 +38,100 @@ export interface IntentPlan {
 
 export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan }
   | { kind: 'retire'; scope: Scope; plan: RetirePlan } | TargetsPlan | IntentPlan;
+
+function nativePermissionCodes(target: RecoveryTarget): string[] {
+  if (target.agent !== 'grok') return [];
+  const diagnostics = [...target.blockers, ...target.reasons ?? [], ...(target.deploymentReceipts ?? []).flatMap((item) =>
+    [...item.diagnostics, ...item.effects.flatMap((effect) => effect.diagnostics)])];
+  return diagnostics.filter(({ subject }) => subject?.field === 'nativeSource' && subject.pluginId === target.pluginId
+    && subject.target === target.agent && subject.scope === target.scope).map(({ code }) => code);
+}
+
+export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
+  identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
+): OperationHistoryRecord {
+  const diagnostics: SafeOperationDiagnostic[] = [];
+  const skillDiagnostics = projectSkillInvocationHistory(receipt.targetResults.flatMap(({ reasons }) => reasons ?? []),
+    identity.recordId, 'execute');
+  const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target'], detailLines: string[] = []) => {
+    const code = safeDiagnosticCode(rawCode, 'recoveryFailed');
+    const id = `${identity.recordId}:diagnostic:${diagnostics.length}`;
+    diagnostics.push({ id, code, stage: 'execute', safeMessage: recoveryReason(code),
+      target, causes: [], detailLines });
+    return id;
+  };
+  const staleBeforeExecution = isRecoveryReviewStaleBeforeExecution(receipt);
+  const targetWorkNotStarted = staleBeforeExecution || Boolean(receipt.unconfirmedSavedState);
+  const checkStatus = `aw plugin status --context ${recoveryStatusContext(receipt)} --json`;
+  const globalIds = new Map<string, string>();
+  for (const code of new Set([...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => entry.code))) {
+    const details = receipt.unconfirmedSavedState || code === 'statusUnavailable' ? [checkStatus] : [];
+    globalIds.set(code, addDiagnostic(code, undefined, details));
+  }
+  for (const result of receipt.commandResults ?? []) {
+    for (const error of result.errors) addDiagnostic(error.code);
+  }
+  const targets = receipt.targetResults.map((entry): OperationHistoryTarget => {
+    const target = { pluginId: entry.pluginId, platform: entry.agent, scope: entry.scope };
+    const state = entry.satisfaction === 'unsupported' || entry.satisfaction === 'excluded' ? 'skipped'
+      : entry.execution === 'not-run' ? 'skipped'
+        : entry.blockers.length > 0 || entry.observation !== 'verified' ? 'failed'
+          : entry.execution === 'applied' ? 'completed' : entry.execution === 'no-op' ? 'kept' : 'failed';
+    const permissionCodes = !targetWorkNotStarted && receipt.remainingTargets.some((position) => position.pluginId === entry.pluginId
+      && position.agent === entry.agent && position.scope === entry.scope) ? nativePermissionCodes(entry) : [];
+    const diagnosticIds = [...new Set([...entry.blockers.map((blocker) => blocker.code), ...permissionCodes])]
+      .map((code) => {
+        const globalId = targetWorkNotStarted && globalIds.get(code);
+        if (globalId) return globalId;
+        const details: string[] = [];
+        const permission = permissionCodes.includes(code);
+        if (permission || code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
+          details.push(checkStatus);
+          if (permission) details.push('从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
+          // Store reviewable commands from structured positions only. Backend prose may contain private data.
+          for (const position of recoveryRetryDispositions(receipt, [entry])) {
+            try {
+              const root = canonicalPluginId(position.pluginId);
+              if (permission) {
+                const alsoUser = position.scope === 'project' && position.kind === 'cli' && receipt.remainingTargets.some((item) =>
+                  item.pluginId === root && item.agent === position.agent && item.scope === 'user');
+                const scope = alsoUser ? '个人和项目' : position.scope === 'user' ? '个人' : '项目';
+                details.push(`在 TUI 中重新检查 ${root} 的 ${position.agent} ${scope}位置。`);
+              } else details.push(position.kind === 'cli'
+                ? `aw plugin sync ${root} --context ${position.scope} --target ${position.agent}`
+                : `在 TUI 中重新检查 ${root} 的 ${position.agent} 项目位置。`);
+            } catch { /* An invalid identity cannot be offered as a command. */ }
+          }
+        }
+        return addDiagnostic(code, target, details);
+      });
+    diagnosticIds.push(...skillDiagnostics.filter((diagnostic) => diagnostic.target?.pluginId === target.pluginId
+      && diagnostic.target.platform === target.platform && diagnostic.target.scope === target.scope).map(({ id }) => id));
+    return { ...target, state, diagnosticIds,
+      ...(entry.blockers[0] ? { errorCode: safeDiagnosticCode(entry.blockers[0].code, 'recoveryFailed') } : {}) };
+  });
+  const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
+  const changed = receipt.configChanged || receipt.declarationChanged || receipt.preferencesChanged || receipt.outputsMayHaveChanged;
+  const state = receipt.ok ? 'succeeded' : verified || changed ? 'partial' : 'blocked';
+  return {
+    summary: {
+      ...identity,
+      state, operationKind: 'pluginWriteBatch',
+      code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
+      message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale')
+        : receipt.unconfirmedSavedState ? '保存后的内容需要重新检查，平台目标尚未执行。' : '批量恢复仍有目标未完成。',
+      diagnosticCount: diagnostics.length + skillDiagnostics.length,
+      effects: {
+        configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
+        awWrite: receipt.outputsMayHaveChanged ? 'possible' : targetWorkNotStarted ? 'notStarted' : 'notApplicable',
+        preApplyExternalEffect: targetWorkNotStarted ? 'notStarted' : 'unknown',
+        finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : targetWorkNotStarted ? 'notStarted' : 'unknown',
+      },
+    },
+    diagnostics: [...diagnostics, ...skillDiagnostics],
+    targets,
+  };
+}
 
 const intentPath = async (location: IntentLocation): Promise<string> =>
   canonicalizePathThroughExistingAncestor(await resolveIntentPath(location));

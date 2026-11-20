@@ -69,7 +69,7 @@ describe('plugin work context CLI', () => {
     const output = path.join(options.cwd, 'keep.txt');
     await fs.writeFile(output, 'existing output');
     const unavailable = { ...options, env: { ...options.env, PATH: '' } };
-    const requested = ['target', 'set', 'cursor', 'codex', 'gemini', 'cursor'];
+    const requested = ['target', 'set', 'cursor', 'codex', 'grok', 'cursor'];
     const beforeSelection = await fileTree(options.env.AW_HOME!);
     const blocked = await jsonCommand(requested, unavailable);
     expect(blocked.exitCode).toBe(3);
@@ -79,7 +79,7 @@ describe('plugin work context CLI', () => {
     expect(set.exitCode).toBe(0);
     expect(set.value).toMatchObject({ command: 'target.set', status: 'success', data: {
       preferencesChanged: true, outputsMayHaveChanged: false,
-      policy: { schemaVersion: 2, targets: ['codex', 'cursor', 'gemini'], exclusions: [] },
+      policy: { schemaVersion: 2, targets: ['codex', 'cursor', 'grok'], exclusions: [] },
     } });
     expect((await jsonCommand(['target', 'set', '--none'], options)).exitCode).toBe(0);
     expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid', value: { targets: [], exclusions: [] } });

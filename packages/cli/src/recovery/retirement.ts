@@ -401,7 +401,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                     || after.package === 'absent' && after.registration === 'not-applicable'
                     || after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation))
                     || expected?.binding.scope.kind === 'project' && (after.scopeRegistration === 'absent'
-                      || ['codex', 'gemini', 'copilot'].includes(platform ?? '') && after.configuration?.activation === 'absent');
+                      || ['codex', 'copilot'].includes(platform ?? '') && after.configuration?.activation === 'absent');
                   const unknown = after.package === 'unknown' || after.registration === 'unknown' && !removedByCommand
                     || after.ownership === 'unknown' || after.ownership === 'foreign';
                   const keptForConsumer = !unknown && inactive && expected?.evidence.sharedReferences === 'present';

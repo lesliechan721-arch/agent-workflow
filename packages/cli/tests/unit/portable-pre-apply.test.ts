@@ -205,7 +205,9 @@ describe('Native and generic preApply execution', () => {
     if (platform === 'generic') {
       expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
     } else {
-      const ready = platform === 'pi' || platform === 'opencode';
+      const cursorCliQualified = (process.platform === 'darwin' && process.arch === 'arm64')
+        || (process.platform === 'linux' && process.arch === 'x64');
+      const ready = platform === 'pi' || platform === 'opencode' || (platform === 'cursor' && cursorCliQualified);
       if (ready) {
         expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
         expect(status.value).toMatchObject({ command: 'plugin.status', status: 'success', data: {

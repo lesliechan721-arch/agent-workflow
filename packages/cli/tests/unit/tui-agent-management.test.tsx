@@ -11,7 +11,7 @@ import { controller, deferred, agentSettings } from '../helpers/tui-console-app-
 import { input, escape, nextTurn, focusAction, acceptanceTraceStep, writeAcceptanceTrace } from '../helpers/tui-console-app-input.js';
 
 afterEach(cleanup);
-const agentNames = ['Codex', 'Claude Code', 'Antigravity', 'Cursor', 'OpenCode', 'Pi', 'Gemini CLI', 'GitHub Copilot CLI', 'Grok Build', 'Generic'];
+const agentNames = ['Codex', 'Claude Code', 'Antigravity', 'Cursor', 'OpenCode', 'Pi', 'GitHub Copilot CLI', 'Grok Build', 'Generic'];
 const empty = (): AgentSettings => ({ preferences: createEmptyPreferences(), revision: 'absent',
   availability: agentSettings().availability,
   context: 'user', plugins: [{ pluginId: 'local/demo', scopes: ['user'], supportedTargets: ['codex', 'cursor'] }] });

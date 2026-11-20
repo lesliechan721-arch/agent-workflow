@@ -1,10 +1,16 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { mapInstallReads, runInstallTasks, type InstallAdmission, type InstallTask, type InstallTaskProgress } from '../recovery/install-concurrency.js';
+export type { InstallTaskProgress } from '../recovery/install-concurrency.js';
+import { withNativeObservationBatch, type NativeObservationBatch } from '../platforms/inspection-query.js';
+import { RebuildInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { withNativeToolRemovalImpact } from '../utils/native-tool-review.js';
 
 import fs from 'fs-extra';
 import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import { nativeInstallResources } from './rebuild-platform-integration.js';
+import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
 import { getDeploymentLayout } from '../platforms/layout.js';
 import type { DeploymentExclusion } from '../platforms/contracts.js';
 import type { ScopeContext } from '../intent/scope-context.js';
@@ -97,7 +103,7 @@ import {
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
-import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
+import { attachSafeOperationError, readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import {
   canonicalizePathThroughExistingAncestorSync,
   codexProjectConfigAliasesUserHome,
@@ -147,6 +153,7 @@ import {
 } from './rebuild-integration.js';
 import {
   executeRebuildOperation,
+  hasPlannedPreApply,
   prepareRebuildOperation,
   type DesiredTarget,
   type PreparedRebuildOperation,
@@ -160,6 +167,23 @@ import {
   type ReconcileOperationPlan,
 } from './reconcile-operation-plan.js';
 
+// A read scope belongs to one Review or its independent locked recheck.
+const nativePreparationReads = new WeakMap<CatalogPreparationReadScope, {
+  plugins: Map<string, Promise<PluginMeta>>;
+  inventories: Map<typeof inventoryCatalogSourceReferences, Map<string, Promise<CatalogSourceReferenceInventory>>>;
+}>();
+
+function preparationReads(runtime?: RebuildCommandRuntime) {
+  const scope = runtime?.catalogReadScope;
+  if (!scope || !runtime.previewOperationPlan || !runtime.batchInstallPlatform) return;
+  let reads = nativePreparationReads.get(scope);
+  if (!reads) {
+    reads = { plugins: new Map(), inventories: new Map() };
+    nativePreparationReads.set(scope, reads);
+  }
+  return reads;
+}
+
 export interface NativeExecutionInput {
   context: ScopeContext;
   /** Complete demand for context.scope, including targets outside this operation. */
@@ -169,16 +193,22 @@ export interface NativeExecutionInput {
 }
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
+  installAdmission?: InstallAdmission;
+  nativeInstallBlockers?: ReadonlyMap<string, string>;
+  onInstallProgress?: (progress: InstallTaskProgress) => void;
+  onInstallTargetState?: (identity: Pick<RebuildTargetIdentity, 'pluginId' | 'scope'> & { platform: PlatformTarget },
+    state: 'running' | 'completed') => void;
   nativePlannedRetirements?: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
   nativeTargetExecution?: {
+    produces?(identity: RebuildTargetIdentity): boolean;
     beforeApply(identity: RebuildTargetIdentity): Promise<CommandProducerResult[]>;
     blocked?(identity: RebuildTargetIdentity, code: string): CommandProducerResult[];
   };
   configApplyPackages?: {
-    targets: Array<{ pluginId: string; scope: Scope; dependencies: string[] }>;
+    targets: Array<{ pluginId: string; scope: Scope; packageId: string; platforms: PlatformName[]; dependencies: string[] }>;
     evidence: unknown;
-    execute(pluginId: string, scope: Scope, token: AwHomeMutationToken): Promise<CommandProducerResult[]>;
-    blocked?(pluginId: string, scope: Scope, code: string): CommandProducerResult[];
+    execute(pluginId: string, scope: Scope, token: AwHomeMutationToken, packageId?: string): Promise<CommandProducerResult[]>;
+    blocked(pluginId: string, scope: Scope, code: string, packageId?: string): CommandProducerResult[];
   };
   awHomeMutationToken?: AwHomeMutationToken;
   executionInput?: NativeExecutionInput;
@@ -680,7 +710,6 @@ async function runSingleSourceRebuildCommand(options: {
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
-    nativeConsent: options.runtime?.nativeConsent === true,
     referencePlugins: options.runtime?.referencePlugins,
     recoveryCandidates: options.runtime?.recoveryCandidates,
     sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
@@ -727,19 +756,12 @@ async function runSingleSourceRebuildCommand(options: {
         : null;
     }),
   )).filter((plugin): plugin is PluginMeta => plugin !== null);
-  if (options.runtime?.namespacedSource) {
-    for (const plugin of catalogPlugins) {
-      plugin.sourceId = options.runtime.namespacedSource.sourceId;
-      plugin.sourceIdentity = options.runtime.namespacedSource.sourceIdentity;
-      plugin.catalogLogicalIdentity = options.runtime.namespacedSource.logicalIdentity;
-      plugin.pluginId = formatPluginId({
-        sourceId: options.runtime.namespacedSource.sourceId,
-        pluginName: plugin.manifest.name,
-      });
-      plugin.marketplaceName = options.runtime.namespacedSource.marketplaceName;
-    }
-  }
-  const catalogByName = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, plugin]));
+  const namespaced = options.runtime?.namespacedSource;
+  const catalogByName = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, namespaced ? {
+    ...plugin, sourceId: namespaced.sourceId, sourceIdentity: namespaced.sourceIdentity,
+    catalogLogicalIdentity: namespaced.logicalIdentity, marketplaceName: namespaced.marketplaceName,
+    pluginId: formatPluginId({ sourceId: namespaced.sourceId, pluginName: plugin.manifest.name }),
+  } : plugin]));
   if (
     options.commandOptions.platform === 'both'
     && options.command !== 'cleanup'
@@ -1630,7 +1652,7 @@ async function cleanupOfflineOwnedComponents(options: {
         // This offline path can revoke only independently owned files and directory-loaded packages.
         if (component.kind === 'owned-directory'
           && ((action.recoveryCandidate && needsFrozenNativeRemoval(action.recoveryCandidate))
-            || ['codex', 'claude', 'gemini', 'copilot', 'pi'].includes(target.platform)
+            || ['codex', 'claude', 'copilot', 'pi'].includes(target.platform)
             || path.relative(path.join(resolveAwHome(options.env), 'platforms'), component.path).split(path.sep)[0] !== '..')) {
           preservedOutputs.push(component.path);
           continue;
@@ -2460,6 +2482,9 @@ async function runRebuildCommandInSession(
     executionInput.selectedTargets.some((selected) =>
       selected.pluginId === target.pluginId && selected.platform === target.platform && selected.scope === target.scope);
   const runtimeEnv = executionInput.context.env;
+  const admission = options.runtime?.installAdmission;
+  const initialGeneration = admission?.exclusiveGeneration ?? 0;
+  if (initialGeneration && requestedPlatforms.includes('codex')) options.runtime?.codexObservationSession?.invalidate();
   const retainSelectors = options.command === 'cleanup' ? options.pluginNames.map(parsePluginId) : [];
   const primarySourceId = retainSelectors.some((selector) => !selector.sourceId)
     ? await readCatalogSourcesConfigSnapshot(runtimeEnv)
@@ -2472,16 +2497,25 @@ async function runRebuildCommandInSession(
   const retainedPackageActions: OperationAction[] = retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage', pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }));
   const readInventory = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
-  let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
-  const readOrdinaryInventory = async () => {
-    ordinaryInventory ??= await measureCommandPerformanceStage(options.runtime, 'inventory', async () => {
-      const inventory = await readInventory({
-        cwd: options.commandOptions.cwd,
-        env: runtimeEnv,
-        scope: options.commandOptions.scope,
-      });
-      return inventory;
-    });
+  const inventoryRequest = { cwd: options.commandOptions.cwd, env: runtimeEnv, scope: options.commandOptions.scope };
+  const readCurrentInventory = (): Promise<CatalogSourceReferenceInventory> => {
+    if (!admission || !options.runtime?.batchInstallPlatform) return readInventory(inventoryRequest);
+    // The inventory includes other hosts' registries and owner markers. Sample them
+    // outside any target or script lease, while sibling publishers are between writes.
+    const roots = [resolveAwHome(runtimeEnv), resolveRepoRootSync(inventoryRequest.cwd),
+      ...NATIVE_PLATFORM_TARGETS.map((platform) => resolvePlatformConfigRoot(platform, inventoryRequest))];
+    return admission.run(roots.map((value) => ({ kind: 'path', value, access: 'read' })), () => readInventory(inventoryRequest),
+      options.runtime.signal);
+  };
+  const readCache = preparationReads(options.runtime);
+  let ordinaryInventory: Promise<CatalogSourceReferenceInventory> | undefined;
+  const readOrdinaryInventory = (): Promise<CatalogSourceReferenceInventory> => {
+    if (ordinaryInventory) return ordinaryInventory;
+    const key = JSON.stringify([inventoryRequest.cwd, inventoryRequest.scope, Object.entries(runtimeEnv).sort(([a], [b]) => a.localeCompare(b))]);
+    let reads = readCache?.inventories.get(readInventory);
+    if (readCache && !reads) readCache.inventories.set(readInventory, reads = new Map());
+    ordinaryInventory = reads?.get(key) ?? measureCommandPerformanceStage(options.runtime, 'inventory', readCurrentInventory);
+    reads?.set(key, ordinaryInventory);
     return ordinaryInventory;
   };
   let requestedPluginNames = options.pluginNames;
@@ -3148,14 +3182,12 @@ async function runRebuildCommandInSession(
         });
       }
       const available = await Promise.all(requiredEntryClosure.map(async (candidate) => {
-        const plugin = await readPluginManifest(
-          path.join(candidate.source.rootDir, 'plugins', candidate.entry.name),
-          { mode: 'bundle' },
-        );
-        plugin.sourceId = candidate.source.sourceId;
-        plugin.sourceIdentity = candidate.source.sourceIdentity;
-        plugin.catalogLogicalIdentity = candidate.source.logicalIdentity;
-        plugin.pluginId = candidate.pluginId;
+        const root = path.join(candidate.source.rootDir, 'plugins', candidate.entry.name);
+        const key = JSON.stringify([root, candidate.source.sourceIdentity, candidate.source.snapshotDigest, candidate.entry.contentDigest]);
+        const read = readCache?.plugins.get(key) ?? readPluginManifest(root, { mode: 'bundle' });
+        readCache?.plugins.set(key, read);
+        const plugin = { ...await read, sourceId: candidate.source.sourceId, sourceIdentity: candidate.source.sourceIdentity,
+          catalogLogicalIdentity: candidate.source.logicalIdentity, pluginId: candidate.pluginId };
         return { source: candidate.source, plugin, pluginId: candidate.pluginId };
       }));
       const selected = selectedEntries.map((entry) => available.find((candidate) =>
@@ -3295,7 +3327,7 @@ async function runRebuildCommandInSession(
       const planExecutionKey = (target: ReconcileOperationPlan['targets'][number]): string => [
         target.pluginId,
         target.platform,
-        target.requestedScope ?? target.resolvedScope,
+        options.runtime?.batchInstallPlatform ? target.resolvedScope : target.requestedScope ?? target.resolvedScope,
       ].join('\0');
       const dependencyTargetFor = (
         plan: ReconcileOperationPlan,
@@ -3514,10 +3546,10 @@ async function runRebuildCommandInSession(
         }
       }
       const executionContext: RebuildExecutionContext = {
-        nativeConsent: options.runtime?.nativeConsent === true,
         recoveryCandidates: options.runtime?.recoveryCandidates,
         sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
         platformRebuildSession: options.runtime?.platformRebuildSession,
+        batchInstallPlatform: options.runtime?.batchInstallPlatform,
         packagePreparationCache: options.runtime?.packagePreparationCache,
         preparedArtifactRenderResults: options.runtime?.preparedArtifactRenderResults,
         interruption: options.runtime?.interruption,
@@ -3573,6 +3605,15 @@ async function runRebuildCommandInSession(
         }
         return output;
       };
+      const readSelections = async <T>(read: (selection: ExecutionSelection, batch?: NativeObservationBatch) => Promise<T>,
+        existingBatch?: NativeObservationBatch): Promise<T[]> => {
+        const batchInstall = !!options.runtime?.batchInstallPlatform;
+        const run = (batch?: NativeObservationBatch) => mapInstallReads(executionSelections, (selection) => read(selection, batch),
+          { signal: executionContext.signal, limit: batchInstall ? undefined : 1 });
+        if (!batchInstall || executionSelections.length < 2) return run();
+        if (existingBatch) return run(existingBatch);
+        return withNativeObservationBatch({ runner: executionContext.nativeCliRunner, signal: executionContext.signal }, run);
+      };
       const createPlan = async (
         inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
         _codexManager?: CodexManager,
@@ -3597,21 +3638,10 @@ async function runRebuildCommandInSession(
         const placementNodes: DependencyPlacementNodeInput[] = [];
         const blockingTargets = new Map<string, string>();
         const actualStates = new Map<string, 'absent' | 'present' | 'partial' | 'error'>();
-        for (const [order, selection] of executionSelections.entries()) {
+        const observations = await readSelections(async (selection, observationBatch) => {
           const { entry, platform } = selection;
-          const relation = executionInput.selectedTargets.some((target) =>
-            target.pluginId === entry.pluginId && target.platform === platform)
-            ? 'requested' as const : 'dependency' as const;
           const requestedScope = selection.requestedScope ?? options.commandOptions.scope;
           const requestedMethod = selection.requestedMethod ?? options.command;
-          const activationOnly = isNativeActivationOnlyTarget(executionContext, {
-            pluginId: entry.pluginId, platform, scope: requestedScope,
-          });
-          const otherScopeRetires = options.runtime?.previewOperationPlan === true
-            && options.runtime.nativePlannedRetirements?.some((target) =>
-              target.pluginId === entry.pluginId && target.platform === platform
-              && target.scope !== requestedScope) === true;
-          let resolvedScope = requestedScope;
           const inspectScope = async (scope: Scope) => {
             const marketplaceName = marketplaceNameFor(entry, platform, scope);
             entry.plugin.marketplaceName = marketplaceName;
@@ -3628,6 +3658,7 @@ async function runRebuildCommandInSession(
               command: requestedMethod,
               catalog: toCatalogResolution(entry.source),
               readOnlyInspectionPlan: true,
+              observationBatch,
             });
             const targetKey = [entry.pluginId, platform, scope].join('\0');
             const ownedTextTargets = plannedOwnedTextTargets.get(targetKey) ?? new Set<string>();
@@ -3690,15 +3721,33 @@ async function runRebuildCommandInSession(
                 : hasAnyPresent ? 'present' : 'absent';
             return { ...result, state, platformObservations: desired.platformObservations ?? [], supplementPhysicalKeys };
           };
-          const otherScope = resolvedScope === 'user' ? 'project' : 'user';
+          const otherScope = requestedScope === 'user' ? 'project' : 'user';
           const [requestedInspection, otherInspection] = await Promise.all([
-            inspectScope(resolvedScope),
+            inspectScope(requestedScope),
             options.commandOptions.scope === 'user'
               ? Promise.resolve({ state: 'partial' as const, components: [], errors: [], platformObservations: [], supplementPhysicalKeys: new Set<string>() })
-              : platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
+              : platform === 'codex' && codexScopePathsAlias && requestedScope === 'user'
               ? Promise.resolve({ state: 'absent' as const, components: [], errors: [], platformObservations: [], supplementPhysicalKeys: new Set<string>() })
               : inspectScope(otherScope),
           ]);
+          return { requestedInspection, otherInspection, otherScope };
+        }, executionContext.nativeObservationBatch);
+        for (const [order, selection] of executionSelections.entries()) {
+          const { entry, platform } = selection;
+          const relation = executionInput.selectedTargets.some((target) =>
+            target.pluginId === entry.pluginId && target.platform === platform)
+            ? 'requested' as const : 'dependency' as const;
+          const requestedScope = selection.requestedScope ?? options.commandOptions.scope;
+          const requestedMethod = selection.requestedMethod ?? options.command;
+          const activationOnly = isNativeActivationOnlyTarget(executionContext, {
+            pluginId: entry.pluginId, platform, scope: requestedScope,
+          });
+          const otherScopeRetires = options.runtime?.previewOperationPlan === true
+            && options.runtime.nativePlannedRetirements?.some((target) =>
+              target.pluginId === entry.pluginId && target.platform === platform
+              && target.scope !== requestedScope) === true;
+          let resolvedScope = requestedScope;
+          const { requestedInspection, otherInspection, otherScope } = observations[order]!;
           const surface = platform === 'codex'
             ? analyzeCodexSurface(entry.plugin.manifest)
             : undefined;
@@ -4023,6 +4072,38 @@ async function runRebuildCommandInSession(
         target.relation === 'dependency'
         && target.resolvedScope !== options.commandOptions.scope
         && target.action === 'keep';
+      const lifecycleCommand = options.command === 'install'
+        || options.command === 'sync' || options.command === 'reinstall';
+      const preApplyAuthorizationForPlan = (plan: ReconcileOperationPlan,
+        preparedTargets?: ReadonlyMap<string, { target: DesiredTarget }>): PreApplyAuthorizationTarget[] =>
+        lifecycleCommand ? executionSelections.flatMap((selection) => {
+          const { entry, platform } = selection;
+          const planned = planTargetFor(plan, selection);
+          if (!planned || planned.action === 'block' || isHealthyWiderDependency(planned)
+            || !entry.plugin.manifest.scripts?.preApply) return [];
+          const identity = { pluginId: entry.pluginId, platform, scope: planned.resolvedScope };
+          if (isNativeActivationOnlyTarget(executionContext, identity)) return [];
+          if (preparedTargets) {
+            const prepared = preparedTargets.get(executionKey(selection, plan));
+            if (!prepared || !hasPlannedPreApply(prepared.target)) return [];
+          }
+          return [{
+            ...identity,
+            pluginName: entry.plugin.manifest.name,
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            relation: planned.relation === 'requested' ? 'requested'
+              : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId)) ? 'direct' : 'transitive',
+          }];
+        }) : [];
+      const assertPreApplyAuthorization = (plan: ReconcileOperationPlan) => {
+        if (options.commandOptions.yes === true || options.runtime?.preApplyConfirmed === true
+          || !preApplyAuthorizationForPlan(plan).length) return;
+        throw namespacedPreflightError(
+          'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
+          preflightTargets,
+        );
+      };
       const createCodexPlans = async (
         _plan: ReconcileOperationPlan,
         _activationSupport: 'observed' | 'assumed' = 'observed',
@@ -4115,11 +4196,11 @@ async function runRebuildCommandInSession(
             scope: planned.resolvedScope, cwd: options.commandOptions.cwd, command: commandForTarget(selection, plan),
             catalog: toCatalogResolution(selection.entry.source) }];
         }));
-        for (const selection of executionSelections) {
+        const builds = await readSelections(async (selection, observationBatch) => {
           const { entry, platform } = selection;
           const planned = planTargetFor(plan, selection)!;
           const key = executionKey(selection, plan);
-          if (planned.action === 'block') continue;
+          if (planned.action === 'block') return;
           const buildCommand = commandForTarget(selection, plan);
           const plannedNative = platform === 'codex'
             ? codexPlans.flatMap((codexPlan) => codexPlan.sharedNativeActions).find((action) =>
@@ -4152,6 +4233,7 @@ async function runRebuildCommandInSession(
                 scope: planned.resolvedScope,
                 cwd: options.commandOptions.cwd,
                 command: buildCommand,
+                observationBatch,
                 catalog: toCatalogResolution(entry.source),
                 ...(platform === 'codex'
                   && (buildCommand === 'cleanup' || buildCommand === 'uninstall')
@@ -4217,16 +4299,13 @@ async function runRebuildCommandInSession(
                 await integration.driver.preflightMutation?.(target);
               }
             }
-            preparedTargets.set(key, {
-              target,
-            });
             if (runTargetHook) {
               await rebuildCommandTestHooks?.afterTargetBuilt?.({
                 command: selection.requestedMethod ?? options.command,
                 identity: target.identity,
               });
             }
-            collisionSelections.push({
+            const collision: DesiredArtifactSelection = {
               pluginId: entry.pluginId,
               targetKey: `${platform}/${target.identity.scope}`,
               artifactKeys: (target.desiredOwnedComponents ?? target.ownedComponents)
@@ -4241,12 +4320,22 @@ async function runRebuildCommandInSession(
                       : component.locator.kind === 'claude-permissions'
                         ? `shared:claude:${path.resolve(component.locator.settingsPath)}:${component.locator.ownerKey}`
                         : `shared:${component.label}`),
-            });
+            };
+            return { key, target, collision };
           } catch (error) {
+            if (recoveryInterruptionCode(error) === 'processCleanupUnconfirmed') throw error;
             options.runtime?.signal?.throwIfAborted();
-            if (error instanceof Error && error.name === 'AbortError'
-              || readSafeOperationError(error)) throw error;
-            preparedTargetErrors.set(key, error);
+            if (error instanceof Error && error.name === 'AbortError' || readSafeOperationError(error)) throw error;
+            return { key, error };
+          }
+        });
+        for (const build of builds) {
+          if (!build) continue;
+          if (build.target) {
+            preparedTargets.set(build.key, { target: build.target });
+            collisionSelections.push(build.collision);
+          } else {
+            preparedTargetErrors.set(build.key, build.error);
           }
         }
         const collisions = preflightDesiredArtifactCollisions(collisionSelections);
@@ -4332,28 +4421,7 @@ async function runRebuildCommandInSession(
         );
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = authorizationPlan;
-        preview.preApplyAuthorization = executionSelections.flatMap((selection) => {
-          const { entry, platform } = selection;
-          const planned = planTargetFor(authorizationPlan, selection);
-          if (!planned || planned.action === 'block' || isHealthyWiderDependency(planned)
-            || !entry.plugin.manifest.scripts?.preApply) {
-            return [];
-          }
-          const relation = planned.relation === 'requested'
-            ? 'requested' as const
-            : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId))
-              ? 'direct' as const
-              : 'transitive' as const;
-          return [{
-            pluginId: entry.pluginId,
-            pluginName: entry.plugin.manifest.name,
-            sourceId: entry.source.sourceId,
-            sourceIdentity: entry.source.sourceIdentity,
-            platform,
-            scope: planned.resolvedScope,
-            relation,
-          }];
-        });
+        preview.preApplyAuthorization = preApplyAuthorizationForPlan(authorizationPlan);
         return preview;
       }
       if (options.runtime?.previewOperationPlan) {
@@ -4377,6 +4445,7 @@ async function runRebuildCommandInSession(
         );
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = initialPlan;
+        preview.preApplyAuthorization = preApplyAuthorizationForPlan(initialPlan, previewPreparation.preparedTargets);
         const blockedTargets = [...previewPreparation.preparedTargets.values()].flatMap(({ target }) => {
           const receipts = target.platformDeployment?.blockedReceipts ?? [];
           if (!receipts.length) return [];
@@ -4472,24 +4541,7 @@ async function runRebuildCommandInSession(
           exactOwnedTextTargets(lockedPlan),
           exactSkillMarkerTargets(lockedPlan),
         );
-        const lifecycleCommand = options.command === 'install'
-          || options.command === 'sync'
-          || options.command === 'reinstall';
-        const preApplyRequired = lifecycleCommand && executionSelections.some(({ entry, platform }) =>
-          entry.plugin.manifest.scripts?.preApply !== undefined
-          && lockedPlan.targets.some((target) =>
-            target.pluginId === entry.pluginId
-            && target.platform === platform
-            && target.action !== 'block'
-            && !isHealthyWiderDependency(target)));
-        if (preApplyRequired
-          && options.commandOptions.yes !== true
-          && options.runtime?.preApplyConfirmed !== true) {
-          throw namespacedPreflightError(
-            'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
-            preflightTargets,
-          );
-        }
+        assertPreApplyAuthorization(lockedPlan);
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
@@ -4552,6 +4604,37 @@ async function runRebuildCommandInSession(
           })) return 'install';
           return commandForTarget(selection, lockedPlan);
         };
+        const deferredPreApply = new Set<string>();
+        let serialScriptGeneration = 0;
+        const currentGeneration = () => admission?.exclusiveGeneration ?? serialScriptGeneration;
+        let observationGeneration = initialGeneration;
+        const refreshCodexObservation = (includeSerial = false) => {
+          if (!admission && !includeSerial) return;
+          const generation = currentGeneration();
+          if (observationGeneration === generation) return;
+          executionContext.codexObservationSession?.invalidate();
+          observationGeneration = generation;
+        };
+        const prepareOperation = async (input: Parameters<typeof prepareRebuildOperation>[0]) => {
+          refreshCodexObservation();
+          const prepared = await prepareRebuildOperation({ ...input, onActionEvent: async (event) => {
+            if (event.data.name === 'preApply' && event.data.phase === 'start') {
+              if (!admission) serialScriptGeneration++;
+              try { options.runtime?.onInstallTargetState?.(input.target.identity, 'running'); }
+              catch { /* Progress observers cannot change execution. */ }
+            }
+            await emitRebuildActionEvent(executionContext, event);
+          } });
+          if (prepared.status === 'failed') {
+            const diagnostic = prepared.result.failures.map((failure) => failure.operationDiagnostic)
+              .find((failure) => failure && recoveryInterruptionCode(failure));
+            if (diagnostic) {
+              throw attachSafeOperationError(new Error(diagnostic.safeMessage), diagnostic);
+            }
+            executionContext.signal?.throwIfAborted();
+          }
+          return prepared;
+        };
         const prepareLockedTargets = async (preparationOptions: {
           eligibleKeys?: ReadonlySet<string>;
           skipPreApply?: boolean;
@@ -4573,6 +4656,13 @@ async function runRebuildCommandInSession(
             const { entry, platform } = selection;
             const key = executionKey(selection, lockedPlan);
             const planned = planTargetFor(lockedPlan, selection)!;
+            const blocked = options.runtime?.nativeInstallBlockers?.get(key);
+            if (blocked) {
+              failures.set(key, failedResult(options.command, targetIdentity(selection, planned.resolvedScope),
+                `${blocked}: ${entry.pluginId} requires a verified provider.`));
+              states.set(key, 'failed');
+              continue;
+            }
             if (preparationOptions.eligibleKeys
               && !preparationOptions.eligibleKeys.has(key)) {
               states.set(key, isHealthyWiderDependency(planned) ? 'ready' : 'skipped');
@@ -4626,19 +4716,25 @@ async function runRebuildCommandInSession(
               states.set(key, 'ready');
               continue;
             }
-            const preparedOperation = await prepareRebuildOperation({
+            // A consumer's script can change external state. Wait for the provider's
+            // actual execution result even when both targets passed native preflight.
+            const hasScript = hasPlannedPreApply(prepared.target);
+            if (entry.plugin.manifest.dependencies?.length && hasScript) deferredPreApply.add(key);
+            const skipPreApply = preparationOptions.skipPreApply || deferredPreApply.has(key);
+            const prepare = () => prepareOperation({
               command: executionCommand,
               target: prepared.target,
               driver: integration.driver,
-              ...(preparationOptions.skipPreApply ? { skipPreApply: true } : {}),
+              skipPreApply,
               ...(preparationOptions.deferCodexNativeInspection
                 && platform === 'codex'
                 && executionContext.codexManager === undefined
                 && (prepared.target.writeNativeRequired ?? prepared.target.requiresNative)
                 ? { deferNativeInspection: true }
                 : {}),
-              onActionEvent: (event) => emitRebuildActionEvent(executionContext, event),
             });
+            const preparedOperation = admission && hasScript && !skipPreApply
+              ? await admission.run([{ kind: 'exclusive' }], prepare, executionContext.signal) : await prepare();
             if (preparedOperation.status === 'failed') {
               failures.set(key, preparedOperation.result);
               states.set(key, 'failed');
@@ -4770,6 +4866,7 @@ async function runRebuildCommandInSession(
               'observed',
               executionContext.codexManager,
             );
+            assertPreApplyAuthorization(lockedPlan);
             lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, false);
             const eligibleKeys = new Set(operationPreparations.keys());
             const initialOperationPreparations = new Map(operationPreparations);
@@ -4959,14 +5056,15 @@ async function runRebuildCommandInSession(
         const preparedTargets = lockedPreparation.preparedTargets;
         const preparedTargetErrors = lockedPreparation.preparedTargetErrors;
         const removalRequiredConsumers = new Map<string, Set<string>>();
+        // Sync checks live references for Codex/Claude providers. Without a possible
+        // consumer the second inventory cannot add a dependency to this plan.
+        const syncNeedsConsumerCheck = options.command === 'sync' && executionSelections.some(({ platform, entry }) =>
+          (platform === 'codex' || platform === 'claude') && availableEntries.some((candidate) =>
+            candidate.source.sourceId === entry.source.sourceId && candidate.entry.dependencies.includes(entry.plugin.manifest.name)));
         if ((options.command === 'cleanup' && !cleanupForce)
           || (options.command === 'uninstall' && !uninstallForce)
-          || options.command === 'sync') {
-          const removalStateInventory = await readInventory({
-            cwd: options.commandOptions.cwd,
-            env: runtimeEnv,
-            scope: options.commandOptions.scope,
-          });
+          || syncNeedsConsumerCheck) {
+          const removalStateInventory = await readCurrentInventory();
           if (options.command !== 'cleanup') {
             const checked = options.command === 'uninstall'
               ? omitSelectedPluginConfigErrors(removalStateInventory, preflightTargets)
@@ -5137,6 +5235,62 @@ async function runRebuildCommandInSession(
         }
       const results: RebuildCommandResult[] = [];
       const dependencyStates = new Map<string, 'completed' | 'kept' | 'failed' | 'skipped'>();
+      const directProviders = new Map(executionSelections.map((selection) => {
+        const planned = planTargetFor(lockedPlan, selection)!;
+        const dependencies = (selection.entry.plugin.manifest.dependencies ?? []).flatMap((pluginName) => {
+          const pluginId = formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName });
+          const provider = dependencyTargetFor(lockedPlan, planned, pluginId);
+          return provider ? [planExecutionKey(provider)] : [];
+        });
+        return [executionKey(selection, lockedPlan), dependencies] as const;
+      }));
+      const providerKeys = new Set([...directProviders.values()].flat());
+      const verifiedGenerations = new Map<string, number>();
+      const providerReady = (key: string) => ['completed', 'kept'].includes(dependencyStates.get(key) ?? '');
+      const providersReady = (key: string) => directProviders.get(key)!.every(providerReady);
+      const providerDeployment = (key: string) => {
+        const deployment = preparedTargets.get(key)?.target.platformDeployment;
+        return deployment?.plans.length && !deployment.blockedReceipts.length ? deployment : undefined;
+      };
+      // A provider's package check does not read its own providers. Include the
+      // whole resolved closure after a script can invalidate earlier readback.
+      const providerClosure = (key: string) => {
+        const providers = new Set<string>();
+        const visit = (consumerKey: string) => {
+          for (const providerKey of directProviders.get(consumerKey) ?? []) {
+            if (providers.has(providerKey)) continue;
+            providers.add(providerKey);
+            visit(providerKey);
+          }
+        };
+        visit(key);
+        return providers;
+      };
+      const verifyProviders = async (selection: ExecutionSelection, key: string) => {
+        const generation = currentGeneration();
+        const target = preparedTargets.get(key)?.target;
+        if (generation === initialGeneration || !directProviders.get(key)?.length
+          || !target || !providersReady(key) || operationPreparationFailures.has(key)) return;
+        refreshCodexObservation(true);
+        for (const provider of providerClosure(key)) {
+          if (verifiedGenerations.get(provider) === generation) continue;
+          try {
+            const deployment = providerDeployment(provider);
+            if (!providerReady(provider) || !deployment) {
+              throw new Error('Dependency evidence is unavailable.');
+            }
+            await deployment.verify();
+          } catch (error) {
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+            const failure = failedResult(selection.requestedMethod ?? options.command, target.identity,
+              `dependencyInstallFailed: ${provider.split('\0', 1)[0]} could not be reverified before publishing ${selection.entry.pluginId}.`);
+            failure.actions = operationPreparations.get(key)?.actions ?? [];
+            operationPreparationFailures.set(key, failure);
+            return;
+          }
+          verifiedGenerations.set(provider, generation);
+        }
+      };
       const nativeTargetExecution = lifecycleCommand ? options.runtime?.nativeTargetExecution : undefined;
       const recordTargetCommands = (commands: readonly CommandProducerResult[]): void => {
         executionContext.commandResults ??= [];
@@ -5145,20 +5299,25 @@ async function runRebuildCommandInSession(
             JSON.stringify(entry) === JSON.stringify(result))) executionContext.commandResults.push(result);
         }
       };
-      for (const selection of executionSelections) {
+      const prepareDependentScript = async (selection: ExecutionSelection, key: string) => {
+        if (!deferredPreApply.has(key) || operationPreparationFailures.has(key)) return;
+        const target = preparedTargets.get(key)!.target;
+        const command = executionCommandFor(selection);
+        if (command === 'cleanup' || command === 'uninstall') return;
+        const preparation = await prepareOperation({ command, target, driver: lockedPreparation.integration.driver });
+        if (preparation.status === 'failed') operationPreparationFailures.set(key, preparation.result);
+        else operationPreparations.set(key, preparation.preparation);
+      };
+      const executeSelection = async (selection: ExecutionSelection, index: number): Promise<void> => {
+        const record = (result: RebuildCommandResult): void => { results[index] = result; };
         const { entry, platform } = selection;
         const planned = planTargetFor(lockedPlan, selection)!;
         const key = executionKey(selection, lockedPlan);
         const requestedMethod = selection.requestedMethod ?? options.command;
-        const directDependencyIds = (entry.plugin.manifest.dependencies ?? []).map((pluginName) =>
-          formatPluginId({ sourceId: entry.source.sourceId, pluginName }));
-        const failedDependency = directDependencyIds.find((pluginId) => {
-          const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
-          const state = dependency
-            ? dependencyStates.get(planExecutionKey(dependency))
-            : undefined;
+        const failedDependency = directProviders.get(key)!.find((provider) => {
+          const state = dependencyStates.get(provider);
           return state === 'failed' || state === 'skipped';
-        });
+        })?.split('\0', 1)[0];
         const failedConsumer = [...(removalRequiredConsumers.get(key) ?? [])]
           .find((consumerKey) => {
             const state = dependencyStates.get(consumerKey);
@@ -5200,7 +5359,7 @@ async function runRebuildCommandInSession(
                   ? `${entry.pluginId} remains required by an unselected declared root.`
                 : `${entry.pluginId} dependency preflight is blocked.`}`;
           const result = failedResult(requestedMethod, identity, message);
-          results.push({
+          record({
             platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
             targetResults: [{
               target: identity,
@@ -5223,10 +5382,25 @@ async function runRebuildCommandInSession(
           });
           dependencyStates.set(key,
             failedDependency || failedConsumer ? 'skipped' : 'failed');
-          continue;
+          return;
         }
-        if (isHealthyWiderDependency(planned)) {
-          results.push({
+        // Target execution normally verifies its deployment immediately before writing.
+        // A producer or a retained target can finish without entering that executor.
+        if ((admission || providerKeys.has(key)) && currentGeneration() !== initialGeneration
+          && (planned.action === 'keep' || reconcileActivationOnly || nativeTargetExecution && (nativeTargetExecution.produces?.(identity) ?? true))
+          && !operationPreparationFailures.has(key)) {
+          try {
+            refreshCodexObservation(true);
+            await preparedTargets.get(key)?.target.platformDeployment?.verify();
+          }
+          catch (error) {
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+            operationPreparationFailures.set(key, failedResult(requestedMethod, identity,
+              error instanceof Error ? error.message : String(error)));
+          }
+        }
+        if (isHealthyWiderDependency(planned) && !operationPreparationFailures.has(key)) {
+          record({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [],
             targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
             overallState: 'succeeded',
@@ -5236,7 +5410,7 @@ async function runRebuildCommandInSession(
             }],
           });
           dependencyStates.set(key, 'kept');
-          continue;
+          return;
         }
         const operationPreparationFailure = operationPreparationFailures.get(key);
         if (operationPreparationFailure) {
@@ -5245,7 +5419,7 @@ async function runRebuildCommandInSession(
             identity,
             targetResult.errorCode ?? 'targetPreparationFailed',
           ) ?? []);
-          results.push({
+          record({
             platforms: [platform],
             plugins: [],
             warnings: [],
@@ -5261,7 +5435,7 @@ async function runRebuildCommandInSession(
             }],
           });
           dependencyStates.set(key, 'failed');
-          continue;
+          return;
         }
         if (nativeTargetExecution) {
           let packageFailure: string | undefined;
@@ -5272,8 +5446,7 @@ async function runRebuildCommandInSession(
               packageFailure = 'commandPackageProviderNotSatisfied';
             }
           } catch (error) {
-            executionContext.signal?.throwIfAborted();
-            if (error instanceof Error && error.name === 'AbortError') throw error;
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
             packageFailure = 'commandPackageApplyFailed';
             recordTargetCommands(nativeTargetExecution.blocked?.(identity, packageFailure) ?? []);
           }
@@ -5283,7 +5456,7 @@ async function runRebuildCommandInSession(
               identity,
               `${packageFailure}: ${entry.pluginId} requires a completed command package provider.`,
             );
-            results.push({
+            record({
               platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
               targetResults: [{ ...toTargetResult(result), action: planned.action }],
               overallState: 'failed',
@@ -5293,7 +5466,7 @@ async function runRebuildCommandInSession(
               }],
             });
             dependencyStates.set(key, 'failed');
-            continue;
+            return;
           }
         }
         if (reconcileActivationOnly) {
@@ -5303,7 +5476,7 @@ async function runRebuildCommandInSession(
               ? preparedError.message
               : String(preparedError);
             const result = failedResult(requestedMethod, identity, message);
-            results.push({
+            record({
               platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
               targetResults: [{
                 target: identity,
@@ -5319,7 +5492,7 @@ async function runRebuildCommandInSession(
               }],
             });
             dependencyStates.set(key, 'failed');
-            continue;
+            return;
           }
           const actions = operationPreparations.get(key)?.actions
             ?? [];
@@ -5329,7 +5502,7 @@ async function runRebuildCommandInSession(
             actions,
             cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
           };
-          results.push({
+          record({
             platforms: [platform],
             plugins: result.status === 'succeeded' ? [identity.pluginName] : [],
             warnings: result.failures.map((failure) => failure.message),
@@ -5353,7 +5526,7 @@ async function runRebuildCommandInSession(
             key,
             result.status === 'succeeded' ? 'completed' : 'failed',
           );
-          continue;
+          return;
         }
         if (planned.action === 'keep'
           && !(preparedTargets.get(key)?.target.writeNativeRequired ?? false)
@@ -5365,7 +5538,7 @@ async function runRebuildCommandInSession(
               ? preparedError.message
               : String(preparedError);
             const result = failedResult(requestedMethod, identity, message);
-            results.push({
+            record({
               platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
               targetResults: [{
                 target: identity,
@@ -5381,7 +5554,7 @@ async function runRebuildCommandInSession(
               }],
             });
             dependencyStates.set(key, 'failed');
-            continue;
+            return;
           }
           const actions = operationPreparations.get(key)?.actions
             ?? [];
@@ -5390,7 +5563,7 @@ async function runRebuildCommandInSession(
             actions,
             cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
           };
-          results.push({
+          record({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [result],
             targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
             overallState: 'succeeded',
@@ -5400,7 +5573,7 @@ async function runRebuildCommandInSession(
             }],
           });
           dependencyStates.set(key, 'kept');
-          continue;
+          return;
         }
         const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
         const namespacedSource = {
@@ -5456,10 +5629,10 @@ async function runRebuildCommandInSession(
             preparationError: preparedTargetErrors.get(key),
           },
         });
-        results.push(executionResult);
+        record(executionResult);
         dependencyStates.set(key,
           executionResult.overallState === 'succeeded' ? 'completed' : 'failed');
-      }
+      };
       const failCompletedCodexTarget = (options_: {
         identity: RebuildTargetIdentity;
         message: string;
@@ -5468,7 +5641,7 @@ async function runRebuildCommandInSession(
         recoveryActions?: string[];
       }): boolean => {
         const resultIndex = results.findIndex((candidate) =>
-          candidate.targetResults.some((target) =>
+          candidate?.targetResults.some((target) =>
             target.target.pluginId === options_.identity.pluginId
             && target.target.platform === 'codex'
             && target.target.scope === options_.identity.scope));
@@ -5520,211 +5693,355 @@ async function runRebuildCommandInSession(
         ].join('\0'), 'failed');
         return true;
       };
-      const activationMutationPluginIds = new Set(lockedCodexPlans.flatMap((plan) => [
-        ...plan.activationActions.user,
-        ...plan.activationActions.project,
-      ].flatMap((action) => action.action === 'none' ? [] : [action.pluginId])));
-      for (const selection of executionSelections) {
-        const { entry, platform } = selection;
-        const key = executionKey(selection, lockedPlan);
-        if (platform !== 'codex'
-          || !activationMutationPluginIds.has(entry.pluginId)
-          || (dependencyStates.get(key) !== 'completed'
-            && dependencyStates.get(key) !== 'kept')) continue;
-        const prepared = preparedTargets.get(key)?.target;
-        if (!prepared) continue;
-        try {
-          await lockedPreparation.integration.prepareNativeMarketplaceGroup(prepared);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          failCompletedCodexTarget({ identity: prepared.identity, message, phase: 'native.write' });
-        }
-      }
-      const successfulCodexTargetScopes = new Set(executionSelections.flatMap((selection) =>
-        selection.platform === 'codex'
-        && (dependencyStates.get(executionKey(selection, lockedPlan)) === 'completed'
-          || dependencyStates.get(executionKey(selection, lockedPlan)) === 'kept')
-          ? [`${selection.entry.pluginId}\0${planTargetFor(
-              lockedPlan,
-              selection,
-            )!.resolvedScope}`]
-          : []));
-      const activationUserBefore = await readCodexConfigFile(resolveCodexPaths(
-        options.commandOptions.cwd,
-        'user',
-        runtimeEnv,
-      ).configTomlPath);
-      const activationProjectBefore = options.commandOptions.scope === 'project'
-        ? await readCodexConfigFile(resolveCodexPaths(
-            options.commandOptions.cwd,
-            'project',
-            runtimeEnv,
-          ).configTomlPath)
-        : undefined;
-      const preservedActivations = {
-        user: new Map(Object.entries(activationUserBefore.snapshot.plugins)
-          .map(([pluginId, activation]) => [pluginId, activation.enabled === true])),
-        project: new Map(Object.entries(activationProjectBefore?.snapshot.plugins ?? {})
-          .map(([pluginId, activation]) => [pluginId, activation.enabled === true])),
+      const codexSelections = executionSelections.filter(({ platform }) => platform === 'codex');
+      const codexProviders = new Set(options.runtime?.batchInstallPlatform === 'codex' || deferredPreApply.size || serialScriptGeneration
+        ? codexSelections.flatMap((selection) => directProviders.get(executionKey(selection, lockedPlan))!) : []);
+      const reportTargetState = (selection: ExecutionSelection, state: 'running' | 'completed'): void => {
+        const identity = targetIdentity(selection, planTargetFor(lockedPlan, selection)!.resolvedScope);
+        try { options.runtime?.onInstallTargetState?.(identity, state); }
+        catch { /* Progress observers cannot change a target's outcome. */ }
       };
-      const activationPlans = selectCodexActivationPlans(
-        lockedCodexPlans,
-        successfulCodexTargetScopes,
-        preservedActivations,
-        originalUserActivations,
-      );
-      if (activationPlans.length > 0
-        || lockedPreparation.integration.driver.completePostchecks) {
-        let activationError: unknown;
-        const activationMutationMarketplaces = new Set<string>();
-        try {
-          if (activationPlans.length > 0) {
-            await executeCodexReconcileActivations({
-              plans: activationPlans,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-              manager: executionContext.codexManager,
-              runner: executionContext.nativeCliRunner,
-              observationSession: executionContext.codexObservationSession,
-              preflightCompleted: true,
-              mutationMarketplaces: activationMutationMarketplaces,
-              observationScopeByMarketplace: codexObservationScopeByMarketplace,
-            });
+      const pendingCodex = new Set<ExecutionSelection>();
+      const runSelection = async (selection: ExecutionSelection, index: number): Promise<void> => {
+        reportTargetState(selection, 'running');
+        refreshCodexObservation();
+        await executeSelection(selection, index);
+        const key = executionKey(selection, lockedPlan);
+        if (selection.platform === 'codex') pendingCodex.add(selection);
+        const unconfirmed = results[index]?.rebuildResults.flatMap((result) => [
+          ...result.failures.flatMap((failure) => failure.operationDiagnostic ? [failure.operationDiagnostic] : []),
+          ...(result.deploymentReceipts ?? []).flatMap((receipt) => receipt.diagnostics),
+        ]).find((diagnostic) => recoveryInterruptionCode(diagnostic) === 'processCleanupUnconfirmed');
+        if (unconfirmed) {
+          const message = 'safeMessage' in unconfirmed ? unconfirmed.safeMessage : unconfirmed.message;
+          throw attachSafeOperationError(new Error(message), { code: unconfirmed.code, safeMessage: message });
+        }
+        if (selection.platform === 'codex') {
+          const prepared = preparedTargets.get(key)?.target;
+          if (codexProviders.has(key) && prepared && providerReady(key)) {
+            try {
+              await lockedPreparation.integration.postcheckCodexProvider(prepared);
+            } catch (error) {
+              if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+              failCompletedCodexTarget({ identity: prepared.identity, message: error instanceof Error ? error.message : String(error) });
+            }
           }
-        } catch (error) {
-          activationError = error;
+          if (providerReady(key) && providerDeployment(key)) verifiedGenerations.set(key, currentGeneration());
+          if (!codexProviders.has(key)) return;
+          pendingCodex.delete(selection);
+        } else if (providerReady(key) && providerDeployment(key)) {
+          verifiedGenerations.set(key, currentGeneration());
         }
-        try {
-          await lockedPreparation.integration.captureCodexPostMutationSnapshots(
-            [...activationMutationMarketplaces],
-          );
-        } catch (error) {
-          activationError ??= error;
+        reportTargetState(selection, 'completed');
+      };
+      const finishCodex = async () => {
+        refreshCodexObservation();
+        for (const selection of codexSelections) {
+          const key = executionKey(selection, lockedPlan);
+          if (!admission || admission.exclusiveGeneration === verifiedGenerations.get(key)) continue;
+          const target = preparedTargets.get(key)?.target;
+          if (target && ['completed', 'kept'].includes(dependencyStates.get(key) ?? '')) {
+            try { await target.platformDeployment?.verify(); }
+            catch (error) {
+              if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+              failCompletedCodexTarget({ identity: target.identity, message: error instanceof Error ? error.message : String(error) });
+            }
+          }
         }
-        const failedCodexTargetScopes = new Set(executionSelections.flatMap((selection) =>
+        const activationMutationPluginIds = new Set(lockedCodexPlans.flatMap((plan) => [
+          ...plan.activationActions.user,
+          ...plan.activationActions.project,
+        ].flatMap((action) => action.action === 'none' ? [] : [action.pluginId])));
+        for (const selection of executionSelections) {
+          const { entry, platform } = selection;
+          const key = executionKey(selection, lockedPlan);
+          if (platform !== 'codex'
+            || !activationMutationPluginIds.has(entry.pluginId)
+            || (dependencyStates.get(key) !== 'completed'
+              && dependencyStates.get(key) !== 'kept')) continue;
+          const prepared = preparedTargets.get(key)?.target;
+          if (!prepared) continue;
+          try {
+            await lockedPreparation.integration.prepareNativeMarketplaceGroup(prepared);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            failCompletedCodexTarget({ identity: prepared.identity, message, phase: 'native.write' });
+          }
+        }
+        const successfulCodexTargetScopes = new Set(executionSelections.flatMap((selection) =>
           selection.platform === 'codex'
-          && (dependencyStates.get(executionKey(selection, lockedPlan)) === 'failed'
-            || dependencyStates.get(executionKey(selection, lockedPlan)) === 'skipped')
+          && (dependencyStates.get(executionKey(selection, lockedPlan)) === 'completed'
+            || dependencyStates.get(executionKey(selection, lockedPlan)) === 'kept')
             ? [`${selection.entry.pluginId}\0${planTargetFor(
                 lockedPlan,
                 selection,
               )!.resolvedScope}`]
             : []));
-        for (const failure of await lockedPreparation.integration.driver.completePostchecks?.() ?? []) {
-          const message = failure.error instanceof Error
-            ? failure.error.message
-            : String(failure.error);
-          if (failCompletedCodexTarget({ identity: failure.target.identity, message })) {
-            const failedPluginId = failure.target.identity.pluginId
-              ?? failure.target.identity.pluginName;
-            failedCodexTargetScopes.add(
-              `${failedPluginId}\0${failure.target.identity.scope}`,
-            );
-          }
-        }
-        if (!activationError && activationPlans.length > 0) {
-          const postcheckTargetScopes = new Set([...successfulCodexTargetScopes]
-            .filter((key) => !failedCodexTargetScopes.has(key)));
-          const postcheckPlans = selectCodexActivationPlans(
-            activationPlans,
-            postcheckTargetScopes,
-            preservedActivations,
-            originalUserActivations,
-          );
+        const activationUserBefore = await readCodexConfigFile(resolveCodexPaths(
+          options.commandOptions.cwd,
+          'user',
+          runtimeEnv,
+        ).configTomlPath);
+        const activationProjectBefore = options.commandOptions.scope === 'project'
+          ? await readCodexConfigFile(resolveCodexPaths(
+              options.commandOptions.cwd,
+              'project',
+              runtimeEnv,
+            ).configTomlPath)
+          : undefined;
+        const preservedActivations = {
+          user: new Map(Object.entries(activationUserBefore.snapshot.plugins)
+            .map(([pluginId, activation]) => [pluginId, activation.enabled === true])),
+          project: new Map(Object.entries(activationProjectBefore?.snapshot.plugins ?? {})
+            .map(([pluginId, activation]) => [pluginId, activation.enabled === true])),
+        };
+        const activationPlans = selectCodexActivationPlans(
+          lockedCodexPlans,
+          successfulCodexTargetScopes,
+          preservedActivations,
+          originalUserActivations,
+        );
+        if (activationPlans.length > 0
+          || lockedPreparation.integration.driver.completePostchecks) {
+          let activationError: unknown;
+          const activationMutationMarketplaces = new Set<string>();
           try {
-            await postcheckCodexReconcileActivations({
-              plans: postcheckPlans,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-              manager: executionContext.codexManager,
-              runner: executionContext.nativeCliRunner,
-              observationScopeByMarketplace: codexObservationScopeByMarketplace,
-              observationSession: executionContext.codexObservationSession,
-            });
+            if (activationPlans.length > 0) {
+              await executeCodexReconcileActivations({
+                plans: activationPlans,
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+                manager: executionContext.codexManager,
+                runner: executionContext.nativeCliRunner,
+                observationSession: executionContext.codexObservationSession,
+                preflightCompleted: true,
+                mutationMarketplaces: activationMutationMarketplaces,
+                observationScopeByMarketplace: codexObservationScopeByMarketplace,
+              });
+            }
           } catch (error) {
             activationError = error;
           }
-        }
-        if (activationError) {
-          const failedActivationTargetScopes = failedCodexActivationTargetScopes({
-            error: activationError,
-            plans: activationPlans,
-            successfulTargetScopes: successfulCodexTargetScopes,
-          });
-          const message = activationError instanceof Error
-            ? activationError.message
-            : String(activationError);
-          const failedSelections = executionSelections.filter((candidate) =>
-            candidate.platform === 'codex'
-            && failedActivationTargetScopes.has(`${candidate.entry.pluginId}\0${planTargetFor(
-              lockedPlan,
-              candidate,
-            )!.resolvedScope}`));
-          if (failedSelections.length === 0) throw activationError;
-          for (const selection of failedSelections) {
-            const planned = planTargetFor(lockedPlan, selection)!;
-            const identity: RebuildTargetIdentity = {
-              sourceId: selection.entry.source.sourceId,
-              sourceIdentity: selection.entry.source.sourceIdentity,
-              pluginId: selection.entry.pluginId,
-              pluginName: selection.entry.plugin.manifest.name,
-              pluginVersion: selection.entry.plugin.manifest.version,
-              platform: 'codex',
-              scope: planned.resolvedScope,
-              cwd: options.commandOptions.cwd,
-            };
-            if (!failCompletedCodexTarget({ identity, message })) throw activationError;
-            failedCodexTargetScopes.add(
-              `${selection.entry.pluginId}\0${planned.resolvedScope}`,
+          try {
+            await lockedPreparation.integration.captureCodexPostMutationSnapshots(
+              [...activationMutationMarketplaces],
             );
+          } catch (error) {
+            activationError ??= error;
           }
-        }
-        let propagated = true;
-        while (propagated) {
-          propagated = false;
-          for (const selection of executionSelections.filter((candidate) =>
-            candidate.platform === 'codex')) {
-            const planned = planTargetFor(lockedPlan, selection)!;
-            const targetScopeKey = `${selection.entry.pluginId}\0${planned.resolvedScope}`;
-            if (failedCodexTargetScopes.has(targetScopeKey)) continue;
-            const failedDependency = (selection.entry.plugin.manifest.dependencies ?? [])
-              .map((pluginName) => formatPluginId({
-                sourceId: selection.entry.source.sourceId,
-                pluginName,
-              }))
-              .find((pluginId) => {
-                const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
-                return dependency
-                  ? failedCodexTargetScopes.has(
-                      `${pluginId}\0${dependency.requestedScope ?? dependency.resolvedScope}`,
-                    )
-                  : false;
+          const failedCodexTargetScopes = new Set(executionSelections.flatMap((selection) =>
+            selection.platform === 'codex'
+            && (dependencyStates.get(executionKey(selection, lockedPlan)) === 'failed'
+              || dependencyStates.get(executionKey(selection, lockedPlan)) === 'skipped')
+              ? [`${selection.entry.pluginId}\0${planTargetFor(
+                  lockedPlan,
+                  selection,
+                )!.resolvedScope}`]
+              : []));
+          for (const failure of await lockedPreparation.integration.driver.completePostchecks?.() ?? []) {
+            if (recoveryInterruptionCode(failure.error, executionContext.signal)) throw failure.error;
+            const message = failure.error instanceof Error
+              ? failure.error.message
+              : String(failure.error);
+            if (failCompletedCodexTarget({ identity: failure.target.identity, message })) {
+              const failedPluginId = failure.target.identity.pluginId
+                ?? failure.target.identity.pluginName;
+              failedCodexTargetScopes.add(
+                `${failedPluginId}\0${failure.target.identity.scope}`,
+              );
+            }
+          }
+          if (!activationError && activationPlans.length > 0) {
+            const postcheckTargetScopes = new Set([...successfulCodexTargetScopes]
+              .filter((key) => !failedCodexTargetScopes.has(key)));
+            const postcheckPlans = selectCodexActivationPlans(
+              activationPlans,
+              postcheckTargetScopes,
+              preservedActivations,
+              originalUserActivations,
+            );
+            try {
+              await postcheckCodexReconcileActivations({
+                plans: postcheckPlans,
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+                manager: executionContext.codexManager,
+                runner: executionContext.nativeCliRunner,
+                observationScopeByMarketplace: codexObservationScopeByMarketplace,
+                observationSession: executionContext.codexObservationSession,
               });
-            if (!failedDependency) continue;
-            const identity: RebuildTargetIdentity = {
-              sourceId: selection.entry.source.sourceId,
-              sourceIdentity: selection.entry.source.sourceIdentity,
-              pluginId: selection.entry.pluginId,
-              pluginName: selection.entry.plugin.manifest.name,
-              pluginVersion: selection.entry.plugin.manifest.version,
-              platform: 'codex',
-              scope: planned.resolvedScope,
-              cwd: options.commandOptions.cwd,
-            };
-            const message = `dependencyInstallFailed: ${selection.entry.pluginId} requires failed dependency ${failedDependency}.`;
-            if (failCompletedCodexTarget({
-              identity,
-              message,
-              recoveryActions: [
-                `run aw plugin sync ${selection.entry.pluginId} --target codex --context ${planned.resolvedScope}`,
-              ],
-            })) {
-              failedCodexTargetScopes.add(targetScopeKey);
-              dependencyStates.set(executionKey(selection, lockedPlan), 'failed');
-              propagated = true;
+            } catch (error) {
+              activationError = error;
+            }
+          }
+          if (activationError) {
+            if (recoveryInterruptionCode(activationError, executionContext.signal)) throw activationError;
+            const failedActivationTargetScopes = failedCodexActivationTargetScopes({
+              error: activationError,
+              plans: activationPlans,
+              successfulTargetScopes: successfulCodexTargetScopes,
+            });
+            const message = activationError instanceof Error
+              ? activationError.message
+              : String(activationError);
+            const failedSelections = executionSelections.filter((candidate) =>
+              candidate.platform === 'codex'
+              && failedActivationTargetScopes.has(`${candidate.entry.pluginId}\0${planTargetFor(
+                lockedPlan,
+                candidate,
+              )!.resolvedScope}`));
+            if (failedSelections.length === 0) throw activationError;
+            for (const selection of failedSelections) {
+              const planned = planTargetFor(lockedPlan, selection)!;
+              const identity: RebuildTargetIdentity = {
+                sourceId: selection.entry.source.sourceId,
+                sourceIdentity: selection.entry.source.sourceIdentity,
+                pluginId: selection.entry.pluginId,
+                pluginName: selection.entry.plugin.manifest.name,
+                pluginVersion: selection.entry.plugin.manifest.version,
+                platform: 'codex',
+                scope: planned.resolvedScope,
+                cwd: options.commandOptions.cwd,
+              };
+              if (!failCompletedCodexTarget({ identity, message })) throw activationError;
+              failedCodexTargetScopes.add(
+                `${selection.entry.pluginId}\0${planned.resolvedScope}`,
+              );
+            }
+          }
+          let propagated = true;
+          while (propagated) {
+            propagated = false;
+            for (const selection of executionSelections.filter((candidate) =>
+              candidate.platform === 'codex')) {
+              const planned = planTargetFor(lockedPlan, selection)!;
+              const targetScopeKey = `${selection.entry.pluginId}\0${planned.resolvedScope}`;
+              if (failedCodexTargetScopes.has(targetScopeKey)) continue;
+              const failedDependency = (selection.entry.plugin.manifest.dependencies ?? [])
+                .map((pluginName) => formatPluginId({
+                  sourceId: selection.entry.source.sourceId,
+                  pluginName,
+                }))
+                .find((pluginId) => {
+                  const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
+                  return dependency
+                    ? failedCodexTargetScopes.has(
+                        `${pluginId}\0${dependency.requestedScope ?? dependency.resolvedScope}`,
+                      )
+                    : false;
+                });
+              if (!failedDependency) continue;
+              const identity: RebuildTargetIdentity = {
+                sourceId: selection.entry.source.sourceId,
+                sourceIdentity: selection.entry.source.sourceIdentity,
+                pluginId: selection.entry.pluginId,
+                pluginName: selection.entry.plugin.manifest.name,
+                pluginVersion: selection.entry.plugin.manifest.version,
+                platform: 'codex',
+                scope: planned.resolvedScope,
+                cwd: options.commandOptions.cwd,
+              };
+              const message = `dependencyInstallFailed: ${selection.entry.pluginId} requires failed dependency ${failedDependency}.`;
+              if (failCompletedCodexTarget({
+                identity,
+                message,
+                recoveryActions: [
+                  `run aw plugin sync ${selection.entry.pluginId} --target codex --context ${planned.resolvedScope}`,
+                ],
+              })) {
+                failedCodexTargetScopes.add(targetScopeKey);
+                dependencyStates.set(executionKey(selection, lockedPlan), 'failed');
+                propagated = true;
+              }
             }
           }
         }
+      };
+      const privatePackages: Array<{ dispose(): Promise<void> }> = [];
+      try {
+        if (admission && options.runtime?.batchInstallPlatform) {
+          const selectedKeys = new Set(executionSelections.map((selection) => executionKey(selection, lockedPlan)));
+          const tasks = executionSelections.flatMap((selection, index): InstallTask<void>[] => {
+            const id = executionKey(selection, lockedPlan);
+            const dependencies = directProviders.get(id)!.filter((key) => selectedKeys.has(key));
+            const target = lockedPreparation.preparedTargets.get(id)?.target;
+            const deployment = target?.platformDeployment;
+            const resources = nativeInstallResources(deployment?.plans ?? []);
+            const producesCommands = target && nativeTargetExecution
+              && (nativeTargetExecution.produces?.(target.identity) ?? true);
+            if (deployment?.writesManagedCommands || producesCommands
+              || target?.operationActions?.some((action) => action.kind === 'syncManagedCommandPackage')) {
+              resources.push({ kind: 'path', value: path.join(resolveAwHome(runtimeEnv), 'commands') });
+            }
+            const leaves: InstallTask<void>[] = [];
+            let prerequisites = dependencies;
+            const providerPlans = [...providerClosure(id)].flatMap((key) => preparedTargets.get(key)?.target.platformDeployment?.plans ?? []);
+            if (providerPlans.length) for (const resource of nativeInstallResources(providerPlans)) {
+              resources.push(resource.kind === 'exclusive' ? resource : { ...resource, access: 'read' });
+            }
+            if (deferredPreApply.has(id) && operationPreparations.has(id)) {
+              const script = `preApply:\0${id}`;
+              leaves.push({ id: script, dependencies, resources: [{ kind: 'exclusive' }], run: async () => {
+                if (!providersReady(id)) return;
+                await verifyProviders(selection, id);
+                await prepareDependentScript(selection, id);
+              } });
+              prerequisites = [script];
+            }
+            const staging = deployment?.privatePackage;
+            if (staging && executionSelections.length >= 2 && operationPreparations.has(id)) {
+              privatePackages.push(staging);
+              const stage = `package-staging:\0${id}`;
+              leaves.push({ id: stage, dependencies: prerequisites, resources: [], run: async () => {
+                if (!providersReady(id) || operationPreparationFailures.has(id)) return;
+                reportTargetState(selection, 'running');
+                try { await staging.prepare(); }
+                catch (error) {
+                  if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+                  operationPreparationFailures.set(id, failedResult(options.command, target!.identity,
+                    error instanceof Error ? error.message : String(error)));
+                }
+              } });
+              prerequisites = [stage];
+            }
+            leaves.push({ id, dependencies: prerequisites, resources, run: async () => {
+              await verifyProviders(selection, id);
+              await runSelection(selection, index);
+            } });
+            return leaves;
+          });
+          await runInstallTasks(tasks, { admission, signal: executionContext.signal });
+        } else {
+          for (const [index, selection] of executionSelections.entries()) {
+            if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+            const key = executionKey(selection, lockedPlan);
+            if (deferredPreApply.has(key) && providersReady(key)) {
+              await verifyProviders(selection, key);
+              await prepareDependentScript(selection, key);
+            }
+            await verifyProviders(selection, key);
+            await runSelection(selection, index);
+          }
+        }
+        if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+        if (codexSelections.length) {
+          if (admission) await admission.run(nativeInstallResources(lockedOperationPlan.deploymentPlans ?? []), finishCodex, executionContext.signal);
+          else await finishCodex();
+        }
+        if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+        for (const selection of pendingCodex) reportTargetState(selection, 'completed');
+      } catch (error) {
+        const code = recoveryInterruptionCode(error, executionContext.signal);
+        if (!code) throw error;
+        for (const selection of pendingCodex) {
+          const state = dependencyStates.get(executionKey(selection, lockedPlan));
+          if (state !== 'completed' && state !== 'kept') continue;
+          failCompletedCodexTarget({ identity: targetIdentity(selection, planTargetFor(lockedPlan, selection)!.resolvedScope),
+            message: `${code}: Codex postcheck did not complete.` });
+        }
+        throw new RebuildInterruptedError(mergeRebuildCommandResults(results.filter(Boolean)), error);
+      } finally {
+        await Promise.all(privatePackages.map((staging) => staging.dispose()));
       }
       const merged = mergeRebuildCommandResults(results);
       if (malformedSelectedConfigPreserved) {
@@ -5834,7 +6151,8 @@ export async function runRebuildCommand(
     runtime: { ...options.runtime, env: executionInput.context.env },
   };
   try {
-    if (scopedOptions.runtime?.codexObservationSession) {
+    if (scopedOptions.runtime?.codexObservationSession
+      || scopedOptions.runtime?.batchInstallPlatform && scopedOptions.runtime.batchInstallPlatform !== 'codex') {
       return withCommands(await runRebuildCommandInSession(scopedOptions));
     }
     const env = executionInput.context.env;

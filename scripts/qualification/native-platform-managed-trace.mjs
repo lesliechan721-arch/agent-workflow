@@ -59,6 +59,20 @@ export function createManagedTraceWriter(file) {
   } };
 }
 
+function mixedNativeTraceFilter() {
+  const readSamples = { claude: 0, pi: 0 };
+  return (args, prefixed) => {
+    if (prefixed ? args[0] === 'install' : args[0] === 'plugin' && args[1] === 'install') return 'install';
+    if (!prefixed && args[0] === 'plugin' && args[1] === 'enable') return 'activate';
+    if (!prefixed && args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') return 'marketplace-add';
+    const client = prefixed ? 'pi' : 'claude';
+    const isList = prefixed ? args.length === 1 && args[0] === 'list' : args.join(' ') === 'plugin list --json';
+    // Keep enough early list samples to see both clients. Reserve space in the
+    // bounded trace for the real installs later in the command.
+    return isList && readSamples[client]++ < 12 ? 'list' : undefined;
+  };
+}
+
 export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform,
   nextOperationId }) {
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
@@ -82,6 +96,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
   const sharedProviderTiming = Boolean(queryEntry) && env.AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING === '1';
+  const mixedFilter = client === 'claude-pi' ? mixedNativeTraceFilter() : undefined;
   let operationId = 0;
   let unmatchedCount = 0;
   let systemQueryCount = 0;
@@ -97,14 +112,18 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       const direct = matchesTarget(commandFile);
       const prefixed = !direct && matchesTarget(argumentFile);
       if ((direct || prefixed) && Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string')) {
-        markers = [...new Set([...preloadMarkers, ...markerValues(process.env, env, invocation.env)])];
         const args = prefixed ? invocation.args.slice(1) : invocation.args;
-        registryList = client === 'codex' && args.length === 4
-          && args.every((argument, index) => argument === ['plugin', 'marketplace', 'list', '--json'][index]);
-        details = { operationId: nextOperationId ? nextOperationId() : ++operationId, startTime: new Date().toISOString(), parentPid: process.pid,
-          command: invocation.command, args: invocation.args.slice(0, 16),
-          publicMarkerProvided: typeof preloadMarker === 'string' && preloadMarker.length > 0
-            && invocation.env?.[PUBLIC_MARKER] === preloadMarker };
+        const nativeOperation = mixedFilter?.(args, prefixed);
+        if (!mixedFilter || nativeOperation) {
+          markers = [...new Set([...preloadMarkers, ...markerValues(process.env, env, invocation.env)])];
+          registryList = client === 'codex' && args.length === 4
+            && args.every((argument, index) => argument === ['plugin', 'marketplace', 'list', '--json'][index]);
+          details = { operationId: nextOperationId ? nextOperationId() : ++operationId, startTime: new Date().toISOString(), parentPid: process.pid,
+            command: invocation.command, args: invocation.args.slice(0, 16),
+            ...(nativeOperation ? { nativeClient: prefixed ? 'pi' : 'claude', nativeOperation } : {}),
+            publicMarkerProvided: typeof preloadMarker === 'string' && preloadMarker.length > 0
+              && invocation.env?.[PUBLIC_MARKER] === preloadMarker };
+        }
       } else if (sharedProviderTiming && sameFile(commandFile, queryEntry) ? ++systemQueryCount <= 64 : ++unmatchedCount <= 8) {
         // Fixed facts only: unmatched calls must not expose paths, argv or env.
         const absolute = (value) => typeof value === 'string' && path.isAbsolute(value);
@@ -145,6 +164,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
         const failed = threw || typeof value?.exitCode === 'number' && value.exitCode !== 0;
         emit({ ...details, phase: text(phase), startTime: text(details.startTime), command: text(details.command),
           args: details.args.map((argument) => text(argument)), finishTime: phase === 'finish' ? text(new Date().toISOString()) : null,
+          ...(phase === 'spawn' ? { spawnTime: new Date().toISOString() } : {}),
           ...(phase === 'finish' ? { threw, exitCode: typeof value?.exitCode === 'number' ? value.exitCode : null,
             reason: text(value?.reason), cause: { code: code(value?.cause?.code) },
             operationDiagnostic: { code: text(value?.operationDiagnostic?.code), safeMessage: text(value?.operationDiagnostic?.safeMessage) },
@@ -246,7 +266,7 @@ export function createManagedPluginTraceRunner(base, { env = process.env, emit, 
 function traceRequested(env, platform) {
   return env.GITHUB_ACTIONS === 'true' && env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
     && ['linux', 'darwin', 'win32'].includes(platform)
-    && ['codex', 'pi', 'claude', 'gemini', 'copilot', 'opencode'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
+    && ['codex', 'pi', 'claude', 'copilot', 'opencode', 'claude-pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
     && typeof env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE === 'string'
     && path.isAbsolute(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE);
 }

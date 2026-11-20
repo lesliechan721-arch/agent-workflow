@@ -597,6 +597,10 @@ export async function runPreApplyScript(options: {
         runnerCleanupConfirmed = true;
       } else if (interruptSignal) {
         throw new Error(`preApply process cleanup failed after ${interruptSignal}.`);
+      } else if (['pluginProcessCleanupFailed', 'processCleanupUnconfirmed'].includes(readSafeOperationError(error)?.code ?? '')) {
+        throw attachSafeOperationError(new Error('preApply process cleanup could not be confirmed.'), {
+          code: 'processCleanupUnconfirmed', stage: 'preApply', safeMessage: 'The preApply process cleanup could not be confirmed.',
+        });
       } else if (error instanceof PluginProcessInputError) {
         throw attachSafeOperationError(new Error('preApply input could not be sent.'), {
           code: 'preApplyInputFailed',

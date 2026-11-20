@@ -11,6 +11,10 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, ConfigReadOptions } from '../../src/tui/model.js';
+import { RecoveryInterruptedError } from '../../src/recovery/interruption.js';
+import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
+import { ConfigApplyInterruptedError } from '../../src/utils/plugin-config-write.js';
+import { skillInvocationWarning } from '../../src/utils/skill-invocation-warning.js';
 
 import { chooseConfigProfile, chooseConfigSave, openConfigSave } from '../helpers/tui-console-app-input.js';
 
@@ -248,7 +252,7 @@ describe('TUI config save batch result', () => {
           { scope: 'user', platform: 'codex', status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested' },
           { scope: 'user', platform: 'claude', status: 'failed', configSaved: false, applyRequested: false, applyStatus: 'notRequested', errorCode: 'configWriteFailed' },
         ],
-      } : { configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
+      } : { configWrite: 'notStarted', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
       getConfigPage: vi.fn(async (_pluginId, options) => configPage(options)),
     });
     await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId, { platform: 'codex' });
@@ -262,6 +266,7 @@ describe('TUI config save batch result', () => {
     const review = await value.buildOperationReview({ kind: 'configSave', pluginId, platform: 'codex', apply: true, retryApply: true, updates: {} });
     await value.executeOperation(review.reviewToken); await nextTurn(5);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSave', platform: 'codex', retryApply: true, updates: {} });
+    expect(instance.lastFrame()).toContain('已应用已保存的设置');
     expect(value.externalDrafts).toEqual([expect.objectContaining({ kind: 'configDraft', owner: pluginId })]);
   });
 
@@ -288,5 +293,207 @@ describe('TUI config save batch result', () => {
     expect(instance.lastFrame()).toContain('已保存 · 应用失败');
     await input(instance, '\r'); await nextTurn(5);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'user', platform: 'claude', retryApply: true, updates: {}, removeKeys: [] });
+  });
+
+  it.each(['saved with unconfirmed cleanup', 'retry interrupted', 'retry interrupted before any delivery'] as const)(
+    'preserves the confirmed config apply facts after %s',
+    async (mode) => {
+      const retryApply = mode !== 'saved with unconfirmed cleanup';
+      const delivered = mode !== 'retry interrupted before any delivery';
+      const code = retryApply ? 'operationInterrupted' : 'processCleanupUnconfirmed';
+      const notice = skillInvocationWarning('git-commit', [
+        { feature: 'skill.invocation.model', values: ['false'] },
+      ], { pluginId, target: 'generic', scope: 'user' })!;
+      const cause = retryApply ? new DOMException('Cancelled', 'AbortError')
+        : Object.assign(new Error('Cleanup unconfirmed'), { code });
+      // The controller receives the config receipt already projected by the domain service.
+      const interrupted = new ConfigApplyInterruptedError(new RecoveryInterruptedError({} as RecoveryReceipt, cause), {
+        state: 'partial',
+        ...(delivered ? { diagnostics: [notice] } : {}),
+        targetResults: [
+          ...(delivered ? [{ target: { pluginName: 'demo', pluginId, platform: 'generic' as const, scope: 'user' as const },
+            state: 'completed' as const, action: 'refresh' }] : []),
+          {
+            target: delivered ? { pluginName: 'demo', pluginId, platform: 'codex', scope: 'user' }
+              : { pluginName: 'consumer', pluginId: 'team/consumer', platform: 'codex', scope: 'project' },
+            state: 'failed', action: 'refresh', errorCode: code,
+          },
+        ],
+      });
+      if (!retryApply) interrupted.configWrite = 'succeeded';
+      const captured: OperationIntent[] = [];
+      const value = new TuiController({
+        loadStatus: vi.fn().mockResolvedValue(status()),
+        captureEvidence: vi.fn(async (intent) => { captured.push(intent); return evidence(intent); }),
+        executeIntent: vi.fn().mockRejectedValue(interrupted),
+      });
+      await value.load();
+      const review = await value.buildOperationReview({
+        kind: 'configSave', pluginId, scope: 'user', apply: true,
+        ...(retryApply ? { retryApply: true } : { updates: { mode: 'new' } }),
+        ...(!delivered ? { platform: 'codex', context: 'project' } : {}),
+      });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 35 }} />);
+      await value.executeOperation(review.reviewToken);
+      if (!delivered) {
+        const result = value.snapshot.result;
+        const failedPosition = { pluginId: 'team/consumer', platform: 'codex', scope: 'project' };
+        expect(result).toMatchObject({
+          state: 'blocked', code, message: expect.stringContaining('请检查未完成位置'),
+          summary: { configTargets: [{ ...failedPosition, state: 'failed', errorCode: code }] },
+        });
+        const history = value.getOperationDiagnostic(result!.operationRecordId!);
+        expect(history?.targets).toMatchObject([{ ...failedPosition, state: 'failed', errorCode: code }]);
+        expect(history?.diagnostics.filter((diagnostic) => diagnostic.target)).toMatchObject([
+          { code, target: failedPosition },
+        ]);
+        await vi.waitFor(() => expect(instance.lastFrame()).toContain('operationInterrupted'));
+        return;
+      }
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分插件内容已就绪'));
+      expect(value.snapshot.result).toMatchObject({
+        state: 'partial', effects: { configCommit: retryApply ? 'notStarted' : 'completed', awWrite: 'partial' },
+        summary: {
+          configTargets: [
+            { pluginId, platform: 'generic', scope: 'user', state: 'completed' },
+            { pluginId, platform: 'codex', scope: 'user', state: 'failed', errorCode: code },
+          ],
+          configDiagnostics: [notice],
+        },
+      });
+      expect(instance.lastFrame()).toContain('git-commit');
+      if (retryApply) {
+        expect(instance.lastFrame()).not.toContain('设置已保存');
+        expect(instance.lastFrame()).toContain('应用已中断');
+      } else {
+        expect(instance.lastFrame()).toContain('设置已保存');
+        expect(instance.lastFrame()).toContain('无法确认进程已清理');
+      }
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(captured.at(-1)).toMatchObject({
+        kind: 'configSave', retryApply: true, updates: {}, targets: ['codex'],
+      }));
+    },
+  );
+
+  it('keeps repeated apply Reviews within the remaining platforms in the selected context', async () => {
+    const target = (platform: 'generic' | 'codex' | 'claude', state: 'completed' | 'failed') => ({
+      target: { pluginName: 'demo', pluginId, platform, scope: 'project' as const }, state, action: 'refresh',
+    });
+    const interrupted = new ConfigApplyInterruptedError(new RecoveryInterruptedError(
+      {} as RecoveryReceipt, new DOMException('Cancelled', 'AbortError'),
+    ), { state: 'partial', targetResults: [
+      target('generic', 'completed'), target('codex', 'failed'), target('claude', 'failed'),
+    ] });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidence(intent));
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(interrupted)
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'partial', apply: {
+        state: 'partial', targetResults: [target('claude', 'completed'), target('codex', 'failed')],
+      } })
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'partial', apply: {
+        state: 'unavailable', reason: 'targetDiscoveryFailed', targetResults: [],
+      } })
+      .mockResolvedValueOnce({ configWrite: 'notStarted', overallState: 'succeeded', apply: {
+        state: 'succeeded', targetResults: [target('codex', 'completed')],
+      } });
+    const value = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status()), captureEvidence, executeIntent });
+    await value.load();
+    const initial = await value.buildOperationReview({
+      kind: 'configSave', pluginId, scope: 'user', context: 'project', retryApply: true, apply: true,
+      targets: ['generic', 'codex', 'claude'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 38 }} />);
+    await value.executeOperation(initial.reviewToken);
+    for (const targets of [['codex', 'claude'], ['codex'], ['codex']]) {
+      const expected = { kind: 'configSave', pluginId, scope: 'user', context: 'project', retryApply: true, targets };
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('重试应用'));
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(value.snapshot.activeReview).toBeDefined());
+      expect(captureEvidence.mock.lastCall?.[0]).toMatchObject(expected);
+      await value.executeOperation(value.snapshot.activeReview!.reviewToken);
+      expect(executeIntent.mock.lastCall?.[0]).toMatchObject(expected);
+    }
+    expect(executeIntent).toHaveBeenCalledTimes(4);
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded', effects: { configCommit: 'notStarted' } });
+  });
+
+  it('keeps a verified Skill on an interrupted position with an unfinished sibling and offers manual recovery', async () => {
+    const code = 'operationInterrupted';
+    const warning = skillInvocationWarning('alpha', [
+      { feature: 'skill.invocation.model', values: ['false'] },
+    ], { pluginId, target: 'generic', scope: 'user' })!;
+    const error = new ConfigApplyInterruptedError(new RecoveryInterruptedError(
+      {} as RecoveryReceipt, new DOMException('Cancelled', 'AbortError'),
+    ), { state: 'partial', diagnostics: [warning], targetResults: [{
+      target: { pluginName: 'demo', pluginId, platform: 'generic', scope: 'user' },
+      state: 'failed', action: 'refresh', errorCode: code, partialDelivery: true,
+    }] });
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async (intent) => evidence(intent)),
+      executeIntent: vi.fn().mockRejectedValueOnce(error),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'configSave', pluginId, scope: 'user', retryApply: true, apply: true, targets: ['generic'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 36 }} />);
+    await value.executeOperation(review.reviewToken);
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', summary: {
+      configTargets: [{ pluginId, platform: 'generic', scope: 'user', state: 'failed', partialDelivery: true, errorCode: code }],
+      configDiagnostics: [warning], configApplyRetryAvailable: false,
+    } });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分插件内容已就绪'));
+    expect(instance.lastFrame()).toContain('alpha');
+    expect(instance.lastFrame()).toContain('请检查未完成位置');
+    expect(instance.lastFrame()).not.toContain('重试应用');
+  });
+
+  it('pages config apply notices and retains exact controls in compact technical details', async () => {
+    const location = { pluginId, target: 'generic', scope: 'project' } as const;
+    const warnings = Array.from({ length: 8 }, (_, index) => skillInvocationWarning(`skill-${index}`, [
+      { feature: 'skill.invocation.model', values: ['false'] },
+    ], location)!);
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async (intent) => evidence(intent)),
+      executeIntent: vi.fn(async () => ({ status: 'succeeded', groups: [
+        { scope: 'user', status: 'succeeded', configSaved: true, applyRequested: true, applyStatus: 'succeeded', execution: {
+          configWrite: 'succeeded', overallState: 'succeeded',
+          apply: { state: 'succeeded', targetResults: [], diagnostics: [...warnings, warnings[0]!] },
+        } },
+      ] })),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({ kind: 'configSaveBatch', pluginId, apply: true, groups: [
+      { scope: 'user', updates: { mode: 'updated' } },
+    ] });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await value.executeOperation(review.reviewToken);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('设置已保存并应用'));
+    expect(instance.lastFrame()).toContain('当前项目 · skill-0 已安装');
+    expect(instance.lastFrame()).not.toContain('重试应用');
+
+    const collectPages = async (): Promise<string> => {
+      const frames = [instance.lastFrame()!];
+      for (let i = 0; i < 30; i += 1) {
+        await input(instance, '\u001b[C');
+        const frame = instance.lastFrame()!;
+        if (frames.at(-1) === frame) break;
+        frames.push(frame);
+      }
+      return frames.join('\n');
+    };
+    const summary = await collectPages();
+    expect(summary).toContain('禁止模型自动调用');
+    expect(summary).toContain('skill-7 已安装');
+    expect(summary.match(/skill-0 已安装/gu)).toHaveLength(1);
+    await input(instance, 'd');
+    const details = await collectPages();
+    expect(details).toContain('skill.invocation.model=false');
+    expect(details).toContain('noBoundExecutor');
+    expect(details).toContain('skill-7 已安装');
+    value.dispose();
   });
 });

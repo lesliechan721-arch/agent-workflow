@@ -22,7 +22,7 @@ describe('scoped demand and execution context', () => {
   it('uses Native delivery on concrete Agents and the AW writer only on generic', () => {
     const plugin = manifest();
     for (const scope of ['user', 'project'] as const) {
-      for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'] as const) {
+      for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'] as const) {
         expect(resolveDelivery(plugin, platform, scope)).toEqual({ kind: 'native', platform });
       }
       expect(resolveDelivery(plugin, 'generic', scope)).toEqual({

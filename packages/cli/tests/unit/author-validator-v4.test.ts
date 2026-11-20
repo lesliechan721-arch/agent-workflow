@@ -56,7 +56,7 @@ console.log(JSON.stringify({version:3,components:context.allowedOutputKinds.incl
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.allowedOutputKinds.includes('skill')?[{
- id:'expected',kind:'skill',name:'expected',requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'capability-unverified'
+ id:'expected',kind:'skill',name:'expected',requiredFeatures:[{feature:'skill.execution',values:['isolated-context']}],reasonCode:'capability-unverified'
 }]:[]}));
 `);
     const result = await validate(plugin);
@@ -106,7 +106,7 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.all
     await fs.outputFile(path.join(plugin, 'skills/manual/README.md'), '# Manual\n');
     const result = await validate(plugin);
     expect(result).toMatchObject({ ok: true, errors: [] });
-    expect(result.warnings.join('\n')).toContain('skill.invocation.model');
+    expect(result.warnings.join('\n')).not.toContain('component unmet');
   });
 
   it('projects declared static MCP beside the selected platform Skill input', async () => {

@@ -218,7 +218,7 @@ async function materializePluginCandidates(options: {
   const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-profile-skills-'));
   try {
     const materialized = await materializeProfilePluginComponents({
-      ...options, outputRoot: stagingRoot, kinds: ['skill'], config: profileConfig.config,
+      ...options, outputRoot: stagingRoot, kinds: ['skill'], portable: true, config: profileConfig.config,
       selectedSkills: options.selectedSkills ? [...options.selectedSkills] : undefined,
     });
     options.recordPreparation(materialized.preparation.map((unit) => ({ ...unit, outputs: [] })));
@@ -484,7 +484,7 @@ export async function materializePortableSkills(
       .filter((plugin) => plugin.manifest.name !== requested.manifest.name)
       .map(pluginId);
     const configDigest = `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), config: configDigests }))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), config: configDigests }))
       .digest('hex')}`;
     const digest = `sha256:${crypto.createHash('sha256')
       .update(JSON.stringify({ platform: options.platform, scope: options.scope, skills: candidates.map((candidate) => [candidate.name, candidate.filesDigest]) }))

@@ -36,8 +36,6 @@ import { deploymentPackageComponent } from '../platforms/inspection.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
 import { readPlatformPackageContentDigest } from './platform-empty-state.js';
-import { assertGeminiProjectRules, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
-  readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import type { DeploymentBinding, InstallRoute, RecoveryCandidate } from '../platforms/contracts.js';
 import type { PlatformName, Scope } from '../types.js';
 
@@ -1199,17 +1197,6 @@ async function observedProjectReference(options: {
   if (binding.scope.kind !== 'project') return false;
   const projectRoot = binding.scope.projectRoot;
   const nativeId = layout.nativeIdentity.registrationId ?? layout.nativeIdentity.packageId;
-  if (binding.platform === 'gemini') {
-    return inventoryRead({ errors, env, cwd, location: geminiExtensionPaths({ cwd, env }).file,
-      kind: 'nativeProjectActivationRead', absent: false, operation: async () => {
-        const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd, env }), nativeId);
-        await assertGeminiProjectRules({ cwd, env }, binding, rules);
-        const target = geminiScopePattern(projectRoot);
-        // A scope-local entry remains a reference when explicitly disabled.
-        // Global/HOME inheritance and other projects do not create this entry.
-        return rules.some((rule) => rule === target || rule === `!${target}`);
-      } });
-  }
   const settingsPath = binding.platform === 'codex' ? path.join(projectRoot, '.codex/config.toml')
     : binding.platform === 'claude' ? path.join(projectRoot, '.claude/settings.local.json')
       : binding.platform === 'copilot' ? path.join(projectRoot, '.github/copilot/settings.local.json') : undefined;
@@ -1275,7 +1262,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
     const namespaces = await inventoryCanonicalDirectoryEntries({ location: path.join(managed, platform),
       kind: 'nativeNamespaceRead', errors, env: options.env, cwd: options.cwd });
     const route: Partial<Record<PlatformName, InstallRoute>> = { codex: 'codex-marketplace', claude: 'claude-marketplace',
-      copilot: 'copilot-marketplace', gemini: 'gemini-extension', antigravity: 'antigravity-cli', grok: 'grok-cli' };
+      copilot: 'copilot-marketplace', antigravity: 'antigravity-cli', grok: 'grok-cli' };
     if (!route[platform]) continue;
     for (const namespace of namespaces) {
       if (!namespace.isDirectory() || namespace.isSymbolicLink()) continue;
@@ -1336,7 +1323,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
         }
         const component: OwnedComponent = { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
         const scopes: Scope[] = descriptor.scope === 'user' && options.scope !== 'user'
-          && ['codex', 'claude', 'gemini', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
+          && ['codex', 'claude', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
         const pathEvidence = options.collectPathEvidence === false ? undefined : await offlineOwnedPathEvidence(packageRoot);
         for (const scope of scopes) {
           const scopedBinding = { ...binding, scope: scope === 'user' ? { kind: 'user' as const }

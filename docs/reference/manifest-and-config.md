@@ -83,7 +83,7 @@ aw dev plugin capabilities --surface config --json
 - `name`：插件名称，符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$` 规范。
 - `version`：单插件稳定语义版本（SemVer）。由作者或发布流程维护，仅标识 artifact 版本，不代表 AW capability。
 - `description`：插件功能简要描述文本。
-- `platforms`：无重复的目标 ID 数组：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`。省略或 `[]` 允许全部十个 target。该字段限定作者允许范围，不证明客户端或五类组件可运行。
+- `platforms`：无重复的目标 ID 数组：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic`。省略或 `[]` 允许全部九个 target。该字段限定作者允许范围，不证明客户端或五类组件可运行。
 - `marketplace`：必填对象，声明市场分类、标签与策略：
   - `category`：市场分类标识（非空字符串）。
   - `tags`：标签字符串数组。

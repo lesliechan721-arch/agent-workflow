@@ -13,23 +13,23 @@ import type { RebuildCommandRuntime } from './rebuild-command.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
-import { resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { calculateCatalogGenerationSetDigest } from '../utils/catalog-generation-resolver.js';
 import { activateCatalogSourceGeneration, withCatalogSourceCandidate } from '../utils/catalog-generation-service.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { deletePluginConfigStore } from '../utils/plugin-config.js';
 import { parseScriptTimeoutMs } from './options.js';
+import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js';
 import { deploymentConfirmationEffects } from './deployment-confirmation.js';
-import { geminiNativeConsentDiagnostic } from '../output/native-consent.js';
 
 export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion: string;
   scope?: string; context?: string; target?: string[]; targets?: string[];
-  only?: string; yes?: boolean; nativeConsent?: boolean; force?: boolean; keepDependencies?: boolean; deleteConfig?: boolean;
+  only?: string; yes?: boolean; force?: boolean; keepDependencies?: boolean; deleteConfig?: boolean;
   refresh?: boolean; rebuild?: boolean; all?: boolean; scriptTimeout?: number | string; scriptTimeoutMs?: number;
 }
 
@@ -38,19 +38,22 @@ export function lifecycleArgumentError(command: string, code: string, message: s
 }
 
 function codeOf(error: unknown): string {
+  const interrupted = recoveryInterruptionCode(error);
+  if (interrupted) return interrupted;
   const code = (error as { code?: unknown })?.code;
   if (typeof code === 'string' && /^[A-Za-z][A-Za-z0-9-]*$/u.test(code)) return code;
   const first = error instanceof Error ? error.message.split(':')[0] : '';
   return /^[A-Za-z][A-Za-z0-9-]*$/u.test(first ?? '') ? first! : 'lifecycleFailed';
 }
 
-export function effectsForPlan(plan: RecoveryPlan): Confirmation['effects'] {
+export function effectsForPlan(plan: RecoveryPlan, pendingSourceIds: readonly string[] = []): Confirmation['effects'] {
   const effects: Confirmation['effects'] = [];
-  if (plan.command !== 'cleanup' && plan.command !== 'uninstall') {
+  if (pendingSourceIds.length && plan.command !== 'cleanup' && plan.command !== 'uninstall') {
     // A temporary candidate can be blocked on generation preparation. Its scripts
     // are still known effects of the request and must be authorized before Active changes.
     for (const placement of plan.joint?.demand.placements ?? []) {
-      if (!placement.plugin.manifest.scripts?.preApply || !plan.receipt.selection.agents.includes(placement.target)
+      if (!placement.plugin.sourceId || !pendingSourceIds.includes(placement.plugin.sourceId)
+        || !placement.plugin.manifest.scripts?.preApply || !plan.receipt.selection.agents.includes(placement.target)
         || !placement.contributions.some((entry) => plan.receipt.requestedRoots.includes(entry.root))) continue;
       effects.push({ code: 'runPreApply', message: 'Run the plugin preApply script.', impact: 'unknown', subject: { pluginId: placement.pluginId, target: placement.target, scope: placement.scope } });
     }
@@ -86,10 +89,11 @@ interface SourceFailure { sourceId: string; code: string }
 
 /** Temporary candidates are read and disposed without publishing store entries or Active. */
 async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[], refresh: boolean, fetchMissing: boolean, runtime: RebuildCommandRuntime,
-  action: (catalog: CatalogOperationContext, candidates: Candidate[], failures: SourceFailure[]) => Promise<T>): Promise<T> {
+  action: (catalog: CatalogOperationContext, candidates: Candidate[], failures: SourceFailure[], catalogReadScope: CatalogPreparationReadScope) => Promise<T>): Promise<T> {
   const config = await readCatalogSourcesConfigSnapshot(options.env);
   const state = await readCatalogGenerationState(options.env);
-  const catalog = await resolvePartialCatalogOperationContext({ env: options.env, configSnapshot: config, signal: options.signal });
+  const catalogReadScope = new CatalogPreparationReadScope(options);
+  const catalog = await catalogReadScope.resolve({ configSnapshot: config });
   const selected = new Set<string>();
   for (const plugin of plugins) {
     const parsed = parsePluginId(plugin);
@@ -108,7 +112,7 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
     && (refresh || fetchMissing && !state.sources[id]?.active));
   const visit = async (index: number, current: CatalogOperationContext, candidates: Candidate[]): Promise<T> => {
     const sourceId = missing[index];
-    if (!sourceId) return action(current, candidates, failures);
+    if (!sourceId) return action(current, candidates, failures, catalogReadScope);
     let entered = false;
     try { return await withCatalogSourceCandidate({ sourceId, cliVersion: options.cliVersion, env: options.env, signal: options.signal, runtime: runtime.catalogGenerationRuntime }, async ({ resolution, candidate }) => {
       entered = true;
@@ -121,7 +125,7 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
       return visit(index + 1, next, [...candidates, { sourceId, candidate, previousActive }]);
     }); } catch (error) {
       // Failures after entry belong to the callback, not to this provider fetch.
-      if (entered || !refresh) throw error;
+      if (entered || !refresh || recoveryInterruptionCode(error, options.signal)) throw error;
       failures.push({ sourceId, code: codeOf(error) });
       return visit(index + 1, current, candidates);
     }
@@ -131,13 +135,6 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
 
 export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync', plugins: string[], options: PublicLifecycleOptions,
   input: CommandExecutionContextInput = {}): Promise<CommandResult<LifecycleData>> {
-  const result = await runPublicLifecycleRequest(command, plugins, options, input);
-  if (options.nativeConsent === true && 'request' in result.data) result.diagnostics.push(geminiNativeConsentDiagnostic());
-  return result;
-}
-
-async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync', plugins: string[], options: PublicLifecycleOptions,
-  input: CommandExecutionContextInput): Promise<CommandResult<LifecycleData>> {
   const id = `plugin.${command}`;
   const invalid = (message: string, field?: string) => lifecycleArgumentError(id, 'invalidOptionValue', message, field);
   if (options.scope !== undefined && !['user', 'project'].includes(options.scope)) return invalid('Invalid scope. Expected user or project.', 'scope');
@@ -152,7 +149,6 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
   if (options.deleteConfig && (command !== 'remove' || options.only)) return invalid('--delete-config requires normal remove.', 'deleteConfig');
   if (options.force && (command !== 'remove' || options.only === 'requirements')) return invalid('--force requires normal remove or remove --only outputs.', 'force');
   if (options.keepDependencies && (command !== 'remove' || options.only)) return invalid('--keep-dependencies requires normal remove.', 'keepDependencies');
-  if (options.nativeConsent && (command === 'remove' || options.only === 'requirements')) return invalid('--native-consent requires install or sync with deployment.', 'nativeConsent');
   const argumentsTargets = options.targets ?? options.target;
   if (options.only === 'requirements' && (argumentsTargets !== undefined || options.scriptTimeout !== undefined || options.scriptTimeoutMs !== undefined)) return invalid('Requirements-only does not accept target or script timeout options.');
   if (command === 'remove' && options.only !== 'outputs' && argumentsTargets !== undefined) return invalid('Use --only outputs to select removal targets.', 'target');
@@ -169,13 +165,13 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
   try { work = await resolveWorkContext({ cwd: options.cwd, scope: options.scope as Scope | undefined, context: options.context as Scope | undefined }); }
   catch (error) { return commandResult<LifecycleData>(id, {}, { status: 'blocked', diagnostics: [publicDiagnostic(codeOf(error))] }); }
   const scope = options.scope as Scope | undefined;
-  const location = { cwd: work.projectRoot ?? options.cwd, scope: scope ?? work.context, env };
+  const location = { cwd: work.projectRoot ?? options.cwd, scope: scope ?? work.context, env, signal: context.signal };
   const preferences = await observePreferences(location);
   if (!options.only && preferences.state !== 'valid' && preferences.state !== 'absent') return commandResult<LifecycleData>(id, {}, { status: 'blocked', diagnostics: [publicDiagnostic('deploymentPreferencesInvalid')] });
   const targets = options.only === 'requirements' ? [] : options.only === 'outputs' ? selected! : (preferences.state === 'valid' ? preferences.value.targets.filter((target) => !selected || selected.includes(target)) : []);
   const observation = await observeIntent(location);
   const data: LifecycleData = { request: { plugins: [...plugins], scope: scope ?? null, context: work.context, targets,
-    targetOrigin: selected ? 'argument' : targets.length ? 'preference' : 'none', mode: options.only === 'requirements' ? 'requirements-only' : options.only === 'outputs' ? 'outputs-only' : 'apply', nativeConsent: options.nativeConsent === true },
+    targetOrigin: selected ? 'argument' : targets.length ? 'preference' : 'none', mode: options.only === 'requirements' ? 'requirements-only' : options.only === 'outputs' ? 'outputs-only' : 'apply' },
     confirmation: null, changes: { requirements: 'none', preferences: 'none', config: 'none', sources: 'none', outputs: 'none' },
     requirements: { state: observation.state, ...('digest' in observation ? { digest: observation.digest } : {}), roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId) : observation.state === 'absent' ? [] : null },
     targetResults: [], remainingTargets: [], coverage: { scopes: work.scopes, currentProject: work.context === 'project', otherProjects: 'unobserved' } };
@@ -184,7 +180,25 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
     data.confirmation = { required: effects.length > 0, provided: options.yes === true, effects };
     return !effects.length || options.yes === true;
   };
-  const runtime: RebuildCommandRuntime = { ...context, directCli: true, nativeConsent: options.nativeConsent === true };
+  const confirmationRequired = (receipt?: RecoveryReceipt): CommandResult<LifecycleData> => {
+    const result = receipt ? receiptResult(id, data, receipt) : commandResult(id, data);
+    result.status = Object.values(data.changes).some((value) => value !== 'none') ? 'partial' : 'blocked';
+    result.diagnostics.push(publicDiagnostic('confirmationRequired'));
+    if (command === 'remove') return result;
+
+    const argv = ['aw', 'plugin', command, ...plugins];
+    if (command === 'install' && scope) argv.push('--scope', scope);
+    if (options.context) argv.push('--context', options.context);
+    for (const target of argumentsTargets ?? []) argv.push('--target', target);
+    if (options.only) argv.push('--only', options.only);
+    if (options.refresh) argv.push('--refresh');
+    if (options.rebuild) argv.push('--rebuild');
+    if (timeout !== undefined) argv.push('--script-timeout', String(timeout));
+    result.nextActions = [{ kind: 'command', argv, requiresConfirmation: true,
+      reason: 'Review the listed effects, then repeat this request from the same directory with --yes to confirm.' }];
+    return result;
+  };
+  const runtime: RebuildCommandRuntime = { ...context, directCli: true };
   const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, keepDependencies: options.keepDependencies, scriptTimeoutMs: timeout, interactive: false };
   try {
     if (command === 'remove' && options.only === 'requirements') {
@@ -197,12 +211,17 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
       const result = blocked('noTargetsEnabled'); result.nextActions.push({ kind: 'command', argv: ['aw', 'target', 'set', '<target>'], reason: 'Enable deployment targets.', requiresConfirmation: false }); return result;
     }
     const applyPlan = async (plan: RecoveryPlan, extra: Confirmation['effects'] = []): Promise<CommandResult<LifecycleData>> => {
-      if (!confirm([...effectsForPlan(plan), ...extra])) { const result = receiptResult(id, data, plan.receipt); result.status = Object.values(data.changes).some((value) => value !== 'none') ? 'partial' : 'blocked'; result.diagnostics.push(publicDiagnostic('confirmationRequired')); await plan.context.dispose(); return result; }
+      if (!confirm([...effectsForPlan(plan), ...extra])) {
+        const result = confirmationRequired(plan.receipt);
+        await plan.context.dispose();
+        return result;
+      }
       receiptResult(id, data, plan.receipt);
       try {
         const receipt = await executeRecovery(plan, { yes: options.yes, runtime });
         return receiptResult(id, data, receipt);
       } catch (error) {
+        if (error instanceof RecoveryInterruptedError) return receiptResult(id, data, error.receipt);
         const current = await observeIntent(location);
         if (current.state === 'valid') {
           if (current.digest !== data.requirements.digest) data.changes.requirements = 'changed';
@@ -264,7 +283,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
           if (!invalidPlan) result.diagnostics.push(publicDiagnostic('confirmationRequired'));
           return result;
         }
-        return await withAwHomeMutationLock({ env, action: async (token) => {
+        return await withAwHomeMutationLock({ env, signal: context.signal, action: async (token) => {
           const receipts: RecoveryReceipt[] = [];
           for (let index = 0; index < plans.length; index++) {
             const plan = plans[index]!;
@@ -308,7 +327,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
       const intents = await Promise.all(work.scopes.map((scope) => observeIntent({ ...location, scope })));
       selectedPlugins = [...new Set(intents.flatMap((intent) => intent.state === 'valid' ? intent.value.roots.map((root) => root.pluginId) : []))];
     }
-    return await withPreparedSources(recovery, selectedPlugins, command === 'sync' && options.refresh === true, command === 'install', runtime, async (catalog, candidates, failures) => {
+    return await withPreparedSources(recovery, selectedPlugins, command === 'sync' && options.refresh === true, command === 'install', runtime, async (catalog, candidates, failures, catalogReadScope) => {
       const belongsToFailedSource = (selector: string) => {
         const parsed = parsePluginId(selector);
         if (parsed.sourceId) return failures.some((failure) => failure.sourceId === parsed.sourceId);
@@ -316,14 +335,15 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         return sources.length === 1 && failures.some((failure) => failure.sourceId === sources[0]!.sourceId);
       };
       const healthySelectors = () => selectedPlugins.filter((selector) => !belongsToFailedSource(selector));
+      let reviewedRoots: ReturnType<typeof deriveJointDemand>['roots'] | undefined;
       const withSourceFailures = async (result: CommandResult<LifecycleData>): Promise<CommandResult<LifecycleData>> => {
         if (!failures.length) return result;
         const validResults = result.status !== 'blocked' && data.targetResults.some((target) => !failures.some((failure) => failure.sourceId === parsePluginId(target.pluginId).sourceId)
           && ['applied', 'no-op'].includes(target.execution));
-        const demand = deriveJointDemand(await readJointDemand(recovery));
+        const roots = reviewedRoots ?? deriveJointDemand(await readJointDemand(recovery)).roots;
         for (const failure of failures) {
           result.diagnostics.push(publicDiagnostic(failure.code, { sourceId: failure.sourceId }));
-          for (const root of demand.roots.filter((root) => parsePluginId(root.pluginId).sourceId === failure.sourceId
+          for (const root of roots.filter((root) => parsePluginId(root.pluginId).sourceId === failure.sourceId
             && targets.includes(root.target) && selectedPlugins.some((selector) => selector === root.pluginId
               || !selector.includes('/') && parsePluginId(root.pluginId).pluginName === selector))) {
             const subject = { pluginId: root.pluginId, sourceId: failure.sourceId, target: root.target, scope: root.scope };
@@ -349,13 +369,18 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         return withSourceFailures(commandResult(id, data));
       }
       if (options.only === 'requirements') {
-        const proposed = await addRequirements({ ...location, selectors: plugins, installSelectors: true, dryRun: true, catalogOperationContext: catalog });
+        const proposed = await addRequirements({ ...location, selectors: plugins, installSelectors: true, dryRun: true, catalogOperationContext: catalog, catalogReadScope });
         if (proposed.errors.length) return receiptResult(id, data, await intentReceipt('install', location, { ...proposed, changed: false }));
-        if (!confirm(sourceEffects)) return blocked('confirmationRequired');
+        if (!confirm(sourceEffects)) return withSourceFailures(confirmationRequired());
       } else {
-        preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, runtime);
+        preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, { ...runtime, catalogReadScope });
+        reviewedRoots = preview.joint?.demand.roots;
         if (preview.blockExecution) { const result = receiptResult(id, data, preview.receipt); await preview.context.dispose(); return withSourceFailures(result); }
-        if (!confirm([...effectsForPlan(preview), ...sourceEffects])) { const result = receiptResult(id, data, preview.receipt); result.status = 'blocked'; result.diagnostics.push(publicDiagnostic('confirmationRequired')); await preview.context.dispose(); return withSourceFailures(result); }
+        if (!confirm([...effectsForPlan(preview, candidates.map((candidate) => candidate.sourceId)), ...sourceEffects])) {
+          const result = confirmationRequired(preview.receipt);
+          await preview.context.dispose();
+          return withSourceFailures(result);
+        }
         receiptResult(id, data, preview.receipt);
       }
       try {
@@ -364,7 +389,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
             const activated = await activateCatalogSourceGeneration({ ...candidate, expectedCandidate: candidate.candidate, expectedActive: candidate.previousActive, cliVersion: options.cliVersion, cwd: location.cwd, env, signal: context.signal, impactConfirmed: options.yes === true, runtime: runtime.catalogGenerationRuntime });
             if (activated.activeChanged) data.changes.sources = 'changed';
           } catch (error) {
-            if (command !== 'sync' || !options.refresh) throw error;
+            if (command !== 'sync' || !options.refresh || recoveryInterruptionCode(error, context.signal)) throw error;
             failures.push({ sourceId: candidate.sourceId, code: codeOf(error) });
             const state = await readCatalogGenerationState(env).catch(() => null);
             if (!state) data.changes.sources = 'unknown';

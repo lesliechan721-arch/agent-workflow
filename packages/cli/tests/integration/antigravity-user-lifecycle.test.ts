@@ -19,7 +19,7 @@ import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 describe('public Antigravity User lifecycle', () => {
   // Test Value Gate: the real public preparation, writer, recovery and removal
   // chain must use the copied owner and dynamic bytes. Only the client is fake.
-  it('installs, updates, refreshes and removes a dynamic native copy after loss of the AW source', async () => {
+  it('updates the owned copy from one ordinary Skill to all three Skills and removes it after source loss', async () => {
     const { env, layout } = getCurrentSourceTestIsolation();
     const cwd = layout.fixtureCwd;
     const workspace = path.join(cwd, 'antigravity-workspace');
@@ -29,6 +29,8 @@ describe('public Antigravity User lifecycle', () => {
     const host = resolvePlatformConfigRoot('antigravity', { cwd, env });
     const installed = path.join(host, 'plugins/demo');
     const oldCopy = path.join(cwd, 'previous-native-copy');
+    const skillNames = ['demo', 'isolate-worktree', 'reconcile-merge'];
+    const readInstalledSkills = () => fs.readdir(path.join(installed, 'skills')).then(names => names.sort());
     await fs.ensureDir(workspace);
     await initializeCatalogWorkspace({ workspaceRoot: workspace });
     await fs.outputFile(path.join(pluginRoot, 'README.md'), 'Antigravity fixture.\n');
@@ -37,11 +39,15 @@ describe('public Antigravity User lifecycle', () => {
         platforms: ['antigravity'], artifacts: { configKeys: [] },
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
         marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } });
-      const body = `---\nname: demo\ndescription: Antigravity revision ${revision}.\n---\nRevision ${revision}.\n`;
-      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `import fs from 'node:fs';\nconst context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));\nconst plan=${JSON.stringify({ version: 3,
-        components: [{ id: 'skill:demo', kind: 'skill', name: 'demo', content: { files: {
+      const components = (revision === 1 ? ['demo'] : skillNames).map(name => {
+        const policy = revision > 1 && name === 'demo' ? 'disable-model-invocation: true\n' : '';
+        const body = `---\nname: ${name}\ndescription: Antigravity revision ${revision}.\n${policy}---\nRevision ${revision}.\n`;
+        return { id: `skill:${name}`, kind: 'skill', name, content: { files: {
           'SKILL.md': { text: body }, 'README.md': { text: 'Generated fixture.\n' },
-        } } }], omitted: [], unmet: [] })};\nif(!context.allowedOutputKinds.includes('skill'))plan.components=[];\nconsole.log(JSON.stringify(plan));\n`);
+        } } };
+      });
+      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `import fs from 'node:fs';\nconst context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));\nconst plan=${JSON.stringify({ version: 3,
+        components, omitted: [], unmet: [] })};\nif(!context.allowedOutputKinds.includes('skill'))plan.components=[];\nconsole.log(JSON.stringify(plan));\n`);
       await buildCatalogWorkspace({ workspaceRoot: workspace, force: true, adapter: { async build(options) {
         await bundleLocalPlugin(options.plugin, options.outputRoot, { buildMode: 'staging', commandEnv: env,
           runtimeResolver: createCatalogRuntimeImportResolver(options.plugins) });
@@ -87,7 +93,7 @@ describe('public Antigravity User lifecycle', () => {
         const exists = await fs.pathExists(installed);
         const manifest = exists ? await fs.readJson(path.join(installed, '.antigravity-plugin/plugin.json')) : null;
         return { exitCode: 0, stderr: '', stdout: JSON.stringify(exists ? [{ name: 'demo', enabled, version: manifest.version,
-          source: 'antigravity', path: installed, skills: ['demo'] }] : []) };
+          source: 'antigravity', path: installed, skills: await readInstalledSkills() }] : []) };
       }
       mutations.push(action);
       if (action === 'install') {
@@ -108,13 +114,25 @@ describe('public Antigravity User lifecycle', () => {
     };
     await apply('install');
     await fs.copy(installed, oldCopy);
+    expect(await readInstalledSkills()).toEqual(['demo']);
+    const beforeRefresh = await fs.readFile(path.join(installed, 'skills/demo/SKILL.md'), 'utf8');
+    expect(beforeRefresh).not.toContain('disable-model-invocation');
     for (const [revision, version] of [[2, '1.0.1'], [3, '1.0.1']] as const) {
       await publish(revision, version);
+      if (revision === 2) {
+        expect(await readInstalledSkills()).toEqual(['demo']);
+        expect(await fs.readFile(path.join(installed, 'skills/demo/SKILL.md'), 'utf8')).toBe(beforeRefresh);
+      }
       mutations.length = 0;
       await apply('sync');
       expect(mutations).toContain('install');
       expect(mutations).not.toContain('uninstall');
-      expect(await fs.readFile(path.join(installed, 'skills/demo/SKILL.md'), 'utf8')).toContain(`Revision ${revision}.`);
+      expect(await readInstalledSkills()).toEqual(skillNames);
+      for (const name of skillNames) {
+        const content = await fs.readFile(path.join(installed, 'skills', name, 'SKILL.md'), 'utf8');
+        expect(content).toContain(`Revision ${revision}.`);
+        expect(content.includes('disable-model-invocation: true')).toBe(name === 'demo');
+      }
       expect((await fs.readJson(path.join(installed, '.antigravity-plugin/plugin.json'))).version).toBe(version);
     }
     // A subsequent ordinary sync repairs the copy even though the AW source
@@ -125,6 +143,7 @@ describe('public Antigravity User lifecycle', () => {
     await apply('sync');
     expect(mutations).toContain('install');
     expect(mutations).not.toContain('uninstall');
+    expect(await readInstalledSkills()).toEqual(skillNames);
     expect(await fs.readFile(path.join(installed, 'skills/demo/SKILL.md'), 'utf8')).toContain('Revision 3.');
     const foreign = path.join(host, 'plugins/foreign/keep.txt');
     await fs.outputFile(foreign, 'Foreign data.\n');

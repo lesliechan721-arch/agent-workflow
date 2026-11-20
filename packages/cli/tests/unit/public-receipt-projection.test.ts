@@ -5,6 +5,60 @@ import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/p
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('shows the known request and reviewed effects when standalone config apply is interrupted', () => {
+    const request = { ok: false, overallState: 'failed', configWrite: 'notStarted',
+      plugin: 'consumer', context: { context: 'project', projectRoot: '/work/project' }, confirmation: null,
+      errors: [{ code: 'operationInterrupted', message: 'The operation was interrupted.' }] };
+    const waiting = renderPublicResult(projectReceipt('plugin.config.apply', request)).split('\n');
+    expect(waiting).toEqual(expect.arrayContaining(['plugin: consumer', 'context: project', 'Project: /work/project', 'Confirmation: not prepared']));
+    expect(waiting.some((line) => line.startsWith('pluginId:') || line.startsWith('Effect:'))).toBe(false);
+
+    const resolved = { ...request, pluginId: 'team/consumer', sourceId: 'team' };
+    const preparing = renderPublicResult(projectReceipt('plugin.config.apply', resolved)).split('\n');
+    expect(preparing).toEqual(expect.arrayContaining(['pluginId: team/consumer', 'context: project', 'Confirmation: not prepared']));
+    expect(preparing).not.toContain('plugin: consumer');
+
+    const effects = ['provider', 'consumer'].map((name) => ({ code: 'runPreApply', message: 'Run the selected script.',
+      subject: { pluginId: `team/${name}`, target: 'codex', scope: 'user' }, impact: 'selected-scope' }));
+    const executing = renderPublicResult(projectReceipt('plugin.config.apply', {
+      ...resolved, confirmation: { required: true, provided: true, effects },
+    })).split('\n');
+    expect(executing).toEqual(expect.arrayContaining(['Confirmation: required=yes, provided=yes',
+      'Effect: Run the selected script. [team/provider / codex / user / selected-scope]',
+      'Effect: Run the selected script. [team/consumer / codex / user / selected-scope]']));
+    expect(executing).not.toContain('Confirmation: not prepared');
+  });
+
+  it('identifies each plugin and command package on a shared config apply location', () => {
+    const target = (pluginName: string) => ({ pluginId: `team/${pluginName}`, pluginName, platform: 'codex', scope: 'user' });
+    const result = projectReceipt('plugin.config.apply', {
+      ok: false, overallState: 'partial', configWrite: 'notStarted',
+      apply: {
+        state: 'partial',
+        targetResults: [
+          { target: target('provider'), action: 'refresh', state: 'completed' },
+          { target: target('consumer'), action: 'refresh', state: 'failed', partialDelivery: true, errorCode: 'platformComponentsUnmet' },
+          { target: target('later'), action: 'refresh', state: 'skipped', errorCode: 'dependencyFailed' },
+        ],
+        commandResults: [{
+          producer: { sourceId: 'team', pluginName: 'consumer', kind: 'package', key: 'personal', scope: 'user' },
+          state: 'failed', commandIds: [], removedCommandIds: [],
+          errors: [{ code: 'processCleanupUnconfirmed', message: 'Process cleanup could not be confirmed.' }],
+        }, {
+          producer: { sourceId: 'team', pluginName: 'provider', kind: 'package', key: 'personal', scope: 'project' },
+          state: 'completed', commandIds: [], removedCommandIds: [], errors: [],
+        }],
+      },
+    });
+    expect(renderPublicResult(result).split('\n')).toEqual(expect.arrayContaining([
+      'team/provider codex/user: completed',
+      'team/consumer codex/user: failed (some outputs verified) [platformComponentsUnmet]',
+      'team/later codex/user: skipped [dependencyFailed]',
+      'team/consumer package:personal user: failed [processCleanupUnconfirmed]',
+      'team/provider package:personal project: completed',
+    ]));
+  });
+
   it('shows each nested status target and marks only the scope with a confirmed disablement', () => {
     const pluginId = 'team/demo';
     const result = commandResult('plugin.status', { inventory: [{ pluginId, targetResults: [
@@ -42,22 +96,6 @@ describe('public domain result projection', () => {
     expect(publicDiagnostic({ code: 'stateInventoryFailed', message: '',
       detail: { reasonCode: 'ownerHeaderPathValidation', path: '/home/token=private-value/file' } }).detail)
       .toEqual({ reasonCode: 'ownerHeaderPathValidation' });
-  });
-
-  it('binds a manual Gemini permission check to the frozen source and workspace', () => {
-    const subject = { pluginId: 'team/demo', target: 'gemini', scope: 'project' as const };
-    const actions = inventoryRecoveryActions([
-      { code: 'nativeConsentProtocolUnverified', subject: { ...subject, field: 'nativeSource' },
-        detail: { reasonCode: 'nativeConsentProtocolUnverified', path: '/home/example/frozen-source' } },
-      { code: 'nativeConsentWorkspace', subject: { ...subject, field: 'workspace' },
-        detail: { reasonCode: 'nativeConsentWorkspace', path: '/home/example/project' } },
-    ]);
-    expect(actions).toHaveLength(1);
-    const output = JSON.stringify(actions);
-    expect(output).toContain('/home/example/frozen-source');
-    expect(output).toContain('/home/example/project');
-    expect(output).toContain('Review each host permission yourself');
-    expect(output).not.toContain('--consent');
   });
 
   it('retains self-check observations and requirement derivation facts', () => {

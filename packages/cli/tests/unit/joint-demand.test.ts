@@ -112,7 +112,7 @@ describe('joint requirements', () => {
   });
   // Test Value Gate: every concrete Agent remains a native requirement, including dynamic-only or intentionally empty plugins.
   it('routes all concrete Agents to native and preserves their provider protection', () => {
-    const targets: AgentId[] = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'];
+    const targets: AgentId[] = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'];
     const input = snapshot(['a'], [], [...targets, 'generic']);
     const root = input.user.roots![0]!;
     root.plugin!.manifest.platforms = [...targets, 'generic'];
@@ -233,7 +233,7 @@ describe('operation-local shared reference coverage', () => {
     const observed = current.extraObserved![0]!;
     observed.scope = 'user';
     after.configuration!.scope = 'user';
-    for (const platform of ['codex', 'gemini', 'copilot'] as const) {
+    for (const platform of ['codex', 'copilot'] as const) {
       observed.agent = platform;
       for (const activation of ['absent', 'disabled', 'unknown'] as const) {
         after.configuration!.activation = activation;
