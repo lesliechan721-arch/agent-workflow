@@ -12,7 +12,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const antigravitySkillQuery = ['-p', '/skills', '--output-format', 'json'];
 
 /** Only the known fixtures leave memory. The response can contain account and local path data. */
-export function parseAntigravitySkillInventory(record, expectedNames) {
+export function parseAntigravitySkillInventory(record, expectedNames, projectRoot) {
   if (record.status !== 'observed' || record.exitCode !== 0) throw new Error('skill-inventory-query-failed');
   let report;
   try { report = JSON.parse(record.stdout); } catch { throw new Error('skill-inventory-invalid-json'); }
@@ -23,7 +23,15 @@ export function parseAntigravitySkillInventory(record, expectedNames) {
   const matched = skills.filter(skill => expectedNames.includes(skill.name));
   if (new Set(matched.map(({ name }) => name)).size !== matched.length
     || matched.some(({ model_invocable }) => typeof model_invocable !== 'boolean')) throw new Error('skill-inventory-ambiguous');
+  if (projectRoot) for (const skill of matched) {
+    const [first, name] = skill.name.split(':');
+    const expected = name ? path.join(projectRoot, '.agents', 'plugins', first, 'skills', name)
+      : path.join(projectRoot, '.agents', 'skills', first);
+    const observed = typeof skill.path === 'string' && path.isAbsolute(skill.path) ? path.normalize(skill.path) : null;
+    if (observed !== expected && observed !== path.join(expected, 'SKILL.md')) throw new Error('skill-inventory-location-mismatch');
+  }
   return { status: 'SUCCESS', num_turns: 0,
+    ...(projectRoot ? { projectLocations: 'verified' } : {}),
     skills: matched.map(({ name, model_invocable }) => ({ name, model_invocable })).sort((a, b) => a.name.localeCompare(b.name)) };
 }
 

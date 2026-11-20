@@ -26,7 +26,6 @@ const orderedSkills = {
   [dependencyB]: ['dependency-b-first', 'dependency-b-second'],
 };
 const names = Object.keys(orderedSkills);
-const userSkills = ['git-commit', ...ordinaryGitSkills].map(name => `git-toolkit:${name}`);
 const projectGit = name => `aw-qualification-official-git-toolkit:${name}`;
 const direct = 'aw-scope-proof-direct';
 const projectKey = name => `aw-${source}-${name}`;
@@ -146,7 +145,8 @@ async function runQualification(executable, authenticatedSkills, report) {
       ...['git-commit', ...ordinaryGitSkills].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/README.md`])]
       .map(file => fs.readFile(path.join(userDirectory, file))));
     const userBefore = await userBytes();
-    assert.equal(JSON.parse(userBefore[0]).name, 'git-toolkit');
+    const userManifest = JSON.parse(userBefore[0]);
+    assert.equal(userManifest.name, 'git-toolkit');
     const inventory = async cwd => JSON.parse(await native(['plugin', 'list', '--json'], cwd));
     const userRegistration = async cwd => {
       const inventoryRows = await inventory(cwd);
@@ -154,6 +154,7 @@ async function runQualification(executable, authenticatedSkills, report) {
       assert.equal(rows.length, 1);
       assert.equal(rows[0].enabled, true);
       assert.equal(rows[0].path, userDirectory);
+      assert.equal(rows[0].version, userManifest.version);
       assert.equal(inventoryRows.filter(row => names.includes(row.name)).length, 0);
     };
     await userRegistration(a);
@@ -167,17 +168,20 @@ async function runQualification(executable, authenticatedSkills, report) {
     await fs.mkdir(path.dirname(foreign), { recursive: true });
     await fs.writeFile(foreign, 'Retain unrelated project files.\n');
 
-    const approved = [direct, ...userSkills, ...['git-commit', ...ordinaryGitSkills].map(projectGit),
+    const approved = [direct, ...['git-commit', ...ordinaryGitSkills].map(projectGit),
       ...names.flatMap(name => [1, 2].flatMap(revision => skillsFor(name, revision).map(skill => `${projectKey(name)}:${skill}`)))];
     const samples = {};
-    report.sessions = { status: 'unverified', ...(authenticatedSkills ? { samples } : { reason: 'authentication-session-probe-not-requested' }) };
+    report.sessions = { status: 'unverified', user: 'unobserved', project: 'unobserved',
+      ...(authenticatedSkills ? { samples } : { reason: 'authentication-session-probe-not-requested' }) };
     const query = async (stage, cwd) => {
       if (!authenticatedSkills) return;
       try {
         const stdout = await native(antigravitySkillQuery, cwd, sessionEnv);
-        samples[stage] = parseAntigravitySkillInventory({ status: 'observed', exitCode: 0, stdout }, approved);
-      } catch {
-        samples[stage] = { status: 'unverified', reason: 'session-inventory-unconfirmed' };
+        samples[stage] = parseAntigravitySkillInventory({ status: 'observed', exitCode: 0, stdout }, approved, cwd);
+      } catch (error) {
+        const wrongLocation = error?.message === 'skill-inventory-location-mismatch';
+        samples[stage] = wrongLocation ? { status: 'mismatch', reason: 'skill-inventory-location-mismatch' }
+          : { status: 'unverified', reason: 'session-inventory-unconfirmed' };
       }
     };
     await query('git-project-a', a);
@@ -236,16 +240,13 @@ async function runQualification(executable, authenticatedSkills, report) {
     report.mixedCleanup = 'project-a-owned-project-b-user-and-foreign-retained';
     await query('removed-project-a', a);
     await query('removed-project-b', b);
+    if (Object.values(samples).some(sample => sample.status === 'mismatch')) throw new Error('skill-inventory-location-mismatch');
     if (authenticatedSkills && Object.values(samples).every(sample => sample.status === 'SUCCESS')) {
       const projectNames = revision => names.flatMap(name => skillsFor(name, revision).map(skill => `${projectKey(name)}:${skill}`));
-      const qualifiedUser = samples['git-project-b'].skills.filter(({ name }) => userSkills.includes(name));
       const present = (stage, expected, withGit = true) => {
         const fixtures = [...expected, ...(withGit ? ['git-commit', ...ordinaryGitSkills].map(projectGit) : [])];
-        const rows = samples[stage].skills.filter(({ name }) => !userSkills.includes(name));
+        const rows = samples[stage].skills;
         assert.deepEqual(rows.map(({ name }) => name).sort(), fixtures.sort());
-        // A project plugin shadows the personal entry when their short Skill
-        // names collide. Other projects and removal expose the personal copy.
-        assert.deepEqual(samples[stage].skills.filter(({ name }) => userSkills.includes(name)), withGit ? [] : qualifiedUser);
         for (const row of rows) assert.equal(row.model_invocable, !['scope-manual', 'git-commit'].includes(row.name.split(':').at(-1)));
       };
       present('git-project-a', [direct]);
@@ -257,11 +258,7 @@ async function runQualification(executable, authenticatedSkills, report) {
       present('removed-project-a', [direct], false);
       present('removed-project-b', projectNames(1), false);
       report.sessions.project = 'observed';
-      report.sessions.user = qualifiedUser.length === userSkills.length ? 'observed' : 'unverified';
-      if (report.sessions.user === 'observed') {
-        for (const row of qualifiedUser) assert.equal(row.model_invocable, row.name !== 'git-toolkit:git-commit');
-        report.sessions.status = 'observed';
-      }
+      report.sessions.status = 'observed';
       report.sessions.explicitInvocation = 'unverified';
     }
   } finally {

@@ -31,6 +31,10 @@ test('validates and redacts the session response', () => {
   }
   assert.throws(() => parseAntigravitySkillInventory(make([selected, selected]), names), /^Error: skill-inventory-ambiguous$/u);
   assert.throws(() => parseAntigravitySkillInventory(result('unparseable private payload'), names), /^Error: skill-inventory-invalid-json$/u);
+  const project = path.resolve(os.tmpdir(), 'isolated');
+  assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project), /^Error: skill-inventory-location-mismatch$/u);
+  const inProject = { ...selected, path: path.join(project, '.agents', 'plugins', 'aw-fixture', 'skills', 'manual', 'SKILL.md') };
+  assert.deepEqual(parseAntigravitySkillInventory(make([inProject]), names, project), { ...safe, projectLocations: 'verified' });
 });
 async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false, dropOwner = false, neutralEnabled = true, retainOnUninstall = false } = {}) {
   let installed = false, installs = 0;

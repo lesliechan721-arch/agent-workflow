@@ -33,4 +33,4 @@
 - Copilot Project 记录使用临时环境 `COPILOT_ALLOW_ALL=true`，同时批准工具；夹具没有 prompt、工具或模型请求，不将该设置传给用户环境。Darwin 普通进程观察不构成 Provider 或 OS 隔离资格。
 - Grok Project 使用固定版本的精确临时目录信任状态，不授予生产自动信任权限。User 四环境执行过 `uninstall --keep-data`，但持久数据哨兵对照只在单独的 macOS arm64 探针完成。
 - OpenCode POSIX 使用已批准的普通管理观察；Windows 保留实际 Job 回执。Antigravity 六环境 User 记录来自两次原始运行，分别保留来源；Project 有效 scope 与会话 trust 不继承 User 资格。
-- Antigravity `1.5.13` 项目资格复测使用 `node scripts/qualification/native-platform-antigravity-project.mjs --executable <agy 绝对路径> --report <报告文件> --authenticated-skills`。AW 命令使用候选构建、临时 AW home、临时客户端配置与独立 Git 项目；仅只读的 `/skills` 访问既有登录。报告只提取固定项目、个人对照的完整技能名和 `model_invocable`。未请求登录态取证时仍可核对文件交付，报告保留会话未知。App、共读及显式加载正文各自需要独立证据。
+- Antigravity `1.5.13` 项目资格复测使用 `node scripts/qualification/native-platform-antigravity-project.mjs --executable <agy 绝对路径> --report <报告文件> --authenticated-skills`。AW 命令使用候选构建、临时 AW home、临时客户端配置与独立 Git 项目。只读 `/skills` 使用既有登录，从精确的项目条目提取技能名和 `model_invocable`。本次候选的个人安装只观察临时客户端注册和实际消费字节，个人登录会话单列为未知。历史个人会话证据独立记录。未请求登录态取证时项目会话也保持未知。App、共读及显式加载正文分别取证。
