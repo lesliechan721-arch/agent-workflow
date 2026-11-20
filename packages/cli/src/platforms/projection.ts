@@ -312,7 +312,8 @@ function projectManifest(input: ProjectionInput, files: ProjectionFiles, selecte
   }
   const manifest: Record<string, unknown> = { ...metadata };
   if (has('skill')) manifest.skills = './skills/';
-  if (has('agent')) manifest.agents = './agents/';
+  // Claude's agents field accepts Markdown files. Omit it to scan the default agents/ directory.
+  if (platform !== 'claude' && has('agent')) manifest.agents = './agents/';
   if (has('mcp')) manifest.mcpServers = platform === 'cursor' ? './mcp.json' : './.mcp.json';
   if (files.files.has('hooks/hooks.json')) manifest.hooks = './hooks/hooks.json';
   if (has('instruction') && platform === 'cursor') manifest.rules = './rules/';

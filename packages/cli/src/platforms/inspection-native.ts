@@ -63,6 +63,10 @@ function configuredActivation(value: unknown, allowServerList = false): Deployme
   if (allowServerList && Array.isArray(value) && value.every((item) => typeof item === 'string')) return 'enabled';
   throw new Error('nativeActivationInvalid');
 }
+async function copilotConfiguredActivation(file: string, nativeId: string): Promise<DeploymentConfigurationObservation['activation']> {
+  const settings = await jsonFile(file);
+  return configuredActivation(settings.enabledPlugins === undefined ? undefined : object(settings.enabledPlugins)[nativeId]);
+}
 function nativeSourceMatches(source: unknown, expected: string): boolean {
   return typeof source === 'string' && path.isAbsolute(source) && path.normalize(source) === path.normalize(expected);
 }
@@ -255,10 +259,8 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       break;
     }
     case 'copilot-marketplace': {
-      await inspectConfiguration(ctx, binding, result, async () => {
-        const settings = await jsonFile(path.join(layout.activationPath, binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json'));
-        return { activation: configuredActivation(settings.enabledPlugins === undefined ? undefined : object(settings.enabledPlugins)[nativeId]) };
-      });
+      const settingsPath = path.join(layout.activationPath, binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json');
+      await inspectConfiguration(ctx, binding, result, async () => ({ activation: await copilotConfiguredActivation(settingsPath, nativeId) }));
       // These inventories are independent. Finish both reads before returning,
       // including when one fails, so no native read outlives this inspection.
       const [marketplaceRead, pluginsRead] = await Promise.allSettled([
@@ -276,14 +278,44 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       if (pluginsRead.status === 'rejected') throw pluginsRead.reason;
       const matches = rows(pluginsRead.value).filter((row) => row.name === layout.nativeIdentity.packageId && row.marketplace === layout.marketplaceName);
       if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
-      result.registration = matches.length ? 'present' : 'absent';
       const row = matches[0];
-      if (row && marketplace !== 'canonical' && !nativeSourceMatches(row.source, layout.marketplaceRoot!)
+      result.registration = row ? 'present' : 'absent';
+      if (!row) break;
+      if (row.source === 'live') {
+        const location = row.installedFrom;
+        const exactSource = nativeSourceMatches(location, layout.marketplaceRoot!);
+        if (!exactSource && typeof location === 'string' && path.isAbsolute(location)) result.ownership = 'foreign';
+        else if ((!exactSource || marketplace !== 'canonical') && !['foreign', 'shared'].includes(result.ownership)) result.ownership = 'unknown';
+        if (exactSource && marketplace === 'canonical' && row.enabled === false && result.package === 'absent'
+          && result.ownership === 'absent' && result.configuration?.activation === 'absent') {
+          // Registering a local marketplace can list its unpublished siblings.
+          // Require the exact source, missing live package and no scope entry.
+          if (binding.scope.kind === 'user') {
+            result.registration = 'absent';
+            break;
+          }
+          const otherActivations = await Promise.all([
+            copilotConfiguredActivation(path.join(layout.physicalIdentity.namespaceRoot, 'settings.json'), nativeId),
+            copilotConfiguredActivation(path.join(layout.activationPath, 'settings.json'), nativeId),
+          ]).catch((error) => {
+            rethrowFatalError(error); ctx.signal?.throwIfAborted();
+            result.registration = 'unknown';
+            result.ownership = 'unknown';
+            diagnostic(result, binding, 'nativeConfigurationUnreadable', 'The other Copilot settings layers could not be read. Registration is unknown.');
+            return null;
+          });
+          if (!otherActivations) break;
+          if (otherActivations.every((activation) => activation === 'absent')) {
+            result.registration = 'absent';
+            break;
+          }
+        }
+      } else if (marketplace !== 'canonical' && !nativeSourceMatches(row.source, layout.marketplaceRoot!)
         && !nativeSourceMatches(row.installedFrom, layout.marketplaceRoot!) && !['foreign', 'shared'].includes(result.ownership)) {
         // Unrecognized source shapes remain unknown and cannot authorize mutation.
         result.ownership = 'unknown';
       }
-      setActivation(result, row?.enabled === true ? 'enabled' : row?.enabled === false ? 'disabled' : 'unknown');
+      setActivation(result, row.enabled === true ? 'enabled' : row.enabled === false ? 'disabled' : 'unknown');
       break;
     }
     case 'pi-package':

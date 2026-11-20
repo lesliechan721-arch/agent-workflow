@@ -118,7 +118,7 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 
 表格定义固定适配方式。AW 检查实际入口、scope 和组件映射后发布可交付的内容，并记录具体缺口。各版本、宿主和产品面的会话资格另按实际证据记录。
 
-Claude 的安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。
+Claude 的角色写入包内默认的 `agents/` 目录，由宿主自动发现。安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。[Claude 清单参考](https://code.claude.com/docs/en/plugins-reference#component-path-forms)
 
 Antigravity CLI `1.3.4` 的 User 清单将 `source` 表示为 `antigravity` 类型，`path` 指向实际配置根下的 `plugins/<packageId>` 副本。该类型不证明 AW 归属。AW 核对精确路径、无 symlink 路径链、副本自己的完整 source/plugin/platform/scope/physical owner、物理身份及旧包完整摘要；仅 AW 来源目录的 owner 不足以授权原生更新或移除。foreign、共享、弱 owner、额外或改写的本地数据均保留。来源目录丢失时，精确原生副本证据仍可用于移除，不建立安装 ledger。普通 ensure 比较实际副本与本次冻结包的摘要，即使来源目录已是当前内容，也会为旧副本安排直接 `plugin install <packageRoot>` 刷新；版本变化与同版本正文变化共用该路径。执行前重验实际归属，执行后及最终 grouped postcheck 均核对实际副本字节；原生命令退出 0 或版本相同不能代替内容证据。
 
@@ -128,7 +128,7 @@ Antigravity Project 使用当前项目 A 的 `.agents/plugins/aw-<sourceId>-<plu
 
 每个配对原生动作后，AW 只在配置完全等于固定版本预期变换时窄恢复此前的全局、全部项目与其他插件字段，并更新本次快照；失败时也只接受未改变或已知变换，遇到 stale 不覆盖外部修改。重装后再核对实际原生副本与本次冻结投影的完整摘要，原生退出 0、版本或登记存在均不能替代字节检查。失败保留 AW 源包和已核验的激活规则，以 partial/unknown 及 `nativeInstallContentPostcheckFailed` 等诊断给出恢复；不回滚包、不删除未知数据、不新建恢复 ledger，也不为其他项目新增信任。用户须先保留或处理本地数据、修复弱 owner 或安装现场，再在同一工作区显式运行许可恢复命令。
 
-Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`。项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，后续路径须为与本次 AW marketplace 精确一致的绝对路径。`plugin list --json` 可能显示尚未发布的本地 marketplace 候选。若该条目报告 `source: live`、`enabled: false`，`installedFrom` 精确匹配已确认的 marketplace，包路径确实缺席，且适用的用户、项目共享和项目本地配置都没有该插件条目，则登记判为缺席。禁用条目若已有包或配置中有显式记录，保留其登记和激活事实。来源缺失或相关配置不可读时保持未知，来源不符时保护外来内容。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
 
@@ -147,6 +147,8 @@ Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`
 在 macOS arm64 的 Pi `1.5.0`，User 和 Project 已登记包的角色可由 `@tintinweb/pi-subagents` `0.22.0` 和 `0.26.1` 发现。对照中的 `pi-subagents` `0.87.0` 和 `0.89.1` 需要 `./` 前缀才能读到同一角色。证据覆盖角色发现，完整会话和执行仍未知。[Pi 原生包与角色发现证据](../../../scripts/qualification/evidence/native-pi-package-agents-2026-11-20.json)
 
 Copilot/Grok 按[角色正文组合合同](../../reference/plugin-runtime.md#35-合并命令闭包与冻结)投影 Instructions。Grok User 和 Project 都将同范围的包与规则补足一起准备，专属角色正文通过包内角色文件核验。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
+
+Grok Project 在同批安装中可以接受同一项目内已确认发布的其他新包。执行前重新核对该包的原生来源、AW 归属和冻结字节。配置、项目授权、同名来源和其他外来变化仍可使计划失效。
 
 Grok 的 list 只证明可解析的登记；inspect 版本须有效且与本次入口一致，不要求等于历史实测版本。匹配精确来源的 inspect.enabled 是原生报告的启用状态，不能提升为加载。配置 enabled/disabled 集合仅补充展示，不覆盖原生结果；有效组件来源及兼容来源重叠可独立查看。Project 目录就绪需要精确作用域的有效启用。宿主拒绝授权时显示该范围的安全诊断。inspect.projectTrusted 是目录/运行时信任，不能授权首次安装新来源；首次 User 安装保留 AW 源包并提示用户用精确原生命令显式授予 `--trust`，随后再 sync，AW `--yes` 不授信。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，在当前范围的 `projectTrusted` 已确认且登记精确同源、独占时，执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
 

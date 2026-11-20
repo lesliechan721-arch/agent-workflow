@@ -29,6 +29,8 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     await fs.writeFile(marker, JSON.stringify({ schemaVersion: 1, kind: 'catalog', workspaceIdentity: identity, sourceIdentity: identity }));
   }
   const catalogId = 'qualification-official';
+  for (const entry of metadata.entries) ctx.dependencies.set(catalogId + '/' + entry.name,
+    entry.dependencies.map(name => name.includes('/') ? name : catalogId + '/' + name));
   await ctx.aw(['source', 'add', catalogId, '--path', local, '--primary', '--no-auto-check', '--yes']);
   await ctx.aw(['source', 'sync', catalogId, '--yes']);
   const active = JSON.parse(await fs.readFile(path.join(ctx.env.AW_HOME, 'catalog-state.json'), 'utf8')).sources[catalogId].active;

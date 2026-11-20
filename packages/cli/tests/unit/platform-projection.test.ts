@@ -137,6 +137,19 @@ describe('platform projection', () => {
     }
   });
 
+  it('writes Claude roles in the default discovery directory without overriding the scan', async () => {
+    const restricted: PluginComponent = { ...agent, content: { ...agent.content, tools: ['Read'] } };
+    const { input, ctx } = await fixture('claude', [skill, restricted]);
+    const result = await projectPlatform(ctx, input);
+    const bundle = result.bundle!.stagingRoot;
+    const manifest = await fs.readJson(path.join(bundle, '.claude-plugin/plugin.json'));
+    expect(manifest).toMatchObject({ name: 'example', version: '1.2.3', skills: './skills/' });
+    expect(manifest).not.toHaveProperty('agents');
+    const text = await fs.readFile(path.join(bundle, 'agents/review.md'), 'utf8');
+    expect(YAML.parse(text.split('---')[1]!)).toEqual({ name: 'review', description: 'Review a change.', tools: ['Read'] });
+    expect(text).toContain('Review this change.');
+  });
+
   it('delivers Pi agents as declarations without an execution extension', async () => {
     const { input, ctx } = await fixture('pi', [agent]);
     const result = await projectPlatform(ctx, input);

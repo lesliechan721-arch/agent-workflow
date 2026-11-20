@@ -6,6 +6,8 @@ import test from 'node:test';
 import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { grokTrustTargets } from './native-platform-public-components.mjs';
+import { confirmedSharedRetention } from './native-platform-public-removal.mjs';
 import { clients } from './native-platform-runtime.mjs';
 
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
@@ -102,18 +104,21 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
 });
 
 // Test Value Gate: batch discovery must preserve both acquisition prefixes,
-// including the original npm package identity behind the Windows Pi shim.
+// including the npm package behind the Windows Pi shim when the runner's
+// temporary directory and the resolved package entry have different spellings.
 test('exposes both acquired clients in one isolated public PATH', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-batch-path-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const claudeBin = path.join(root, 'claude-tool');
   const piBin = path.join(root, 'pi-tool');
+  const piBinAlias = path.join(root, 'pi-bin-alias');
   const piPackage = path.join(piBin, 'node_modules', ...clients.pi.package.split('/'));
   const piEntry = path.join(piPackage, 'cli.js');
   const claudeEntry = path.join(root, 'acquired-claude');
   const runnerGit = path.join(root, 'runner-git');
   const unrelated = path.join(root, 'unrelated');
   await fs.mkdir(piPackage, { recursive: true });
+  await fs.symlink(piBin, piBinAlias, process.platform === 'win32' ? 'junction' : 'dir');
   await fs.mkdir(runnerGit);
   await fs.writeFile(path.join(runnerGit, 'git.exe'), 'Git fixture');
   await fs.writeFile(claudeEntry, 'Claude fixture');
@@ -123,10 +128,10 @@ test('exposes both acquired clients in one isolated public PATH', async t => {
   const base = { root, env, project: root };
   const [claude, pi] = await preparePublicClientPaths([
     { ...base, platform: 'claude', clientBin: claudeBin, launcher: { executable: claudeEntry, prefix: [] } },
-    { ...base, platform: 'pi', clientBin: piBin, launcher: { executable: process.execPath, prefix: [piEntry] } },
+    { ...base, platform: 'pi', clientBin: piBinAlias, launcher: { executable: process.execPath, prefix: [piEntry] } },
   ]);
   const directories = env.PATH.split(path.delimiter);
-  assert.deepEqual(directories.slice(0, 2), [claudeBin, piBin]);
+  assert.deepEqual(directories.slice(0, 2), [claudeBin, piBinAlias]);
   assert(!directories.includes(unrelated));
   assert.deepEqual(await fs.readFile(claude), await fs.readFile(claudeEntry));
   if (process.platform === 'win32') {
@@ -135,6 +140,23 @@ test('exposes both acquired clients in one isolated public PATH', async t => {
     const launcher = await resolveWindowsNpmCommand({ command: 'pi', binName: 'pi', packageName: clients.pi.package, cwd: root, env });
     assert.deepEqual(launcher, { command: process.execPath, argsPrefix: [await fs.realpath(piEntry)] });
   } else assert.equal(pi, await fs.realpath(piEntry));
+});
+
+test('Grok only offers trust recovery for a fully explained dependency chain', () => {
+  const row = (pluginId, blocker) => ({ pluginId, scope: 'user', target: 'grok', blockerCodes: [blocker] });
+  const parent = row('official/agent-subagent', 'nativeTrustRequired');
+  const child = row('official/codex-enhance', 'dependencyInstallFailed');
+  const grandchild = row('official/consumer', 'dependencyInstallFailed');
+  const value = { data: { targetResults: [grandchild, child, parent] }, diagnostics: [] };
+  const edges = new Map([[parent.pluginId, []], [child.pluginId, [parent.pluginId]], [grandchild.pluginId, [child.pluginId]]]);
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), [parent]);
+  assert.deepEqual(grokTrustTargets(value, edges, new Set([parent.pluginId])), []);
+  assert.deepEqual(grokTrustTargets(value, new Map([...edges, [child.pluginId, []]]), new Set()), []);
+  value.data.targetResults.push(row('official/unrelated', 'operationPlanStale'));
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), []);
+  value.data.targetResults.pop();
+  value.diagnostics.push({ code: 'preApplyFailed', severity: 'error' });
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), []);
 });
 
 function removalFixture(platform = 'codex', scope = 'user', {
@@ -256,6 +278,33 @@ test('requires native absence for an exclusive removal', async () => {
     target: { level: 'native-management-state', active: false, present: false },
     neutral: { level: 'native-management-state', active: false, present: false },
   });
+});
+
+// A retained native package and a removed Codex role may coexist in one receipt.
+test('binds retained marketplace bytes to this package and its separately removed contribution', () => {
+  const { ctx, pluginId, plan, target, receipt } = removalFixture('codex', 'project');
+  const directory = path.join(ctx.project, 'marketplace', 'plugins', ctx.pluginName);
+  const role = path.join(ctx.project, '.codex', 'agents', 'fixture.toml');
+  const before = { physicalKey: plan.physicalKey, directory, contributions: new Set([role]) };
+  const matches = input => confirmedSharedRetention({ ...ctx, id: pluginId }, input, before);
+  receipt.after.nativeIdentity.sourceLocation = directory;
+  plan.effects.push({ id: 'role', kind: 'remove-owned', destination: role });
+  receipt.effects.push({ id: 'role', status: 'applied', mutation: 'confirmed' });
+  assert(matches(target));
+  for (const change of [
+    row => { row.deploymentPlans[0].sharedReferences = 'none'; },
+    row => { row.deploymentReceipts[0].after.ownership = 'foreign'; },
+    row => { row.deploymentReceipts[0].after.nativeIdentity.sourceLocation += '-other'; },
+    row => { row.deploymentReceipts[0].after.consumers[0].activation = 'enabled'; },
+    row => { row.deploymentReceipts[0].effects[0].mutation = 'possible'; },
+    row => { row.deploymentReceipts[0].diagnostics = []; },
+    row => { row.deploymentPlans[0].effects[1].destination = directory; },
+    row => { row.deploymentReceipts[0].effects[1].status = 'skipped'; },
+  ]) {
+    const altered = structuredClone(target);
+    change(altered);
+    assert.equal(matches(altered), false);
+  }
 });
 
 test('rejects retained registrations without the successful shared removal boundary', async (t) => {

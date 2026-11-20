@@ -106,6 +106,86 @@ async function grokTrustFixture(failProject = false) {
 }
 
 describe('native recovery dispatch', () => {
+  // Test Value Gate: the next Project package sees the first one in Grok's
+  // inventory after AW publishes it. Only that verified publication may differ.
+  it.each(['unchanged', 'project configuration', 'project trust', 'same-name source', 'extra package file'] as const)(
+    'revalidates a second Grok Project package after the first publication with %s', async (change) => {
+      installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+      const { env, layout } = getCurrentSourceTestIsolation();
+      const cwd = await fs.realpath(layout.fixtureCwd);
+      await fs.ensureDir(path.join(cwd, '.git'));
+      const source = path.join(cwd, 'grok-catalog');
+      const names = ['base', 'bundle'];
+      await createDependencyCatalogSnapshotFixture(source, names.map((name) => ({ name,
+        dependencies: name === 'bundle' ? ['base'] : [], configureManifest(manifest) {
+          manifest.platforms = ['grok'];
+          manifest.extensions = { agents: [{ name: `${name}-reviewer`, description: `Review ${name}.`, prompt: `Check the ${name} output.` }] };
+        },
+      })));
+      const config = await readCatalogSourcesConfigSnapshot(env);
+      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+        sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+      await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+      await setTargets({ cwd, env, scope: 'user' }, ['grok']);
+
+      const projectPlugins = path.join(cwd, '.grok', 'plugins');
+      const provider = path.join(projectPlugins, 'aw-local-base');
+      const consumer = path.join(projectPlugins, 'aw-local-bundle');
+      const foreignManifest = path.join(projectPlugins, 'manual-bundle', '.grok-plugin', 'plugin.json');
+      const extraFile = path.join(provider, 'outside-aw.txt');
+      const configFile = path.join(cwd, '.grok', 'config.toml');
+      let providerCompleted = false;
+      let externalChange = false;
+      const nativeCliRunner = async ({ args, cwd: nativeCwd }: NativeCliInvocation) => {
+        if (args[0] === 'plugin' && args[1] === 'list') return { exitCode: 0, stdout: '[]', stderr: '' };
+        if (args[0] !== 'inspect') throw new Error(`Unexpected Grok operation ${args.join(' ')}`);
+        const project = nativeCwd === cwd;
+        if (project && providerCompleted && !externalChange && change !== 'unchanged') {
+          externalChange = true;
+          if (change === 'project configuration') await fs.outputFile(configFile, '[plugins]\ndisabled = ["unrelated"]\n');
+          if (change === 'same-name source') await fs.outputJson(foreignManifest, { name: 'bundle', version: '9.0.0' });
+          if (change === 'extra package file') await fs.outputFile(extraFile, 'Keep this file.\n');
+        }
+        const directories = project && await fs.pathExists(projectPlugins) ? await fs.readdir(projectPlugins) : [];
+        const plugins = (await Promise.all(directories.map(async (directory) => {
+          const root = path.join(projectPlugins, directory);
+          const manifest = await fs.readJson(path.join(root, '.grok-plugin', 'plugin.json'), { throws: false }).catch(() => null);
+          return manifest ? [{ name: manifest.name, scope: 'project', path: root, enabled: true }] : [];
+        }))).flat();
+        const agents = (await Promise.all(plugins.map(async (plugin) => {
+          const directory = path.join(plugin.path, 'agents');
+          const files = await fs.pathExists(directory) ? await fs.readdir(directory) : [];
+          return files.map((file) => ({ name: path.basename(file, '.md'), source: { plugin_name: plugin.name, path: path.join(directory, file) } }));
+        }))).flat();
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify({ grokVersion: '1.0.77', plugins, skills: [], agents, mcpServers: [],
+          projectTrusted: change !== 'project trust' || !externalChange || !project }) };
+      };
+      const options = { cwd, env, cliVersion: '1.0.0', scope: 'project' as const, context: 'project' as const, targets: ['grok'], yes: true };
+      const install = await runRecovery('install', ['local/base', 'local/bundle'], options, { nativeCliRunner,
+        onInstallProgress: ({ completed }) => { if (completed === 1) providerCompleted = true; } });
+      expect(await fs.readFile(path.join(provider, 'agents', 'base-reviewer.md'), 'utf8')).toContain('Check the base output.');
+      if (change !== 'unchanged') {
+        expect(externalChange).toBe(true);
+        expect(install.targetResults.find(({ pluginId }) => pluginId === 'local/bundle')?.blockers.map(({ code }) => code)).toContain('operationPlanStale');
+        expect(await fs.pathExists(consumer)).toBe(false);
+        if (change === 'same-name source') expect(await fs.readJson(foreignManifest)).toEqual({ name: 'bundle', version: '9.0.0' });
+        if (change === 'extra package file') expect(await fs.readFile(extraFile, 'utf8')).toBe('Keep this file.\n');
+        return;
+      }
+      expect(install, JSON.stringify(install)).toMatchObject({ ok: true, remainingTargets: [], targetResults: [
+        { pluginId: 'local/base', execution: 'applied', content: 'satisfied' },
+        { pluginId: 'local/bundle', execution: 'applied', content: 'satisfied' },
+      ] });
+      const role = path.join(consumer, 'agents', 'bundle-reviewer.md');
+      expect(await fs.readFile(role, 'utf8')).toContain('Check the bundle output.');
+      const before = (await fs.stat(role)).mtimeMs;
+      const status = await runPublicPluginStatus([], { cwd, env, cliVersion: options.cliVersion, context: options.context }, { nativeCliRunner });
+      expect(status.data).toMatchObject({ counts: { ready: 2, pending: 0 }, inSync: true, allSatisfied: true });
+      const sync = await runPublicLifecycle('sync', ['local/base', 'local/bundle'], options, { nativeCliRunner });
+      expect(sync, JSON.stringify(sync)).toMatchObject({ status: 'success', data: { remainingTargets: [], changes: { outputs: 'none' } } });
+      expect((await fs.stat(role)).mtimeMs).toBe(before);
+    });
+
   // Read role-only text from both native package routes, and verify the same
   // target's rules projection and quiet follow-up status.
   it.each(['user', 'project'] as const)('reports a complete Grok %s dynamic supplement projection ready', async (scope) => {

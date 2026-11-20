@@ -138,9 +138,9 @@ async function rpcSkills(ctx, cwd) {
   return array(result.commands.commands).filter(item => item.name === `skill:${ctx.skillName}`);
 }
 
-export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false }) {
+export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false, version = publicFixtureVersion(revision) }) {
   assert.equal(typeof active, 'boolean');
-  if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version: publicFixtureVersion(revision) });
+  if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version });
   let matches;
   if (ctx.platform === 'pi') {
     const skills = await rpcSkills(ctx, cwd);
@@ -158,7 +158,7 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
     assert.equal(typeof skill.sourceInfo.baseDir, 'string', 'native-management-state-unverified');
     const manifest = await isolatedFile(ctx, path.join(skill.sourceInfo.baseDir, 'package.json'));
     const metadata = JSON.parse(manifest.content.toString('utf8'));
-    assert.equal(metadata.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
+    assert.equal(metadata.version, version, 'native-management-version-mismatch');
     const packageRoot = path.dirname(manifest.path);
     const row = single(inventory.entries.filter(row => path.relative(row.path, packageRoot) === ''), 'pi-native-registration-unverified');
     assert.equal(row.scope, ctx.scope);
@@ -218,7 +218,7 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
   const item = single(matches);
   assert.equal(typeof item.enabled, 'boolean', 'native-management-state-unverified');
   assert.equal(item.enabled, active, 'native-management-scope-mismatch');
-  assert.equal(item.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
+  assert.equal(item.version, version, 'native-management-version-mismatch');
   return { level: 'native-management-state', active, present: true, version: item.version,
     ...(item.scope ? { scope: item.scope } : {}) };
 }

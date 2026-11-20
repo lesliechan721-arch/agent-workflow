@@ -422,7 +422,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         return { version: actual };
       });
       if (options.publicAw) {
-        await qualifyPublicAw(ctx);
+        await qualifyPublicAw(ctx, { components: process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1' });
         for (const id of requiredPublicChecks(platform, scope)) {
           if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
         }

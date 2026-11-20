@@ -95,6 +95,12 @@ interface UnitPreparation {
   finalized: FinalizedPlatformComponents;
   evidenceInput: Parameters<typeof createPlatformInputEvidence>[0]['units'][number];
 }
+interface GrokProjectPublication {
+  projectRoot: string;
+  sourceDigest: string;
+  contentDigest: string;
+  owner: Extract<OwnedComponent, { kind: 'owned-directory' }>;
+}
 interface TargetResolution extends Resolution {
   ordinaryEvidence?: { discovery: string; observations: Map<string, string> };
 }
@@ -373,6 +379,7 @@ export class PlatformRebuildSession {
   private readonly published = new Map<string, Promise<{ mutation: 'none' | 'confirmed' | 'possible'; changed: boolean }>>();
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
   private readonly piProjectRegisteredRoots = new Map<string, Set<string>>();
+  private readonly grokProjectPublications = new Map<string, GrokProjectPublication>();
   private readonly exclusions = new Map<string, DeploymentExclusion[]>();
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
@@ -414,6 +421,7 @@ export class PlatformRebuildSession {
     this.staging = undefined;
     this.targets.clear(); this.resolutions.clear(); this.units.clear(); this.published.clear();
     this.nativeEffects.clear(); this.piProjectRegisteredRoots.clear(); this.exclusions.clear();
+    this.grokProjectPublications.clear();
     this.contexts.clear(); this.mutableChecks.clear(); this.requestedOperations.clear(); this.marketplaces.clear();
     this.marketplaceTargets.clear(); this.marketplaceCandidatesFrozen = false;
   }
@@ -856,9 +864,55 @@ export class PlatformRebuildSession {
           observation: { ...before, registration: 'absent',
             diagnostics: before.diagnostics.filter(({ code }) => code !== 'piProjectRegistrationNotVisible') } });
       };
+      const matchesAfterGrokPublications = async (current: Awaited<ReturnType<typeof currentMutable>>): Promise<boolean> => {
+        if (artifactValueDigest(current) === artifactValueDigest(mutableBaseline)) return true;
+        if (entry.binding.route !== 'grok-directory' || entry.binding.scope.kind !== 'project'
+          || operation(input) !== 'ensure' || !this.grokProjectPublications.size) return false;
+        const before = mutableBaseline.observation.prerequisites.nativeSources;
+        const after = current.observation.prerequisites.nativeSources;
+        const scopeEvidence = after?.grokProjectEvidence;
+        if (before?.observation !== 'complete' || after?.observation !== 'complete' || !scopeEvidence
+          || scopeEvidence.scopeDigest !== before.grokProjectEvidence?.scopeDigest) return false;
+        const priorPaths = new Set(before.sources.map(({ path: sourcePath }) => path.normalize(sourcePath)));
+        const paths = after.sources.map(({ path: sourcePath }) => path.normalize(sourcePath));
+        if (new Set(paths).size !== paths.length) return false;
+        const kept: typeof after.sources = [];
+        const sourceDigests: string[] = [];
+        const added: GrokProjectPublication[] = [];
+        for (const [index, source] of after.sources.entries()) {
+          const root = paths[index]!;
+          const digest = scopeEvidence.sourceDigests[index]!;
+          const published = this.grokProjectPublications.get(root);
+          if (published?.projectRoot === entry.binding.scope.projectRoot && published.sourceDigest === digest
+            && !priorPaths.has(root) && source.name !== entry.layout.nativeIdentity.packageId) {
+            added.push(published);
+          } else {
+            kept.push(source);
+            sourceDigests.push(digest);
+          }
+        }
+        if (!added.length) return false;
+        const normalizedSources = { ...after, sources: kept, configurationEvidence: before.configurationEvidence,
+          grokProjectEvidence: { ...scopeEvidence, sourceDigests } };
+        const observation = { ...current.observation,
+          prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
+        const normalized = { ...current, observation };
+        if (artifactValueDigest(normalized) !== artifactValueDigest(mutableBaseline)) return false;
+        // Accept only still-owned bytes from this operation, including the full package tree.
+        for (const { owner, contentDigest } of added) {
+          ctx.signal?.throwIfAborted();
+          const marker = await readSkillOwnerMarker({ skillRoot: owner.path, allowedRoot: owner.allowedRoot,
+            expectedIdentity: owner.identity }).catch(() => null);
+          const observedContent = marker?.nativeProjection?.contentDigest === contentDigest
+            ? await readPlatformPackageContentDigest(owner.path).catch(() => undefined) : undefined;
+          ctx.signal?.throwIfAborted();
+          if (observedContent !== contentDigest) return false;
+        }
+        return true;
+      };
       const check = async (discovery?: { value: unknown }, batch?: NativeObservationBatch): Promise<boolean> => {
         if (!parallelNativeReads) return await fingerprint(discovery) === initial
-          && artifactValueDigest(await currentMutable(batch)) === artifactValueDigest(mutableBaseline);
+          && await matchesAfterGrokPublications(await currentMutable(batch));
         const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable(batch)]);
         if (immutableRead.status === 'rejected') throw immutableRead.reason;
         if (immutableRead.value !== initial) return false;
@@ -1344,6 +1398,27 @@ export class PlatformRebuildSession {
           }
           if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
             || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
+          if (prepared.plan.binding.route === 'grok-directory' && prepared.plan.binding.scope.kind === 'project'
+            && prepared.plan.operation === 'ensure' && publication?.mutation === 'confirmed'
+            && prepared.driverState.before.package === 'absent' && prepared.driverState.before.ownership === 'absent'
+            && receipt.after.package === 'present' && receipt.after.ownership === 'aw'
+            && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+            const { packageRoot } = prepared.plan.evidence.layout;
+            const nativeIdentity = receipt.after.nativeIdentity;
+            const root = path.normalize(packageRoot);
+            const bundle = prepared.plan.projections.find((projection) => projection.bundle)?.bundle;
+            const owner = prepared.driverState.packageComponent;
+            const nativeSources = receipt.after.prerequisites.nativeSources;
+            const sourceIndex = nativeSources?.sources.findIndex((source) => source.name === nativeIdentity?.packageId
+              && path.normalize(source.path) === root && source.scope === 'project' && source.origin === 'native' && source.enabled === true) ?? -1;
+            const sourceDigest = nativeSources?.grokProjectEvidence?.sourceDigests[sourceIndex];
+            if (bundle && owner?.kind === 'owned-directory' && owner.path === packageRoot && sourceDigest
+              && nativeIdentity?.route === 'grok-directory' && nativeIdentity.sourceLocation === packageRoot
+              && nativeSources?.observation === 'complete' && !nativeSources.overlaps.includes(nativeIdentity.packageId)) {
+              this.grokProjectPublications.set(root, { projectRoot: prepared.plan.binding.scope.projectRoot,
+                sourceDigest, contentDigest: bundle.contentDigest, owner });
+            }
+          }
           const piInventoryKey = piProjectInventoryKey(prepared.plan.binding, prepared.plan.evidence.layout.activationPath);
           if (piInventoryKey && piProjectEmptyDeliveryObserved(prepared.plan.binding, prepared.driverState.before)
             && receipt.after.registration === 'present' && receipt.after.ownership === 'aw' && receipt.after.configuration?.activation === 'enabled'

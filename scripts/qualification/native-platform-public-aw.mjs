@@ -30,7 +30,7 @@ export async function observeNativeWorkingDirectory(ctx) {
 
 // Expose the acquired client to public AW discovery. Only the temporary npm
 // prefix or this scope's private bin is writable; no user launcher is changed.
-async function preparePublicClientEntry(ctx) {
+export async function preparePublicClientEntry(ctx) {
   const directory = ctx.clientBin ?? path.join(ctx.root, 'client-bin');
   await fs.mkdir(directory, { recursive: true });
   assert(ctx.launcher.prefix.length <= 1, 'Public AW requires a direct client entry.');
@@ -40,9 +40,10 @@ async function preparePublicClientEntry(ctx) {
   const destination = path.join(directory, `${ctx.platform === 'antigravity' ? 'agy' : ctx.platform}${windows ? npmEntry ? '.cmd' : '.exe' : ''}`);
   if (windows && npmEntry) {
     const { renderNpmCmdShim } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
-    const relative = path.relative(directory, entry);
-    assert(!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`),
-      'The acquired npm entry must be inside its temporary prefix.');
+    const relative = path.relative(await fs.realpath(directory), await fs.realpath(entry));
+    if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      throw new Error('client-entry-outside-acquired-prefix');
+    }
     const content = renderNpmCmdShim(relative.replaceAll('/', '\\'));
     try { await fs.writeFile(destination, content, { flag: 'wx' }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; assert.equal(await fs.readFile(destination, 'utf8'), content); }
@@ -364,8 +365,8 @@ async function observePublicComponentSuites(ctx) {
   return failures;
 }
 
-export async function qualifyPublicAw(ctx) {
-  if (process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS !== '1') return qualifyPublicLifecycle(ctx);
+export async function qualifyPublicAw(ctx, { components = false } = {}) {
+  if (!components) return qualifyPublicLifecycle(ctx);
   // Component delivery has its own file and receipt evidence. Collect it before
   // the runtime/session observer can defer a platform with an unknown profile.
   const entry = await preparePublicClientPath(ctx);

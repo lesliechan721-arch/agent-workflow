@@ -17,13 +17,14 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 // Test Value Gate: native delivery, status and no-op sync agree with the actual
 // recipient files, including dynamically prepared agents and scope exclusions.
 it.each([
-  { target: 'copilot', scope: 'user', includesMain: false, hasRole: true, dynamicMainOnly: false },
-  { target: 'copilot', scope: 'user', includesMain: true, hasRole: false, dynamicMainOnly: false },
-  { target: 'grok', scope: 'project', includesMain: true, hasRole: true, dynamicMainOnly: false },
-  { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicMainOnly: false },
-  { target: 'grok', scope: 'user', includesMain: true, hasRole: false, dynamicMainOnly: true },
-  { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicMainOnly: true },
-] as const)('projects $target $scope instructions with main=$includesMain, role=$hasRole, and dynamic main-only rule=$dynamicMainOnly', async ({ target, scope, includesMain, hasRole, dynamicMainOnly }) => {
+  { target: 'copilot', scope: 'user', includesMain: false, hasRole: true, dynamicRules: false },
+  { target: 'copilot', scope: 'user', includesMain: true, hasRole: false, dynamicRules: false },
+  { target: 'grok', scope: 'project', includesMain: true, hasRole: true, dynamicRules: false },
+  { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicRules: false },
+  { target: 'grok', scope: 'user', includesMain: true, hasRole: false, dynamicRules: true },
+  { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicRules: true },
+  { target: 'grok', scope: 'project', includesMain: true, hasRole: true, dynamicRules: true },
+] as const)('projects $target $scope instructions with main=$includesMain, role=$hasRole, and dynamic rules=$dynamicRules', async ({ target, scope, includesMain, hasRole, dynamicRules }) => {
   installNativeTestQualification({ platforms: [target], discovery: true, executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
@@ -32,11 +33,14 @@ it.each([
   const trace = path.join(cwd, 'renderer-calls');
   const instruction = 'Keep the input unchanged.';
   const prompt = 'Review the input for correctness.';
-  const runsRenderer = hasRole || dynamicMainOnly;
-  const ruleNames = dynamicMainOnly ? scope === 'project' ? ['preserve', 'read-only'] : ['preserve'] : [];
-  const components = dynamicMainOnly ? ruleNames.map((name) => ({ id: `renderer-${name}`, name, kind: 'instruction',
-    content: { title: 'Preserve input', content: instruction, coverage: ['main'] } }))
-    : [{ id: 'renderer-reviewer', name: 'reviewer', kind: 'agent', content: { description: 'Review input.', prompt } }];
+  const runsRenderer = hasRole || dynamicRules;
+  const mixed = dynamicRules && hasRole;
+  const ruleNames = dynamicRules ? scope === 'project' ? ['preserve', 'read-only'] : ['preserve'] : [];
+  const components = [
+    ...ruleNames.map((name) => ({ id: `renderer-${name}`, name, kind: 'instruction',
+      content: { title: 'Preserve input', content: instruction, coverage: ['main'] } })),
+    ...(hasRole && !dynamicRules ? [{ id: 'renderer-reviewer', name: 'reviewer', kind: 'agent', content: { description: 'Review input.', prompt } }] : []),
+  ];
   const unrelated = target === 'copilot'
     ? path.join(cwd, '.github', 'agents', 'reviewer.agent.md') : path.join(host, 'agents', 'reviewer.md');
   await fs.ensureDir(path.join(cwd, '.git'));
@@ -50,7 +54,8 @@ it.each([
   `);
   await createCatalogSnapshotFixture(source, 'demo', [], 'Instruction audience fixture.', (manifest) => {
     manifest.platforms = [target];
-    if (!dynamicMainOnly) manifest.extensions = { instructions: [{ name: 'preserve', title: 'Preserve input', content: instruction,
+    if (mixed) manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review input.', prompt }] };
+    if (!dynamicRules) manifest.extensions = { instructions: [{ name: 'preserve', title: 'Preserve input', content: instruction,
       coverage: includesMain ? ['main', 'plugin-agents'] : ['plugin-agents'] }] };
     manifest.artifacts = { configKeys: [], scopes: [runsRenderer ? scope : scope === 'user' ? 'project' : 'user'] };
     manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
@@ -107,10 +112,10 @@ it.each([
     expect(result.exitCode, JSON.stringify(value)).toBe(0);
     return value;
   };
+  const componentIds = [...components.map(({ id }) => id), ...(mixed ? ['agent:reviewer'] : !dynamicRules ? ['instruction:preserve'] : [])];
   const expected = {
-    target, scope, content: 'satisfied', satisfaction: 'installed', installedComponentCount: dynamicMainOnly ? ruleNames.length : hasRole ? 2 : 1,
-    installedComponentIds: hasRole ? expect.arrayContaining(['renderer-reviewer', 'instruction:preserve'])
-      : dynamicMainOnly ? expect.arrayContaining(components.map(({ id }) => id)) : ['instruction:preserve'],
+    target, scope, content: 'satisfied', satisfaction: 'installed', installedComponentCount: componentIds.length,
+    installedComponentIds: expect.arrayContaining(componentIds),
     ...(runsRenderer ? {} : { componentGaps: [expect.objectContaining({ componentId: 'instruction:preserve', kind: 'instruction',
       requiredFeatures: [{ feature: 'instruction.coverage', values: ['plugin-agents'] }] })] }),
   };
@@ -125,11 +130,11 @@ it.each([
     : path.join(grokRules, 'aw-local-demo-preserve.md');
   if (hasRole) {
     const body = await fs.readFile(roleFile, 'utf8');
-    expect(body).toContain(`${prompt}\n\n${instruction}\n`);
+    expect(body).toContain(dynamicRules ? `${prompt}\n` : `${prompt}\n\n${instruction}\n`);
   } else expect(await fs.pathExists(roleFile)).toBe(false);
   if (includesMain) expect(await fs.readFile(mainFile, 'utf8')).toContain(instruction);
   else expect(await fs.pathExists(mainFile)).toBe(false);
-  if (dynamicMainOnly) expect(await fs.pathExists(packageRoot)).toBe(false);
+  if (dynamicRules && !hasRole) expect(await fs.pathExists(packageRoot)).toBe(false);
 
   const rendered = runsRenderer ? await fs.readFile(trace, 'utf8') : null;
   const writes = nativeWrites;
@@ -153,7 +158,7 @@ it.each([
   expect(await fs.readFile(unrelated, 'utf8')).toBe('A role from another scope.\n');
 
   let supplementRecord: string | undefined;
-  if (dynamicMainOnly) {
+  if (dynamicRules && !hasRole) {
     const records = path.join(env.AW_HOME!, 'platforms', target, 'empty-state');
     const [recordName] = await fs.readdir(records);
     const record = path.join(records, recordName!);
@@ -181,6 +186,9 @@ it.each([
     } else {
       supplementRecord = path.join(env.AW_HOME!, 'platforms', target, 'supplements', recordName!);
       const complete = await fs.readJson(supplementRecord);
+      const { bindingId, inputDigest, outputs: legacyOutputs } = complete;
+      await fs.writeJson(supplementRecord, { schemaVersion: 1, bindingId, inputDigest, outputs: legacyOutputs });
+      expect((await aw('status')).data).toMatchObject({ inSync: true, allSatisfied: true, inventory: [{ targetResults: [expected] }] });
       for (const outputs of [[], complete.outputs.filter(({ id }: { id: string }) => id === 'renderer-read-only')]) {
         await fs.writeJson(supplementRecord, { ...complete, outputs });
         const damaged = await invoke('status');
@@ -202,14 +210,33 @@ it.each([
       expect(await readFiles()).toEqual(projected);
     }
   }
+  if (mixed) {
+    const records = path.join(env.AW_HOME!, 'platforms', target, 'supplements');
+    const [recordName] = await fs.readdir(records);
+    supplementRecord = path.join(records, recordName!);
+    const complete = await fs.readJson(supplementRecord);
+    await fs.writeJson(supplementRecord, { ...complete, outputs: complete.outputs.filter(({ id }: { id: string }) => id !== 'renderer-preserve') });
+    await fs.remove(mainFile);
+    const beforeStatus = await fs.readFile(trace, 'utf8');
+    const damaged = await invoke('status');
+    expect(damaged.exitCode).toBe(3);
+    expect(damaged.parseJsonStdout<CommandResult>().data).toMatchObject({ counts: { unconfirmed: 1 }, inSync: null, allSatisfied: null,
+      inventory: [{ targetResults: [{ content: 'unknown', installedComponentIds: ['agent:reviewer'],
+        deploymentObservations: [{ after: { package: 'present' } }] }] }] });
+    expect(await fs.readFile(trace, 'utf8')).toBe(beforeStatus);
+    const repaired = await aw('sync', 'local/demo', '--yes');
+    expect(repaired.data).toMatchObject({ changes: { outputs: 'changed' }, remainingTargets: [], targetResults: [expected] });
+    expect(await fs.readFile(mainFile, 'utf8')).toContain(instruction);
+    expect((await aw('status')).data).toMatchObject({ inSync: true, allSatisfied: true, inventory: [{ targetResults: [expected] }] });
+  }
   if (runsRenderer) {
-    const lostFile = dynamicMainOnly ? mainFile : roleFile;
+    const lostFile = dynamicRules ? mainFile : roleFile;
     await fs.remove(lostFile);
     const afterLoss = await aw('status');
     expect(afterLoss.data, JSON.stringify(afterLoss)).toMatchObject({ counts: { pending: 1 }, inSync: false, allSatisfied: false,
       inventory: [{ targetResults: [{ content: 'absent' }] }] });
     expect(afterLoss.data).not.toMatchObject({ inventory: [{ targetResults: [{ componentGaps: expect.any(Array) }] }] });
-    if (dynamicMainOnly) {
+    if (dynamicRules) {
       await fs.outputFile(lostFile, 'Foreign rule.\n');
       const foreign = await invoke('status');
       expect(foreign.parseJsonStdout<CommandResult>().data).toMatchObject({ counts: { blocked: 1 }, inSync: false, allSatisfied: false,

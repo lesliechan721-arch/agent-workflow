@@ -11,6 +11,7 @@ import { nativePath, readInstalled, targetOf, nativePackage, checkSettled } from
 import { qualifyCatalog } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { prepareEnvironment, repoRoot, sha256, execute, assertCommand, candidateFiles } from './native-platform-runtime.mjs';
+import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 
 export const componentPlatforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
 const kinds = ['skill', 'agent', 'mcp', 'hook', 'instruction'];
@@ -26,6 +27,26 @@ const specs = [
   { name: 'hook-only', kinds: ['hook'] },
   { name: 'without-skills', kinds: kinds.filter(kind => kind !== 'skill') },
 ];
+
+// Recover only the trust requests actually observed in this isolated Catalog.
+export function grokTrustTargets(value, dependencies, alreadyAuthorized) {
+  const blocked = value.data.targetResults.filter(target => target.blockerCodes.length);
+  if (!blocked.length || blocked.some(target => target.target !== 'grok' || target.scope !== 'user' ||
+      target.blockerCodes.length !== 1 || !['nativeTrustRequired', 'dependencyInstallFailed'].includes(target.blockerCodes[0])) ||
+      value.diagnostics.some(item => item.severity === 'error' && !['nativeTrustRequired', 'dependencyInstallFailed'].includes(item.code))) return [];
+  const direct = blocked.filter(target => target.blockerCodes[0] === 'nativeTrustRequired');
+  if (!direct.length || direct.some(target => !dependencies.has(target.pluginId) || alreadyAuthorized.has(target.pluginId))) return [];
+  const blockedIds = new Set(blocked.map(target => target.pluginId));
+  const explained = new Set(direct.map(target => target.pluginId));
+  for (let previous = -1; previous !== explained.size;) {
+    previous = explained.size;
+    for (const target of blocked) {
+      const causes = (dependencies.get(target.pluginId) ?? []).filter(id => blockedIds.has(id));
+      if (causes.length && causes.every(id => explained.has(id))) explained.add(target.pluginId);
+    }
+  }
+  return explained.size === blockedIds.size ? direct : [];
+}
 
 async function writeFixture(workspace, scaffold, spec, revision) {
   const directory = path.join(workspace, 'plugins', spec.name);
@@ -120,7 +141,29 @@ async function verifyFixture(ctx, result, spec, revision) {
     assert.equal(target.installedComponentCount, 0);
     assert(!nativePackage(target), 'A clean zero-output install published a package');
   }
-  return { id, installed, skipped: gaps.map(({ id, reasonCode, requiredFeatures }) => ({ id, reasonCode, requiredFeatures })) };
+  const outcome = { id, installed, skipped: gaps.map(({ id, reasonCode, requiredFeatures }) => ({ id, reasonCode, requiredFeatures })) };
+  if (ctx.platform === 'claude' && result.command === 'plugin.status'
+    && ['single-agent', 'single-skill'].includes(spec.name)) {
+    const state = target.deploymentObservations.find(({ after }) => after.nativeIdentity?.packageId === spec.name)?.after;
+    const registrationId = state?.nativeIdentity?.registrationId;
+    assert(registrationId?.startsWith(spec.name + '@'), id + ': missing native registration identity');
+    assert.equal(state.registration, 'present');
+    assert.equal(state.ownership, 'aw');
+    assert.equal(state.scopeRegistration, 'present');
+    assert.equal(target.content, 'satisfied');
+    const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+    const details = await runNativeCli({ command: 'claude', agentKind: 'claude', args: ['plugin', 'details', registrationId],
+      cwd: ctx.scope === 'project' ? ctx.project : ctx.root, env: ctx.env });
+    assert.equal(details.exitCode, 0, details.stderr);
+    const inventory = /^\s*Agents \((\d+)\)([^\r\n]*)$/mu.exec(details.stdout);
+    assert(inventory, 'Claude plugin details did not report the Agent inventory for ' + id);
+    const roles = inventory[2].trim().split(/\s+/u).filter(Boolean);
+    const expectedRoles = spec.name === 'single-agent' ? [names.agent] : [];
+    assert.equal(Number(inventory[1]), expectedRoles.length, id);
+    assert.deepEqual(roles, expectedRoles, id);
+    outcome.nativeAgentInventory = { level: 'component-inventory', registrationId, roles };
+  }
+  return outcome;
 }
 
 
@@ -188,6 +231,7 @@ async function matrix(ctx, report) {
     specs.find(spec => spec.name === 'single-instruction'),
     { ...specs.find(spec => spec.name === 'single-agent'), dependencies: ['single-instruction'] },
   ] : platform === 'generic' ? specs : specs.filter(spec => spec.name !== 'without-skills');
+  for (const spec of inputs) ctx.dependencies.set(source + '/' + spec.name, (spec.dependencies ?? []).map(name => source + '/' + name));
   await aw(['dev', 'plugin', 'create', inputs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace);
   const scaffold = JSON.parse(await fs.readFile(path.join(workspace, 'plugins', inputs[0].name, manifestFile), 'utf8'));
   for (const spec of inputs) await writeFixture(workspace, scaffold, spec, 1);
@@ -195,7 +239,8 @@ async function matrix(ctx, report) {
   await build();
   await aw(['source', 'add', source, '--path', path.join(workspace, '.aw/catalog'), '--primary', '--no-auto-check', '--yes']);
   const ids = inputs.map(spec => source + '/' + spec.name);
-  const install = ids => aw(['plugin', 'install', ...ids, '--scope', scope, '--context', scope, '--target', platform, '--yes']);
+  const installArgs = ids => ['plugin', 'install', ...ids, '--scope', scope, '--context', scope, '--target', platform, '--yes'];
+  const install = ids => aw(installArgs(ids));
   const sync = () => aw(['plugin', 'sync', '--context', scope, '--yes']);
   const status = () => aw(['plugin', 'status', '--context', scope]);
   if (report.suite === 'pi-pair') return piPair(ctx, report, inputs, install, status, sync);
@@ -233,17 +278,43 @@ async function matrix(ctx, report) {
     assert.deepEqual(unchanged.data.remainingTargets, []);
     assert.equal(unchanged.data.changes.outputs, 'none');
   }
+  const installFailures = [];
+  report.installFailures = installFailures;
   for (const spec of inputs) {
     const id = source + '/' + spec.name;
-    const installed = await install([id]);
-    assert.deepEqual(installed.data.remainingTargets, []);
-    if (spec.name.startsWith('single-')) {
-      const [kind] = spec.kinds;
-      const row = report.cells.find(row => row.kind === kind);
-      const outcome = await verifyFixture(ctx, installed, spec, 1);
+    const row = report.cells.find(row => spec.name === 'single-' + row.kind);
+    // A returned business failure for one independent root must not hide
+    // unrelated reads. An incomplete process observation still stops this scope.
+    const { exitCode, value } = await ctx.result(installArgs([id]));
+    if (exitCode !== 0) {
+      assert(['blocked', 'partial', 'failed'].includes(value.status), id + ': unexpected command result');
+      const target = value.data.targetResults?.find(item => item.pluginId === id && item.target === platform && item.scope === scope);
+      const failure = { id, exitCode, status: value.status, execution: target?.execution, blockerCodes: target?.blockerCodes,
+        diagnostics: value.diagnostics.map(item => item.code) };
+      if (row) row.failure = failure;
+      installFailures.push(failure);
+      continue;
+    }
+    assert.equal(value.status, 'success');
+    if (value.data.remainingTargets.length) {
+      const failure = { id, exitCode, status: value.status, remainingTargets: value.data.remainingTargets };
+      if (row) row.failure = failure;
+      installFailures.push(failure);
+      continue;
+    }
+    if (!row) continue;
+    try {
+      const outcome = await verifyFixture(ctx, value, spec, 1);
       row.observed = outcome.installed.length ? 'installed' : 'skipped';
       row.evidence = outcome.installed[0] ?? outcome.skipped[0];
+    } catch (error) {
+      if (error.code !== 'ERR_ASSERTION' && error.code !== 'ENOENT') throw error;
+      row.failure = { id, exitCode, status: value.status, reason: error.message.replaceAll(ctx.root, '<isolated>') };
+      installFailures.push(row.failure);
     }
+  }
+  if (installFailures.length) {
+    assert.fail('Independent plugin installation failures: ' + installFailures.map(item => item.id).join(', '));
   }
   const observed = await status();
   checkSettled(observed);
@@ -261,9 +332,15 @@ async function matrix(ctx, report) {
   await build();
   await aw(['source', 'sync', source, '--yes']);
   await sync();
-  report.updated = await verifyFixture(ctx, await status(), mixed, 2);
-  for (const id of ids) await aw(['plugin', 'remove', id, '--scope', scope, '--yes']);
-  for (const entry of report.cases.flatMap(item => item.installed)) await assert.rejects(fs.stat(path.join(ctx.root, entry.path)), { code: 'ENOENT' });
+  const beforeRemoval = await status();
+  report.updated = await verifyFixture(ctx, beforeRemoval, mixed, 2);
+  report.removals = [];
+  const controls = new Set();
+  const remainingRoots = new Set(ids);
+  for (const fixture of report.cases) {
+    remainingRoots.delete(fixture.id);
+    await verifyFixtureRemoval(ctx, report, beforeRemoval, fixture.id === report.updated.id ? report.updated : fixture, controls, remainingRoots);
+  }
   await install([source + '/' + mixed.name]);
   report.reinstalled = await verifyFixture(ctx, await status(), mixed, 2);
   if (platform === 'generic') {
@@ -362,21 +439,26 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     const project = path.join(root, 'project');
     await fs.mkdir(project);
     assertCommand(await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', project], { cwd: root, env }));
-    async function result(args, cwd = project) {
+    const dependencies = new Map();
+    async function result(args, cwd = project, trustRetry) {
       const response = await executePublicAw({ executable: process.execPath, prefix: [cli] }, [...args, '--json'], { cwd, env, timeoutMs: 180000 });
       assert(!response.cancelled && !response.timedOut && response.terminationReason === 'complete', args.join(' '));
       const value = JSON.parse(response.stdout);
       assert.equal(value.schemaVersion, 2);
-      if (platform === 'grok' && scope === 'user' && args[0] === 'plugin' && args[1] === 'install'
+      const outcome = { exitCode: response.exitCode, value, stderr: response.stderr };
+      if (platform === 'grok' && scope === 'user' && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
         && value.status === 'partial' && response.exitCode === 4) {
-        const authorized = [];
-        for (const target of value.data.targetResults) {
-          if (!target.blockerCodes.length) continue;
-          assert.deepEqual(target.blockerCodes, ['nativeTrustRequired']);
-          const after = target.deploymentReceipts.find(item => item.after.ownership === 'aw' && item.after.registration === 'absent')?.after;
+        const retry = trustRetry ?? { roots: value.data.request.plugins, authorized: new Set() };
+        const direct = grokTrustTargets(value, dependencies, retry.authorized);
+        if (!direct.length) return outcome;
+        assert(Array.isArray(retry.roots) && retry.roots.length);
+        const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+        for (const target of direct) {
+          const [provider, name] = target.pluginId.split('/');
+          const after = target.deploymentReceipts.find(item => item.after.ownership === 'aw' && item.after.registration === 'absent'
+            && item.after.nativeIdentity?.packageId === name)?.after;
           assert.equal(after?.nativeIdentity.route, 'grok-cli');
           const location = await fs.realpath(after.nativeIdentity.sourceLocation);
-          const [provider, name] = target.pluginId.split('/');
           const parts = path.relative(env.AW_HOME, location).split(path.sep);
           assert.deepEqual(parts.slice(0, 2), ['platforms', 'grok']);
           assert.match(parts[2], /^[a-f0-9]{64}$/u);
@@ -384,15 +466,15 @@ export async function runComponentQualification({ platform, scope, clientPath, s
           assert.equal(JSON.parse(await fs.readFile(path.join(location, '.agent-workflows-owner.json'), 'utf8')).pluginId, target.pluginId);
           assert(value.diagnostics.some(diagnostic => diagnostic.code === 'grokNativeInstallRecovery'
             && diagnostic.subject?.pluginId === target.pluginId && diagnostic.detail.path === location));
-          assertCommand(await execute({ executable: 'grok', prefix: [] }, ['plugin', 'install', location, '--trust'],
-            { cwd: path.join(env.AW_HOME, 'runtime', 'user'), env }));
-          authorized.push(target.pluginId);
+          const native = await runNativeCli({ command: 'grok', args: ['plugin', 'install', location, '--trust'],
+            cwd: path.join(env.AW_HOME, 'runtime', 'user'), env, timeoutMs: 60_000 });
+          assert.equal(native.exitCode, 0, 'Grok rejected the isolated explicit trust for ' + target.pluginId);
+          retry.authorized.add(target.pluginId);
+          (report.explicitFixtureTrust ??= []).push(target.pluginId);
         }
-        assert(authorized.length);
-        report.explicitFixtureTrust = [...(report.explicitFixtureTrust ?? []), ...authorized];
-        return result(['plugin', 'sync', '--context', 'user', '--target', 'grok', '--yes'], cwd);
+        return result(['plugin', 'sync', ...retry.roots, '--context', 'user', '--target', 'grok', '--yes'], cwd, retry);
       }
-      return { exitCode: response.exitCode, value, stderr: response.stderr };
+      return outcome;
     }
     async function aw(args, cwd) {
       const { exitCode, value, stderr } = await result(args, cwd);
@@ -417,7 +499,7 @@ export async function runComponentQualification({ platform, scope, clientPath, s
     }
     const target = await aw(['target', 'set', platform]);
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
-    const ctx = { root, project, env, aw, result, scope, platform };
+    const ctx = { root, project, env, aw, result, scope, platform, dependencies };
     if (suite === 'matrix' || suite.startsWith('pi-')) await matrix(ctx, report);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
     assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');

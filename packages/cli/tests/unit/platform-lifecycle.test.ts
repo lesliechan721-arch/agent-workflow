@@ -899,6 +899,58 @@ describe('platform inspection and native activation', () => {
     expect(runner.mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'marketplace', 'list', '--json']]);
   });
 
+  // Test Value Gate: a live catalog row cannot stand in for registration, or
+  // authorize mutation when its origin or activation is unconfirmed.
+  it.each([
+    { kind: 'disabled installed package', scope: 'user', owned: true, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'aw', activation: 'disabled' },
+    { kind: 'disabled User enrollment with missing package', scope: 'project', userEntry: false, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'disabled Project enrollment with missing package', scope: 'project', projectEntry: false, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'shared Project enrollment with missing package', scope: 'project', repoEntry: true, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'unreadable User enrollment in Project', scope: 'project', userEntry: 'invalid', location: 'canonical', marketplace: true, enabled: false,
+      registration: 'unknown', ownership: 'unknown', activation: 'unknown' },
+    { kind: 'foreign live row', scope: 'user', location: 'foreign', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'foreign', activation: 'disabled' },
+    { kind: 'live row with no location', scope: 'user', location: 'missing', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'unknown', activation: 'disabled' },
+    { kind: 'live row with no marketplace', scope: 'user', location: 'canonical', marketplace: false, enabled: false,
+      registration: 'present', ownership: 'unknown', activation: 'disabled' },
+    { kind: 'live row with unreported activation', scope: 'user', location: 'canonical', marketplace: true, enabled: undefined,
+      registration: 'present', ownership: 'absent', activation: 'unknown' },
+  ] as const)('preserves distinct Copilot evidence for $kind', async (scenario) => {
+    const ctx = await environment();
+    const { binding } = fixture('copilot-marketplace');
+    const configRoot = path.join(ctx.cwd, '.copilot');
+    binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/copilot', configRoot };
+    if (scenario.scope === 'project') binding.scope = { kind: 'project', projectRoot: ctx.cwd };
+    const layout = await getDeploymentLayout(ctx, binding);
+    binding.physicalKey = layout.renderUnits[0]!.physicalKey;
+    if ('owned' in scenario) {
+      const owner = deploymentPackageComponent(binding, layout);
+      await fs.outputFile(path.join(layout.packageRoot, SKILL_OWNER_MARKER), createSkillOwnerMarkerContent(owner.identity));
+    }
+    if ('userEntry' in scenario) await fs.outputJson(path.join(configRoot, 'settings.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.userEntry },
+    });
+    if ('projectEntry' in scenario) await fs.outputJson(path.join(layout.activationPath, 'settings.local.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.projectEntry },
+    });
+    if ('repoEntry' in scenario) await fs.outputJson(path.join(layout.activationPath, 'settings.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.repoEntry },
+    });
+    const installedFrom = scenario.location === 'canonical' ? layout.marketplaceRoot
+      : scenario.location === 'foreign' ? path.join(ctx.cwd, 'foreign-marketplace') : undefined;
+    const runner = async (call: NativeCliInvocation) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(call.args[1] === 'marketplace'
+      ? scenario.marketplace ? [{ name: layout.marketplaceName, source: `Local: ${layout.marketplaceRoot}` }] : []
+      : [{ name: layout.nativeIdentity.packageId, marketplace: layout.marketplaceName, source: 'live', installedFrom, enabled: scenario.enabled }]) });
+    const after = await inspectDeployment({ ...ctx, runner }, binding);
+    expect(after).toMatchObject({ ownership: scenario.ownership, registration: scenario.registration,
+      consumers: [{ activation: scenario.activation }] });
+  });
+
   // Test Value Gate: slow Copilot inventories must overlap without an early
   // return on failure or loss of the source and row safety checks.
   it.each([

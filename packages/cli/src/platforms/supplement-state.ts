@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 
+import { artifactValueDigest } from '../utils/artifact-plan.js';
 import { inspectOwnedComponents, parseOwnedTextHeader } from '../utils/ownership.js';
 import { assertSafeFileMutationPath, atomicReplaceSafeFile } from '../utils/safe-fs.js';
 import { resolveAbsoluteAwHome } from '../utils/state-paths.js';
@@ -43,22 +44,28 @@ function readOutputs(value: unknown, prefix: string, extension: string): Platfor
 export async function writePlatformSupplementState(ctx: ReadContext, binding: DeploymentBinding,
   inputDigest: string, outputs: PlatformSupplementOutput[]): Promise<void> {
   const { root, filePath } = statePath(binding, ctx.env);
+  const record = { schemaVersion: 2, bindingId: binding.id, inputDigest, outputs };
   await atomicReplaceSafeFile({ filePath, allowedRoot: root, label: 'Platform supplement state',
-    content: `${JSON.stringify({ schemaVersion: 1, bindingId: binding.id, inputDigest, outputs }, null, 2)}\n` });
+    content: `${JSON.stringify({ ...record, outputDigest: artifactValueDigest(record) }, null, 2)}\n` });
 }
 
 export async function inspectPlatformSupplementState(ctx: ReadContext, binding: DeploymentBinding,
-  inputDigest: string): Promise<{ inputMatches: boolean; components: DeploymentObservation['components'] } | null> {
+  inputDigest: string, verifiedOutputIds?: readonly string[]): Promise<{ inputMatches: boolean; components: DeploymentObservation['components'] } | null> {
   try {
     const { root, filePath } = statePath(binding, ctx.env);
     await assertSafeFileMutationPath({ filePath, allowedRoot: root, label: 'Platform supplement state' });
     const stat = await fs.lstat(filePath);
     if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-    const state = await fs.readJson(filePath);
-    if (state?.schemaVersion !== 1 || state.bindingId !== binding.id
-      || typeof state.inputDigest !== 'string' || !SHA256.test(state.inputDigest)) return null;
-    const outputs = readOutputs(state.outputs, `${getDeploymentResourceKey(binding.plugin)}-`, binding.platform === 'grok' ? '.md' : '.toml');
+    const { outputDigest, ...record } = await fs.readJson(filePath);
+    if (record.bindingId !== binding.id || typeof record.inputDigest !== 'string' || !SHA256.test(record.inputDigest)) return null;
+    if (record.schemaVersion === 2) {
+      if (outputDigest !== artifactValueDigest(record)) return null;
+    } else if (record.schemaVersion !== 1 || outputDigest !== undefined) return null;
+    const outputs = readOutputs(record.outputs, `${getDeploymentResourceKey(binding.plugin)}-`, binding.platform === 'grok' ? '.md' : '.toml');
     if (!outputs) return null;
+    // A legacy record needs the independently verified IDs from the same binding's complete empty-package receipt.
+    if (record.schemaVersion === 1 && (!verifiedOutputIds || outputs.length !== verifiedOutputIds.length
+      || outputs.some(({ id }) => !verifiedOutputIds.includes(id)))) return null;
     const { renderUnits, supplementRoot } = await getDeploymentLayout(ctx, binding);
     const unit = renderUnits.find((candidate) => candidate.output === 'supplement');
     if (!unit || !supplementRoot) return null;
@@ -76,7 +83,7 @@ export async function inspectPlatformSupplementState(ctx: ReadContext, binding: 
       const digest = `sha256:${createHash('sha256').update(parsed.content).digest('hex')}`;
       return { id, presence: 'present', reasonCodes: digest === output.contentDigest ? [] : ['componentContentDrift'] };
     }));
-    return { inputMatches: state.inputDigest === inputDigest, components: observed };
+    return { inputMatches: record.inputDigest === inputDigest, components: observed };
   } catch {
     ctx.signal?.throwIfAborted();
     return null;

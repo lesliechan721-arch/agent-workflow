@@ -23,6 +23,9 @@ function within(root: string, file: unknown): boolean {
   const relative = path.relative(root, file);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
+function evidenceDigest(value: unknown): string {
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
 
 /** 1.0.77's list is an install inventory; inspect.enabled is not load evidence. */
 export async function inspectGrokDeployment(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout,
@@ -85,7 +88,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     if (typeof plugin.name !== 'string' || typeof plugin.path !== 'string' || !path.isAbsolute(plugin.path)
       || typeof plugin.scope !== 'string') throw new Error('grokPluginIdentityInvalid');
   }
-  const effective = ['skills', 'agents', 'mcpServers'].flatMap((kind) => rows(inspect[kind]).map((row) => ({ kind, row, source: object(row.source) })));
+  const effectiveKinds = ['skills', 'agents', 'mcpServers'];
+  const effective = effectiveKinds.flatMap((kind) => rows(inspect[kind]).map((row) => ({ kind, row, source: object(row.source) })));
   const own = nativeRoot === undefined ? [] : plugins.filter((plugin) => plugin.name === name
     && path.normalize(plugin.path as string) === path.normalize(nativeRoot) && plugin.scope === binding.scope.kind);
   const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
@@ -133,6 +137,9 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       }
     }
   }
+  const configEvidence = evidence.slice(3);
+  const attributedResources = new Set<Record<string, unknown>>();
+  const sourceDigests: string[] = [];
   let sourcesComplete = true;
   const sources: NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'] = [];
   for (const plugin of plugins) {
@@ -143,6 +150,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     let origin: 'native' | 'compatibility' | 'unknown' = native ? 'native' : 'unknown';
     const inventory = list.find((row) => row.name === plugin.name && row.path === plugin.path);
     let version = typeof inventory?.version === 'string' ? inventory.version : typeof plugin.version === 'string' ? plugin.version : null;
+    const evidenceStart = evidence.length;
     // Public manifests provide version evidence for compatibility discoveries;
     // this read never grants AW ownership or cleanup authority.
     for (const descriptor of native ? ['.grok-plugin'] : ['.grok-plugin', '.claude-plugin']) {
@@ -164,14 +172,27 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
         }
       }
     }
+    const resources = effective.filter(({ source }) => source.plugin_name === plugin.name && within(plugin.path as string, source.path));
     sources.push({ name: plugin.name, version, path: plugin.path, scope: plugin.scope, origin,
       enabled: typeof plugin.enabled === 'boolean' ? plugin.enabled : null,
-      effectiveComponents: effective.filter(({ source }) => source.plugin_name === plugin.name && within(plugin.path as string, source.path))
-        .map(({ kind, row }) => `${kind}:${String(row.name)}`).sort() });
+      effectiveComponents: resources.map(({ kind, row }) => `${kind}:${String(row.name)}`).sort() });
+    if (projectRoot) {
+      for (const { row } of resources) attributedResources.add(row);
+      sourceDigests.push(evidenceDigest([plugin, resources.map(({ kind, row }) => [kind, row]), ...evidence.slice(evidenceStart)]));
+    }
   }
+  // Keep unbound runtime resources, policy and configuration bound to the scope.
+  const grokProjectEvidence = projectRoot ? {
+    scopeDigest: evidenceDigest([binding.scope, list, {
+      ...nativeEvidence, plugins: undefined,
+      ...Object.fromEntries(effectiveKinds.map((kind) => [kind,
+        effective.filter((entry) => entry.kind === kind && !attributedResources.has(entry.row)).map(({ row }) => row)])),
+    }, ...configEvidence]),
+    sourceDigests,
+  } : undefined;
   const overlaps = [...new Set(sources.filter((source) => sources.some((other) => other !== source && other.name === source.name)).map((source) => source.name))].sort();
   result.prerequisites.nativeSources = { observation: sourcesComplete ? 'complete' : 'unknown', sources, overlaps,
-    configurationEvidence: `sha256:${crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex')}` };
+    configurationEvidence: evidenceDigest(evidence), ...(grokProjectEvidence ? { grokProjectEvidence } : {}) };
   if (overlaps.length) result.diagnostics.push({ code: 'nativeCompatibilityOverlap', severity: 'warning',
     message: 'Grok discovered overlapping plugin sources. Effective component sources are reported; compatibility files remain outside AW cleanup authority.', subject: { target: 'grok' } });
   if (sources.some((source) => source.origin === 'compatibility' && source.name === name)) result.diagnostics.push({

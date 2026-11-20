@@ -68,22 +68,33 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
-  it('publishes only Codex roles when a prepared package is empty and reports the scoped deployment ready', async () => {
+  // Test Value Gate: a package absence receipt cannot prove all rendered Project roles were delivered.
+  it.each([
+    'prepared empty package', 'Project-only renderer', 'static roles',
+  ] as const)('publishes only Codex roles and reports the scoped deployment with %s', async (mode) => {
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
     const sourceRoot = path.join(cwd, 'dynamic-role-source');
-    const body = { version: 3, components: [{ id: 'reviewer', name: 'reviewer', kind: 'agent',
-      content: { description: 'Reviews changes', prompt: 'Check the diff.' } }], omitted: [], unmet: [] };
+    const staticRoles = mode === 'static roles';
+    const projectOnly = mode === 'Project-only renderer';
+    const roles = ['reviewer', 'advisor'].map((name) => ({ name, description: 'Reviews changes', prompt: 'Check the diff.' }));
+    const body = { version: 3, components: roles.map(({ name, ...content }) => ({ id: name, name, kind: 'agent', content })), omitted: [], unmet: [] };
+    const trace = path.join(cwd, 'renderer-calls');
     await fs.outputFile(path.join(sourceRoot, 'plugins/roles/render.mjs'), `
       import fs from 'node:fs';
       const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
       const body = ${JSON.stringify(body)};
+      fs.appendFileSync(${JSON.stringify(trace)}, 'render\\n');
       console.log(JSON.stringify({ ...body, components: body.components.filter((component) => context.allowedOutputKinds.includes(component.kind)) }));
     `);
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'roles', configureManifest: (manifest) => {
       manifest.platforms = ['codex'];
+      if (staticRoles) {
+        manifest.extensions = { agents: roles };
+        return;
+      }
       delete manifest.extensions;
-      manifest.artifacts = { configKeys: [] };
+      manifest.artifacts = { configKeys: [], ...(projectOnly ? { scopes: ['project'] } : {}) };
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     } }]);
     const config = await readCatalogSourcesConfigSnapshot(env);
@@ -93,22 +104,54 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     await writePreferences({ scope: 'user', cwd, env }, { ...createEmptyPreferences(), targets: ['codex'] });
     const runtime = await createCodexNativeTestRuntime(isolation);
-    const install = createCapturedCliIo();
-    expect(await runCli(['plugin', 'install', 'team/roles', '--scope', 'project', '--yes', '--json'], {
-      cwd, env, interactive: false, nativeCliRunner: runtime.nativeCliRunner, io: install.io,
-    }), install.readStdout()).toBe(0);
+    const aw = (...args: string[]) => runCliEntry(['plugin', ...args, '--context', 'project', '--json'],
+      { cwd, env, interactive: false, nativeCliRunner: runtime.nativeCliRunner });
+    const install = await aw('install', 'team/roles', '--scope', 'project', '--yes');
+    expect(install.exitCode, install.stdout).toBe(0);
     expect(runtime.packageRoots.size).toBe(0);
-    const location = path.join(cwd, '.codex', 'agents', 'aw-team-roles-reviewer.toml');
-    expect(await fs.readFile(location, 'utf8')).toContain('Check the diff.');
-    const status = createCapturedCliIo();
-    expect(await runCli(['plugin', 'status', '--context', 'project', '--json'], {
-      cwd, env, interactive: false, nativeCliRunner: runtime.nativeCliRunner, io: status.io,
-    }), status.readStdout()).toBe(0);
-    expect(JSON.parse(status.readStdout())).toMatchObject({ schemaVersion: 2, status: 'success', data: { allSatisfied: true, inSync: true,
+    const role = (name: string) => path.join(cwd, '.codex', 'agents', `aw-team-roles-${name}.toml`);
+    const reviewer = await fs.readFile(role('reviewer'), 'utf8');
+    expect(reviewer).toContain('Check the diff.');
+    expect(await fs.readFile(role('advisor'), 'utf8')).toContain('Check the diff.');
+    const observedRoles = roles.map(({ name }) => expect.objectContaining({ id: staticRoles ? `agent:${name}` : name, presence: 'present' }));
+    const ready = { schemaVersion: 2, status: 'success', data: { allSatisfied: true, inSync: true,
       counts: { ready: 1, blocked: 0 }, inventory: [{ pluginId: 'team/roles', targetResults: [{ scope: 'project', content: 'satisfied',
-        deploymentObservations: [{ after: { package: 'absent', registration: 'absent',
-          components: [{ id: 'reviewer', presence: 'present' }] } }],
-      }] }] } });
+        installedComponentCount: 2,
+        deploymentObservations: [{ after: { package: 'absent', registration: 'absent', components: expect.arrayContaining(observedRoles) } }],
+      }] }] } };
+    expect((await aw('status')).parseJsonStdout<CommandResult>()).toMatchObject(ready);
+    if (!projectOnly) return;
+
+    const stateRoot = path.join(env.AW_HOME!, 'platforms', 'codex');
+    const [name] = await fs.readdir(path.join(stateRoot, 'supplements'));
+    const supplementPath = path.join(stateRoot, 'supplements', name!);
+    const { bindingId, inputDigest, outputs } = await fs.readJson(supplementPath);
+    const receiptPath = path.join(stateRoot, 'empty-state', name!);
+    const { schemaVersion, kind, plugin, platform, binding, units } = await fs.readJson(receiptPath);
+    await fs.writeJson(receiptPath, { schemaVersion, kind, plugin, platform, binding, result: 'intentional-empty',
+      units: units.filter(({ output }: { output: string }) => output === 'package') });
+    const legacy = { schemaVersion: 1, bindingId, inputDigest };
+    const beforeStatus = await fs.readFile(trace, 'utf8');
+    const unconfirmed = async () => {
+      const status = await aw('status');
+      expect(status.exitCode, status.stdout).toBe(3);
+      expect(status.parseJsonStdout<CommandResult>().data).toMatchObject({ allSatisfied: null, inSync: null, counts: { unconfirmed: 1 },
+        inventory: [{ targetResults: [{ content: 'unknown' }] }] });
+    };
+    await fs.writeJson(supplementPath, { ...legacy, outputs });
+    await unconfirmed();
+    await fs.writeJson(supplementPath, { ...legacy, outputs: outputs.filter(({ id }: { id: string }) => id === 'reviewer') });
+    await fs.remove(role('advisor'));
+    await unconfirmed();
+    expect(await fs.readFile(trace, 'utf8')).toBe(beforeStatus);
+
+    const repair = await aw('sync', 'team/roles', '--yes');
+    expect(repair.exitCode, repair.stdout).toBe(0);
+    expect(repair.parseJsonStdout<CommandResult<LifecycleData>>().data).toMatchObject({ remainingTargets: [], changes: { outputs: 'changed' } });
+    expect(await fs.readFile(role('reviewer'), 'utf8')).toBe(reviewer);
+    expect(await fs.readFile(role('advisor'), 'utf8')).toContain('Check the diff.');
+    expect((await aw('status')).parseJsonStdout<CommandResult>()).toMatchObject(ready);
+    expect(runtime.packageRoots.size).toBe(0);
   });
 
   it('reports each Codex component gap in its render scope for a Project install', async () => {

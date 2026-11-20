@@ -119,8 +119,21 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: 2d866d18bc396dcbc57647b491a9878ef8fc52ee
-          path: .qualification-frozen
+          path: .qualification-frozen-revision
           persist-credentials: false
+      - name: Extract the published Catalog without checkout line-ending conversion
+        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && (env.QUALIFICATION_CLIENT == 'all' || env.QUALIFICATION_CLIENT == 'pi')
+        shell: bash
+        run: |
+          mkdir .qualification-frozen
+          git -C .qualification-frozen-revision -c core.autocrlf=false -c core.eol=lf archive --format=tar HEAD | tar -xf - -C .qualification-frozen
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          const manifest = readFileSync('.qualification-frozen/catalog-manifest.json');
+          assert.equal(createHash('sha256').update(manifest).digest('hex'), '95b7be92ed40dc2068227c29459963bcb0170446e10646bc650d08a45c9e6b1f');
+          JS
       - name: Prepare the qualified Windows helper in its normal optional package
         if: runner.os == 'Windows'
         shell: bash

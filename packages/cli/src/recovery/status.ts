@@ -309,8 +309,9 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 { pluginId: root.pluginId, agent: platform, scope: binding.scope.kind }, renderUnits));
             }
             const supplementInput = inputEvidence.units.find((unit) => unit.output === 'supplement');
+            const emptyPackageIds = recordedDelivery?.result === 'intentional-empty-package' ? recordedDelivery.installedComponentIds : undefined;
             const recordedSupplements = dynamicUnits.has('supplement') && supplementInput
-              ? await inspectPlatformSupplementState(ctx, binding, supplementInput.inputDigest) : null;
+              ? await inspectPlatformSupplementState(ctx, binding, supplementInput.inputDigest, emptyPackageIds) : null;
             if (recordedSupplements) {
               const staticIds = new Set(supplements.components.map((component) => component.id));
               const dynamicComponents = recordedSupplements.components.filter((component) => !staticIds.has(component.id));
@@ -322,10 +323,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               expectedCount = currentIds.size;
               packageExpectedCount = [...currentIds].filter((id) => !supplementIds.has(id)).length;
             }
-            // Static outputs can be checked directly. A readable dynamic list alone cannot prove none of its entries were lost.
-            const supplementSetUnconfirmed = recordedDelivery?.result === 'intentional-empty-package'
-              && (recordedDelivery.installedComponentIds.length !== supplementIds.size
-                || recordedDelivery.installedComponentIds.some((id) => !supplementIds.has(id)));
+            const supplementSetUnconfirmed = emptyPackageIds
+              && (emptyPackageIds.length !== supplementIds.size || emptyPackageIds.some((id) => !supplementIds.has(id)));
             const supplementConflict = supplements.components.some((component) => component.reasonCodes.includes('supplementOwnershipConflict'));
             const supplementMissing = supplements.components.some((component) => component.presence === 'absent');
             const supplementDrift = supplements.components.some((component) => component.reasonCodes.includes('componentContentDrift'));

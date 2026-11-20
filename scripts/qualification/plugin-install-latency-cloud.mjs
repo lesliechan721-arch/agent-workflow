@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { computeTreeDigest } from '../build/build-cache.mjs';
-import { acquireClient, isolatedEnvironment, processManagementInfo, repoRoot } from './native-platform-runtime.mjs';
+import { acquireClient, processManagementInfo, repoRoot } from './native-platform-runtime.mjs';
 import { cloudCatalog as frozenCatalog } from './plugin-install-latency-catalog.mjs';
 import { verifySample } from './plugin-install-latency-matrix.mjs';
 
@@ -175,7 +175,7 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
   const catalog = await fs.realpath(catalogInput);
   const output = path.resolve(outputInput);
   await fs.mkdir(output, { mode: 0o700 });
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-cloud-'));
+  const scratch = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-cloud-')));
   let phase = 'inputs';
   try {
     const manifest = await fs.readFile(path.join(catalog, 'catalog-manifest.json'));
@@ -189,11 +189,11 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
     const checkoutResourcesDigest = `sha256:${await computeTreeDigest(repoRoot, runtimeResources)}`;
     if (baseline.runtimeResourcesDigest !== checkoutResourcesDigest) throw new Error('baseline-runtime-resources-mismatch');
 
-    phase = 'acquisition';
     const clientVersions = {};
     const acquisitions = {};
     const directories = [];
     for (const client of nativeClients) {
+      phase = `acquire-${client}`;
       console.log(`Acquiring fixed public ${client} CLI.`);
       const { launcher, binDirectory, acquisition } = await acquireClient(client, path.join(scratch, client));
       clientVersions[client] = acquisition.version;
@@ -201,10 +201,10 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
       if (client === 'pi' && process.platform === 'win32') {
         // AW resolves a verified .cmd next to the prefix's node_modules, so
         // the npm install's nested node_modules/.bin launcher is unsuitable.
-        const { preparePublicClientPath } = await import('./native-platform-public-aw.mjs');
-        const entry = await preparePublicClientPath({ platform: client, clientBin: binDirectory, launcher,
-          project: repoRoot, env: isolatedEnvironment(scratch) });
-        directories.push(path.dirname(entry));
+        phase = 'expose-windows-pi-entry';
+        const { preparePublicClientEntry } = await import('./native-platform-public-aw.mjs');
+        const { directory } = await preparePublicClientEntry({ platform: client, clientBin: binDirectory, launcher });
+        directories.push(directory);
       } else {
         directories.push(client === 'pi' ? path.join(binDirectory, 'node_modules', '.bin') : path.dirname(launcher.executable));
       }
