@@ -284,7 +284,9 @@ it.skipIf(process.platform !== 'linux').each(['replaced', 'exited', 'new-group-m
   },
 );
 
-it.skipIf(process.platform !== 'linux').each(['detached-unreadable', 'detached-unmarked', 'reused-group-member'] as const)(
+it.skipIf(process.platform !== 'linux').each([
+  'detached-unreadable', 'detached-unmarked', 'reused-group-member', 'reused-detached-unreadable',
+] as const)(
   'keeps %s relevant after confirmation without granting it a signal', async scenario => {
     const observer = process.pid;
     const root = observer + 1;
@@ -302,12 +304,16 @@ it.skipIf(process.platform !== 'linux').each(['detached-unreadable', 'detached-u
         (phase === 1 ? unreadable : marked).add(root);
       }
       const sameGroup = scenario === 'reused-group-member';
-      if (sameGroup || phase > 0) {
+      const olderMarkedChild = scenario === 'reused-detached-unreadable' && phase === 0;
+      if (olderMarkedChild) {
+        table.set(child, { ppid: root, pgid: root, state: 'S', startTime: '25' });
+        marked.add(child);
+      } else if (sameGroup || phase > 0) {
         const replaced = sameGroup && phase >= 2;
         table.set(child, { ppid: rootAlive && !replaced ? root : 1, pgid: sameGroup ? root : child,
           state: 'S', startTime: replaced ? '40' : '30' });
         if (phase < 2) marked.add(child);
-        else if (scenario === 'detached-unreadable') unreadable.add(child);
+        else if (scenario !== 'detached-unmarked' && !sameGroup) unreadable.add(child);
       }
       return { table, markerPidsByValue: new Map([[marker, marked]]), unreadablePids: unreadable };
     });
@@ -322,7 +328,7 @@ it.skipIf(process.platform !== 'linux').each(['detached-unreadable', 'detached-u
         expect(scenario === 'reused-group-member' ? pid : Math.abs(pid)).toBe(root);
       }
       const reason = scenario === 'reused-group-member' ? 'initial-group-ownership-unconfirmed'
-        : scenario === 'detached-unreadable' ? 'process-marker-unreadable' : 'known-process-marker-missing';
+        : scenario === 'detached-unmarked' ? 'known-process-marker-missing' : 'process-marker-unreadable';
       expect(observation.diagnostics).toMatchObject([
         { stage: 'termination-start', reason, affectedPids: [child] },
         { stage: 'termination-verification', reason, affectedPids: [child] },

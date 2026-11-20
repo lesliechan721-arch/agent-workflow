@@ -984,7 +984,10 @@ function refreshObservedProcesses(
     if (!entry) continue;
     if (state.platform === 'win32' && entry.creationTime === undefined) continue;
     const known = state.descendants.get(processId);
-    if (!known || known.startTime === entry.startTime) {
+    // An exact procfs marker can establish a newer lifetime of the same PID.
+    // Keep just that identity for subsequent checks, never an older sample.
+    if (!known || known.startTime === entry.startTime ||
+      (usesLinuxProcfs(state) && BigInt(entry.startTime) > BigInt(known.startTime))) {
       state.descendants.set(processId, {
         pid: processId,
         startTime: entry.startTime,
