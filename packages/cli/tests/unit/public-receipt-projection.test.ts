@@ -5,6 +5,30 @@ import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/p
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('shows the known request and reviewed effects when standalone config apply is interrupted', () => {
+    const request = { ok: false, overallState: 'failed', configWrite: 'notStarted',
+      plugin: 'consumer', context: { context: 'project', projectRoot: '/work/project' }, confirmation: null,
+      errors: [{ code: 'operationInterrupted', message: 'The operation was interrupted.' }] };
+    const waiting = renderPublicResult(projectReceipt('plugin.config.apply', request)).split('\n');
+    expect(waiting).toEqual(expect.arrayContaining(['plugin: consumer', 'context: project', 'Project: /work/project', 'Confirmation: not prepared']));
+    expect(waiting.some((line) => line.startsWith('pluginId:') || line.startsWith('Effect:'))).toBe(false);
+
+    const resolved = { ...request, pluginId: 'team/consumer', sourceId: 'team' };
+    const preparing = renderPublicResult(projectReceipt('plugin.config.apply', resolved)).split('\n');
+    expect(preparing).toEqual(expect.arrayContaining(['pluginId: team/consumer', 'context: project', 'Confirmation: not prepared']));
+    expect(preparing).not.toContain('plugin: consumer');
+
+    const effects = ['provider', 'consumer'].map((name) => ({ code: 'runPreApply', message: 'Run the selected script.',
+      subject: { pluginId: `team/${name}`, target: 'codex', scope: 'user' }, impact: 'selected-scope' }));
+    const executing = renderPublicResult(projectReceipt('plugin.config.apply', {
+      ...resolved, confirmation: { required: true, provided: true, effects },
+    })).split('\n');
+    expect(executing).toEqual(expect.arrayContaining(['Confirmation: required=yes, provided=yes',
+      'Effect: Run the selected script. [team/provider / codex / user / selected-scope]',
+      'Effect: Run the selected script. [team/consumer / codex / user / selected-scope]']));
+    expect(executing).not.toContain('Confirmation: not prepared');
+  });
+
   it('identifies each plugin and command package on a shared config apply location', () => {
     const target = (pluginName: string) => ({ pluginId: `team/${pluginName}`, pluginName, platform: 'codex', scope: 'user' });
     const result = projectReceipt('plugin.config.apply', {

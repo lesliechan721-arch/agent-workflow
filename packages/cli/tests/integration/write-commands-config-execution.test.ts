@@ -33,6 +33,8 @@ import type { PluginMeta } from '../../src/types.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
+import type { DebugLogger } from '../../src/output/model.js';
+import { CatalogLeaseEscapeError, withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
 
 import {
   syncWriteCommand,
@@ -82,10 +84,27 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: source }] },
     expectedDigest: (await readCatalogSourcesConfigSnapshot(env)).digest, env });
-    const runJson = async (args: string[]) => {
+    const readCancellation = new AbortController();
+    await expect(withResolvedCatalogPlugin({
+      selector: 'team/demo', cliVersion: '1.0.0', env, signal: readCancellation.signal,
+      consume: ({ pluginId }) => {
+        readCancellation.abort();
+        return { pluginId };
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    const completionCancellation = new AbortController();
+    await expect(withResolvedCatalogPlugin({
+      selector: 'team/demo', cliVersion: '1.0.0', env, signal: completionCancellation.signal,
+      retainCompletedResultOnAbort: true,
+      consume: ({ plugin }) => {
+        completionCancellation.abort();
+        return { output: plugin.rootDir };
+      },
+    })).rejects.toBeInstanceOf(CatalogLeaseEscapeError);
+    const runJson = async (args: string[], debugLogger?: DebugLogger) => {
       const output = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], {
-        cwd, env, io: output.io, interactive: false,
+        cwd, env, io: output.io, interactive: false, debugLogger,
       });
       return { exitCode, payload: JSON.parse(output.readStdout()) };
     };
@@ -105,10 +124,26 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
 
     const original = await fs.readFile(skillPath);
     await fs.move(path.dirname(skillPath), path.join(cwd, 'moved-manual-skill'));
-    const applied = await runJson(['plugin', 'config', 'apply', 'team/demo', '--context', 'user', '--target', 'generic', '--yes']);
+    let interruptedAfterStatus = false;
+    const applied = await runJson(['plugin', 'config', 'apply', 'demo', '--context', 'user', '--target', 'generic', '--yes'], {
+      log(event) {
+        if (!interruptedAfterStatus && event.type === 'performance:stage'
+          && event.data?.name === 'recovery.status' && event.data.phase === 'success') {
+          interruptedAfterStatus = true;
+          process.emit('SIGINT', 'SIGINT');
+        }
+      },
+    });
     expect(await fs.readFile(skillPath)).toEqual(original);
-    expect(applied).toMatchObject({ exitCode: 0, payload: { status: 'success',
-      data: { configWrite: 'notStarted', apply: { state: 'succeeded' } }, diagnostics: [invocationNotice] } });
+    expect(interruptedAfterStatus).toBe(true);
+    expect(applied).toMatchObject({ exitCode: 130, payload: { status: 'success',
+      data: { plugin: 'demo', pluginId: 'team/demo', sourceId: 'team', context: { context: 'user' },
+        configWrite: 'notStarted', confirmation: { required: false, provided: true, effects: [] },
+        apply: { state: 'succeeded', targetResults: [{
+          target: { pluginId: 'team/demo', platform: 'generic', scope: 'user' }, state: 'completed',
+        }] } },
+      diagnostics: expect.arrayContaining([expect.objectContaining(invocationNotice),
+        expect.objectContaining({ code: 'operationInterrupted' })]) } });
 
     const setArgs = ['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"fast"', '--platform', 'generic', '--apply', '--yes'];
     const set = await runJson(setArgs);

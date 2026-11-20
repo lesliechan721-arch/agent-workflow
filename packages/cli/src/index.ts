@@ -84,6 +84,7 @@ import {
   inventoryLegacyConfigReferences,
 } from './utils/catalog-source-references.js';
 import {
+  CatalogLeaseEscapeError,
   parsePluginId,
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -1922,7 +1923,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       awHomeMutationToken: AwHomeMutationToken,
       catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
-    _apply = false,
+    options?: { retainCompletedResultOnAbort?: true },
   ) => (async () => {
     const parsed = parsePluginId(selector);
     return withAwHomeMutationLock({
@@ -1940,6 +1941,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           operationContext: catalogOperationContext,
           env: context.env,
           signal: context.signal,
+          retainCompletedResultOnAbort: options?.retainCompletedResultOnAbort,
           consume: (resolution) => consume(
             resolution,
             awHomeMutationToken,
@@ -2572,7 +2574,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 action: command === 'unset' ? 'unset' as const : 'set' as const, scope: 'user' as const,
                 ...(writeReceipt.staleRemovedKeys?.includes(key!) ? { stale: true as const } : {}) }],
             });
-          }, rawOptions.apply === true));
+          }));
         if (!receipt) return;
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else {
@@ -2652,16 +2654,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
             preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+          }).catch((error: unknown) => {
+            if (!(error instanceof ConfigApplyInterruptedError)) throw error;
+            const { code, message } = configMutationFailure(error, context.env, context.cwd);
+            return { configWrite: error.configWrite, overallState: 'partial' as const,
+              apply: error.apply, errors: [{ code, message }] };
           });
           return { ...applied, ...identity, confirmation, context: work };
-        }, true)).catch((error: unknown) => {
-          // The Catalog lease rejects normal returns after an abort, so project the receipt after cleanup.
-          if (error instanceof ConfigApplyInterruptedError && resolved && confirmed) {
-            const { code, message } = configMutationFailure(error, context.env, context.cwd);
-            return { ...resolved, confirmation: confirmed, context: work,
-              configWrite: error.configWrite, overallState: 'partial' as const,
-              apply: error.apply, errors: [{ code, message }] };
-          }
+        }, { retainCompletedResultOnAbort: true })).catch((error: unknown) => {
+          if (error instanceof CatalogLeaseEscapeError) throw error;
           const code = recoveryInterruptionCode(error, context.signal);
           if (!code) throw error;
           if (!resolved) parsePluginId(selector);

@@ -50,6 +50,7 @@ export function safePublicMessage(message: string, code = 'commandFailed'): stri
 }
 export function renderPublicResult(result: CommandResult<object>, verbose = false): string {
   const data = result.data as Record<string, unknown>;
+  const configMutation = result.command?.startsWith('plugin.config.') && typeof data.configWrite === 'string';
   const lines = [`${result.status.toUpperCase()}  ${(result.command ?? 'Command').replaceAll('.', ' ')}`];
   const request = data.request as { plugins?: string[]; scope?: string; context?: string; targets?: string[]; mode?: string } | undefined;
   if (request) {
@@ -69,6 +70,14 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   if (result.command === 'dev.plugin.capabilities' && data.capabilities) lines.push(...renderPluginCapabilities(data as unknown as PluginCapabilitiesResult));
   else if (Array.isArray(data.capabilities)) lines.push(`Capabilities: ${data.capabilities.join(', ')}`);
+  if (configMutation) {
+    if (!data.pluginId && typeof data.plugin === 'string') lines.push(`plugin: ${data.plugin}`);
+    const context = data.context as { context?: string; projectRoot?: string } | undefined;
+    if (context && typeof context === 'object' && context.context) {
+      lines.push(`context: ${context.context}`);
+      if (context.projectRoot) lines.push(`Project: ${context.projectRoot}`);
+    }
+  }
   for (const key of ['pluginId', 'sourceId', 'scope', 'context', 'platform', 'catalogVersion', 'configWrite', 'outputRoot', 'out', 'sourceBindingPath', 'specDirectory', 'metadataPath', 'workspaceRoot', 'removed', 'deleted', 'resetDisposition', 'name', 'description', 'outcome', 'activeChanged']) {
     const value = data[key];
     if (value !== undefined && value !== null && typeof value !== 'object') lines.push(`${key}: ${String(value)}`);
@@ -194,7 +203,16 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   if (data.preview === true || data.dryRun === true) lines.push('Preview only. No content was deleted.');
   const confirmation = data.confirmation as Confirmation | null | undefined;
-  if (confirmation?.required) for (const effect of confirmation.effects) lines.push(`Effect: ${effect.message}`);
+  if (configMutation && (confirmation?.required || result.diagnostics.some(({ code }) =>
+    code === 'operationInterrupted' || code === 'processCleanupUnconfirmed'))) {
+    if (confirmation) lines.push(`Confirmation: required=${confirmation.required ? 'yes' : 'no'}, provided=${confirmation.provided ? 'yes' : 'no'}`);
+    else if (confirmation === null) lines.push('Confirmation: not prepared');
+  }
+  if (confirmation?.required) for (const effect of confirmation.effects) {
+    const subject = effect.subject;
+    const position = configMutation ? [subject?.pluginId ?? subject?.sourceId, subject?.target, subject?.scope, subject?.field].filter(Boolean) : [];
+    lines.push(`Effect: ${effect.message}${configMutation ? ` [${[...position, effect.impact].join(' / ')}]` : ''}`);
+  }
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
   for (const diagnostic of result.diagnostics) {
     const { detail } = diagnostic;
