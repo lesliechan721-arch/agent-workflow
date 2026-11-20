@@ -33,7 +33,7 @@ await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries: [a
 const env = { ...process.env, AW_HOME: awHome };
 const config = await readCatalogSourcesConfigSnapshot(env);
 await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
-await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', cwd, env });
 await setTargets({ cwd, scope: 'project', env }, ['generic']);
 const productionRunner = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
 const waitingForLock = mode === 'wait-lock' || mode === 'wait-confirmed-lock';
