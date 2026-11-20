@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.30",
+  "version": "0.2.0-beta.31",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -48,7 +48,6 @@
     "cursor",
     "opencode",
     "pi",
-    "gemini",
     "copilot",
     "grok",
     "generic"

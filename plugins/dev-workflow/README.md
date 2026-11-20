@@ -9,7 +9,7 @@ aw target set codex claude
 aw plugin install dev-workflow --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
 
 安装同时提供 decision-kit 和 human-content，分别用于取得有效决定和组织可审阅的材料。
 

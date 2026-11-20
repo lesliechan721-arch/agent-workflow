@@ -4,7 +4,7 @@
 
 ## 确认分发与来源
 
-标准 Skill 导出使用十个 canonical target 中的显式平台 profile。支持集合由顶层 platforms 取得，缺省或空数组表示全部十平台。具体 Agent 的安装走原生平台路由；generic 仅管理通用 Skills。导出不会把 Native 能力缺口变成支持。
+标准 Skill 导出使用九个 canonical target 中的显式平台 profile。支持集合由顶层 platforms 取得，缺省或空数组表示全部九个平台。具体 Agent 的安装走原生平台路由；generic 仅管理通用 Skills。导出不会把 Native 能力缺口变成支持。
 
 静态内容来自统一 skills 来源；动态 renderer 按所选平台、render scope 和 kinds 返回完整组件集合 v3，不预声明 Skill 清单。导出从本次集合选取 Skill，每个最终直接子目录形成完整标准 Skill，保留生产 README。实际字段与组件限制以当前 capability receipt 和 validator 为准。
 

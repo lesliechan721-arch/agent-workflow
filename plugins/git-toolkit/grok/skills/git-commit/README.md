@@ -4,13 +4,13 @@
 
 ## 怎样调用
 
-在 Codex 中使用 `$git-commit`，在 Claude Code 中使用 `/git-toolkit:git-commit`，并说明本次提交范围。例如：
+在 Codex 中使用 `$git-commit`，在 Claude Code 中使用 `/git-toolkit:git-commit`，在 Pi 中使用 `/skill:git-commit`，在 OpenCode 中使用 `@git-commit`，在 Grok Build 中使用 `/git-commit`。调用时说明本次提交范围。
 
 ```text
 $git-commit 只提交这次修复涉及的文件，保留其它暂存和未暂存改动。
 ```
 
-普通的“帮我提交”请求不会自动加载此技能。
+技能声明仅由用户显式调用。使用 `generic` 文件时，读取文件的客户端决定是否执行这项限制。
 
 ## 适合使用
 

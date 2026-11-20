@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.16",
+  "version": "0.1.0-beta.17",
   "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
   "marketplace": {
     "category": "workflow",
@@ -22,7 +22,6 @@
     "cursor",
     "opencode",
     "pi",
-    "gemini",
     "copilot",
     "grok",
     "generic"

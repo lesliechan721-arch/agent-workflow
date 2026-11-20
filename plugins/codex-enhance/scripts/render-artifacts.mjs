@@ -147,7 +147,7 @@ async function runtimeResourceFiles(context, key, relative) {
   return result;
 }
 
-const PLATFORMS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'];
+const PLATFORMS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
 
 function validateContext(context) {
   if (context?.schemaVersion !== 2 || context.surface !== 'agent-plugin') {

@@ -13,7 +13,7 @@ aw plugin install codex-enhance --scope user
 
 安装同时检查同 source 的 `agent-subagent` 依赖；依赖未满足时，相关调度入口不可用。项目启用复用个人层配置，不产生独立项目执行配置。
 
-Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供中性的顾问和调查角色。其它平台未取得 Codex 模型配置及调度依赖的等价支持时，调度 Skills 显示依赖未满足。Pi 需要用户已有且启用的兼容角色消费者；本插件不安装执行器或注册执行工具。`generic` 不提供原生角色。
+Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供中性的顾问和调查角色。其它平台未取得 Codex 模型配置及调度依赖的等价支持时，调度 Skills 显示依赖未满足。Pi 需要用户已有且启用的兼容角色消费者；本插件不安装执行器或注册执行工具。`generic` 不提供原生角色。
 
 ## 包含的 Skill
 

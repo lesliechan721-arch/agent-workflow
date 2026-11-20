@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-subagent",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
   "marketplace": {
     "category": "workflow",
@@ -46,7 +46,6 @@
     "cursor",
     "opencode",
     "pi",
-    "gemini",
     "copilot",
     "grok",
     "generic"
@@ -121,7 +120,6 @@
           "cursor": null,
           "opencode": null,
           "pi": null,
-          "gemini": null,
           "copilot": null,
           "grok": null,
           "generic": null
@@ -187,7 +185,6 @@
           "cursor": null,
           "opencode": null,
           "pi": null,
-          "gemini": null,
           "copilot": null,
           "grok": null,
           "generic": null

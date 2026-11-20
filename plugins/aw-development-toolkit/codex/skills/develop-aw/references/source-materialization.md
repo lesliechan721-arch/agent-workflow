@@ -29,7 +29,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> \
   --scope <scope> --out <new-directory> --json
 ```
 
-按需提供 `--config <file>` 或 `--skill`。采用用户指定的新目录，或规范化可写临时根下的新目录。准备不依赖 Eval suite，也不授权修改源、真实安装或模型运行。platform 必须是十个 canonical target 之一；标准 Skill 导出也必须选择具体目标。作者准备使用显式固定 profile，不依赖本机客户端可用性；未核验能力保持 unmet。
+按需提供 `--config <file>` 或 `--skill`。采用用户指定的新目录，或规范化可写临时根下的新目录。准备不依赖 Eval suite，也不授权修改源、真实安装或模型运行。platform 必须是九个 canonical target 之一；标准 Skill 导出也必须选择具体目标。作者准备使用显式固定 profile，不依赖本机客户端可用性；未核验能力保持 unmet。
 
 动态组件名称从真实 prepare 与来源绑定取得，inspect 不执行 renderer 猜测动态集合。绑定同时记录固定 profile、能力、完整期望集合、资源闭包、渲染输入和实际投影摘要；任何输入漂移须重新 prepare。
 
