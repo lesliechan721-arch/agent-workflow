@@ -8,6 +8,7 @@ import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readEnvironmentValue } from '../../src/utils/state-paths.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
@@ -123,7 +124,22 @@ it.each([
     expect(status.data.inventory?.[0]?.targetResults).toContainEqual(expect.objectContaining({
       content: 'satisfied', satisfaction: 'installed', installedComponentCount: 1, installedComponentIds: [staticRole ? 'agent:role' : 'role'],
     }));
-    expect(codex.nativeCliRunner.mock.calls.every(([{ args }]) => args.includes('--version') || args.includes('list'))).toBe(true);
+    const systemRoot = process.platform === 'win32' ? readEnvironmentValue(env, 'SystemRoot') : undefined;
+    const windowsPowerShell = systemRoot && path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const unexpectedCalls = codex.nativeCliRunner.mock.calls.map(([{ command, args }]) => ({ command, args })).filter(({ command, args }) => {
+      // The shared runner also receives the registered Windows App inventory probe.
+      if (command === windowsPowerShell && args.length === 5 && args[0] === '-NoLogo' && args[1] === '-NoProfile'
+        && args[2] === '-NonInteractive' && args[3] === '-EncodedCommand') {
+        const query = Buffer.from(args[4]!, 'base64').toString('utf16le');
+        return !query.includes("Get-AppxPackage -Name 'OpenAI.Codex' -PackageTypeFilter Main");
+      }
+      const cliArgs = command === process.execPath ? args.slice(1) : args;
+      const version = cliArgs.length === 1 && cliArgs[0] === '--version';
+      const list = cliArgs.length === 5 && cliArgs[0] === 'plugin' && cliArgs[1] === 'list'
+        && cliArgs[2] === '--marketplace' && cliArgs[4] === '--json';
+      return !version && !list;
+    });
+    expect(unexpectedCalls).toEqual([]);
     await fs.remove(file);
     const missing = await runPublicPluginStatus([], { context: scope, cwd, env }, runtime);
     expect(missing.data).toMatchObject({ inSync: false, allSatisfied: false, counts: { pending: 1 } });

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { computeTreeDigest } from '../build/build-cache.mjs';
-import { acquireClient, processManagementInfo, repoRoot } from './native-platform-runtime.mjs';
+import { acquireClient, isolatedEnvironment, processManagementInfo, repoRoot } from './native-platform-runtime.mjs';
 import { cloudCatalog as frozenCatalog } from './plugin-install-latency-catalog.mjs';
 import { verifySample } from './plugin-install-latency-matrix.mjs';
 
@@ -198,7 +198,16 @@ async function main([catalogInput, outputInput, flag, ...extra]) {
       const { launcher, binDirectory, acquisition } = await acquireClient(client, path.join(scratch, client));
       clientVersions[client] = acquisition.version;
       acquisitions[client] = acquisition;
-      directories.push(client === 'pi' ? path.join(binDirectory, 'node_modules', '.bin') : path.dirname(launcher.executable));
+      if (client === 'pi' && process.platform === 'win32') {
+        // AW resolves a verified .cmd next to the prefix's node_modules, so
+        // the npm install's nested node_modules/.bin launcher is unsuitable.
+        const { preparePublicClientPath } = await import('./native-platform-public-aw.mjs');
+        const entry = await preparePublicClientPath({ platform: client, clientBin: binDirectory, launcher,
+          project: repoRoot, env: isolatedEnvironment(scratch) });
+        directories.push(path.dirname(entry));
+      } else {
+        directories.push(client === 'pi' ? path.join(binDirectory, 'node_modules', '.bin') : path.dirname(launcher.executable));
+      }
     }
     // Windows ignores PATH key case and Node accepts only one variant.
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'));
