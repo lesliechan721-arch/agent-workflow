@@ -153,10 +153,11 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
   }
   return path.join(home, platform === 'antigravity' ? '.gemini/config' : `.${platform}`);
 }
-async function probe(ctx: ReadContext, command: string, args: string[]): Promise<string> {
+async function probe(ctx: ReadContext, command: string, args: string[],
+  timeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS): Promise<string> {
   ctx.signal?.throwIfAborted();
   const result = await runNativeCli({ command, args, cwd: ctx.cwd, env: ctx.env,
-    signal: ctx.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
+    signal: ctx.signal, timeoutMs }, ctx.runner);
   if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > MAX_PROBE_OUTPUT_BYTES) {
     throw new Error('probeFailed');
   }
@@ -290,8 +291,10 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
   const candidates = await cliPaths(profile.names, ctx);
-  // A cold Windows Copilot launch can exceed the version timeout. Budget one recovery across PATH entries.
-  let versionRetryAvailable = platform === 'copilot' && (ctx.platform ?? process.platform) === 'win32';
+  // A cold Windows Copilot launch can need more than the ordinary version timeout.
+  // Charge only time beyond that allowance so fast PATH entries leave the reserve available.
+  const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
+  let extraVersionBudgetMs = platform === 'copilot' && (ctx.platform ?? process.platform) === 'win32' ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
     'A client entry could not be inspected safely. Repair its permissions or launcher and check again.')] : [];
   const checkCandidate = async (executable: string): Promise<{ product: ProductInstallation; failure?: Diagnostic }> => {
@@ -300,16 +303,19 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
       const readVersion = async (): Promise<string | null> => {
-        const runVersion = () => probe(ctx, invocation.command, invocation.args);
-        const versionOutput = versionRetryAvailable
-          ? await runVersion().catch((error: unknown) => {
-            rethrowFatalError(error);
-            ctx.signal?.throwIfAborted();
-            if (!(error instanceof NativeCliError) || error.reason !== 'timeout') throw error;
-            versionRetryAvailable = false;
-            return runVersion();
-          })
-          : await runVersion();
+        const startedAt = extraVersionBudgetMs > 0 ? performance.now() : undefined;
+        let versionOutput: string;
+        try {
+          versionOutput = await probe(ctx, invocation.command, invocation.args, versionTimeoutMs + extraVersionBudgetMs);
+        } catch (error) {
+          if (error instanceof NativeCliError && error.reason === 'timeout') extraVersionBudgetMs = 0;
+          throw error;
+        } finally {
+          if (startedAt !== undefined) {
+            const extraElapsedMs = Math.max(0, Math.ceil(performance.now() - startedAt) - versionTimeoutMs);
+            extraVersionBudgetMs = Math.max(0, extraVersionBudgetMs - extraElapsedMs);
+          }
+        }
         if (!profile.identity.test(versionOutput)
           && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
           const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
