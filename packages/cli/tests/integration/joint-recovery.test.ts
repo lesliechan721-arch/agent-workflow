@@ -22,12 +22,13 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { recoveryRetryTargets, type RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { resolvePreferencesPath, writePreferences, setTargets, type DeploymentPreferences } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
-import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
@@ -48,7 +49,6 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
   for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'SKILL.md'),
     `---\nname: ${skill(name)}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
   for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'README.md'), `Use ${name}.\n`);
-  for (const name of names) for (const platform of platforms) await fs.copy(path.join(source, 'plugins', name, 'skills'), path.join(source, 'plugins', name, platform, 'skills'));
   for (const name of names.filter(hasHook)) await fs.outputFile(path.join(source, 'plugins', name, 'pre-apply.mjs'), [
     "import fs from 'node:fs'; const c = JSON.parse(fs.readFileSync(0, 'utf8'));",
     `fs.appendFileSync(${JSON.stringify(hookTrace)}, JSON.stringify({ plugin: c.plugin.name, platform: c.target.platform, scope: c.target.scope }) + '\\n');`,
@@ -70,20 +70,10 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
       manifest.platforms = platforms; manifest.skills = './skills'; delete manifest.extensions;
       if (hasHook(name)) manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
     } })));
-  const entries = [];
-  for (const name of names) {
-    const root = path.join(source, 'plugins', name);
-    const plugin = await readPluginManifest(root, { mode: 'bundle' });
-    const receipt = createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []);
-    for (const platform of platforms) await fs.outputJson(path.join(root, platform, 'skills', skill(name), 'aw-plugin-requirements.json'), receipt);
-    entries.push(await createCatalogManifestV7Entry(plugin, root));
-  }
-  const catalogPath = path.join(source, 'catalog-manifest.json');
-  await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries });
   const config = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
     sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env: isolation.env });
-  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', cwd, env: isolation.env });
   const generated = await fs.readJson(path.join(source, '.aw-generated.json')) as { workspaceIdentity: string };
   const options = { cwd, env: isolation.env, cliVersion: '1.0.0', yes: true };
   const intent = (name: string) => ({ schemaVersion: 3 as const, kind: 'aw-plugin-intents' as const,
@@ -809,26 +799,32 @@ describe('joint recovery through real Catalog and owned outputs', () => {
   });
 
   it.each(['same-path damage', 'new Active', 'changed ref with unchanged Store'] as const)('preserves a joint install receipt after %s between a verified provider and its waiting consumer', async (change) => {
-    const value = await fixture(false, ['generic'], true, { a: [], b: ['d'], d: ['a'], z: [] });
+    // d is the first consumer after a. Its hook exposes early execution even if the write is blocked.
+    const value = await fixture(false, ['generic'], ['d'], {
+      a: [], b: ['d'], d: ['a'], ...(change === 'same-path damage' ? { z: [] } : {}),
+    });
     const user = { ...value.options, scope: 'user' as const };
     const project = { ...value.options, scope: 'project' as const };
     const projectIntent = await fs.readFile(await resolveIntentPath(project));
     const foreign = path.join(value.projectRoot, 'foreign', 'SKILL.md');
     await fs.outputFile(foreign, 'foreign skill\n');
     const protectedFiles = await snapshotRegularTree(value.projectRoot);
-    const active = await resolveActiveCatalogGeneration({ ...user, sourceId: 'team' });
     const statePath = resolveCatalogGenerationStatePath(user.env);
+    const originalState = await fs.readFile(statePath);
+    const state = JSON.parse(originalState.toString()) as CatalogGenerationStateFileV1;
+    const active = state.sources.team!.active!;
+    const store = resolveCatalogStoreLocation({ ...active, env: user.env });
     let nextState: Buffer | undefined;
     if (change === 'new Active') {
-      const originalState = await fs.readFile(statePath);
       await fs.appendFile(path.join(value.source, 'catalog-manifest.json'), '\n');
       const next = await syncCatalogSourceGeneration({ ...user, sourceId: 'team' });
-      expect(next.active?.snapshotDigest).not.toBe(active.snapshotDigest);
+      expect(next).toMatchObject({ outcome: 'activated', active: { logicalIdentity: active.logicalIdentity } });
+      const nextStore = resolveCatalogStoreLocation({ ...next.active!, env: user.env });
+      expect(nextStore.snapshotRoot).not.toBe(store.snapshotRoot);
       nextState = await fs.readFile(statePath);
       await fs.writeFile(statePath, originalState);
     } else if (change === 'changed ref with unchanged Store') {
-      const state = await fs.readJson(statePath) as CatalogGenerationStateFileV1;
-      state.sources.team!.active!.requestedRef = 'refs/heads/changed';
+      active.requestedRef = 'refs/heads/changed';
       nextState = Buffer.from(JSON.stringify(state));
     }
     const plan = await prepareRecovery('install', ['team/a', 'team/b'], user);
@@ -836,7 +832,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(plan.receipt.requestedTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
       .toEqual(['team/a:user', 'team/b:project', 'team/b:user', 'team/d:user']);
 
-    const damagedFile = path.join(active.snapshotPath, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
+    const damagedFile = path.join(store.snapshotRoot, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
     let changed = false;
     const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: async (event) => {
       // d waits for a. Change the source after the completed output and before d checks its scripts and files.
@@ -874,8 +870,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
     await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
-    const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
+    await expect(fs.pathExists(value.hookTrace)).resolves.toBe(false);
     if (change === 'new Active') {
       const action = receipt.recoveryActions.find((item) => item === 'aw plugin sync team/b --context project --target generic')!;
       const capture = createCapturedCliIo();
@@ -883,6 +878,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       for (const [root, name] of [[value.userRoot, 'd'], [value.userRoot, 'b'], [value.projectRoot, 'b']] as const) {
         await expect(fs.readFile(path.join(root, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
       }
+      expect(JSON.parse(await fs.readFile(value.hookTrace, 'utf8'))).toEqual({ plugin: 'd', platform: 'generic', scope: 'user' });
       await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
       await expectSavedIntent(receipt, user);
     }

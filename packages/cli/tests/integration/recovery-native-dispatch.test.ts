@@ -353,15 +353,23 @@ describe('native recovery dispatch', () => {
       if (baseRule) expect(await fs.readFile(rule, 'utf8')).toContain('Keep the draft.');
       if (kind === 'hook') expect(await fs.readJson(path.join(provider, 'hooks', 'hooks.json'))).toHaveProperty('hooks');
       if (kind === 'rule') expect(await fs.pathExists(provider)).toBe(false);
-      const role = path.join(consumer, 'agents', 'bundle-reviewer.md');
-      expect(await fs.readFile(role, 'utf8')).toContain('Check the bundle output.');
-      const before = (await fs.stat(role)).mtimeMs;
+      const unchangedNames = independentUpgrade ? names.filter((name) => name !== 'base') : ['bundle'];
+      const readUnchangedRoles = () => Promise.all(unchangedNames.map(async (name) => {
+        const file = path.join(projectPlugins, 'aw-local-' + name, 'agents', `${name}-reviewer.md`);
+        const [text, { mtimeMs }] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
+        return { name, text, mtimeMs };
+      }));
+      const before = await readUnchangedRoles();
+      for (const { name, text } of before) expect(text).toContain(`Check the ${name} output.`);
       const statusOptions = { cwd, env, cliVersion: options.cliVersion, context: options.context };
       const status = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
       expect(status.data).toMatchObject({ counts: { ready: names.length, pending: 0 }, inSync: true, allSatisfied: true });
-      const sync = await runPublicLifecycle('sync', requested, options, { nativeCliRunner });
-      expect(sync, JSON.stringify(sync)).toMatchObject({ status: 'success', data: { remainingTargets: [], changes: { outputs: 'none' } } });
-      expect((await fs.stat(role)).mtimeMs).toBe(before);
+      // The smaller batches cover standalone no-op syncs. The seven-package case checks the sync that actually upgrades base.
+      if (!independentUpgrade) {
+        const sync = await runPublicLifecycle('sync', requested, options, { nativeCliRunner });
+        expect(sync, JSON.stringify(sync)).toMatchObject({ status: 'success', data: { remainingTargets: [], changes: { outputs: 'none' } } });
+        expect(await readUnchangedRoles()).toEqual(before);
+      }
       if (upgrade) {
         await writeCatalog(1);
         await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: options.cliVersion, env });
@@ -382,8 +390,10 @@ describe('native recovery dispatch', () => {
           expect(await fs.readFile(rule, 'utf8')).toContain('Keep the final draft.');
           const updatedStatus = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
           expect(updatedStatus.data).toMatchObject({ counts: { ready: names.length, pending: 0 }, inSync: true });
-          expect((await runPublicLifecycle('sync', [], options, { nativeCliRunner })).data.changes.outputs).toBe('none');
-          expect((await fs.stat(role)).mtimeMs).toBe(before);
+          if (!independentUpgrade) {
+            expect((await runPublicLifecycle('sync', [], options, { nativeCliRunner })).data.changes.outputs).toBe('none');
+          }
+          expect(await readUnchangedRoles()).toEqual(before);
         } else {
           expect(externalChange).toBe(true);
           expect(update.data.targetResults.map(({ execution, blockerCodes }) => ({ execution, blockerCodes }))).toEqual([
