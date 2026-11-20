@@ -6,8 +6,8 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
-  observeQualification, readSharedProviderStages } from './native-platforms.mjs';
+import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary,
+  readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
@@ -189,6 +189,91 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.equal(versionFrom('opencode v2.2.6\n'), '2.2.6');
   assert.equal(versionFrom('opencode v2.2.6-preview'), null);
   assert.equal(versionFrom('unknown'), null);
+});
+
+// Test Value Gate: invalid group syntax must fail before any install, and the
+// mixed scenario must never run with an executable or a missing native target.
+test('accepts explicit client groups and rejects incomplete mixed qualification requests', () => {
+  const options = (selection, ...flags) => ['--candidate', 'candidate.json', '--client', selection, '--report', 'report.json', ...flags];
+  const mixed = ['--public-aw', '--mixed-native-aw'];
+  assert.doesNotThrow(() => parseArgs(options('codex,pi,claude', '--install', ...mixed)));
+  assert.doesNotThrow(() => parseArgs(options('copilot,grok,opencode', '--install', '--public-aw')));
+  assert.doesNotThrow(() => parseArgs(options('codex', '--executable', path.resolve('client'))));
+  for (const selection of ['', ',codex', 'codex,', 'codex,,pi', 'codex, pi', 'codex,codex', 'codex,unknown', 'codex,all', 'all,pi']) {
+    assert.throws(() => parseArgs(options(selection, '--install')), /invalid-arguments/);
+  }
+  assert.throws(() => parseArgs(options('codex,pi', '--executable', path.resolve('client'))), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('all', '--executable', path.resolve('client'))), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('claude,pi', '--install', '--mixed-native-aw')), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('codex,claude', '--install', ...mixed)), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('codex,pi', '--install', ...mixed)), /invalid-arguments/);
+});
+
+// Test Value Gate: a group must keep trying selected clients after a download
+// failure and report any missing mixed participant, even with a valid candidate.
+test('qualifies the selected group with the same candidate and scope requirements', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-group-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const candidate = path.join(root, 'candidate.json');
+  const client = path.join(root, 'client.mjs');
+  const reportPath = path.join(root, 'report.json');
+  const sourceSha = process.env.GITHUB_SHA ?? 'a'.repeat(40);
+  await writeCandidate(candidate, sourceSha);
+  await fs.writeFile(client, 'console.log("0.0.0");\n');
+  const acquired = [];
+  const options = (selection, ...flags) => parseArgs(['--candidate', candidate, '--client', selection, '--report', reportPath,
+    '--install', '--public-aw', ...flags]);
+  const acquire = async (platform, installRoot) => {
+    acquired.push({ platform, installRoot });
+    if (platform !== 'pi') throw new Error('client-install-failed');
+    return { launcher: { executable: process.execPath, prefix: [client] }, binDirectory: root };
+  };
+
+  const report = await run(options('codex,pi,claude', '--mixed-native-aw'), acquire);
+  assert.equal(report.candidate?.sourceSha, sourceSha);
+  assert.deepEqual(report.clients.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.deepEqual(acquired.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), true);
+  assert.equal(report.boundary.modelRequests, 'loopback qualification fixtures only');
+  assert.equal(report.mixedPublicAw?.status, 'failed');
+  assert.deepEqual(report.mixedPublicAw?.unavailable, ['claude']);
+  const pi = report.clients.find(({ platform }) => platform === 'pi');
+  assert.deepEqual(pi.scopes.map(({ scope }) => scope), ['user', 'project']);
+  assert.deepEqual(pi.publicAw.map(({ scope }) => scope), ['user', 'project']);
+  assert(report.clients.every(({ acquisitionCleanup }) => acquisitionCleanup === 'completed'));
+
+  const second = await run(options('copilot,grok,opencode'), acquire);
+  assert.equal(second.candidate?.manifestSha256, report.candidate.manifestSha256);
+  const grokUnavailable = process.platform === 'darwin' && process.arch === 'x64'
+    || process.platform === 'win32' && process.arch === 'arm64';
+  assert.deepEqual(second.clients.map(({ platform, status }) => [platform, status]), [
+    ['copilot', 'failed'], ['grok', grokUnavailable ? 'excluded' : 'failed'], ['opencode', 'failed'],
+  ]);
+  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
+  assert.equal(second.status, 'failed');
+  assert.equal(second.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), false);
+  assert.equal(second.boundary.modelRequests, 'loopback qualification fixtures only');
+  assert.equal(second.mixedPublicAw, undefined);
+
+  await fs.writeFile(candidate, JSON.stringify({ schemaVersion: 1, sourceSha, files: {} }));
+  const acquiredCount = acquired.length;
+  const unbound = await run(options('claude,pi'), acquire);
+  assert.equal(unbound.reason, 'candidate-content-mismatch');
+  assert.equal(unbound.status, 'failed');
+  assert.equal(unbound.boundary.modelRequests, 'none');
+  assert.equal(acquired.length, acquiredCount);
+  for (const { installRoot } of acquired) {
+    assert.equal(await fs.stat(installRoot).then(() => false, error => error.code === 'ENOENT'), true);
+  }
+});
+
+// Test Value Gate: a fixed unavailable distribution can be excluded, while a
+// required client's missing evidence or failure must prevent a passing group.
+test('preserves required failures and unknowns when aggregating client results', () => {
+  assert.equal(aggregateQualificationStatus(['passed', 'excluded']), 'passed');
+  assert.equal(aggregateQualificationStatus(['excluded', 'passed', 'unverified']), 'unverified');
+  assert.equal(aggregateQualificationStatus(['unverified', 'excluded', 'failed', 'passed']), 'failed');
 });
 
 // Test Value Gate: a green AW envelope must not pass the two-client run when

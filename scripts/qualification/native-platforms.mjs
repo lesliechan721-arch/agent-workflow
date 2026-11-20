@@ -10,8 +10,17 @@ import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|client[,client...]> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]'
+  + `\nClients are ${Object.keys(clients).join(', ')}.`;
 class Unverified extends Error {}
+
+function selectPlatforms(selection) {
+  if (selection === 'all') return Object.keys(clients);
+  const platforms = selection?.split(',') ?? [];
+  if (!platforms.length || platforms.some(platform => !Object.hasOwn(clients, platform))
+    || new Set(platforms).size !== platforms.length) throw new Error('invalid-arguments');
+  return platforms;
+}
 
 export function parseArgs(args) {
   const options = {};
@@ -27,11 +36,13 @@ export function parseArgs(args) {
     if (Object.keys(options).length !== 2 || !options['source-sha']) throw new Error('invalid-arguments');
     return options;
   }
-  if (!options.candidate || !options.report || !(options.client === 'all' || Object.hasOwn(clients, options.client))
+  const platforms = selectPlatforms(options.client);
+  if (!options.candidate || !options.report
     || Boolean(options.install) === Boolean(options.executable)
-    || options.executable && (options.client === 'all' || !path.isAbsolute(options.executable))
+    || options.executable && (platforms.length !== 1 || !path.isAbsolute(options.executable))
     || Object.keys(options).some((key) => ['write-candidate', 'source-sha'].includes(key))) throw new Error('invalid-arguments');
-  if (options['mixed-native-aw'] && (options.client !== 'all' || !options.install || !options['public-aw'])) throw new Error('invalid-arguments');
+  if (options['mixed-native-aw'] && (!options.install || !options['public-aw']
+    || !mixedNativePlatforms.every(platform => platforms.includes(platform)))) throw new Error('invalid-arguments');
   return options;
 }
 
@@ -439,9 +450,10 @@ async function cleanupClientAcquisition(installRoot, result) {
   }
 }
 
-export async function run(options) {
-  const codexBehaviorRequested = options['public-aw'] && ['all', 'codex'].includes(options.client);
-  const loopbackRequested = options['public-aw'] && ['all', 'codex', 'grok', 'copilot'].includes(options.client);
+export async function run(options, acquire = acquireClient) {
+  const selectedPlatforms = selectPlatforms(options.client);
+  const codexBehaviorRequested = options['public-aw'] && selectedPlatforms.includes('codex');
+  const loopbackRequested = options['public-aw'] && selectedPlatforms.some(platform => ['codex', 'grok', 'copilot'].includes(platform));
   const mixedPublicAwRequested = Boolean(options['mixed-native-aw']);
   const mixedClients = new Map();
   const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
@@ -488,7 +500,7 @@ export async function run(options) {
     report.candidate = await verifyCandidate(options.candidate);
     report.processManagement = await processManagementInfo();
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
-    for (const platform of options.client === 'all' ? Object.keys(clients) : [options.client]) {
+    for (const platform of selectedPlatforms) {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
       report.clients.push(result);
       if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
@@ -501,7 +513,7 @@ export async function run(options) {
         let clientBin;
         if (options.install) {
           installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
-          const acquired = await acquireClient(platform, installRoot);
+          const acquired = await acquire(platform, installRoot);
           launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
           if (mixedPublicAwRequested && mixedNativePlatforms.includes(platform)) {
             mixedClients.set(platform, { ...acquired, installRoot, result });
