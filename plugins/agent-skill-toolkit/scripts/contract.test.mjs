@@ -9,18 +9,15 @@ import test from 'node:test';
 const root = realpathSync(process.env.AW_PLUGIN_ROOT);
 const windows = process.platform === 'win32';
 const skills = [
-  'author-agent-skill',
-  'review-agent-skill',
-  'simplify-agent-skill',
+  'agent-skill',
   'audit-agent-skill-evals',
 ];
-const manualSkills = new Set(['review-agent-skill', 'simplify-agent-skill']);
 
 function runtimeSkill(platform, name) {
   return path.join(root, platform, 'skills', name);
 }
 
-test('publishes four Skills with explicit review and simplification policies', () => {
+test('publishes two model-callable Skills with valid public metadata', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'agent-skill-toolkit');
   assert.ok(!(manifest.requires?.aw?.capabilities ?? []).includes('aw.review-publication.v1'));
@@ -29,9 +26,8 @@ test('publishes four Skills with explicit review and simplification policies', (
     for (const skill of skills) {
       const frontmatter = readFileSync(path.join(runtimeSkill(platform, skill), 'SKILL.md'), 'utf8')
         .split(/^---\s*$/mu)[1].split(/\r?\n/u).map(line => line.trim());
-      assert.equal(frontmatter.includes('disable-model-invocation: true'), manualSkills.has(skill), `${platform}/${skill}`);
+      assert.equal(frontmatter.includes('disable-model-invocation: true'), false, `${platform}/${skill}`);
       assert.equal(frontmatter.includes('user-invocable: false'), false, `${platform}/${skill}`);
-      if (manualSkills.has(skill)) assert.ok(frontmatter.includes('user-invocable: true'), `${platform}/${skill}`);
     }
   }
 
@@ -41,11 +37,11 @@ test('publishes four Skills with explicit review and simplification policies', (
       .split(/\r?\n/u)
       .map((line) => line.trim())
       .filter((line) => line.startsWith('allow_implicit_invocation:'));
-    assert.deepEqual(policyLines, [`allow_implicit_invocation: ${!manualSkills.has(skill)}`], skill);
+    assert.deepEqual(policyLines, ['allow_implicit_invocation: true'], skill);
 
     const args = [
       'dev', 'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
-      '--frontmatter-profile', manualSkills.has(skill) ? 'claude-current' : 'portable-agent-skills',
+      '--frontmatter-profile', 'portable-agent-skills',
       '--codex-metadata', 'required',
       '--json',
     ];
@@ -61,51 +57,43 @@ test('publishes four Skills with explicit review and simplification policies', (
   }
 });
 
-test('materializes shared methods and independent tools on both platforms', () => {
+test('materializes co-located references and independent tools on both platforms', () => {
   const targets = [
-    ['author-agent-skill', 'references/skill-invocation.md'],
-    ['author-agent-skill', 'references/skill-composition.md'],
-    ['author-agent-skill', 'references/skill-format.md'],
-    ['author-agent-skill', 'scripts/init-skill.mjs'],
-    ['author-agent-skill', 'scripts/check-skill.mjs'],
-    ['author-agent-skill', 'assets/tooling-NOTICE.txt'],
-    ['simplify-agent-skill', 'references/skill-composition.md'],
-    ['simplify-agent-skill', 'references/skill-format.md'],
-    ['simplify-agent-skill', 'scripts/check-skill.mjs'],
-    ['simplify-agent-skill', 'assets/tooling-NOTICE.txt'],
-    ['review-agent-skill', 'references/skill-invocation.md'],
-    ['review-agent-skill', 'references/skill-composition.md'],
-    ['review-agent-skill', 'references/skill-format.md'],
-    ['review-agent-skill', 'scripts/check-skill.mjs'],
-    ['review-agent-skill', 'assets/tooling-NOTICE.txt'],
-    ['review-agent-skill', 'references/architecture-review.md'],
-    ['review-agent-skill', 'references/public-surface-review.md'],
+    ['agent-skill', 'references/design-and-validation.md'],
+    ['agent-skill', 'references/skill-invocation.md'],
+    ['agent-skill', 'references/skill-composition.md'],
+    ['agent-skill', 'references/skill-format.md'],
+    ['agent-skill', 'references/trigger-development.md'],
+    ['agent-skill', 'references/script-authoring.md'],
+    ['agent-skill', 'references/eval-design.md'],
+    ['agent-skill', 'references/ablation-acceptance.md'],
+    ['agent-skill', 'scripts/init-skill.mjs'],
+    ['agent-skill', 'scripts/check-skill.mjs'],
+    ['agent-skill', 'assets/tooling-NOTICE.txt'],
+    ['audit-agent-skill-evals', 'references/eval-audit-standard.md'],
+    ['audit-agent-skill-evals', 'references/formal-admission.md'],
   ];
   for (const platform of ['codex', 'claude']) {
-    const copies = new Map();
     for (const [skill, relative] of targets) {
       const file = path.join(runtimeSkill(platform, skill), relative);
-      assert.equal(statSync(file).isFile(), true);
-      const bytes = readFileSync(file);
-      if (copies.has(relative)) assert.deepEqual(bytes, copies.get(relative), `${platform}/${relative}`);
-      else copies.set(relative, bytes);
+      assert.equal(statSync(file).isFile(), true, `${platform}/${skill}/${relative}`);
       if (relative.startsWith('scripts/')) {
         const result = spawnSync(process.execPath, [file, '--help'], { encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr || result.stdout);
       }
     }
-    for (const oldName of ['invocation-and-description.md', 'composition-audit.md']) {
-      assert.equal(existsSync(path.join(runtimeSkill(platform, 'author-agent-skill'), 'references', oldName)), false);
+    for (const retired of ['author-agent-skill', 'review-agent-skill', 'simplify-agent-skill']) {
+      assert.equal(existsSync(runtimeSkill(platform, retired)), false, `${platform}/${retired}`);
     }
-    const checker = path.join(runtimeSkill(platform, 'author-agent-skill'), 'scripts/check-skill.mjs');
+    const checker = path.join(runtimeSkill(platform, 'agent-skill'), 'scripts/check-skill.mjs');
     for (const skill of skills) {
       const result = spawnSync(process.execPath, [checker, runtimeSkill(platform, skill), '--format', 'json'], {
         encoding: 'utf8',
       });
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const receipt = JSON.parse(result.stdout);
-      assert.equal(receipt.ok, true);
-      assert.equal(receipt.complete, true);
+      assert.equal(receipt.ok, true, JSON.stringify(receipt));
+      assert.equal(receipt.complete, true, JSON.stringify(receipt));
     }
   }
 });

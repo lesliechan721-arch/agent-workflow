@@ -1,6 +1,6 @@
 interface:
   display_name: "Agent Content"
-  short_description: "设计和评价最小、可达、可执行的 Agent-facing 内容"
+  short_description: "编写、重构和评价高杠杆、无冗余的 Agent-facing 内容"
   default_prompt: "使用 $agent-content 处理当前 Agent-facing 内容请求。"
 
 policy:

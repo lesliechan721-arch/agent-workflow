@@ -4,9 +4,7 @@
     "kind": "trigger",
     "unitUnderTest": "develop-aw",
     "participants": [
-      "review-agent-skill",
-      "simplify-agent-skill",
-      "author-agent-skill"
+      "agent-skill"
     ],
     "policy": {
       "optimization": "precision-first",
@@ -104,7 +102,7 @@
         "boundary"
       ],
       "input": {
-        "query": "$simplify-agent-skill 简化这个 AW 插件里的 Skill，保留功能和当前修改；不运行模型实验。",
+        "query": "$agent-skill 简化这个 AW 插件里的 Skill，保留功能和当前修改；不运行模型实验。",
         "expectedLoad": true
       },
       "audit": {
@@ -119,7 +117,7 @@
         "boundary"
       ],
       "input": {
-        "query": "$author-agent-skill 修改这个 AW 插件里的 Skill，让它处理新增的输入类型，并检查受影响内容。",
+        "query": "$agent-skill 修改这个 AW 插件里的 Skill，让它处理新增的输入类型，并检查受影响内容。",
         "expectedLoad": true
       },
       "audit": {

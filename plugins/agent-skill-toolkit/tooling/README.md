@@ -10,7 +10,7 @@ node plugins/agent-skill-toolkit/tooling/build.mjs --out /absolute/path/to/new-o
 pnpm --dir plugins/agent-skill-toolkit/tooling test
 ```
 
-输出父目录必须存在，输出目录必须尚不存在。独立构建产生四个 `skills/<skill>/scripts/*.mjs` 副本和三个 `assets/tooling-NOTICE.txt`。每个脚本内含所需 parser；运行只依靠 Node 和显式输入。NOTICE 保留通用依赖许可。AW 使用 `scripts/build-tools.mjs` 调用同一构建函数，并只写经核对的 staging 副本中的声明目标。
+输出父目录必须存在，输出目录必须尚不存在。独立构建产生 `skills/agent-skill/` 下的两个 `scripts/*.mjs` 副本和一份 `assets/tooling-NOTICE.txt`。每个脚本内含所需 parser；运行只依靠 Node 和显式输入。NOTICE 保留通用依赖许可。AW 使用 `scripts/build-tools.mjs` 调用同一构建函数，并只写经核对的 staging 副本中的声明目标。
 
 `test:isolated` 是显式 macOS 验证：
 

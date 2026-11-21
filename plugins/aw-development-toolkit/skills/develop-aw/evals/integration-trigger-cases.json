@@ -4,7 +4,7 @@
     "kind": "trigger",
     "unitUnderTest": "develop-aw",
     "participants": [
-      "review-agent-skill",
+      "agent-skill",
       "agent-content"
     ],
     "policy": {
@@ -44,7 +44,7 @@
         "representative"
       ],
       "input": {
-        "query": "$review-agent-skill 只读评审这个 AW 插件的 manifest 与已有 materialized profiles，不重建。",
+        "query": "$agent-skill 只读评审这个 AW 插件的 manifest 与已有 materialized profiles，不重建。",
         "expectedLoad": true
       },
       "audit": {
@@ -76,7 +76,7 @@
         "representative"
       ],
       "input": {
-        "query": "$review-agent-skill 只读检查 AW Catalog inventory、依赖和 snapshot currentness，别联网或 build。",
+        "query": "$agent-skill 只读检查 AW Catalog inventory、依赖和 snapshot currentness，别联网或 build。",
         "expectedLoad": true
       },
       "audit": {
@@ -108,7 +108,7 @@
         "representative"
       ],
       "input": {
-        "query": "$review-agent-skill 审核两个 AW 插件之间的运行时引用和 Skill 交接，不修改。",
+        "query": "$agent-skill 审核两个 AW 插件之间的运行时引用和 Skill 交接，不修改。",
         "expectedLoad": true
       },
       "audit": {
