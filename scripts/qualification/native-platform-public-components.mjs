@@ -103,26 +103,48 @@ function receiptDiagnostics(value) {
   return facts.length ? { diagnostics: facts } : {};
 }
 
-function componentReceiptEvidence(value, command, platform) {
+const grokAvailabilityStates = ['available', 'missing', 'unsupported', 'unknown'];
+const grokDiscoveryReasons = ['clientDiscoveryIncomplete', 'clientEntryUnresolved', 'clientIdentityUnconfirmed',
+  'clientInstallInterfaceUnsupported', 'clientNotFound', 'clientProbeFailed', 'clientVersionUnknown', 'clientVersionUnsupported'];
+
+function grokTargetAvailability(value) {
+  const target = rows(value.data?.availability, 16).find(item => item?.id === 'grok');
+  if (!grokAvailabilityStates.includes(target?.availability)) return undefined;
+  const diagnosticCodes = rows(target.diagnostics, 8).map(item => item?.code).filter(code => grokDiscoveryReasons.includes(code));
+  return { target: 'grok', availability: target.availability, installations: rows(target.installations, 8)
+    .filter(item => item?.product === 'cli' && grokAvailabilityStates.includes(item.availability)).map(item => ({
+      availability: item.availability, reasonCodes: rows(item.reasonCodes, 8).filter(code => grokDiscoveryReasons.includes(code)),
+    })), ...(diagnosticCodes.length ? { diagnosticCodes } : {}) };
+}
+
+export function componentReceiptEvidence(value, command, platform, traceMode) {
   if (!value) return {};
-  const installScope = command.command === 'plugin.install' ? command.scope : undefined;
+  const requestedScope = ['plugin.install', 'plugin.remove'].includes(command.command) ? command.scope : undefined;
   const targets = rows(value.data?.targetResults, 64).filter(target => command.pluginIds?.includes(target?.pluginId)
     && target.target === platform && ['user', 'project'].includes(target.scope)
-    && (!installScope || target.scope === installScope)).slice(0, 16).map(target => {
+    && (!requestedScope || target.scope === requestedScope)).slice(0, 16).map(target => {
     const diagnostics = rows(target.deploymentReceipts, 8).flatMap(receipt => rows(receipt?.diagnostics, 8));
     return { pluginId: target.pluginId, target: platform, scope: target.scope,
       ...(['not-run', 'no-op', 'applied', 'partial', 'failed'].includes(target.execution) ? { execution: target.execution } : {}),
       blockerCodes: rows(target.blockerCodes, 16).filter(code => receiptCodes.has(code)), ...receiptDiagnostics(diagnostics) };
   });
-  return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics), ...(targets.length ? { targets } : {}) } };
+  const targetAvailability = traceMode === 'grok-component-discovery' ? grokTargetAvailability(value) : undefined;
+  return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics), ...(targets.length ? { targets } : {}),
+    ...(targetAvailability ? { targetAvailability } : {}) } };
 }
 
-async function readCodexComponentTrace(file) {
+const componentTraceCategories = {
+  'codex-component-install': ['codex-version', 'codex-plugin-list', 'codex-marketplace-list', 'windows-system-powershell'],
+  'grok-component-discovery': ['grok-version', 'grok-help', 'grok-plugin-help', 'grok-plugin-list-help'],
+  'claude-component-remove': ['claude-version', 'claude-plugin-list', 'claude-marketplace-list', 'claude-plugin-disable', 'claude-plugin-uninstall'],
+};
+
+async function readComponentTrace(file, mode) {
   const { state, records } = await readManagedTrace(file);
   const installation = records.filter(row => ['loading-runner', 'installed', 'runner-install-failed', 'configuration-rejected'].includes(row?.state)
     && row.phase === 'installation').at(-1)?.state;
   return { state, ...(installation ? { installation } : {}), records: records.filter(row => row?.phase === 'finish'
-    && ['codex-version', 'codex-plugin-list', 'codex-marketplace-list', 'windows-system-powershell'].includes(row.category)
+    && componentTraceCategories[mode].includes(row.category)
     && Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0 && typeof row.threw === 'boolean'
     && (row.exitCode === null || Number.isSafeInteger(row.exitCode))).map(row => ({
     category: row.category, elapsedMs: row.elapsedMs, threw: row.threw, exitCode: row.exitCode,
@@ -130,6 +152,10 @@ async function readCodexComponentTrace(file) {
     ...(['timeout', 'aborted', 'exit'].includes(row.reason) ? { reason: row.reason } : {}),
     ...(['nativeCliTimedOut', 'nativeCliFailed', 'nativeCliExecutableMissing'].includes(row.errorCode) ? { errorCode: row.errorCode } : {}),
     ...(['ENOENT', 'EACCES', 'EPERM'].includes(row.causeCode) ? { causeCode: row.causeCode } : {}),
+    ...(mode === 'claude-component-remove' && row.cleanupUnconfirmed === true
+      && ['identity-lookup', 'marker-lookup', 'inspection-deadline', 'cleanup-deadline', 'process-group-live',
+        'process-group-sigterm', 'process-group-sigkill', 'process-group-exit-check', 'child-pid-unavailable'].includes(row.cleanupKind)
+      ? { cleanupKind: row.cleanupKind } : {}),
   })) };
 }
 
@@ -712,21 +738,27 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     if (process.platform === 'linux') {
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
-    let installTraceIndex = 0;
+    let componentTraceIndex = 0;
     async function result(args, cwd = project, trustRetry) {
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
-      const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && args[0] === 'target' && args[1] === 'set';
       const command = componentCommand(args, dependencies);
+      const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && command.command === 'target.set';
       const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
       const installTrace = traceEntry && platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
         && (suite === 'candidate' || matrixInstall);
-      const trace = Boolean(discoveryTrace || installTrace);
+      const grokTrace = traceEntry && platform === 'grok' && command.command === 'target.set';
+      const claudeTrace = traceEntry && platform === 'claude' && scope === 'project' && suite === 'matrix'
+        && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
+        && command.pluginIds[0] === 'matrix/hook-only';
+      const traceMode = installTrace ? 'codex-component-install' : grokTrace ? 'grok-component-discovery'
+        : claudeTrace ? 'claude-component-remove' : undefined;
+      const trace = Boolean(discoveryTrace || traceMode);
       const traceFile = discoveryTrace ? path.join(root, 'target-discovery.jsonl')
-        : installTrace ? path.join(root, `${suite}-install-${++installTraceIndex}.jsonl`) : undefined;
+        : traceMode ? path.join(root, `${traceMode}-${++componentTraceIndex}.jsonl`) : undefined;
       const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
-        ...(installTrace ? { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: 'codex-component-install' } : {}),
+        ...(traceMode ? { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: traceMode } : {}),
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
       let response;
       let value;
@@ -734,7 +766,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       let stage = 'execute';
       const recordFailure = (stage, kind, error, receipt) => {
         failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
-          ...componentReceiptEvidence(receipt, command, platform) };
+          ...componentReceiptEvidence(receipt, command, platform, traceMode) };
         const failures = report.commandFailures ??= [];
         if (failures.length < 16) failures.push(failure);
         else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
@@ -756,7 +788,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
         throw error;
       } finally {
         if (discoveryTrace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
-        if (installTrace && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readCodexComponentTrace(traceFile);
+        if (traceMode && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(traceFile, traceMode);
       }
       const outcome = { exitCode: response.exitCode, value, failure };
       const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)

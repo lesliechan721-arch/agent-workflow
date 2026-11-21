@@ -3,7 +3,10 @@ import path from 'node:path';
 
 const PUBLIC_MARKER = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 const UUID = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/giu;
-const componentTraceMode = 'codex-component-install';
+const componentTraceModes = new Map([
+  ['codex-component-install', 'codex:win32'], ['grok-component-discovery', 'grok:win32'], ['claude-component-remove', 'claude:darwin'],
+]);
+const usesComponentTrace = (mode, client, platform) => componentTraceModes.get(mode) === `${client}:${platform}`;
 const powerShellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand'];
 const matchesArgs = (args, expected) => args.length === expected.length && expected.every((arg, index) => args[index] === arg);
 
@@ -13,6 +16,44 @@ function codexComponentCategory(args) {
   if (args.length === 5 && args[4] === '--json' && matchesArgs(args.slice(0, 3), ['plugin', 'list', '--marketplace'])) {
     return 'codex-plugin-list';
   }
+}
+
+function nativeComponentCategory(client, args) {
+  if (client === 'codex') return codexComponentCategory(args);
+  if (matchesArgs(args, ['--version'])) return `${client}-version`;
+  if (client === 'grok') {
+    if (matchesArgs(args, ['--help'])) return 'grok-help';
+    if (matchesArgs(args, ['plugin', '--help'])) return 'grok-plugin-help';
+    if (matchesArgs(args, ['plugin', 'list', '--help'])) return 'grok-plugin-list-help';
+  } else {
+    if (matchesArgs(args, ['plugin', 'marketplace', 'list', '--json'])) return 'claude-marketplace-list';
+    if (matchesArgs(args, ['plugin', 'list', '--json'])) return 'claude-plugin-list';
+    if (args.length === 5 && args[0] === 'plugin' && ['disable', 'uninstall'].includes(args[1]) && args[3] === '--scope' && args[4] === 'local') {
+      return `claude-plugin-${args[1]}`;
+    }
+  }
+}
+
+const cleanupKinds = new Map([
+  ['Process tree cleanup unconfirmed: POSIX process identity lookup failed.', 'identity-lookup'],
+  ['Native CLI cleanup unconfirmed: POSIX process marker lookup failed.', 'marker-lookup'],
+  ['Process tree cleanup unconfirmed: POSIX process inspection deadline exceeded.', 'inspection-deadline'],
+  ['Native CLI cleanup unconfirmed: cleanup timed out.', 'cleanup-deadline'],
+  ['Native CLI cleanup unconfirmed: process group is still running.', 'process-group-live'],
+  ['Native CLI cleanup unconfirmed: could not signal process group SIGTERM.', 'process-group-sigterm'],
+  ['Native CLI cleanup unconfirmed: could not signal process group SIGKILL.', 'process-group-sigkill'],
+  ['Native CLI cleanup unconfirmed: could not verify process group exit.', 'process-group-exit-check'],
+  ['Native CLI cleanup unconfirmed: child PID is unavailable.', 'child-pid-unavailable'],
+]);
+
+function nativeCleanupKind(error) {
+  const message = error?.message;
+  // The process observer prefixes this internal error before adding query
+  // detail. The trace retains only the category, never the detail or message.
+  if (typeof message === 'string' && message.startsWith('Process tree cleanup unconfirmed: POSIX process marker lookup failed (stage=')) {
+    return 'marker-lookup';
+  }
+  return cleanupKinds.get(message);
 }
 
 function observeCompletion(base, invocation, finish) {
@@ -95,7 +136,10 @@ function mixedNativeTraceFilter() {
 
 export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform,
   nextOperationId, mode }) {
+  const componentTrace = usesComponentTrace(mode, client, platform);
+  if (mode !== undefined && !componentTrace) return base;
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
+  const grokNodeEntry = mode === 'grok-component-discovery' ? canonicalFile(process.execPath) : undefined;
   function sameFile(file, target) {
     if (file === target && typeof file === 'string') return true;
     if (platform !== 'win32' || typeof file !== 'string' || typeof target !== 'string'
@@ -114,9 +158,8 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   const queryEntry = client === 'codex' && platform === 'win32' && typeof systemRoot === 'string' && path.isAbsolute(systemRoot)
     ? canonicalFile(path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')) : undefined;
   const preloadMarker = env[PUBLIC_MARKER];
-  const preloadMarkers = markerValues(process.env, env);
+  const preloadMarkers = componentTrace ? [] : markerValues(process.env, env);
   const sharedProviderTiming = Boolean(queryEntry) && env.AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING === '1';
-  const componentTrace = mode === componentTraceMode && client === 'codex' && platform === 'win32';
   const componentSamples = new Map();
   const mixedFilter = client === 'claude-pi' ? mixedNativeTraceFilter() : undefined;
   let operationId = 0;
@@ -133,10 +176,12 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       const firstArgument = Array.isArray(invocation.args) ? invocation.args[0] : undefined;
       const argumentFile = canonicalFile(firstArgument);
       const direct = matchesTarget(commandFile);
-      const prefixed = !direct && matchesTarget(argumentFile);
+      // The Windows npm shim resolves to the current Node and the known script.
+      const prefixed = !direct && matchesTarget(argumentFile)
+        && (mode !== 'grok-component-discovery' || sameFile(commandFile, grokNodeEntry));
       const validArgs = Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string');
       if (componentTrace) {
-        if (validArgs && (direct || prefixed)) componentCategory = codexComponentCategory(prefixed ? invocation.args.slice(1) : invocation.args);
+        if (validArgs && (direct || prefixed)) componentCategory = nativeComponentCategory(client, prefixed ? invocation.args.slice(1) : invocation.args);
         if (validArgs && invocation.args.length === 5 && matchesArgs(invocation.args.slice(0, 4), powerShellArgs)
           && sameFile(commandFile, queryEntry)) componentCategory = 'windows-system-powershell';
       } else if ((direct || prefixed) && validArgs) {
@@ -179,10 +224,12 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
             ? value.reason : undefined;
           const errorCode = value?.operationDiagnostic?.code;
           const causeCode = value?.operationDiagnostic?.cause?.code;
+          const cleanupKind = client === 'claude' && reason ? nativeCleanupKind(value.cleanupError) : undefined;
           emit({ phase: 'finish', category: componentCategory, elapsedMs: performance.now() - start, threw, exitCode,
             ...(!threw || reason ? { timedOut: reason === 'timeout' } : {}),
             ...(value?.cleanupError ? { cleanupUnconfirmed: true } : ((!threw || reason) && exitCode !== 250
               ? { cleanupUnconfirmed: false } : {})),
+            ...(cleanupKind ? { cleanupKind } : {}),
             ...(reason ? { reason } : {}),
             ...(['nativeCliTimedOut', 'nativeCliFailed', 'nativeCliExecutableMissing'].includes(errorCode) ? { errorCode } : {}),
             ...(['ENOENT', 'EACCES', 'EPERM'].includes(causeCode) ? { causeCode } : {}),
@@ -313,10 +360,12 @@ export function createManagedPluginTraceRunner(base, { env = process.env, emit, 
 }
 
 function traceRequested(env, platform) {
+  const client = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT;
   return env.GITHUB_ACTIONS === 'true' && env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
     && ['linux', 'darwin', 'win32'].includes(platform)
-    && (['codex', 'pi', 'claude', 'copilot', 'opencode', 'claude-pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
-      || platform === 'win32' && env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT === 'antigravity')
+    && (['codex', 'pi', 'claude', 'copilot', 'opencode', 'claude-pi'].includes(client)
+      || platform === 'win32' && client === 'antigravity'
+      || client === 'grok' && usesComponentTrace(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, client, platform))
     && typeof env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE === 'string'
     && path.isAbsolute(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE);
 }
@@ -328,7 +377,7 @@ export function managedTraceConfiguration(env = process.env, platform = process.
     const file = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
     const client = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT;
     const mode = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE;
-    if (mode !== undefined && (mode !== componentTraceMode || client !== 'codex' || platform !== 'win32')) return undefined;
+    if (mode !== undefined && !usesComponentTrace(mode, client, platform)) return undefined;
     if (!Array.isArray(entries) || !entries.length || !entries.every((entry) => canonicalFile(entry))
       || typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
     return { entries, file, client, ...(mode ? { mode } : {}) };
@@ -349,7 +398,7 @@ async function installFromEnvironment() {
     let operationId = 0;
     const diagnosticOptions = { ...configuration, env: process.env, emit: writer.emit, nextOperationId: () => ++operationId };
     const wrapper = createManagedTraceRunner(base, diagnosticOptions);
-    if (configuration.mode !== componentTraceMode) {
+    if (configuration.mode === undefined) {
       const { defaultPluginProcessRunner: pluginRunner } = await import('../../packages/cli/dist/src/utils/plugin-scripts.js');
       const pluginRun = pluginRunner.run;
       pluginRunner.run = createManagedPluginTraceRunner((invocation, options) => pluginRun.call(pluginRunner, invocation, options), diagnosticOptions);

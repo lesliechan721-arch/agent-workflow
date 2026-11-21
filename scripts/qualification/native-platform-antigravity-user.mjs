@@ -30,6 +30,67 @@ function commandEvidence(result) {
       descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } };
 }
 
+const boolean = value => typeof value === 'boolean';
+const nonnegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
+const nullable = check => value => value === null || check(value);
+const oneOf = (...values) => value => values.includes(value);
+const signal = value => typeof value === 'string' && Object.hasOwn(os.constants.signals, value);
+const lookupFailureReason = oneOf('callback-error', 'deadline-exceeded', 'synchronous-error');
+const knownLookupCode = value => typeof value === 'string' && (Object.hasOwn(os.constants.errno, value)
+  || ['ABORT_ERR', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', 'DARWIN_MARKER_RESULT_INVALID', 'DARWIN_IDENTITY_RESULT_INVALID'].includes(value));
+
+function setupFields(value, fields) {
+  return Object.fromEntries(Object.entries(fields).flatMap(([field, isValid]) => {
+    const fact = value?.[field];
+    return isValid(fact) ? [[field, fact]] : [];
+  }));
+}
+
+function recordProjectSetupEvidence(record, result, diagnostics, timings) {
+  if (result) {
+    Object.assign(record, setupFields(result, { exitCode: nullable(Number.isSafeInteger), signal: nullable(signal),
+      timedOut: boolean, cancelled: boolean, maxBufferExceeded: boolean,
+      terminationReason: nullable(oneOf('complete', 'timeout', 'abort', 'max-buffer')) }));
+    record.processManagement = setupFields({ mode: result.containmentMode }, {
+      mode: oneOf('managed', 'verified-observed', 'observed', 'unmanaged-confirmed'),
+    });
+    // Exit 250 from the Windows helper leaves the child's cleanup unconfirmed.
+    if (result.exitCode !== 250) Object.assign(record.processManagement,
+      setupFields(result, { gradingEvidenceAccepted: boolean, descendantCleanupGuaranteed: boolean }));
+  }
+  if (Array.isArray(diagnostics) && diagnostics.length) {
+    const selected = diagnostics.length === 1 ? diagnostics : [diagnostics[0], diagnostics.at(-1)];
+    record.processDiagnostics = selected.map(diagnostic => ({
+      ...setupFields(diagnostic, {
+        stage: oneOf('observation', 'identity-observation', 'termination-start', 'termination-kill', 'termination-verification'),
+        reason: oneOf('marker-lookup-failed', 'identity-lookup-failed', 'inspection-deadline-exceeded', 'inspection-lease-invalid',
+          'root-marker-missing', 'known-process-marker-missing', 'initial-group-marker-missing', 'process-marker-unreadable',
+          'cleanup-snapshot', 'marked-process-group-changed', 'root-process-group-changed', 'live-descendants-before-completion',
+          'initial-group-ownership-unconfirmed', 'verified-process-still-running'),
+        markerLookupSucceeded: nullable(boolean), snapshotStartedAt: nonnegativeInteger,
+        snapshotDeadline: nonnegativeInteger, markerLookupAttempts: nonnegativeInteger,
+      }),
+      ...(diagnostic?.lookupFailure ? { lookupFailure: setupFields(diagnostic.lookupFailure,
+        { reason: lookupFailureReason, code: knownLookupCode, signal, killed: boolean }) } : {}),
+      ...(Array.isArray(diagnostic?.queries) ? { queries: diagnostic.queries.slice(0, 8).map(query => setupFields(query, {
+        kind: oneOf('identity', 'marker', 'darwin-marker'), startedAt: nonnegativeInteger, deadline: nonnegativeInteger,
+        callbackAt: nonnegativeInteger, settledAt: nonnegativeInteger, callbackState: oneOf('returned', 'pending', 'not-called'),
+        completion: oneOf('pending', 'callback', 'deadline', 'synchronous-error'), failureReason: lookupFailureReason,
+      })) } : {}),
+    }));
+  }
+  if (Array.isArray(timings?.records)) {
+    record.processQueryTimings = { ...setupFields(timings, { source: oneOf('existing-observer-execFile-callbacks'),
+      clock: oneOf('unix-epoch-ms'), capturedAt: nonnegativeInteger, omitted: nonnegativeInteger }),
+    records: timings.records.slice(0, 24).map(query => setupFields(query, {
+      queryKind: oneOf('identity-ps', 'marker-ps', 'darwin-marker-osascript'), sequence: nonnegativeInteger,
+      startedAt: nonnegativeInteger, timeoutMs: nonnegativeInteger, callbackAt: nonnegativeInteger,
+      status: oneOf('pending', 'callback-success', 'callback-error', 'synchronous-error'),
+      errorCategory: oneOf('timeout', 'output-limit', 'not-found', 'permission-denied', 'aborted', 'nonzero-exit', 'other'),
+    })) };
+  }
+}
+
 /** Keep raw native paths until the management and consumer-file oracles finish. */
 export async function probeAntigravityUser(launcher, context, runCommand = execute, host = process) {
   const report = { scope: 'user', input: 'aw-projection-candidate', status: 'failed', checks: [], commands: [],
@@ -133,7 +194,11 @@ export async function qualifyAntigravityUserScopes(client, launcher, context, op
   }
 }
 
-export async function runAntigravityUserQualification(options) {
+export async function runAntigravityUserQualification(options, {
+  acquireDistribution = acquireAntigravityDistribution,
+  candidateRoot,
+  initializeProject = execute,
+} = {}) {
   const publicAwRequested = options['public-aw'] === true;
   const client = { platform: 'antigravity', requiredVersion: '1.3.4', status: 'failed', scopes: [], cleanup: 'not-started' };
   const report = { schemaVersion: 2, kind: 'antigravity-user-native-qualification', status: 'failed', createdAt: new Date().toISOString(),
@@ -150,20 +215,28 @@ export async function runAntigravityUserQualification(options) {
   try {
     if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('hosted-runner-required');
     getAntigravityDistribution();
-    report.candidate = await verifyCandidate(options.candidate);
+    report.candidate = await verifyCandidate(options.candidate, candidateRoot);
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
     report.processManagement = await processManagementInfo();
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-antigravity-user-')));
     const env = await prepareEnvironment(root);
-    const acquired = await acquireAntigravityDistribution(root, env);
+    const acquired = await acquireDistribution(root, env);
     Object.assign(client, { acquisition: acquired.acquisition, extraction: acquired.extraction, entries: [acquired.entry] });
     const project = path.join(root, 'target'), neutral = path.join(root, 'neutral');
     await fs.mkdir(project); await fs.mkdir(neutral);
-    const setup = await execute({ executable: 'git', prefix: [] },
-      ['init', '--quiet', '--template=', '--initial-branch=qualification', project],
-      { cwd: root, env, stdin: '', timeoutMs: 30_000 });
+    const projectSetup = client.projectSetup = { stage: 'git-init', status: 'failed', timeoutMs: 30_000 };
+    let setup;
+    try {
+      setup = await initializeProject({ executable: 'git', prefix: [] },
+        ['init', '--quiet', '--template=', '--initial-branch=qualification', project],
+        { cwd: root, env, stdin: '', timeoutMs: projectSetup.timeoutMs });
+    } catch (error) {
+      recordProjectSetupEvidence(projectSetup, error?.result, error?.processTreeDiagnostics, error?.publicAwProcessQueryTimings);
+      throw new Error('project-setup-process-unconfirmed');
+    }
+    recordProjectSetupEvidence(projectSetup, setup, undefined, setup.processQueryTimings);
     assertCommand(setup);
-    client.projectSetup = commandEvidence(setup);
+    projectSetup.status = 'passed';
     await qualifyAntigravityUserScopes(client, acquired.launcher, { root, project, neutral, env, executable: acquired.entry.path },
       { publicAw: publicAwRequested });
   } catch (error) {

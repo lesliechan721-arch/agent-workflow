@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { parseAntigravityUserArgs, probeAntigravityUser, qualifyAntigravityUserScopes, runAntigravityUserQualification } from './native-platform-antigravity-user.mjs';
-import { prepareEnvironment } from './native-platform-runtime.mjs';
+import { prepareEnvironment, writeCandidate } from './native-platform-runtime.mjs';
 import { redact } from './native-platforms.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 
@@ -216,4 +216,89 @@ test('fails candidate verification before acquisition or any client execution', 
   assert.equal(report.status, 'failed'); assert.equal(report.clients[0].reason, 'ENOENT');
   assert.equal(report.candidate, undefined); assert.deepEqual(report.clients[0].scopes, []);
   assert.equal(report.clients[0].acquisition, undefined); assert.equal(report.clients[0].cleanup, 'not-started');
+});
+
+async function runProjectSetupFixture(t, initializeProject) {
+  const context = await fixture(t);
+  const previous = process.env.GITHUB_ACTIONS;
+  t.after(() => { if (previous === undefined) delete process.env.GITHUB_ACTIONS; else process.env.GITHUB_ACTIONS = previous; });
+  process.env.GITHUB_ACTIONS = 'true';
+  const candidate = path.join(context.root, 'candidate.json');
+  const reportPath = path.join(context.root, 'report.json');
+  const candidateRoot = path.join(context.root, 'build');
+  for (const directory of ['packages/cli/dist', 'packages/cli/plugins-dist', 'packages/plugin-core/dist',
+    'packages/plugin-core/schemas', 'packages/agent-skill-eval/dist', 'scripts/qualification']) {
+    await fs.mkdir(path.join(candidateRoot, directory), { recursive: true });
+  }
+  await fs.writeFile(path.join(candidateRoot, 'packages/cli/dist/index.js'), '// controlled candidate');
+  await writeCandidate(candidate, process.env.GITHUB_SHA ?? 'a'.repeat(40), candidateRoot);
+  let ownedRoot;
+  const report = await runAntigravityUserQualification({ candidate, report: reportPath, 'public-aw': true }, {
+    candidateRoot,
+    async acquireDistribution(root) {
+      ownedRoot = root;
+      return { acquisition: {}, extraction: {}, entry: { path: path.join(root, 'antigravity'), sha256: 'a'.repeat(64) } };
+    },
+    async initializeProject(launcher, args, options) {
+      assert.deepEqual(launcher, { executable: 'git', prefix: [] });
+      assert.deepEqual(args, ['init', '--quiet', '--template=', '--initial-branch=qualification', path.join(ownedRoot, 'target')]);
+      assert.equal(options.timeoutMs, 30_000);
+      return initializeProject();
+    },
+  });
+  return { report, written: await fs.readFile(reportPath, 'utf8'), ownedRoot };
+}
+
+// Test Value Gate: a cleanup failure during project setup must be identifiable
+// in the public report without publishing any process command or output.
+test('reports an unconfirmed Git setup even after the isolated root is removed', { skip: process.platform === 'win32' }, async t => {
+  const privateData = 'private-process-fixture-value';
+  const earlierDiagnostic = { stage: 'observation', reason: 'marker-lookup-failed', markerLookupSucceeded: null,
+    lookupFailure: { reason: 'callback-error', code: 'EPERM', signal: 'SIGKILL', killed: true } };
+  const diagnostic = { stage: 'termination-start', reason: 'marker-lookup-failed', markerLookupSucceeded: false,
+    snapshotStartedAt: 100, snapshotDeadline: 2_100, markerLookupAttempts: 1, lookupFailure: { reason: 'deadline-exceeded' },
+    queries: [{ kind: 'marker', startedAt: 100, deadline: 2_100, callbackState: 'pending', completion: 'deadline' }] };
+  const trace = { sequence: 1, queryKind: 'marker-ps', startedAt: 100, timeoutMs: 2_000, status: 'pending' };
+  const callback = { sequence: 2, queryKind: 'identity-ps', startedAt: 100, callbackAt: 2_100, status: 'callback-error', errorCategory: 'timeout' };
+  const { report, written, ownedRoot } = await runProjectSetupFixture(t, () => {
+    throw Object.assign(new Error(privateData), {
+      result: completed(privateData, { stderr: privateData, gradingEvidenceAccepted: false }),
+      processTreeDiagnostics: [earlierDiagnostic, { ...diagnostic, commands: [privateData],
+        lookupFailure: { ...diagnostic.lookupFailure, code: privateData, signal: privateData, killed: 7 },
+        queries: [{ ...diagnostic.queries[0], callbackAt: privateData, settledAt: 1.25, failureReason: privateData }] }],
+      publicAwProcessQueryTimings: { clock: privateData, source: 'existing-observer-execFile-callbacks',
+        records: [{ ...trace, environment: privateData, stdout: privateData, errorCategory: privateData }, callback], omitted: 0 },
+    });
+  });
+  const client = report.clients[0];
+  assert.equal(report.status, 'failed');
+  assert.equal(client.reason, 'project-setup-process-unconfirmed');
+  assert.equal(client.cleanup, 'completed');
+  assert.deepEqual(client.scopes, []);
+  assert.equal(client.publicAw, undefined);
+  assert.equal(written.includes(privateData), false);
+  assert.deepEqual(client.projectSetup, { stage: 'git-init', status: 'failed', timeoutMs: 30_000,
+    exitCode: 0, signal: null, timedOut: false, cancelled: false, maxBufferExceeded: false, terminationReason: 'complete',
+    processManagement: { mode: 'verified-observed', gradingEvidenceAccepted: false, descendantCleanupGuaranteed: false },
+    processDiagnostics: [earlierDiagnostic, diagnostic],
+    processQueryTimings: { source: 'existing-observer-execFile-callbacks', records: [trace, callback], omitted: 0 } });
+  await assert.rejects(fs.stat(ownedRoot), { code: 'ENOENT' });
+  assert.deepEqual(JSON.parse(written), report);
+});
+
+// Test Value Gate: the Windows helper's own failure exit cannot certify cleanup
+// even when the process result initializes both evidence flags as true.
+test('keeps Windows helper exit 250 unconfirmed in the Git setup report', { skip: process.platform === 'win32' }, async t => {
+  const { written } = await runProjectSetupFixture(t, () => completed('', {
+    exitCode: 250, gradingEvidenceAccepted: true, descendantCleanupGuaranteed: true,
+  }));
+  const diagnostic = JSON.parse(written);
+  assert.equal(diagnostic.status, 'failed');
+  const client = diagnostic.clients[0];
+  assert.equal(client.reason, 'command-failed');
+  assert.equal(client.projectSetup.stage, 'git-init');
+  assert.equal(client.projectSetup.status, 'failed');
+  assert.equal(client.projectSetup.exitCode, 250);
+  assert.deepEqual(client.projectSetup.processManagement, { mode: 'verified-observed' });
+  assert.deepEqual(client.scopes, []);
 });

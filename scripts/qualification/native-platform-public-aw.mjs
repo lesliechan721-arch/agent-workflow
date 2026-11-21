@@ -356,10 +356,15 @@ async function observePublicComponentSuites(ctx, publicClientEntry) {
     for (const suite of suites) {
       try {
         await ctx.check('public-components-' + scope + '-' + suite, async () => {
-          const trace = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true'
-            && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
-          const traceEntry = trace && (['copilot', 'antigravity'].includes(ctx.platform) ? ctx.launcher.prefix[0] ?? publicClientEntry
-            : ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite) ? publicClientEntry : undefined);
+          const hostedTrace = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+          let traceEntry;
+          if (hostedTrace && process.platform === 'win32') {
+            if (['copilot', 'antigravity', 'grok'].includes(ctx.platform)) traceEntry = ctx.launcher.prefix[0] ?? publicClientEntry;
+            else if (ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite)) traceEntry = publicClientEntry;
+          }
+          if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
+            traceEntry = publicClientEntry;
+          }
           const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
             ...(traceEntry ? { traceEntry } : {}),
             ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });

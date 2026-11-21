@@ -7,7 +7,7 @@ import test from 'node:test';
 import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
+import { componentReceiptEvidence, grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
 
@@ -340,6 +340,63 @@ test('keeps Windows Codex Project matrix traces attached to the right installs',
   assert.deepEqual(report.commandFailures.map(failure => [failure.pluginIds[0], failure.stage, failure.exitCode,
     failure.nativeCommandTrace.records[0].elapsedMs]), [['matrix/single-agent', 'command', 4, 2], ['matrix/single-hook', 'execute', 250, 4]]);
   assert(!JSON.stringify(report).includes(sentinel));
+});
+
+// A blocked target preference is just one AW command. Its evidence must
+// distinguish missing samples from a started native check without other targets.
+test('retains Windows Grok target selection evidence without arbitrary discovery data', async () => {
+  const sentinel = 'private_grok_discovery_payload';
+  const sample = { category: 'grok-version', elapsedMs: 5010, threw: true, exitCode: 124, timedOut: true, reason: 'timeout' };
+  for (const traced of [true, false]) {
+    const calls = [];
+    const report = await runComponentQualification({ platform: 'grok', scope: 'user', suite: 'matrix',
+      clientPath: process.env.PATH, traceEntry: process.execPath }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args, { env }) {
+        const command = args.slice(0, 2).join('.');
+        calls.push(command);
+        assert.equal(command, 'target.set');
+        assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, 'grok-component-discovery');
+        if (traced) await fs.writeFile(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, [
+          { phase: 'finish', ...sample, stdout: sentinel, env: sentinel, cleanupKind: 'identity-lookup' },
+          { phase: 'finish', ...sample, category: 'claude-plugin-list', stderr: sentinel },
+        ].map(item => JSON.stringify(item)).join('\n') + '\n', { flag: 'wx' });
+        return { ...publicResponse(command, {}), exitCode: 3, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: { availability: [
+            { id: 'claude', availability: 'unknown', installations: [], diagnostics: [{ code: 'clientProbeFailed', message: sentinel }] },
+            { id: 'grok', availability: 'unknown', ...(traced ? { installations: [{ product: 'cli', availability: 'unknown',
+              id: sentinel, reasonCodes: ['clientProbeFailed', sentinel], entry: { executable: sentinel }, version: sentinel }] }
+              : { installations: [], diagnostics: [{ code: 'clientEntryUnresolved', message: sentinel, detail: { path: sentinel } },
+                { code: sentinel }, { code: { raw: sentinel } }, null] }) },
+          ] },
+        }) };
+      },
+    });
+    assert.deepEqual(calls, ['target.set']);
+    assert.equal(report.status, 'failed');
+    const [failure] = report.commandFailures;
+    assert.deepEqual(failure.awReceipt, { status: 'blocked', targetAvailability: { target: 'grok', availability: 'unknown',
+      ...(traced ? { installations: [{ availability: 'unknown', reasonCodes: ['clientProbeFailed'] }] }
+        : { installations: [], diagnosticCodes: ['clientEntryUnresolved'] }) } });
+    assert.deepEqual(failure.nativeCommandTrace, traced ? { state: 'captured', records: [sample] } : { state: 'not-created', records: [] });
+    assert(!JSON.stringify(report).includes(sentinel));
+  }
+});
+
+// Test Value Gate: an explicit write scope is independent of the context used to inspect status.
+test('scopes removal failure evidence to the requested target and retains command diagnostics', () => {
+  const pluginId = 'matrix/hook-only';
+  const diagnostics = [{ code: 'processCleanupUnconfirmed', severity: 'error' }];
+  const target = { pluginId, target: 'claude', execution: 'failed' };
+  const rows = [{ ...target, scope: 'user', blockerCodes: ['platformExecutionFailed'] },
+    { ...target, scope: 'project', blockerCodes: ['processCleanupUnconfirmed'] }];
+  const value = { schemaVersion: 2, command: 'plugin.remove', status: 'failed', diagnostics, data: { targetResults: rows } };
+  const request = { command: 'plugin.remove', scope: 'project', pluginIds: [pluginId] };
+  const removal = componentReceiptEvidence(value, request, 'claude', 'claude-component-remove').awReceipt;
+  assert.deepEqual(removal, { status: 'failed', diagnostics, targets: [rows[1]] });
+  const status = componentReceiptEvidence({ ...value, command: 'plugin.status' },
+    { command: 'plugin.status', context: 'project', pluginIds: [pluginId] }, 'claude').awReceipt;
+  assert.deepEqual(status.targets, rows);
 });
 
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.

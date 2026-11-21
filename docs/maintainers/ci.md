@@ -197,7 +197,7 @@ Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，
 
 组件资格要求 v2 回执属于本次公开命令，并且状态符合公开退出码。`commandFailures` 保留最多 16 条失败，包含实际取得的退出和清理信息。POSIX 进程观察器会将外层 AW 正常退出时仍存活的后代判为清理失败。有观察记录时，报告附上首末快照、按 PID 和启动时间匹配的进程名、行形态和身份确认。AW 返回失败回执，或 AW 写完回执后外层清理失败时，`awReceipt` 保留受控的状态、诊断和已知夹具的目标结果。`scope` 和 `context` 分别记录命令适用的安装范围与请求上下文。`target.set` 写个人偏好，Catalog 来源命令没有插件安装范围。独立 Catalog 插件各自保留失败及已知夹具名称。[公开 CLI 退出码](../reference/cli.md#3-状态与进程退出码) · [公共组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
-Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。Codex Project 的官方候选或合成矩阵独立安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。`operationPlanStale` 有细分原因时，报告保留既有的受控分类。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
+Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。 Windows Grok 的 `target set` 失败时还会记录 Grok 自己的可用性分类、固定原因码和本次版本、帮助查询的有限样本。macOS 的 Claude Project 组件矩阵移除 `matrix/hook-only` 失败时，会保留本次移除已执行的原生操作类别和已知清理原因。Codex Project 的官方候选或合成矩阵独立安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。`operationPlanStale` 有细分原因时，报告保留既有的受控分类。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
 跨范围依赖资格在隔离环境先为 User 安装官方 `agent-skill-toolkit` 与其依赖，再为 Project 安装 `aw-development-toolkit`。检查项目首次安装完成、两项依赖的五份个人技能文件保持原样、公开项目目录只包含根插件应交付的技能、独立状态就绪及再次同步零写入。Antigravity 另核对根插件的实际目录短名。Grok 再用一条命令显式安装两个项目包，检查二者都已落盘。仅撤销这两项需求后，按根查询应指出两项待清理依赖。一次普通同步应移除两份项目副本，并保留个人和项目根原有的技能文件。[跨范围资格](../../scripts/qualification/native-platform-public-catalog.mjs)
 
@@ -228,7 +228,7 @@ gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=all -f 
 gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=antigravity-user-public -f hosts=all
 ```
 
-独立 User 报告绑定 source、run attempt、candidate 摘要、实际入口摘要及 acquisition／scope 清理结果。Linux/macOS 管理命令保留严格 `verified-observed`；Windows 走既有 Job 路径，命令保留实际 `containmentMode`、grading 和后代清理字段，Job/helper 证据单列，不按 OS 改写命令模式。每条原生命令使用 EOF 和原30秒时限。临时 HOME/AW/Agent/XDG 根中，三轮分别验证安装、版本更新和同版本正文刷新；每轮从目标与 neutral 的新管理查询确认全局 enabled，并读取原生 `path` 指向的实际副本字节和完整 AW owner。内部判定使用原始 stdout，全部内容判定完成后才对报告脱敏。卸载后双侧缺席、进程及清理均为必需检查；Skill 加载／模型采用未知单列且不阻塞。该候选取证不新增或扩大 production profile，其他环境的支持仍须独立验收。
+独立 User 报告绑定 source、run attempt、candidate 摘要、实际入口摘要及 acquisition／scope 清理结果。 Antigravity 的 Git 项目准备记录自己的状态。准备失败时，报告保留实际取得的退出状态、受控的进程归属诊断及查询时序，以区分准备阶段、客户端安装和临时目录清理。Linux/macOS 管理命令保留严格 `verified-observed`；Windows 走既有 Job 路径，命令保留实际 `containmentMode`、grading 和后代清理字段，Job/helper 证据单列，不按 OS 改写命令模式。每条原生命令使用 EOF 和原30秒时限。临时 HOME/AW/Agent/XDG 根中，三轮分别验证安装、版本更新和同版本正文刷新；每轮从目标与 neutral 的新管理查询确认全局 enabled，并读取原生 `path` 指向的实际副本字节和完整 AW owner。内部判定使用原始 stdout，全部内容判定完成后才对报告脱敏。卸载后双侧缺席、进程及清理均为必需检查；Skill 加载／模型采用未知单列且不阻塞。该候选取证不新增或扩大 production profile，其他环境的支持仍须独立验收。
 
 资格报告格式保持 schema 2。直接 Native 报告使用 `management-content-scope-v1`。启用公开 AW 场景后，`public-status-and-native-scope-v2` 要求 v2 公开状态在适用场景中与原生登记、有效启用、实际消费字节和作用域一致。Project 在外部目录禁用或不可见，User 在两处全局可见。普通 Skill 发现和加载单列 `observations`。必测场景的证据缺失、命令失败、进程审计失败或清理失败会使对应单元无法通过。报告标明候选源码、宿主、真实客户端版本、产品面、scope 和未覆盖场景。旧报告保留原判据与来源。
 
