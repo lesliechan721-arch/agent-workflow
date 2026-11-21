@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 8
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
@@ -33,12 +33,12 @@ jobs:
       - run: pnpm native:windows-job:prepare
       - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
       - run: pnpm build
-      - name: Observe active interruption and a completed Windows Job with pending events
-        run: node scripts/qualification/windows-renderer-race.mjs packages/cli/dist abort > "$RUNNER_TEMP/windows-renderer-race.json"
+      - name: Compare the public configuration interruption before and after the fix
+        run: python scripts/qualification/windows-config-interrupt-race.py --output "$RUNNER_TEMP/windows-config-interrupt-race.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-renderer-race-facts
-          path: ${{ runner.temp }}/windows-renderer-race.json
+          name: windows-config-interrupt-race-facts
+          path: ${{ runner.temp }}/windows-config-interrupt-race.json
           if-no-files-found: error
           retention-days: 7
