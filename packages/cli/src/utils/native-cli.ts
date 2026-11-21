@@ -390,24 +390,11 @@ interface SuccessfulNativeCliOutput {
 async function terminateNativeCliProcessGroup(
   pid: number,
   killProcess: typeof process.kill,
+  allowDarwinPermissionDeniedProbe: boolean,
   inspectLinuxGroup: boolean,
   successfulOutput?: SuccessfulNativeCliOutput,
-): Promise<void> {
+): Promise<Error | undefined> {
   const groupPid = -pid;
-  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
-    try {
-      killProcess(groupPid, signal);
-      return true;
-    } catch (error) {
-      if (isProcessGroupMissing(error)) {
-        return false;
-      }
-      throw new Error(
-        `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
-        { cause: error },
-      );
-    }
-  };
   const groupExists = (): boolean => {
     try {
       killProcess(groupPid, 0);
@@ -422,9 +409,29 @@ async function terminateNativeCliProcessGroup(
       );
     }
   };
+  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean | Error => {
+    try {
+      killProcess(groupPid, signal);
+      return true;
+    } catch (error) {
+      if (isProcessGroupMissing(error)) {
+        return false;
+      }
+      const denied = new Error(
+        `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
+        { cause: error },
+      );
+      if (allowDarwinPermissionDeniedProbe && successfulOutput && readNativeCliErrorCode(error) === 'EPERM') {
+        // Stop signaling this group. The audit may still need to clean up
+        // observed descendants before the final group-existence check.
+        return denied;
+      }
+      throw denied;
+    }
+  };
 
   const termSent = signalGroup('SIGTERM');
-  if (!termSent && successfulOutput) {
+  if (termSent !== true && successfulOutput) {
     // Group absence allows an early check once both output streams have closed.
     let graceTimer: NodeJS.Timeout | undefined;
     const grace = new Promise<void>((resolve) => {
@@ -438,7 +445,9 @@ async function terminateNativeCliProcessGroup(
   } else {
     await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
   }
+  if (termSent instanceof Error) return termSent;
   const killSent = signalGroup('SIGKILL');
+  if (killSent instanceof Error) return killSent;
   const deadline = performance.now() + NATIVE_CLI_PROCESS_GROUP_VERIFY_MS;
   let nextInspection = performance.now() + NATIVE_CLI_PROCESS_GROUP_POLL_MS;
   while (groupExists()) {
@@ -461,7 +470,7 @@ function settleNativeCliTerminationCleanup(
   observation: ProcessTreeObservation | undefined,
   requireConfirmedCleanup: boolean,
   allowUnobservedWindowsProcessOnNormalCompletion: boolean,
-  processGroup: boolean,
+  processGroupPlatform: NodeJS.Platform | undefined,
   inspectLinuxGroup: boolean,
   allowUnavailablePosixAudit: boolean,
   processTreeAuditPreparationError: Error | undefined,
@@ -496,12 +505,25 @@ function settleNativeCliTerminationCleanup(
 
   return new Promise((resolve) => {
     let settled = false;
+    let permissionDeniedGroupSignal: Error | undefined;
     const finish = (cleanupError?: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
+      if (permissionDeniedGroupSignal && !cleanupError) {
+        cleanupError = permissionDeniedGroupSignal;
+        // At this point the marker audit has finished and any signals it sent
+        // are behind us. Only a missing group confirms cleanup after EPERM.
+        if (successfulOutput?.canEndGrace()) {
+          try {
+            killProcess(-childPid, 0);
+          } catch (error) {
+            if (isProcessGroupMissing(error)) cleanupError = undefined;
+          }
+        }
+      }
       child.stdout?.destroy?.();
       child.stderr?.destroy?.();
       if (cleanupError) {
@@ -517,11 +539,14 @@ function settleNativeCliTerminationCleanup(
 
     let cleanup: Promise<void>;
     try {
-      cleanup = processGroup
+      cleanup = processGroupPlatform
         ? (async () => {
             let processGroupError: Error | undefined;
             try {
-              await terminateNativeCliProcessGroup(childPid, killProcess, inspectLinuxGroup, successfulOutput);
+              permissionDeniedGroupSignal = await terminateNativeCliProcessGroup(
+                childPid, killProcess, processGroupPlatform === 'darwin' && observation !== undefined,
+                inspectLinuxGroup, successfulOutput,
+              );
             } catch (error) {
               processGroupError = error instanceof Error
                 ? error
@@ -545,6 +570,7 @@ function settleNativeCliTerminationCleanup(
             }
 
             if (processGroupError) throw processGroupError;
+            if (permissionDeniedGroupSignal && auditError) throw permissionDeniedGroupSignal;
             if (
               auditError &&
               !(allowUnavailablePosixAudit && isPosixProcessInspectionUnavailableError(auditError))
@@ -704,7 +730,7 @@ export function createExecFileNativeCliRunner(
           processTreeObservation,
           requireConfirmedCleanup,
           allowUnobservedWindowsProcessOnNormalCompletion,
-          cleanupStrategy === 'process-group',
+          cleanupStrategy === 'process-group' ? platform : undefined,
           usesPosixSpawn && platform === 'linux',
           allowUnavailablePosixAudit,
           processTreeAuditPreparationError,
@@ -895,7 +921,7 @@ export function createExecFileNativeCliRunner(
                 ready: callbackOutput === undefined
                   ? new Promise<void>((resolve) => { notifySuccessfulOutput = resolve; })
                   : Promise.resolve(),
-                canEndGrace: () => terminationReason === undefined,
+                canEndGrace: () => terminationReason === undefined && callbackOutput !== undefined && callbackError == null,
               }
             : undefined;
         void cleanupProcessTree(
