@@ -235,6 +235,7 @@ Linux 容器中，已退出的进程可能仍等 PID 1 回收。若 TERM 和 KIL
 - **后代收敛与 Job 审计**：
   - 当父进程退出、超时中断、主动取消或 root 正常退出后，Windows 内核自动清理并终止 Job 内所有后代进程。
   - 停止后必须通过 Job accounting 确认 Job 内进程计数已归零。
+  - 取消插件 renderer 或 preApply 时，Windows 可能先报告辅助进程已经退出，随后 Node 才收到 `close`。AW 设置 4.5 秒的关闭计时器。若先收到正常清理或本次强制终止的关闭通知，AW 确认中断。若计时器先触发、停止出错，或关闭时得到含义不明的 `250`、`251`，AW 报告清理未确认。
 - **环境与模块路径继承**：插件后端完整继承原环境、工作目录和 stdio，包括 PowerShell 模块路径（`PSModulePath`）的有值和缺失状态。
 - **Native CLI 工作目录**：普通 Windows 短路径保留调用方写法，避免改变客户端项目信任键。解析后达到 260 个 UTF-16 code unit 的路径保留既有 namespace 转换；调用方显式的 namespace 不被删除。这不证明所有客户端的长项目或 UNC 信任语义已通过资格。
 

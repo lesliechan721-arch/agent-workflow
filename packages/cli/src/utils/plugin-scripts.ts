@@ -30,6 +30,9 @@ export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
 const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
+// The --config helper can also propagate a plugin's exit code, so these are ambiguous.
+const WINDOWS_JOB_CONTAINMENT_FAILURE = 250;
+const WINDOWS_JOB_PARENT_EXITED = 251;
 const WINDOWS_SYSTEM_ENV_KEYS = [
   'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT',
   'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
@@ -413,19 +416,13 @@ export function createDefaultPluginProcessRunner(
         clearTimeout(timer);
         const direct = (signal: 'SIGTERM' | 'SIGKILL'): void => { if (child.exitCode === null && child.signalCode === null) child.kill(signal); };
         if (windowsJobInvocation) {
-          try {
-            if (child.exitCode === null && child.signalCode === null && child.kill('SIGKILL') === false) {
-              throw new Error('Windows Job helper did not accept termination.');
-            }
-          } catch (error) {
-            failCleanup(error);
-            return;
-          }
           windowsJobCloseTimer = setTimeout(
             () => failCleanup(new Error('Windows Job helper exit could not be confirmed.')),
             WINDOWS_JOB_CLOSE_TIMEOUT_MS,
           );
           windowsJobCloseTimer.unref();
+          // A finished helper can refuse the signal while Node still has its close event queued.
+          try { direct('SIGKILL'); } catch (error) { failCleanup(error); }
           return;
         }
         let termination: Promise<unknown>;
@@ -469,13 +466,22 @@ export function createDefaultPluginProcessRunner(
         }
       });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
-      child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settleImmediately(error); });
+      child.on('error', (error) => {
+        if (terminating && windowsJobInvocation) failCleanup(error);
+        else if (!terminating) settleImmediately(error);
+      });
       const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
         if (settled) return;
         childExited = true;
         completedExitCode = exitCode;
         completedSignal = signal;
         if (windowsJobInvocation) {
+          const completedJob = signal === null && exitCode !== null && exitCode >= 0
+            && exitCode !== WINDOWS_JOB_CONTAINMENT_FAILURE && exitCode !== WINDOWS_JOB_PARENT_EXITED;
+          if (terminating && signal !== 'SIGKILL' && !completedJob) {
+            failCleanup(new Error('Windows Job helper did not confirm process cleanup.'));
+            return;
+          }
           cleanupCompleted = true;
           settleIfComplete();
           return;
