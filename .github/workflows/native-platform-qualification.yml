@@ -34,7 +34,7 @@ jobs:
       - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
       - run: pnpm build
       - name: Observe active interruption and a completed Windows Job with pending events
-        run: node scripts/qualification/windows-renderer-race.mjs > "$RUNNER_TEMP/windows-renderer-race.json"
+        run: node scripts/qualification/windows-renderer-race.mjs packages/cli/dist abort > "$RUNNER_TEMP/windows-renderer-race.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // node scripts/qualification/windows-renderer-race.mjs [cli-dist] [abort|cleanup-failed]
 const defaultDist = fileURLToPath(new URL('../../packages/cli/dist/', import.meta.url));
 const waitWord = new Int32Array(new SharedArrayBuffer(4));
-const cases = ['complete', 'interrupt-running', 'interrupt-before-events'];
+const cases = ['complete', 'interrupt-running', 'interrupt-before-events', 'interrupt-before-events-250', 'interrupt-before-events-251'];
 const knownSignals = new Set(['SIGINT', 'SIGTERM', 'SIGKILL']);
 const knownErrnos = new Set(['EACCES', 'ENOENT', 'EPERM', 'ESRCH', 'EINVAL', 'ENOSYS', 'UNKNOWN']);
 const errno = (error) => knownErrnos.has(error?.code) ? error.code : null;
@@ -27,7 +27,7 @@ writeFileSync(file('starting'), String(process.pid));
 renameSync(file('starting'), file('started'));
 const deadline = Date.now() + 14_000;
 while (!existsSync(file('release')) && Date.now() < deadline) await delay(10);
-if (existsSync(file('release'))) writeFileSync(file('finished'), 'complete');
+if (existsSync(file('release'))) { writeFileSync(file('finished'), 'complete'); process.exitCode = Number(process.argv[2]); }
 else process.exitCode = 2;
 `;
 
@@ -143,7 +143,8 @@ async function runCase(root, name, runner, readDiagnostic) {
     finished: existsSync(finished), exitDelivered: events.some(({ event }) => event === 'exit'),
     closeDelivered: events.some(({ event }) => event === 'close') });
   let outcome;
-  const pending = runner.run({ command: process.execPath, args: [entry], cwd: root, env }, {
+  const childCode = name.endsWith('-250') ? '250' : name.endsWith('-251') ? '251' : '0';
+  const pending = runner.run({ command: process.execPath, args: [entry, childCode], cwd: root, env }, {
     signal: controller.signal, timeoutMs: 16_000, onSpawn({ pid }) {
       trial.helperPid = pid;
       trial.record('spawn');
@@ -167,7 +168,7 @@ async function runCase(root, name, runner, readDiagnostic) {
     } else {
       trial.record('renderer-started');
       if (name !== 'interrupt-running') writeFileSync(release, 'finish');
-      if (name === 'interrupt-before-events') {
+      if (name.startsWith('interrupt-before-events')) {
         waitForHelperExit(trial.helperPid);
         beforeAbort = snapshot();
         if (beforeAbort.helper !== 'exited' || beforeAbort.renderer !== 'exited' || !beforeAbort.finished
@@ -203,17 +204,19 @@ async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-renderer-race-'));
   const trials = [];
   for (const name of cases) trials.push(await runCase(path.join(root, name), name, defaultPluginProcessRunner, readSafeOperationError));
-  const [complete, interrupted, race] = trials;
+  const [complete, interrupted, race, ...ambiguous] = trials;
+  const reservedExitsPreserved = ambiguous.every((row, index) => row.outcome.kind === 'cleanup-failed'
+    && row.events.some((entry) => entry.event === 'close' && entry.exitCode === 250 + index));
   const controlsPassed = complete.outcome.kind === 'returned' && complete.outcome.exitCode === 0
     && complete.after.finished && interrupted.beforeAbort?.helper === 'live' && interrupted.beforeAbort.renderer === 'live'
     && interrupted.outcome.kind === 'abort' && !interrupted.after.finished;
   const ownedProcessesExited = trials.every(({ after }) => after.helper === 'exited' && after.renderer === 'exited' && after.closeDelivered);
   if (ownedProcessesExited) await rm(root, { recursive: true, force: true });
-  const observed = controlsPassed && ownedProcessesExited && trials.every(({ setup }) => setup === 'ready')
+  const observed = controlsPassed && reservedExitsPreserved && ownedProcessesExited && trials.every(({ setup }) => setup === 'ready')
     && ['abort', 'cleanup-failed'].includes(race.outcome.kind);
   const check = !observed ? 'incomplete' : expectedRace && expectedRace !== race.outcome.kind ? 'unexpected-race-result' : 'observed';
   return { check, platform: process.platform, arch: process.arch, node: process.versions.node, productSha256, helperSha256,
-    controlsPassed, ownedProcessesExited, expectedRace: expectedRace ?? null, trials };
+    controlsPassed, reservedExitsPreserved, ownedProcessesExited, expectedRace: expectedRace ?? null, trials };
 }
 
 try {
