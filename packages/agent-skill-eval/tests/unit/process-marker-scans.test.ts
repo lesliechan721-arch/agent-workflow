@@ -181,6 +181,10 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
     // files for the byte-limit check so the kernel can close the scan promptly.
     await rm(fifo);
     await writeFile(fifo, entry);
+    const focused = await linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.timeout(2_000),
+      entry.length + unrelated.length, root, new Set([process.pid, wrong, malformed + 1]));
+    expect(new Set(focused.table.keys())).toEqual(new Set([process.pid, wrong]));
+    expect(focused.markerPidsByValue.get(marker)).toEqual(new Set([process.pid]));
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.timeout(2_000), 1, root))
       .rejects.toMatchObject({ code: 'PROCFS_BYTE_LIMIT' });
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.abort(), 16_384, root))
@@ -492,7 +496,7 @@ it.skipIf(process.platform !== 'linux').each([
 );
 
 type LeasedRow = [pid: number, tick: string, group: number, marker: boolean | null, state?: string, ppid?: number];
-type ReadLeasedRows = (query: 'identity' | 'marker') => LeasedRow[] | Promise<LeasedRow[]>;
+type ReadLeasedRows = (query: 'identity' | 'marker' | 'settled-marker') => LeasedRow[] | Promise<LeasedRow[]>;
 
 async function leasedLinuxFixture(knownChild = false, initialObservation?: ReadLeasedRows) {
   const [root, child, sentinel] = [101, 102, 103];
@@ -508,13 +512,15 @@ async function leasedLinuxFixture(knownChild = false, initialObservation?: ReadL
   let includeSentinel = true;
   let rows: ReadLeasedRows = () => knownChild
     ? [[root, '10', root, true], [child, '20', child, true]] : [[root, '10', root, true]];
-  const read = vi.spyOn(linux, 'readLinuxMarkerScan').mockImplementation(async (name, markers) => {
+  const visibility = vi.spyOn(linux, 'assertLinuxProcfsProcessVisibility').mockResolvedValue(undefined);
+  const read = vi.spyOn(linux, 'readLinuxMarkerScan').mockImplementation(async (name, markers, _signal, _maxBytes, _proc, pids) => {
     if (markers.size) {
       expect(name).toBe(markerName);
       marker = [...markers][0];
     }
-    const current = await rows(markers.size ? 'marker' : 'identity');
+    let current = await rows(pids ? 'settled-marker' : markers.size ? 'marker' : 'identity');
     if (includeSentinel) current.push([sentinel, '5', sentinel, true]);
+    if (pids) current = current.filter(([pid]) => pids.has(pid));
     return {
       table: new Map(current.map(([pid, startTime, pgid, , state = 'S', ppid = 1]) => [pid, { ppid, pgid, startTime, state }])),
       markerPidsByValue: new Map([[marker, new Set(current.filter(row => row[3] === true).map(row => row[0]))]]),
@@ -531,7 +537,7 @@ async function leasedLinuxFixture(knownChild = false, initialObservation?: ReadL
     terminate: (requireDescendantsExitedBeforeCompletion = false) => terminateProcessTree(root, () => {}, dependencies, {
       observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion,
     }),
-    close: async () => { observation.dispose(); read.mockRestore(); await lease.release(); },
+    close: async () => { observation.dispose(); read.mockRestore(); visibility.mockRestore(); await lease.release(); },
   };
 }
 
@@ -610,6 +616,91 @@ it.skipIf(process.platform !== 'linux')('retains a negative marker from a short-
 });
 
 it.skipIf(process.platform !== 'linux').each([
+  ['recovers', undefined], ['exits', undefined], ['becomes a zombie', undefined],
+  ['loses its marker', 'known-process-marker-missing'], ['is replaced', 'process-marker-unreadable'],
+  ['is replaced by a zombie', 'process-marker-unreadable'],
+  ['loses its sentinel', 'inspection-lease-invalid'], ['exceeds the deadline', 'marker-lookup-failed'],
+] as const)('checks a detached child that %s after two unreadable procfs scans', async (outcome, reason) => {
+  vi.useFakeTimers();
+  const f = await leasedLinuxFixture();
+  try {
+    const readableAt = Date.now() + 1_025;
+    const deadline = Date.now() + 3_000;
+    f.sample(query => {
+      const rows: LeasedRow[] = [[f.root, '10', f.root, true], [104, '20', 104, true, 'R', f.root]];
+      if (Date.now() < readableAt) return [...rows, [f.child, '20', f.child, null, 'R', f.root]];
+      if (outcome === 'exceeds the deadline' && query === 'settled-marker') return new Promise(() => {});
+      if (outcome === 'loses its sentinel') f.loseSentinel();
+      if (outcome === 'exits') return rows;
+      const replacement = outcome === 'is replaced' || outcome === 'is replaced by a zombie';
+      const zombie = outcome === 'becomes a zombie' || outcome === 'is replaced by a zombie';
+      return [...rows, [f.child, replacement ? '21' : '20', f.child, !zombie && outcome !== 'loses its marker',
+        zombie ? 'Z' : 'R', f.root]];
+    });
+    await vi.advanceTimersByTimeAsync(outcome === 'exceeds the deadline' ? 3_000 : 1_100);
+    expect(f.confirmation).toHaveBeenCalledWith(expect.objectContaining({ pid: f.child, result: 'present' }));
+    if (reason) {
+      expect(f.observation.diagnostics[0]).toMatchObject({ stage: 'observation', reason, snapshotDeadline: deadline });
+      if (outcome === 'loses its marker') {
+        expect(f.observation.diagnostics[0].processes).toEqual(expect.arrayContaining([
+          expect.objectContaining({ pid: f.child, startTime: '20', markerMatches: false }),
+          expect.objectContaining({ pid: 104, present: null, markerMatches: null }),
+        ]));
+      }
+    } else expect(f.observation.diagnostics).toEqual([]);
+    f.sample(() => []);
+    if (reason) await expect(f.terminate(true)).rejects.toThrow();
+    else await expect(f.terminate(true)).resolves.toBeUndefined();
+    expect(f.kill).not.toHaveBeenCalled();
+  } finally { await f.close(); vi.useRealTimers(); }
+});
+
+it.skipIf(process.platform !== 'linux')('keeps a recovered reparented group member relevant after it leaves the group and loses its marker', async () => {
+  vi.useFakeTimers();
+  const f = await leasedLinuxFixture();
+  try {
+    const readableAt = Date.now() + 1_025;
+    const root: LeasedRow = [f.root, '10', f.root, true];
+    f.sample(() => [root, [f.child, '20', f.root, Date.now() < readableAt ? null : true, 'R', 1]]);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(f.observation.diagnostics).toEqual([]);
+    f.sample(() => [root, [f.child, '20', f.child, false, 'R', 1]]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.observation.diagnostics[0]).toMatchObject({
+      stage: 'observation', reason: 'known-process-marker-missing', affectedPids: [f.child],
+      processes: expect.arrayContaining([
+        expect.objectContaining({ pid: f.child, knownStartTime: '20', pgid: f.child, markerMatches: false }),
+      ]),
+    });
+    f.sample(() => [[f.child, '20', f.child, false, 'Z', 1]]);
+    await expect(f.terminate(true)).rejects.toThrow('lost its process marker');
+    expect(f.kill).not.toHaveBeenCalled();
+  } finally { await f.close(); vi.useRealTimers(); }
+});
+
+it.skipIf(process.platform !== 'linux')('withholds the group signal after the scoped recheck sees a replacement root', async () => {
+  vi.useFakeTimers();
+  const f = await leasedLinuxFixture();
+  try {
+    const replacementAt = Date.now() + 1_025;
+    const member: LeasedRow = [f.child, '20', f.root, true];
+    f.sample(() => [member, Date.now() < replacementAt ? [f.root, '10', f.root, null] : [f.root, '30', f.root, true]]);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(f.observation.diagnostics[0]).toMatchObject({ reason: 'process-marker-unreadable', affectedPids: [f.root] });
+
+    // The replacement is gone before cleanup. The independently marked
+    // survivor may receive an individual signal, but the group was reused.
+    let memberAlive = true;
+    f.sample(() => memberAlive ? [member] : []);
+    f.kill.mockImplementation(pid => { if (pid === f.child) memberAlive = false; });
+    const cleanup = f.terminate().catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(350);
+    expect(await cleanup).toBeInstanceOf(Error);
+    expect(f.kill.mock.calls).toEqual([[f.child, 'SIGTERM']]);
+  } finally { await f.close(); vi.useRealTimers(); }
+});
+
+it.skipIf(process.platform !== 'linux').each([
   ['observation', false], ['observation', null], ['termination-start', false], ['termination-start', null],
 ] as const)('checks a detached child first seen on the second %s table with marker %s', async (stage, marker) => {
   vi.useFakeTimers();
@@ -618,7 +709,7 @@ it.skipIf(process.platform !== 'linux').each([
     let scans = 0;
     f.sample(query => {
       const detached: LeasedRow = [f.child, '20', f.child, marker, 'S', f.root];
-      if (query === 'identity') return scans === 2 ? [detached] : [];
+      if (query !== 'marker') return scans === 2 ? [detached] : [];
       const root: LeasedRow = [f.root, '10', f.root, true];
       switch (++scans) {
         case 1: return [root, [104, '30', f.root, null]];
@@ -626,7 +717,7 @@ it.skipIf(process.platform !== 'linux').each([
         default: return [];
       }
     });
-    if (stage === 'observation') await vi.advanceTimersByTimeAsync(1_000);
+    if (stage === 'observation') await vi.advanceTimersByTimeAsync(1_100);
     const cleanup = f.terminate(true).catch((error: Error) => error);
     await vi.advanceTimersByTimeAsync(350);
     expect(await cleanup).toBeInstanceOf(Error);
@@ -742,7 +833,7 @@ it.skipIf(process.platform !== 'linux').each([
       if (outcome === 'zombie') child[4] = 'Z';
       return [root, child];
     });
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_100);
     expect(markerQueries).toBe(2);
     const reasons = f.observation.diagnostics.map(d => d.reason);
     if (outcome === 'initial-negative' || outcome === 'marker-negative') expect(reasons).toEqual(['initial-group-marker-missing']);

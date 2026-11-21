@@ -77,10 +77,12 @@ function readIdentity(text: string, pid: number) {
 
 export async function readLinuxMarkerScan(
   markerName: string, markers: ReadonlySet<string>, signal: AbortSignal, maxBytes: number, proc = '/proc',
+  selectedPids?: ReadonlySet<number>,
 ): Promise<LinuxMarkerScan> {
   const result: LinuxMarkerScan = { table: new Map(), markerPidsByValue: new Map(), unreadablePids: new Set() };
   const assignments = [...markers].map(marker => ({ marker, bytes: Buffer.from(`${markerName}=${marker}`) }));
-  const pids = (await readdir(proc)).filter(name => /^[1-9]\d*$/u.test(name)).map(Number);
+  const pids = selectedPids ? [...selectedPids]
+    : (await readdir(proc)).filter(name => /^[1-9]\d*$/u.test(name)).map(Number);
   let bytes = 0;
   let next = 0;
   let failed = false;

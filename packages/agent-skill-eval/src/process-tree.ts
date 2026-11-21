@@ -26,7 +26,7 @@ function posixInspectionTimeout(platform: NodeJS.Platform): number {
 const PROCESS_TREE_IDENTITY_INTERVAL_MS = 250;
 const PROCESS_TREE_MARKER_INTERVAL_MS = 1_000;
 const PROCESS_TREE_TERMINATION_GRACE_MS = 250;
-const PROCESS_TREE_TERMINATION_SETTLE_MS = 50;
+const PROCESS_TREE_SETTLE_MS = 50;
 const PROCESS_TREE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const MARKER_SCAN_COLLECTION_MS = 2;
 const MARKER_SCAN_MIN_SHARED_BUDGET_MS = 20;
@@ -71,6 +71,7 @@ type ProcessCommandPromise<T = string> = Promise<ProcessCommandResult<T>> & { re
 
 interface PosixProcessSnapshot {
   table: Map<number, ProcessEntry>;
+  sampledPids?: ReadonlySet<number>;
   markerPids: Set<number>;
   unreadableMarkerPids: Set<number>;
   markerLookupSucceeded: boolean;
@@ -550,13 +551,14 @@ function queryLinuxMarkers(
   timeoutMs: number,
   markers: Set<string>,
   name = DEFAULT_PROCESS_MARKER_ENV,
-  requireCompleteProcessTable = false,
+  requireProcessVisibility = false,
+  selectedPids?: ReadonlySet<number>,
 ): ProcessCommandPromise<LinuxMarkerScan> {
   const controller = new AbortController();
   const deadline = performance.now() + timeoutMs;
   return measureProcessQuery(markers.size ? 'marker' : 'identity', timeoutMs, complete => {
-    const read = () => readLinuxMarkerScan(name, markers, controller.signal, PROCESS_TREE_MAX_BUFFER_BYTES);
-    const scan = requireCompleteProcessTable
+    const read = () => readLinuxMarkerScan(name, markers, controller.signal, PROCESS_TREE_MAX_BUFFER_BYTES, undefined, selectedPids);
+    const scan = requireProcessVisibility
       ? assertLinuxProcfsProcessVisibility(controller.signal).then(read)
       : read();
     void scan
@@ -1091,9 +1093,10 @@ function posixDiagnostic(
     ...(snapshot?.markerLookupFailure ? { lookupFailure: snapshot.markerLookupFailure } : {}),
     processes: [...pids].sort((a, b) => a - b).map((pid) => {
       const entry = snapshot?.table.get(pid);
+      const sampled = snapshot && (snapshot.sampledPids?.has(pid) ?? true);
       return {
         pid,
-        present: snapshot ? entry !== undefined : null,
+        present: sampled ? entry !== undefined : null,
         knownStartTime: identities.get(pid),
         ...(entry ? {
           ppid: entry.ppid,
@@ -1101,7 +1104,7 @@ function posixDiagnostic(
           startTime: entry.startTime,
           state: entry.state,
         } : {}),
-        markerMatches: snapshot?.markerLookupSucceeded && state.marker !== undefined &&
+        markerMatches: sampled && snapshot.markerLookupSucceeded && state.marker !== undefined &&
           !snapshot.unreadableMarkerPids.has(pid)
           ? snapshot.markerPids.has(pid)
           : null,
@@ -1176,14 +1179,15 @@ async function acceptPosixSnapshot(
 ): Promise<boolean> {
   // This disposition applies only to this observation's confirmed null candidates.
   // Keep their marker rows and known identities for later, independent cleanup.
-  const confirmedAbsentPids = new Set<number>();
+  const confirmedExitedPids = new Set<number>();
+  const recoveredMarkerPids = new Set<number>();
   const darwin = state.platform === 'darwin';
   const snapshotDeadline = posixSnapshotDeadline(snapshot, state.platform, deadline);
   const markerConfirmationDeadline = confirmationDeadline(snapshotDeadline, posixCommandTimeout(state.platform));
-  const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
+  const fail = (error: Error, reason: string, affectedPids: number[] = [], evidence = snapshot): void => {
     const recordCleanup = stage !== 'observation' && usesLinuxProcfs(state);
     if (state.failure && !recordCleanup) return;
-    const diagnostic = posixDiagnostic(state, snapshot, stage, reason, affectedPids);
+    const diagnostic = posixDiagnostic(state, evidence, stage, reason, affectedPids);
     latchObservationFailure(state, error, diagnostic);
     if (recordCleanup) state.diagnostics[1] = diagnostic;
   };
@@ -1220,13 +1224,19 @@ async function acceptPosixSnapshot(
     }
   }
   const needsConfirmation = (pid: number): boolean => {
-    if (confirmedAbsentPids.has(pid)) return false;
+    if (confirmedExitedPids.has(pid)) return false;
     const entry = snapshot.table.get(pid);
     if (pid === state.pid && state.root && entry?.startTime !== state.root.startTime) return false;
     return entry !== undefined && !entry.state?.startsWith('Z')
       && (isRelevantPosixProcess(state, pid, entry, snapshot.table) || snapshot.confirmedUnmarkedPids.has(pid));
   };
   const strictProcfs = state.dependencies.linuxProcessInspection === 'procfs';
+  const failLeasedNegative = (negative: number[], evidence: PosixProcessSnapshot): void => {
+    const known = negative.some(pid =>
+      pid === state.pid || state.descendants.get(pid)?.startTime === evidence.table.get(pid)?.startTime);
+    fail(cleanupUnconfirmed('custom process contract violation: a live provider process lost its process marker.'),
+      known ? 'known-process-marker-missing' : 'initial-group-marker-missing', negative, evidence);
+  };
   const inspectLeasedProcfsTable = (): boolean => {
     const invalid = validateLeaseSnapshot(snapshot, state.lease!, stage);
     if (invalid) {
@@ -1244,12 +1254,7 @@ async function acceptPosixSnapshot(
     const negative = [...snapshot.table.keys()].filter(pid =>
       needsConfirmation(pid) && !snapshot.markerPids.has(pid)
       && !snapshot.unreadableMarkerPids.has(pid));
-    if (negative.length) {
-      const known = negative.some(pid =>
-        pid === state.pid || state.descendants.get(pid)?.startTime === snapshot.table.get(pid)?.startTime);
-      fail(cleanupUnconfirmed('custom process contract violation: a live provider process lost its process marker.'),
-        known ? 'known-process-marker-missing' : 'initial-group-marker-missing', negative);
-    }
+    if (negative.length) failLeasedNegative(negative, snapshot);
     if (requireDescendantsExitedBeforeCompletion) {
       latchLiveDescendantCompletionFailure(state, snapshot, true);
     }
@@ -1370,13 +1375,15 @@ async function acceptPosixSnapshot(
           retainProcfsRootReuse(state, trustedTable);
           retainGroupDepartures(trustedTable);
         }
+        const stillPresent: number[] = [];
         for (const pid of candidates) {
           const startTime = snapshot.table.get(pid)!.startTime;
           const current = trustedTable?.get(pid);
           const result = trustedTable === undefined ? 'unknown'
             : current === undefined ? 'absent'
               : current.startTime === startTime ? 'present' : 'unknown';
-          if (result === 'absent') confirmedAbsentPids.add(pid);
+          if (result === 'absent') confirmedExitedPids.add(pid);
+          if (result === 'present') stillPresent.push(pid);
           try {
             state.dependencies.onLinuxMarkerIdentityConfirmation?.({
               rootPid: state.pid, pid, startTime, phase: 'post-marker-confirmation',
@@ -1385,6 +1392,46 @@ async function acceptPosixSnapshot(
           } catch {
             // Diagnostic consumers cannot change the process inspection gate.
           }
+        }
+        const lease = state.lease;
+        if (strictProcfs && lease && stillPresent.length > 0 && !state.failure
+          && Date.now() + PROCESS_TREE_SETTLE_MS < markerConfirmationDeadline) {
+          // A live task can still be in exec across both quick full scans. Give
+          // the same identities one settled read within the original deadline.
+          await new Promise(resolve => setTimeout(resolve, PROCESS_TREE_SETTLE_MS));
+          if (state.disposed || state.failure) return false;
+          const remaining = markerConfirmationDeadline - Date.now();
+          if (remaining <= 0) return failMarkerLookup(commandFailure('deadline-exceeded'));
+          const pids = new Set([process.pid, lease.sentinel.pid, ...stillPresent]);
+          snapshot.markerLookupAttempts += 1;
+          const settled = await queryLinuxMarkers(remaining, new Set([state.marker]), state.markerEnvironmentVariable, true, pids);
+          if (settled.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(settled.query);
+          if (settled.output === null || Date.now() >= markerConfirmationDeadline) {
+            return failMarkerLookup(settled.failure ?? commandFailure('deadline-exceeded'));
+          }
+          const evidence: PosixProcessSnapshot = {
+            ...snapshot, table: settled.output.table, sampledPids: pids,
+            markerPids: parseMarkerProcessIds(settled.output, state.markerEnvironmentVariable, state.marker),
+            unreadableMarkerPids: settled.output.unreadablePids,
+          };
+          const invalid = validateLeaseSnapshot(evidence, lease, stage);
+          if (invalid) {
+            fail(invalid, 'inspection-lease-invalid', [], evidence);
+            return false;
+          }
+          retainProcfsRootReuse(state, evidence.table);
+          const negative: number[] = [];
+          for (const pid of stillPresent) {
+            const entry = evidence.table.get(pid);
+            if (entry && entry.startTime !== snapshot.table.get(pid)!.startTime) continue;
+            if (!entry || entry.state?.startsWith('Z')) confirmedExitedPids.add(pid);
+            else if (evidence.markerPids.has(pid)) recoveredMarkerPids.add(pid);
+            else if (!evidence.unreadableMarkerPids.has(pid)) negative.push(pid);
+          }
+          // Keep newly proven identities relevant if they later detach or
+          // lose the marker. Cleanup still needs its own complete marker table.
+          refreshObservedProcesses(state, evidence.table, recoveredMarkerPids);
+          if (negative.length > 0) failLeasedNegative(negative, evidence);
         }
       }
     }
@@ -1432,7 +1479,8 @@ async function acceptPosixSnapshot(
       }
     }
   }
-  const stillUnreadable = [...snapshot.unreadableMarkerPids].filter(needsConfirmation);
+  const stillUnreadable = [...snapshot.unreadableMarkerPids]
+    .filter(pid => needsConfirmation(pid) && !recoveredMarkerPids.has(pid));
   if (state.marker !== undefined && stillUnreadable.length > 0) {
     fail(
       cleanupUnconfirmed('POSIX process marker could not be read for a live provider process after confirmation.'),
@@ -1448,12 +1496,12 @@ async function acceptPosixSnapshot(
   }
   const rootEntry = snapshot.table.get(state.pid);
   let confirmedUnmarkedRoot = snapshot.confirmedUnmarkedPids.has(state.pid)
-    && !confirmedAbsentPids.has(state.pid);
+    && !confirmedExitedPids.has(state.pid);
   if (
     state.marker !== undefined &&
     rootEntry !== undefined &&
     !rootEntry.state?.startsWith('Z') &&
-    !confirmedAbsentPids.has(state.pid) &&
+    !confirmedExitedPids.has(state.pid) &&
     (state.root === undefined || state.root.startTime === rootEntry.startTime) &&
     !snapshot.markerPids.has(state.pid)
   ) {
@@ -1548,17 +1596,17 @@ async function acceptPosixSnapshot(
         !snapshot.table.get(identity.pid)?.state?.startsWith('Z'),
     );
     const markerlessKnownPids = liveKnownIdentities
-      .filter((identity) => !confirmedAbsentPids.has(identity.pid) && !snapshot.markerPids.has(identity.pid))
+      .filter((identity) => !confirmedExitedPids.has(identity.pid) && !snapshot.markerPids.has(identity.pid))
       .map((identity) => identity.pid);
     const markerlessConfirmedPids = [...snapshot.confirmedUnmarkedPids].filter((pid) => {
       const entry = snapshot.table.get(pid);
-      return entry && !confirmedAbsentPids.has(pid)
+      return entry && !confirmedExitedPids.has(pid)
         && !entry.state?.startsWith('Z') && !snapshot.markerPids.has(pid);
     });
     const markerlessInitialGroupPids: number[] = [];
     if (state.rootPgid !== undefined && !groupLeaderWasReused(state, snapshot.table)) {
       for (const [pid, entry] of snapshot.table) {
-        if (entry.pgid !== state.rootPgid || entry.state?.startsWith('Z') || confirmedAbsentPids.has(pid)) continue;
+        if (entry.pgid !== state.rootPgid || entry.state?.startsWith('Z') || confirmedExitedPids.has(pid)) continue;
         if (pid !== state.pid && !snapshot.markerPids.has(pid)) {
           markerlessInitialGroupPids.push(pid);
         }
@@ -2373,7 +2421,7 @@ async function terminatePosixProcessTree(
   snapshot = killSnapshot;
   signalOwned(snapshot, 'SIGKILL');
   await new Promise<void>((resolve) => {
-    setTimeout(resolve, PROCESS_TREE_TERMINATION_SETTLE_MS);
+    setTimeout(resolve, PROCESS_TREE_SETTLE_MS);
   });
   const verified = await readImmediatePosixSnapshot(state, 'termination-verification');
   if (!verified) {
