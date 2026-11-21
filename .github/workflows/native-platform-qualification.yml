@@ -33,15 +33,12 @@ jobs:
       - run: pnpm native:windows-job:prepare
       - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
       - run: pnpm build
-      - name: Reproduce the standalone configuration interruption
-        env:
-          AW_TEST_WORKERS: '1'
-          AW_TEST_SHARD_PLATFORM: win32
-        run: python scripts/qualification/windows-renderer-replay.py
+      - name: Observe active interruption and a completed Windows Job with pending events
+        run: node scripts/qualification/windows-renderer-race.mjs > "$RUNNER_TEMP/windows-renderer-race.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-renderer-interruption-facts
-          path: ${{ runner.temp }}/windows-renderer-interruption.json
-          if-no-files-found: warn
+          name: windows-renderer-race-facts
+          path: ${{ runner.temp }}/windows-renderer-race.json
+          if-no-files-found: error
           retention-days: 7
