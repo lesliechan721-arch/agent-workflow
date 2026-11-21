@@ -40,7 +40,7 @@ test('delivered tools run with only Node and package files under an OS filesyste
         socket.on('connect', () => { socket.destroy(); reject(new Error('Network is accessible.')); });
         socket.on('error', e => { socket.destroy(); ['EPERM', 'EACCES'].includes(e.code) ? resolve() : reject(e); });
       });
-      const author = 'bundle/skills/author-agent-skill/scripts/';
+      const author = 'bundle/skills/agent-skill/scripts/';
       function run(entry, args) {
         const result = spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', timeout: 15000 });
         assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);

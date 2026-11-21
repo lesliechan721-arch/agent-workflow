@@ -1,12 +1,12 @@
 # Agent Content Toolkit
 
-为 Agent 指令提供共同的写作与评价方法，帮助减少重复规则、弱指针和不必要的上下文负担。
+提供 `agent-content`，用于编写、重构和只读评价给 Agent 读取的文档（AGENTS.md、CLAUDE.md、prompt、角色说明和 reference），减少抽象空话、重复免责条款、弱指针与多跳读取负担。
 
 ```bash
 aw target set codex
 aw plugin install agent-content-toolkit --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。包含 `agent-content`，用于 AGENTS.md、CLAUDE.md、prompt、role instructions 和 reference。
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
 
-例如：“整理这份 AGENTS.md，保留事实与必要约束。”或“只读评价这些 reference 的读取路径。”它遵守当前请求的写入边界；普通输出是修改或人读建议。完整 Skill 包、模型评估和插件发布由对应能力负责。
+例如：“整理这份 AGENTS.md，去掉泛泛而谈的空话，保留项目事实和安全约束。”或“只读评价这些 reference 的信息层级和跳转路径。”它遵守当前请求的写入边界；完整 Skill 包处理请使用 `agent-skill`。

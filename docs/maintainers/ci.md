@@ -199,7 +199,7 @@ Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，
 
 Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。各宿主的 Grok `target set` 失败时，从本次 AW 回执保存 Grok 的可用性分类及固定原因码。Windows 还记录本次版本和帮助查询的有限样本。macOS 的 Claude Project 组件矩阵移除 `matrix/hook-only` 失败时，会保留本次移除已执行的原生操作类别和已知清理原因。Codex Project 的官方候选或合成矩阵独立安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。`operationPlanStale` 有细分原因时，报告保留既有的受控分类。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
-跨范围依赖资格在隔离环境先为 User 安装官方 `agent-skill-toolkit` 与其依赖，再为 Project 安装 `aw-development-toolkit`。检查项目首次安装完成、两项依赖的五份个人技能文件保持原样、公开项目目录只包含根插件应交付的技能、独立状态就绪及再次同步零写入。Antigravity 另核对根插件的实际目录短名。Grok 再用一条命令显式安装两个项目包，检查二者都已落盘。仅撤销这两项需求后，按根查询应指出两项待清理依赖。一次普通同步应移除两份项目副本，并保留个人和项目根原有的技能文件。[跨范围资格](../../scripts/qualification/native-platform-public-catalog.mjs)
+跨范围依赖资格在隔离环境先为 User 安装官方 `agent-skill-toolkit` 与其依赖，再为 Project 安装 `aw-development-toolkit`。检查项目首次安装完成、两项依赖的全部个人技能文件保持原样、公开项目目录只包含根插件应交付的技能、独立状态就绪及再次同步零写入。Antigravity 另核对根插件的实际目录短名。Grok 再用一条命令显式安装两个项目包，检查二者都已落盘。仅撤销这两项需求后，按根查询应指出两项待清理依赖。一次普通同步应移除两份项目副本，并保留个人和项目根原有的技能文件。[跨范围资格](../../scripts/qualification/native-platform-public-catalog.mjs)
 
 Pi 的成对安装回归在干净 User 和已信任 Project 中，把只含 Instruction 的扩展和依赖它的单 Agent 包放进同一条公开 `plugin install`。检查两次独立发布及原生登记都已确认，Pi 设置各有一个对应路径。随后读回两个文件、执行无变化 `sync`，并核对包内容和设置的文件标识、修改时间及摘要。
 

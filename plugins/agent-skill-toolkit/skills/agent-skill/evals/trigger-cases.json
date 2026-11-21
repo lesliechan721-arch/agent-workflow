@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "agent-skill",
+    "participants": [
+      "agent-content",
+      "audit-agent-skill-evals"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、只读、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "create_package",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "创建一个从用户给定日志提取错误摘要的 Agent Skill，默认不写脚本。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "创建完整 Skill 包属于主职责。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "纯解释已有 Skill 用法、不评审也不修改时不需要加载。"
+      }
+    },
+    {
+      "id": "change_description",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "修改这个 Skill 的 description，让单文件定向读取不再被误路由为全仓探索。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "Skill 触发与调用边界变更属于本能力。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "仅改普通业务代码、不涉及 Skill 时不需要加载。"
+      }
+    },
+    {
+      "id": "design_cases",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "为已有 Skill 补真实的正负触发用例，输出当前项目支持的 case 文件，但不要运行。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "Eval 用例设计属于本能力分支。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只独立审核现有 Oracle 而不修改则是 audit-agent-skill-evals。"
+      }
+    },
+    {
+      "id": "fix_skill_typo",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "将 skills/summary/SKILL.md 的一个错别字修正，其他内容不动。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "局部 Skill 修正属于轻量修改路径。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只解释 Skill 功能而不修改也不评审时不需要加载。"
+      }
+    },
+    {
+      "id": "readonly_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读评审一个现有 Skill 的复杂度、抓手和组合结构，不修改文件。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "agent-skill 正式承接单 Skill 与多 Skill 组合的只读评审，并在正文中严守只读边界。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只读审核 Eval case 的 Oracle 与 fixture 时应交给 audit-agent-skill-evals。"
+      }
+    },
+    {
+      "id": "refactor_skill_architecture",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "重构这组已有 Skill，去掉抽象空话和多余薄壳入口，保留核心约束。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "已有 Skill 的锐化重构与组合收敛属于核心职责。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；允许辅助加载 agent-content。该标签不表示首个入口。",
+        "minimalCounterexample": "如果对象仅为项目 AGENTS.md 且不含任何 Skill 包，则只需 agent-content。"
+      }
+    },
+    {
+      "id": "audit_cases",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "独立检查已有 Eval 标签和 fixture 是否成立，不修改案例。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "独立 Oracle 审核归 audit-agent-skill-evals，与作者职责隔离。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "明确要求修订或补写 case 文件且不签独立通过时才使用 agent-skill。"
+      }
+    },
+    {
+      "id": "execute_evals",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "执行已有 Spec，不要改 Skill 或用例；先说明成本。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "模型运行属于 Eval Runner。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为创建或修订 case 文件时使用 agent-skill。"
+      }
+    },
+    {
+      "id": "explain_package",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "解释这个 Skill 的使用方式，不评价也不变更。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "纯使用解释既非创作、重构也非评审。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求评审质量或修改正文时使用 agent-skill。"
+      }
+    },
+    {
+      "id": "plain_agents_md_only",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "整理本仓库根目录的 AGENTS.md，去掉重复规则；不涉及任何 Agent Skill 包。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "非 Skill 的普通项目指令由 agent-content 直接处理。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "对象变为 Skill 目录及其 frontmatter/references 时使用 agent-skill。"
+      }
+    }
+  ]
+}

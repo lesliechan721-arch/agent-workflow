@@ -4,8 +4,7 @@
     "kind": "conversation",
     "unitUnderTest": "agent-content",
     "participants": [
-      "author-agent-skill",
-      "review-agent-skill"
+      "agent-skill"
     ],
     "policy": {
       "optimization": "balanced",
@@ -313,6 +312,85 @@
         "rationale": "弱指针先修指针而非扩大常驻上下文。",
         "minimalCounterexample": "如果目标环境不能按需读取该文件，才应考虑最少必要信息前置。",
         "allowedVariance": "允许等价措辞和实现；不以是否复述标准术语或固定中间步骤判定。"
+      }
+    },
+    {
+      "id": "sharpen_abstract_and_prune_disclaimer_tails",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "重构 guide.md，去掉空泛清单和重复免责尾巴，结合 failures.md 写成能直接改变执行者行为的具体规则。只改 guide.md，保留只读边界，不执行诊断。",
+      "assertions": [
+        "删掉换到任意项目都成立的空泛清单（如“兼顾安全、性能与清晰度”）和削弱指令张力的重复免责尾巴。",
+        "把 failures.md 中的真实失败模式落实为可观察信号与具体动作（如核对 PID/构建版本、连续两次同前提失败先验证前提）。",
+        "保留不修改生产配置的硬边界；只修改 guide.md，不宣称模型行为已验证。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "guide.md": "# 排查指南\n编写清晰可靠的诊断说明，兼顾安全、性能、兼容与可维护性。注意边界条件。只读排查不得改生产配置。\n遇到问题时可结合历史经验排查；这只是线索，不自动要求验证假设，局部成功也不替代整体判断，不自动授予修改权限。\n",
+          "failures.md": "# 历史踩坑记录\n1. 执行者经常没确认正在运行的进程版本，对着旧构建调试半小时。\n2. 同一假设连续两次修补失败后仍继续叠第三层补丁，而不停下来验证前提。\n"
+        }
+      },
+      "expected": {
+        "output": "交付锐化后的具体排查规则与精简的硬边界，说明实际改动和未验证项。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "guide.md"
+        ],
+        "artifacts": [
+          {
+            "path": "guide.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "检验锐化去抽象与去免责尾句手法，同时保留真实硬边界。",
+        "minimalCounterexample": "若 guide.md 已具体对应两类失败模式且无冗余免责，只需局部检查不强改。",
+        "allowedVariance": "允许等价措辞与版式；按是否保留真实机制与安全边界、是否移除空话和卸力尾巴判断。"
+      }
+    },
+    {
+      "id": "hoist_shared_rules_and_collapse_tiny_hops",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "regression"
+      ],
+      "prompt": "重构 entry.md 与 branches/ 下资料，消除两个分支里重复粘贴的通用授权与停止条款，并处理只有 3 行的必读短文件。可改这些文件，保留完整业务规则。",
+      "assertions": [
+        "将两分支重复粘贴的授权和停止底线上提到 entry.md 维护一处，分支只留各自独有动作。",
+        "合并只有 3 行的必读短文件 common-check.md，减少无收益跳转，同时保留两条独立分支的条件读取。",
+        "保留“不删除他人改动”和两分支各自的独有步骤，不宣称已实测执行成本。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "entry.md": "先读 branches/common-check.md。排查读 branches/diagnose.md；修复读 branches/fix.md。\n",
+          "branches/common-check.md": "确认目标文件路径与当前分支，再开始处理。\n",
+          "branches/diagnose.md": "排查前先复现原始失败并记录输入与版本。\n不得删除他人改动。达到预算或缺少授权时停止。局部通过不替代整体。\n",
+          "branches/fix.md": "修复前写出预期行为，改完后在原入口复验。\n不得删除他人改动。达到预算或缺少授权时停止。局部通过不替代整体。\n"
+        }
+      },
+      "expected": {
+        "output": "上提共享纪律并消除无收益短跳，保留全部业务规则与分支边界。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "entry.md",
+          "branches/**"
+        ],
+        "artifacts": [
+          {
+            "path": "entry.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "检验多分支共享规则上提与过碎短跳合并。",
+        "minimalCounterexample": "若两个分支的停止规则实质不同，则应保留各自差异而不能强行合并。",
+        "allowedVariance": "允许不同目录整理方式；按是否消除重复粘贴、减少无收益跳转且保持语义完整判断。"
       }
     }
   ]

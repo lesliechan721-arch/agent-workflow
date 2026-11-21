@@ -1,7 +1,0 @@
-interface:
-  display_name: "Simplify Agent Skill"
-  short_description: "通过有限对照减少 Agent Skill 负担，保留必要方法与知识"
-  default_prompt: "使用 $simplify-agent-skill 处理当前已授权范围，并报告真实结果与关键未知。"
-
-policy:
-  allow_implicit_invocation: false

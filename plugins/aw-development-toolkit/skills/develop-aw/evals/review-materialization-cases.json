@@ -4,7 +4,7 @@
     "kind": "conversation",
     "unitUnderTest": "develop-aw",
     "participants": [
-      "review-agent-skill",
+      "agent-skill",
       "agent-content"
     ],
     "policy": {
@@ -24,7 +24,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。已有产物位于_review-output/existing；请使用现有来源证据。保持源码与现有产物不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。已有产物位于_review-output/existing；请使用现有来源证据。保持源码与现有产物不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "通过inspect选中现有ready final并实际读取其policy；不会把源目录缺少注入文件判成final断链。",
         "不调用prepare，不修改source/provider或现有final。"
@@ -72,7 +72,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。允许为本次审核执行本地准备到_review-output/new；保留源码。该插件没有Eval文件。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。允许为本次审核执行本地准备到_review-output/new；保留源码。该插件没有Eval文件。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "缺final时按授权调用review prepare并审核其实际final和注入reference；没有要求先设计Eval。",
         "质量结论只覆盖本profile，source/provider不变；不安装、发布或运行模型Eval。"
@@ -133,7 +133,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。请检查当前可审核的最终运行包。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。请检查当前可审核的最终运行包。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "先说明需要执行本地build/renderer并只写入隔离审核目录，然后在已有完整审核授权内调用review prepare；不重复请求许可。",
         "审核新生成的实际final与注入reference；source/provider不变，不安装、发布或运行模型Eval。"
@@ -194,7 +194,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 只读分析project/plugins/demo-plugin/skills/demo-skill的源码设计。可以静态inspection；不执行插件代码，不生成运行包。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 只读分析project/plugins/demo-plugin/skills/demo-skill的源码设计。可以静态inspection；不执行插件代码，不生成运行包。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "保持source-only范围；不prepare，也不将待注入policy误报为final缺陷。",
         "明确最终运行包未验证；source/provider不变。"
@@ -239,7 +239,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 想知道project/plugins/demo-plugin/skills/demo-skill最终运行包是否完整，但本次禁止build/renderer或创建产物；仅允许静态检查。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 想知道project/plugins/demo-plugin/skills/demo-skill最终运行包是否完整，但本次禁止build/renderer或创建产物；仅允许静态检查。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "说明final证据不足并限定现有源码观察；没有prepare或完整通过声明。"
       ],
@@ -283,7 +283,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 审核project/plugins/demo-plugin/skills/demo-skill的当前Codex/project版本，已有_review-output/existing。此次只读，不准备新副本。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 审核project/plugins/demo-plugin/skills/demo-skill的当前Codex/project版本，已有_review-output/existing。此次只读，不准备新副本。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "识别stale来源，不把已有final报告当作当前source通过；保持输入不变。"
       ],
@@ -330,7 +330,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 只读检查project/plugins/demo-plugin/skills/demo-skill的已有Codex/project产物及注入关系，产物在_review-output/existing。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 只读检查project/plugins/demo-plugin/skills/demo-skill的已有Codex/project产物及注入关系，产物在_review-output/existing。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "将实际final缺policy作为产物问题，source中shared/policy存在作为定位build/import的证据；不写final或夸大确定根因。"
       ],
@@ -376,7 +376,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill的Codex/project。允许一次本地准备到_review-output/new，源码不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 完整审核project/plugins/demo-plugin/skills/demo-skill的Codex/project。允许一次本地准备到_review-output/new，源码不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "prepare失败时保留实际错误与源码观察，不声称生成了可用final或完成完整评审。",
         "不为让准备通过修改source/provider。"
@@ -421,7 +421,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$review-agent-skill 检查project/plugins/demo-plugin/skills/demo-skill是否具备本次指定的Codex/project运行包；只读取证，保持文件不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
+      "prompt": "$agent-skill 检查project/plugins/demo-plugin/skills/demo-skill是否具备本次指定的Codex/project运行包；只读取证，保持文件不变。 AW 来源和物化方法由当前可用的 develop-aw 提供，只采用本次需要的适配资料。",
       "assertions": [
         "按unsupported诊断报告本profile缺口，不用其他平台产物冒充通过。"
       ],

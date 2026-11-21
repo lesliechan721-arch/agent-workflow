@@ -45,8 +45,7 @@ export async function qualifyProjectDependencies(ctx, report) {
   const user = { ...ctx, scope: 'user' };
   const personal = await install(skills, 'user');
   const providers = [];
-  for (const [id, expected] of [[content, ['agent-content']], [skills,
-    ['audit-agent-skill-evals', 'author-agent-skill', 'review-agent-skill', 'simplify-agent-skill']]]) {
+  for (const [id, expected] of [[content, ['agent-content']], [skills, ['agent-skill', 'audit-agent-skill-evals']]]) {
     const target = targetOf(personal, user, id);
     const directory = ctx.platform === 'antigravity' ? path.join(ctx.env.HOME, '.gemini/config/plugins', id.split('/')[1]) : nativePackage(target);
     const files = await Promise.all(expected.map(name => readInstalled(ctx, nativePath(user, { id }, 'skill', directory, name), name)));
