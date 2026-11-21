@@ -182,15 +182,14 @@ it.skipIf(process.platform !== 'linux')('binds exact Linux marker evidence to th
     await rm(fifo);
     await writeFile(fifo, entry);
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.timeout(2_000), 1, root))
-      .rejects.toThrow('exceeded its byte limit');
+      .rejects.toMatchObject({ code: 'PROCFS_BYTE_LIMIT' });
     await expect(linux.readLinuxMarkerScan(name, new Set([marker]), AbortSignal.abort(), 16_384, root))
       .rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-// Cancellation after the environment opens must reject the scan without crashing Node.
-it.skipIf(process.platform !== 'linux')('survives cancellation while opening a Linux process environment', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'aw-marker-abort-'));
+async function runIsolatedLinuxMarkerScan(script: string): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'aw-marker-scan-'));
   try {
     const ts = await import('typescript');
     const source = await readFile(new URL('../../src/linux-process-marker.ts', import.meta.url), 'utf8');
@@ -198,12 +197,88 @@ it.skipIf(process.platform !== 'linux')('survives cancellation while opening a L
       compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ESNext },
     });
     await writeFile(join(root, 'marker.mjs'), outputText);
-    const script = `
+    const imports = `
       import assert from 'node:assert/strict';
       import { promises as fs } from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
       import { readLinuxMarkerScan } from './marker.mjs';
+    `;
+    await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', imports + script], {
+      cwd: root, env: {}, timeout: 3_000, killSignal: 'SIGKILL',
+    })).resolves.toMatchObject({ stdout: '', stderr: '' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
+// A partly sampled task that is being reaped can show kernel placeholders.
+// Recheck its pinned directory before accepting absence or using its identity.
+it.skipIf(process.platform !== 'linux')('preserves Linux marker and PID evidence across a partially reaped stat', async () => {
+  await runIsolatedLinuxMarkerScan(String.raw`
+    const pid = process.pid + 1;
+    const marker = 'fixture-value';
+    const name = 'AW_MARKER';
+    const environment = Buffer.from(name + '=' + marker + '\0');
+    function row(id, exiting = false, startTime = id + 100) {
+      const fields = Array(49).fill('0');
+      fields[0] = exiting ? 'X' : 'S';
+      fields[1] = exiting ? '0' : '1';
+      fields[2] = fields[3] = exiting ? '-1' : String(id);
+      fields[17] = exiting ? '0' : '1';
+      fields[19] = String(startTime);
+      fields[47] = '100';
+      fields[48] = String(100 + environment.length);
+      return id + ' (fixture) ' + fields.join(' ');
+    }
+    const exiting = row(pid, true);
+    const live = row(pid);
+    const readFile = fs.readFile;
+    const cases = [
+      { caseName: 'gone', first: exiting, next: [null], present: false },
+      { caseName: 'same identity', first: exiting, next: [live], present: true, marked: true },
+      { caseName: 'gone after environment', first: live, next: [exiting, null], present: true, unreadable: true },
+      { caseName: 'unresolved', first: exiting, next: [], code: 'PROCFS_INVALID_IDENTITY' },
+      { caseName: 'changed identity', first: exiting, next: [row(pid, false, pid + 101)], code: 'PROCFS_IDENTITY_CHANGED' },
+      { caseName: 'already rechecked', first: exiting, next: [live, exiting, null], code: 'PROCFS_INVALID_IDENTITY' },
+      { caseName: 'empty stat', first: '', next: [], code: 'PROCFS_INVALID_IDENTITY' },
+      { caseName: 'partial placeholders', first: exiting.replace(' 0 -1 -1 ', ' 0 -1 0 '), next: [], code: 'PROCFS_INVALID_IDENTITY' },
+    ];
+    for (const [index, scenario] of cases.entries()) {
+      const proc = 'proc-' + index;
+      const stat = proc + '/' + pid + '/stat';
+      for (const id of [process.pid, pid]) {
+        const directory = proc + '/' + id;
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(directory + '/environ', environment);
+        await fs.writeFile(directory + '/stat', id === pid ? scenario.first : row(id));
+      }
+      fs.readFile = async (path, ...args) => {
+        const data = await readFile(path, ...args);
+        if (typeof data === 'string' && data.startsWith(pid + ' (fixture) ')) {
+          const next = scenario.next.shift();
+          if (next === null) await fs.unlink(stat);
+          else if (next !== undefined) await fs.writeFile(stat, next);
+        }
+        return data;
+      };
+      syncBuiltinESMExports();
+      const scan = readLinuxMarkerScan(name, new Set([marker]), AbortSignal.timeout(1_000), 16_384, proc);
+      if (scenario.code) {
+        await assert.rejects(scan, { code: scenario.code }, scenario.caseName);
+      } else {
+        const evidence = await scan;
+        assert.equal(evidence.table.has(pid), scenario.present, scenario.caseName);
+        assert.equal(evidence.unreadablePids.has(pid), scenario.unreadable === true, scenario.caseName);
+        assert.deepEqual(evidence.markerPidsByValue.get(marker), new Set(scenario.marked
+          ? [process.pid, pid] : [process.pid]), scenario.caseName);
+      }
+    }
+  `);
+});
+
+// Cancellation after the environment opens must reject the scan without crashing Node.
+it.skipIf(process.platform !== 'linux')('survives cancellation while opening a Linux process environment', async () => {
+  await runIsolatedLinuxMarkerScan(`
       const row = 'proc/' + process.pid;
       const fields = Array(49).fill('0');
       fields[0] = 'S'; fields[19] = '100';
@@ -227,13 +302,7 @@ it.skipIf(process.platform !== 'linux')('survives cancellation while opening a L
       await assert.rejects(readLinuxMarkerScan('AW_MARKER', new Set(['fixture']),
         controller.signal, 1_024, 'proc'), { name: 'AbortError' });
       assert.equal(environment?.fd, -1);
-    `;
-    await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], {
-      cwd: root, env: {}, timeout: 3_000, killSignal: 'SIGKILL',
-    })).resolves.toMatchObject({ stdout: '', stderr: '' });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  `);
 });
 
 // Cleanup may succeed with unreaped zombies only if every member has exited.

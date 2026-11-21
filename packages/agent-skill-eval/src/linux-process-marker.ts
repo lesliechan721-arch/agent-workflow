@@ -20,6 +20,16 @@ function processGone(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ESRCH';
 }
 
+function scanFailure(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function assertSameStartTime(before: string, after: string): void {
+  if (before !== after) {
+    throw scanFailure('PROCFS_IDENTITY_CHANGED', 'Linux process identity changed during inspection.');
+  }
+}
+
 export async function assertLinuxProcfsProcessVisibility(signal: AbortSignal): Promise<void> {
   const mountInfo = await readFile('/proc/self/mountinfo', { encoding: 'utf8', signal });
   const procMounts: string[] = [];
@@ -52,9 +62,15 @@ function readIdentity(text: string, pid: number) {
   const ppid = Number(fields[1]);
   const pgid = Number(fields[2]);
   const threadCount = /^\d+$/u.test(fields[17] ?? '') ? Number(fields[17]) : undefined;
+  // do_task_stat leaves these initial values when the task is reaped before
+  // it can read the signal state. The recorded task state can be older.
+  const reapedDuringRead = fields[1] === '0' && fields[2] === '-1' && fields[3] === '-1' && fields[17] === '0';
   if (end < 0 || !text.startsWith(`${pid} (`) || !/^[A-Za-z]$/u.test(fields[0])
-    || ![ppid, pgid].every(value => Number.isSafeInteger(value) && value >= 0)
-    || ![19, 47, 48].every(index => /^\d+$/u.test(fields[index] ?? ''))) throw new Error('Invalid Linux process identity.');
+    || !Number.isSafeInteger(ppid) || ppid < 0 || !Number.isSafeInteger(pgid) || (pgid < 0 && !reapedDuringRead)
+    || ![19, 47, 48].every(index => /^\d+$/u.test(fields[index] ?? ''))) {
+    throw scanFailure('PROCFS_INVALID_IDENTITY', 'Invalid Linux process identity.');
+  }
+  if (reapedDuringRead) return { startTime: fields[19] };
   return { entry: { ppid, pgid, state: fields[0], startTime: fields[19], threadCount },
     envStart: BigInt(fields[47]), envEnd: BigInt(fields[48]) };
 }
@@ -75,7 +91,17 @@ export async function readLinuxMarkerScan(
       // The open proc directory pins this PID lookup. A reused numeric PID
       // cannot redirect the environment read into a replacement directory.
       const base = `/proc/self/fd/${directory.fd}`;
-      const stat = () => readFile(`${base}/stat`, { encoding: 'utf8', signal }).then(text => readIdentity(text, pid));
+      const readStat = () => readFile(`${base}/stat`, { encoding: 'utf8', signal });
+      let recheckedStat = false;
+      const stat = async () => {
+        const observed = readIdentity(await readStat(), pid);
+        if (observed.entry) return observed;
+        const identity = recheckedStat ? undefined : readIdentity(await readStat(), pid);
+        recheckedStat = true;
+        if (!identity?.entry) throw scanFailure('PROCFS_INVALID_IDENTITY', 'Linux process identity is still unavailable.');
+        assertSameStartTime(observed.startTime, identity.entry.startTime);
+        return identity;
+      };
       const before = await stat();
       if (!markers.size || before.entry.state === 'Z') {
         result.table.set(pid, before.entry);
@@ -91,7 +117,7 @@ export async function readLinuxMarkerScan(
           const chunks: Buffer[] = [];
           for await (const chunk of file.createReadStream({ signal, autoClose: false })) {
             bytes += chunk.length;
-            if (bytes > maxBytes) throw new Error('Linux process scan exceeded its byte limit.');
+            if (bytes > maxBytes) throw scanFailure('PROCFS_BYTE_LIMIT', 'Linux process scan exceeded its byte limit.');
             chunks.push(chunk);
           }
           environment = Buffer.concat(chunks);
@@ -110,7 +136,7 @@ export async function readLinuxMarkerScan(
         result.unreadablePids.add(pid);
         return;
       }
-      if (after.entry.startTime !== before.entry.startTime) throw new Error('Linux process identity changed during inspection.');
+      assertSameStartTime(before.entry.startTime, after.entry.startTime);
       result.table.set(pid, after.entry);
       if (after.entry.state === 'Z') return;
       // A live task may be in exec or losing its address space. A short read,
@@ -147,6 +173,6 @@ export async function readLinuxMarkerScan(
   }
   await Promise.all(Array.from({ length: Math.min(8, pids.length) }, worker));
   signal.throwIfAborted();
-  if (!result.table.has(process.pid)) throw new Error('Linux observer identity missing.');
+  if (!result.table.has(process.pid)) throw scanFailure('PROCFS_OBSERVER_MISSING', 'Linux observer identity missing.');
   return result;
 }
