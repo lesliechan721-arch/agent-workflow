@@ -161,6 +161,8 @@ Claude 专属配置固定在 `extensions.permissions[].agentOverrides.claude.san
 
 Claude 当前官方合同说明尾部 ` *` 覆盖有/无参数的该前缀，沙箱排除与 permission 独立，组合命令仍受额外条件约束。这里只生成直接调用所需规则；实际宿主匹配继续单独验收。
 
+当前入口缺少声明的命令权限映射时（含 `generic`），AW 以 `invocationPolicyNotApplied` 标明受影响的具体动作。若本次组件集合明确省略了提供命令的 Skill、该 Skill 的 renderer 排除了当前渲染 scope，或该 Skill 缺少平台能力，AW 跳过引用该命令的权限与沙箱例外，并继续交付其他适用动作和独立组件。Skill 正文引用的命令仍须实际可用。未声明的集合、静态集合中的无效命令或 variant、必需资源缺失仍按上文处理。[CLI 诊断合同](cli.md#4-业务-payload-的边界)
+
 Guide 的 allow 与 Claude exclusion 均固定为 start/send/wait/result/stop 五项；不生成整个 ID 的宽前缀。管理入口与其它 ID 不匹配。
 
 ## A6. 可交接示例

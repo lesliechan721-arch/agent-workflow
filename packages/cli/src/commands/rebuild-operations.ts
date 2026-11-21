@@ -12,6 +12,7 @@ import type {
   RebuildCommand,
   Scope,
 } from '../types.js';
+import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import type { OperationAction } from './operation-plan.js';
@@ -915,10 +916,13 @@ export async function executeRebuildOperation(options: {
           ? 'failed' : 'succeeded' });
       }
       const failure = receipts.flatMap((receipt) => receipt.effects).find((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status));
-      const gaps = receipts.flatMap((receipt) => receipt.unmet);
+      const gaps = receipts.flatMap((receipt) => receipt.unmet).filter((gap) => !isDeliveryCapabilityGap(gap));
       const diagnostics = receipts.flatMap((receipt) => receipt.diagnostics).filter((item) => item.severity === 'error');
+      const failureDiagnostics = failure?.diagnostics.length ? failure.diagnostics
+        : gaps.some((gap) => gap.reasonCode !== 'packageUpdateBlockedByUnmet') ? [] : diagnostics;
       let result = failure || gaps.length || diagnostics.length
-        ? failed(options.command, options.target, accumulator, 'native.write', failure?.diagnostics.map((item) => `${item.code}: ${item.message}`).join('; ') || 'platformComponentsUnmet')
+        ? failed(options.command, options.target, accumulator, 'native.write',
+          failureDiagnostics.map((item) => `${item.code}: ${item.message}`).join('; ') || 'platformComponentsUnmet')
         : succeeded(options.command, options.target, accumulator);
       if (result.status === 'succeeded' && options.command !== 'cleanup' && options.command !== 'uninstall') {
         const deployment = options.target.platformDeployment;

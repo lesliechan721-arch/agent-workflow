@@ -8,6 +8,7 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
+import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
 import { runCli } from '../../src/index.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -21,12 +22,13 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { recoveryRetryTargets, type RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { resolvePreferencesPath, writePreferences, setTargets, type DeploymentPreferences } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
-import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
@@ -47,7 +49,6 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
   for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'SKILL.md'),
     `---\nname: ${skill(name)}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
   for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'README.md'), `Use ${name}.\n`);
-  for (const name of names) for (const platform of platforms) await fs.copy(path.join(source, 'plugins', name, 'skills'), path.join(source, 'plugins', name, platform, 'skills'));
   for (const name of names.filter(hasHook)) await fs.outputFile(path.join(source, 'plugins', name, 'pre-apply.mjs'), [
     "import fs from 'node:fs'; const c = JSON.parse(fs.readFileSync(0, 'utf8'));",
     `fs.appendFileSync(${JSON.stringify(hookTrace)}, JSON.stringify({ plugin: c.plugin.name, platform: c.target.platform, scope: c.target.scope }) + '\\n');`,
@@ -69,20 +70,10 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
       manifest.platforms = platforms; manifest.skills = './skills'; delete manifest.extensions;
       if (hasHook(name)) manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
     } })));
-  const entries = [];
-  for (const name of names) {
-    const root = path.join(source, 'plugins', name);
-    const plugin = await readPluginManifest(root, { mode: 'bundle' });
-    const receipt = createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []);
-    for (const platform of platforms) await fs.outputJson(path.join(root, platform, 'skills', skill(name), 'aw-plugin-requirements.json'), receipt);
-    entries.push(await createCatalogManifestV7Entry(plugin, root));
-  }
-  const catalogPath = path.join(source, 'catalog-manifest.json');
-  await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries });
   const config = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
     sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env: isolation.env });
-  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', cwd, env: isolation.env });
   const generated = await fs.readJson(path.join(source, '.aw-generated.json')) as { workspaceIdentity: string };
   const options = { cwd, env: isolation.env, cliVersion: '1.0.0', yes: true };
   const intent = (name: string) => ({ schemaVersion: 3 as const, kind: 'aw-plugin-intents' as const,
@@ -97,6 +88,19 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
   }
   const nativeSkill = (platform: 'opencode' | 'cursor', scope: 'user' | 'project', name: string) => nativePaths[`${platform}/${scope}/${name}`]!;
   return { options, cwd, source, hookTrace, hookFailure, nativeSkill, userRoot: path.join(isolation.env.HOME!, '.agents', 'skills'), projectRoot: path.join(cwd, '.agents', 'skills') };
+}
+
+function failNextPackagePublication(packageRoot: string) {
+  let failed = false;
+  const move = fs.move.bind(fs);
+  const spy = vi.spyOn(fs, 'move').mockImplementation(async (source: string, destination: string, options?: fs.MoveOptions) => {
+    if (destination === packageRoot && !failed) {
+      failed = true;
+      throw new Error('EACCES');
+    }
+    return move(source, destination, options);
+  });
+  return { failed: () => failed, restore: () => spy.mockRestore() };
 }
 
 async function expectSavedIntent(receipt: RecoveryReceipt, location: Parameters<typeof observeIntent>[0]) {
@@ -400,6 +404,125 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     }
   }, 30000);
 
+  it('installs a Project root once over an existing User Skill dependency', async () => {
+    const value = await fixture(false, ['opencode']);
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
+    await fs.remove(await resolveIntentPath(project));
+    await setTargets(user, ['opencode']);
+    expect((await runRecovery('sync', ['team/a'], user)).ok).toBe(true);
+    const receipt = await runRecovery('install', ['team/b'], project);
+    expect(receipt.ok, JSON.stringify(receipt.targetResults.map((target) => [target.pluginId, target.scope, target.blockers]))).toBe(true);
+    expect(receipt.targetResults.map((target) => [target.pluginId, target.scope])).toEqual([['team/b', 'project']]);
+    expect(await fs.pathExists(value.nativeSkill('opencode', 'project', 'd'))).toBe(false);
+    expect(await readRecoveryStatus(project)).toMatchObject({ allSatisfied: true, inSync: true });
+    const personalSkill = path.join(value.nativeSkill('opencode', 'user', 'd'), 'SKILL.md');
+    await fs.appendFile(personalSkill, '\nUser drift.\n');
+    const blocked = await runRecovery('sync', ['team/b'], project);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.targetResults.find((target) => target.pluginId === 'team/b')?.blockers).toContainEqual(
+      expect.objectContaining({ code: 'userSkillProviderNotReady', pluginId: 'team/d', subject: { pluginId: 'team/a', scope: 'user', target: 'opencode' } }));
+    for (const result of [
+      await runPublicPluginStatus(['team/b'], { ...project, targets: ['opencode'] }),
+      await runPublicLifecycle('sync', ['team/b'], { ...project, targets: ['opencode'] }),
+    ]) {
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'userSkillProviderNotReady',
+        subject: { pluginId: 'team/a', scope: 'user', target: 'opencode' } }));
+      expect(result.nextActions.flatMap((action) => action.kind === 'command' && action.argv[2] === 'sync' ? [action.argv] : [])).toEqual([
+        ['aw', 'plugin', 'sync', 'team/a', '--context', 'user', '--target', 'opencode'],
+        ['aw', 'plugin', 'sync', 'team/b', '--context', 'project', '--target', 'opencode'],
+      ]);
+    }
+    expect(await fs.readFile(personalSkill, 'utf8')).toContain('User drift.');
+    expect(await fs.pathExists(value.nativeSkill('opencode', 'project', 'd'))).toBe(false);
+    const repaired = await runRecovery('sync', [], project);
+    expect(repaired.ok, JSON.stringify(repaired.targetResults.map((target) => [target.pluginId, target.scope, target.blockers]))).toBe(true);
+    expect(repaired).toMatchObject({ allSatisfied: true, inSync: true });
+    expect(await fs.readFile(personalSkill, 'utf8')).not.toContain('User drift.');
+    const foreign = path.join(value.nativeSkill('opencode', 'project', 'd'), 'foreign.txt');
+    await fs.outputFile(foreign, 'Keep my project package.');
+    const conflict = await runRecovery('sync', ['team/b'], project);
+    expect(conflict.targetResults.find((target) => target.pluginId === 'team/b')?.blockers).toContainEqual(
+      expect.objectContaining({ code: 'projectSkillProviderConflict' }));
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Keep my project package.');
+  }, 30000);
+
+  it('reuses installed User Skills on separate native layouts and retires an owned Project duplicate on sync', async () => {
+    const value = await fixture(false, ['opencode'], false, { b: ['a'], a: ['d'], d: [] });
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
+    await setTargets(user, ['opencode']);
+    const userSkill = value.nativeSkill('opencode', 'user', 'd');
+    const projectSkill = value.nativeSkill('opencode', 'project', 'd');
+    // A User declaration alone must not make Project sync install its dependency into User.
+    expect(await runRecovery('sync', ['team/b'], project)).toMatchObject({ ok: true, blockers: [], errors: [] });
+    expect(await fs.pathExists(userSkill)).toBe(false);
+    expect(await fs.pathExists(projectSkill)).toBe(true);
+    expect((await runRecovery('sync', ['team/a'], user)).ok).toBe(true);
+    const before = await readRecoveryStatus(project);
+    expect(before.extraObserved).toContainEqual(expect.objectContaining({ pluginId: 'team/d', agent: 'opencode', scope: 'project' }));
+    for (const selection of [[], ['team/b']]) {
+      const query = await runPublicPluginStatus(selection, project);
+      expect(query.diagnostics).toContainEqual(expect.objectContaining({ code: 'projectSkillDuplicatePending',
+        severity: 'warning', subject: { pluginId: 'team/d', target: 'opencode', scope: 'project' } }));
+      expect(query.nextActions.filter((action) => action.kind === 'command')).toEqual([expect.objectContaining({
+        argv: ['aw', 'plugin', 'sync', 'team/b', '--context', 'project', '--target', 'opencode'],
+      })]);
+    }
+    await fs.appendFile(path.join(userSkill, 'SKILL.md'), '\nUser bytes need refreshing.\n');
+    const failure = failNextPackagePublication(path.resolve(userSkill, '../..'));
+    try {
+      expect((await runRecovery('sync', [], project)).ok).toBe(false);
+      expect(failure.failed()).toBe(true);
+      expect(await fs.pathExists(projectSkill)).toBe(true);
+      expect(await fs.pathExists(value.nativeSkill('opencode', 'project', 'a'))).toBe(true);
+    } finally { failure.restore(); }
+    const migrated = await runRecovery('sync', [], project);
+    expect(migrated.ok, JSON.stringify(migrated.targetResults)).toBe(true);
+    expect(await fs.pathExists(projectSkill)).toBe(false);
+    expect(await fs.pathExists(value.nativeSkill('opencode', 'project', 'a'))).toBe(false);
+    expect(await fs.pathExists(userSkill)).toBe(true);
+    const after = await readRecoveryStatus(project);
+    expect(after).toMatchObject({ allSatisfied: true, inSync: true });
+    expect(after.observedTargets?.find((target) => target.pluginId === 'team/d')).toMatchObject({
+      scope: 'user', requiredBy: ['team/a', 'team/b'],
+    });
+    const removed = await runRecovery('uninstall', ['team/a'], { ...project, scope: 'user' });
+    expect(removed.ok, JSON.stringify(removed.errors)).toBe(true);
+    expect(await fs.pathExists(projectSkill)).toBe(true);
+    expect(await fs.pathExists(userSkill)).toBe(false);
+    expect(await readRecoveryStatus(project)).toMatchObject({ allSatisfied: true, inSync: true });
+  }, 30000);
+
+  it('publishes a selected missing User provider first and retains it if its later Project replacement fails', async () => {
+    const value = await fixture(false, ['opencode']);
+    const project = { ...value.options, context: 'project' as const };
+    await setTargets({ ...project, scope: 'user' }, ['opencode']);
+    const userSkill = value.nativeSkill('opencode', 'user', 'd');
+    const projectSkill = value.nativeSkill('opencode', 'project', 'd');
+    expect(await runRecovery('sync', [], project)).toMatchObject({ ok: true, inSync: true });
+    expect(await fs.pathExists(userSkill)).toBe(true);
+    expect(await fs.pathExists(projectSkill)).toBe(false);
+    const failure = failNextPackagePublication(path.resolve(projectSkill, '../..'));
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a'], { ...project, scope: 'user', yes: true });
+      expect(result.status).not.toBe('success');
+      expect(result.nextActions, JSON.stringify(result.diagnostics)).toContainEqual({ kind: 'manual', message: expect.stringContaining(
+        'aw plugin remove team/d --only outputs --scope user --target opencode') });
+      expect(failure.failed()).toBe(true);
+      expect(await fs.pathExists(userSkill)).toBe(true);
+      expect(await fs.pathExists(projectSkill)).toBe(false);
+    } finally { failure.restore(); }
+    expect((await runRecovery('sync', ['team/b'], project)).ok).toBe(true);
+    expect(await fs.pathExists(projectSkill)).toBe(true);
+    expect(await fs.pathExists(userSkill)).toBe(true);
+    const cleanup = await runPublicLifecycle('remove', ['team/d'],
+      { ...project, scope: 'user', only: 'outputs', targets: ['opencode'], yes: true });
+    expect(cleanup.status, JSON.stringify(cleanup.diagnostics)).toBe('success');
+    expect(await fs.pathExists(userSkill)).toBe(false);
+    expect(await readRecoveryStatus(project)).toMatchObject({ inSync: true });
+  }, 30000);
+
   // Test Value Gate: the public execution must create one shared dependency and preserve both declarations.
   it('repairs user providers before project consumers without a project dependency copy', async () => {
     const value = await fixture();
@@ -676,26 +799,32 @@ describe('joint recovery through real Catalog and owned outputs', () => {
   });
 
   it.each(['same-path damage', 'new Active', 'changed ref with unchanged Store'] as const)('preserves a joint install receipt after %s between a verified provider and its waiting consumer', async (change) => {
-    const value = await fixture(false, ['generic'], true, { a: [], b: ['d'], d: ['a'], z: [] });
+    // d is the first consumer after a. Its hook exposes early execution even if the write is blocked.
+    const value = await fixture(false, ['generic'], ['d'], {
+      a: [], b: ['d'], d: ['a'], ...(change === 'same-path damage' ? { z: [] } : {}),
+    });
     const user = { ...value.options, scope: 'user' as const };
     const project = { ...value.options, scope: 'project' as const };
     const projectIntent = await fs.readFile(await resolveIntentPath(project));
     const foreign = path.join(value.projectRoot, 'foreign', 'SKILL.md');
     await fs.outputFile(foreign, 'foreign skill\n');
     const protectedFiles = await snapshotRegularTree(value.projectRoot);
-    const active = await resolveActiveCatalogGeneration({ ...user, sourceId: 'team' });
     const statePath = resolveCatalogGenerationStatePath(user.env);
+    const originalState = await fs.readFile(statePath);
+    const state = JSON.parse(originalState.toString()) as CatalogGenerationStateFileV1;
+    const active = state.sources.team!.active!;
+    const store = resolveCatalogStoreLocation({ ...active, env: user.env });
     let nextState: Buffer | undefined;
     if (change === 'new Active') {
-      const originalState = await fs.readFile(statePath);
       await fs.appendFile(path.join(value.source, 'catalog-manifest.json'), '\n');
       const next = await syncCatalogSourceGeneration({ ...user, sourceId: 'team' });
-      expect(next.active?.snapshotDigest).not.toBe(active.snapshotDigest);
+      expect(next).toMatchObject({ outcome: 'activated', active: { logicalIdentity: active.logicalIdentity } });
+      const nextStore = resolveCatalogStoreLocation({ ...next.active!, env: user.env });
+      expect(nextStore.snapshotRoot).not.toBe(store.snapshotRoot);
       nextState = await fs.readFile(statePath);
       await fs.writeFile(statePath, originalState);
     } else if (change === 'changed ref with unchanged Store') {
-      const state = await fs.readJson(statePath) as CatalogGenerationStateFileV1;
-      state.sources.team!.active!.requestedRef = 'refs/heads/changed';
+      active.requestedRef = 'refs/heads/changed';
       nextState = Buffer.from(JSON.stringify(state));
     }
     const plan = await prepareRecovery('install', ['team/a', 'team/b'], user);
@@ -703,7 +832,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(plan.receipt.requestedTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
       .toEqual(['team/a:user', 'team/b:project', 'team/b:user', 'team/d:user']);
 
-    const damagedFile = path.join(active.snapshotPath, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
+    const damagedFile = path.join(store.snapshotRoot, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
     let changed = false;
     const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: async (event) => {
       // d waits for a. Change the source after the completed output and before d checks its scripts and files.
@@ -741,8 +870,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
     await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
-    const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
+    await expect(fs.pathExists(value.hookTrace)).resolves.toBe(false);
     if (change === 'new Active') {
       const action = receipt.recoveryActions.find((item) => item === 'aw plugin sync team/b --context project --target generic')!;
       const capture = createCapturedCliIo();
@@ -750,6 +878,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       for (const [root, name] of [[value.userRoot, 'd'], [value.userRoot, 'b'], [value.projectRoot, 'b']] as const) {
         await expect(fs.readFile(path.join(root, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
       }
+      expect(JSON.parse(await fs.readFile(value.hookTrace, 'utf8'))).toEqual({ plugin: 'd', platform: 'generic', scope: 'user' });
       await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
       await expectSavedIntent(receipt, user);
     }
@@ -1247,7 +1376,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
   }, 30000);
   // Test Value Gate: a foreign replacement preserves prior Native output; an independent Native target can still finish.
   it('preserves prior Native outputs when a generic replacement conflicts and still permits safe work', async () => {
-    const value = await fixture(false, ['generic', 'opencode', 'cursor']);
+    const value = await fixture(false, ['generic', 'opencode', 'cursor'], ['d']);
     await setTargets({ ...value.options, scope: 'user' }, ['opencode']);
     const initial = await runRecovery('sync', [], value.options);
     expect(initial.ok, JSON.stringify(initial)).toBe(true);
@@ -1394,7 +1523,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     { scope: 'user', keep: false, directRoot: 'selected' },
     { scope: 'project', keep: false, directRoot: 'selected' },
   ] as const)('removes only the selected independent Native scope with retention=$keep ($scope, direct root=$directRoot)', async ({ scope, keep, directRoot }) => {
-    const value = await fixture(false, ['opencode']);
+    const value = await fixture(false, ['opencode'], ['d']);
     await setTargets({ ...value.options, scope: 'user' }, ['opencode']);
     const otherScope = scope === 'user' ? 'project' : 'user';
     if (directRoot !== 'none') {
@@ -2012,3 +2141,115 @@ it('reports each failed provider in a three-level chain and retries the only dec
     await expect(fs.readFile(path.join(value.projectRoot, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
   }
 }, 30_000);
+
+// A requirements-only exit leaves the installed Project consumer able to use its dependency.
+it.each(['inherited skills', 'healthy project copy', 'damaged project copy', 'missing declared copy', 'removed consumer'] as const)(
+  'removes a User root while accounting for %s in the current project', async (scenario) => {
+    installNativeTestQualification({ discovery: true });
+    const value = await fixture(false, ['opencode']);
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
+    const userDependency = path.join(value.nativeSkill('opencode', 'user', 'd'), 'SKILL.md');
+    const projectDependency = path.join(value.nativeSkill('opencode', 'project', 'd'), 'SKILL.md');
+    const projectConsumer = path.join(value.nativeSkill('opencode', 'project', 'b'), 'SKILL.md');
+    await setTargets(user, ['opencode']);
+    const hasProjectCopy = scenario === 'healthy project copy' || scenario === 'damaged project copy';
+    if (hasProjectCopy) expect((await runRecovery('sync', ['team/b'], project)).ok).toBe(true);
+    expect((await runRecovery('sync', ['team/a'], user)).ok).toBe(true);
+    if (!hasProjectCopy) expect((await runRecovery('sync', ['team/b'], project)).ok).toBe(true);
+    await expect(fs.readFile(userDependency, 'utf8')).resolves.toContain('Use d.');
+    expect(await fs.pathExists(projectDependency)).toBe(hasProjectCopy);
+    if (scenario === 'damaged project copy') await fs.appendFile(projectDependency, '\nOut of date.\n');
+
+    expect((await runPublicLifecycle('remove', ['team/b'], { ...project, only: 'requirements' })).status).toBe('success');
+    if (scenario === 'missing declared copy') {
+      expect((await runPublicLifecycle('install', ['team/d'], { ...project, only: 'requirements' })).status).toBe('success');
+    }
+    if (scenario === 'removed consumer') {
+      expect((await runPublicLifecycle('remove', ['team/b'], { ...project, only: 'outputs', targets: ['opencode'] })).status).toBe('success');
+    } else await expect(fs.readFile(projectConsumer, 'utf8')).resolves.toContain('Use b.');
+
+    const removed = await runPublicLifecycle('remove', ['team/a'], { ...project, scope: 'user' });
+    expect(removed.status, JSON.stringify(removed.diagnostics)).toBe('success');
+    expect(await fs.pathExists(path.join(value.nativeSkill('opencode', 'user', 'a'), 'SKILL.md'))).toBe(false);
+    expect(await fs.pathExists(projectConsumer)).toBe(scenario !== 'removed consumer');
+    expect(await fs.pathExists(userDependency)).toBe(scenario !== 'healthy project copy' && scenario !== 'removed consumer');
+    if (hasProjectCopy) await expect(fs.readFile(projectDependency, 'utf8')).resolves.toContain('Use d.');
+  }, 30_000,
+);
+
+it('syncs a Claude project that still uses two shared User dependencies', async () => {
+  installNativeTestQualification({ discovery: true });
+  const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+  const value = await fixture(false, ['claude'], false, { a: ['d'], b: ['a', 'd'], d: [] });
+  const user = { ...value.options, scope: 'user' as const, context: 'user' as const, targets: ['claude'] };
+  const project = { ...value.options, scope: 'project' as const, context: 'project' as const, targets: ['claude'] };
+  await setTargets(user, ['claude']);
+  expect((await runPublicLifecycle('install', ['team/a'], user, claude.runtime)).status).toBe('success');
+  const first = await runPublicLifecycle('install', ['team/b'], project, claude.runtime);
+  expect(first.status, JSON.stringify(first.diagnostics)).toBe('success');
+  const before = await fs.readJson(claude.installedPath);
+  claude.nativeCliRunner.mockClear();
+
+  const synced = await runPublicLifecycle('sync', ['team/b'], project, claude.runtime);
+  expect(synced.status, JSON.stringify(synced.diagnostics)).toBe('success');
+  expect(synced.data.remainingTargets).toEqual([]);
+  expect(synced.data.targetResults.find((target) => target.pluginId === 'team/b')).toMatchObject({ execution: 'no-op' });
+  expect(claude.nativeCliRunner.mock.calls.some(([invocation]) => invocation.args.includes('uninstall')
+    || invocation.args.includes('disable'))).toBe(false);
+  await expect(fs.readJson(claude.installedPath)).resolves.toEqual(before);
+}, 30_000);
+
+it.each(['owned consumer', 'foreign consumer', 'removed consumer', 'healthy project copy'] as const)(
+  'protects only dependencies still needed by a delisted %s', async (scenario) => {
+    installNativeTestQualification({ discovery: true });
+    const value = await fixture(false, ['opencode']);
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
+    const removeFromProject = { ...project, scope: 'user' as const };
+    const projectB = path.join(value.nativeSkill('opencode', 'project', 'b'), 'SKILL.md');
+    const userD = path.join(value.nativeSkill('opencode', 'user', 'd'), 'SKILL.md');
+    const projectD = path.join(value.nativeSkill('opencode', 'project', 'd'), 'SKILL.md');
+    const hasProjectCopy = scenario === 'healthy project copy';
+    const userRoot = hasProjectCopy ? 'team/d' : 'team/a';
+    await setTargets(user, ['opencode']);
+    if (hasProjectCopy) {
+      const intent = await observeIntent(user);
+      if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+      await writeIntent(user, { ...intent.value, roots: [{ pluginId: userRoot }] });
+      expect((await runRecovery('sync', ['team/b'], project)).ok).toBe(true);
+    }
+    expect((await runRecovery('sync', [userRoot], user)).ok).toBe(true);
+    if (!hasProjectCopy) expect((await runRecovery('sync', ['team/b'], project)).ok).toBe(true);
+    expect(await fs.pathExists(projectD)).toBe(hasProjectCopy);
+    expect((await runPublicLifecycle('remove', ['team/b'], { ...project, only: 'requirements' })).status).toBe('success');
+
+    const indexPath = path.join(value.source, 'catalog-manifest.json');
+    const index = await fs.readJson(indexPath) as { entries: Array<{ name: string }> };
+    await fs.writeJson(indexPath, { ...index, entries: index.entries.filter(({ name }) => name !== 'b') });
+    await fs.remove(path.join(value.source, 'plugins', 'b'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: user.env });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: user.env });
+    expect(active.manifest.entries.map(({ name }) => name)).not.toContain('b');
+
+    const cleanProjectB = () => runPublicLifecycle('remove', ['team/b'], { ...project, only: 'outputs', targets: ['opencode'] });
+    if (scenario === 'removed consumer') expect((await cleanProjectB()).status).toBe('success');
+    if (scenario === 'foreign consumer') await fs.remove(path.join(path.resolve(projectB, '../../..'), SKILL_OWNER_MARKER));
+    const before = await observeIntent(user);
+    const removed = await runPublicLifecycle('remove', [userRoot], removeFromProject);
+    if (scenario === 'owned consumer') {
+      expect(removed.status).toBe('blocked');
+      expect(removed.diagnostics).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+      expect(await observeIntent(user)).toEqual(before);
+      await expect(fs.readFile(userD, 'utf8')).resolves.toContain('Use d.');
+      await expect(fs.readFile(projectB, 'utf8')).resolves.toContain('Use b.');
+      expect((await cleanProjectB()).status).toBe('success');
+      expect((await runPublicLifecycle('remove', [userRoot], removeFromProject)).status).toBe('success');
+    } else {
+      expect(removed.status, JSON.stringify(removed.diagnostics)).toBe('success');
+    }
+    expect(await fs.pathExists(userD)).toBe(false);
+    expect(await fs.pathExists(projectB)).toBe(hasProjectCopy || scenario === 'foreign consumer');
+    if (hasProjectCopy) await expect(fs.readFile(projectD, 'utf8')).resolves.toContain('Use d.');
+  }, 30_000,
+);

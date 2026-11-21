@@ -857,7 +857,9 @@ describe('cross-plugin public config apply', () => {
           "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
           `const name=${JSON.stringify(name)};`,
           "const files={'SKILL.md':`---\\nname: ${name}\\ndescription: Config reference integration fixture.\\n---\\n# Reference fixture\\n`,'README.md':'# Reference fixture\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n'};",
-          `console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,runtimeConfig:{keys:${JSON.stringify(name === 'provider' ? ['registry'] : ['selected'])}},content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));`,
+          `const binding = c.platform === 'codex' ? { runtimeConfig: { keys: ${JSON.stringify(name === 'provider' ? ['registry'] : ['selected'])} } } : {};`,
+          "if (c.platform === 'claude') files['README.md'] += JSON.stringify(c.config.values.registry);",
+          "console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,...binding,content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));",
         ].join('\n'));
         if (name === 'provider') await fs.outputFile(path.join(pluginRoot, 'pre-apply.mjs'), [
           "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
@@ -918,6 +920,10 @@ describe('cross-plugin public config apply', () => {
     expect(await run(['target', 'set', 'codex', 'claude', '--yes'])).toMatchObject({ exitCode: 0 });
     const claude = await run(['plugin', 'install', 'team/provider', '--scope', 'user', '--yes']);
     expect(claude, JSON.stringify(claude)).toMatchObject({ exitCode: 0 });
+    const [claudeProvider] = native.packageRoots.values();
+    expect(claudeProvider).toBeDefined();
+    const renderedRegistry = path.join(claudeProvider!, 'skills/provider/README.md');
+    expect(await fs.readFile(renderedRegistry, 'utf8')).toContain('[]');
     const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
     // A manual edit can leave a previously installed consumer invalid until the missing key is added.
     await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity, logicalIdentity: source.logicalIdentity,
@@ -958,6 +964,7 @@ describe('cross-plugin public config apply', () => {
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'provider', platform: 'claude' }), state: 'completed' }),
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'consumer', platform: 'codex' }), state: 'skipped', errorCode: 'dependencyApplyFailed' }),
     ]));
+    expect(await fs.readFile(renderedRegistry, 'utf8')).toContain('"remote"');
     const codexAdds = runner.mock.calls.slice(applyCalls).map(([invocation]) => invocation)
       .filter((invocation) => !isClaudeInvocation(invocation) && invocation.args.includes('add'))
       .flatMap((invocation) => invocation.args.filter((arg) => arg.includes('@')));

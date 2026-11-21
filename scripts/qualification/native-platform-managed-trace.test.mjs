@@ -49,11 +49,58 @@ test('injects only the current public marker into each qualification script call
   assert.notEqual(records[0].operationId, records[3].operationId);
   const encoded = JSON.stringify(records);
   for (const secret of ['fixture-marker', 'next-fixture-marker', 'private-', 'isolated-']) assert(!encoded.includes(secret));
+  assert.throws(() => wrapped({ ...invocation, env: { [PUBLIC_MARKER]: 'other-lease' } }, options),
+    /conflicting public process marker/);
+  assert.equal(calls, 2);
   const unchangedOptions = Object.freeze({ timeoutMs: 456 });
   const unchanged = createManagedPluginTraceRunner((received, receivedOptions) => {
     assert.equal(received, invocation); assert.equal(receivedOptions, unchangedOptions); return Promise.resolve(result);
   }, { env: { PARENT_SECRET: 'private-parent' }, emit() { throw new Error('trace failure'); } });
   assert.equal(await unchanged(invocation, unchangedOptions), result);
+});
+
+// Exercise the public AW launcher with a real isolated renderer. The outer
+// observer and the renderer must each retain their own exact launch marker.
+test('supervises a Linux public AW renderer across its private environment', {
+  skip: process.platform !== 'linux', timeout: 20_000,
+}, async (t) => {
+  const { executePublicAw, publicAwNodeLauncher } = await import('./native-platform-public-process.mjs');
+  const { prepareEnvironment } = await import('./native-platform-runtime.mjs');
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-marker-'));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const script = path.join(cwd, 'renderer.mjs');
+  const launcher = path.join(cwd, 'launch.mjs');
+  await fs.writeFile(script, `
+    import { createHash } from 'node:crypto';
+    const outer = process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER;
+    const inner = process.env.AW_NATIVE_CLI_PROCESS_MARKER;
+    if (!outer || !inner || outer === inner || process.env.PRIVATE_PARENT_VALUE !== undefined ||
+        createHash('sha256').update(outer).digest('hex') !== process.argv[2]) process.exitCode = 1;
+  `);
+  const runtime = new URL('../../packages/cli/dist/src/utils/plugin-scripts.js', import.meta.url);
+  await fs.writeFile(launcher, `
+    import { createHash } from 'node:crypto';
+    import { buildPluginScriptSpawnEnv, defaultPluginProcessRunner } from ${JSON.stringify(runtime.href)};
+    const cwd = process.cwd();
+    const env = buildPluginScriptSpawnEnv({ commandEnv: process.env, contextPath: '', tempDir: cwd,
+      plugin: {name:'fixture', version:'1.0.0'}, event:'install', scope:'user', bundleRoot:cwd });
+    const digest = createHash('sha256').update(process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER).digest('hex');
+    const run = await defaultPluginProcessRunner.run({command:process.execPath, args:[process.argv[2], digest],
+      cwd, env}, {timeoutMs:5000});
+    process.exitCode = run.exitCode ?? 1;
+  `);
+  const env = { ...await prepareEnvironment(cwd), PRIVATE_PARENT_VALUE: 'fixture' };
+  const traceFile = path.join(cwd, 'managed.jsonl');
+  for (const trace of [false, true]) {
+    const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+      AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+      AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([process.execPath]) } : env;
+    const result = await executePublicAw(publicAwNodeLauncher(launcher, trace), [script], { cwd, env: commandEnv, timeoutMs: 10_000 });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.terminationReason, 'complete');
+  }
+  const records = (await fs.readFile(traceFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(records.filter(row => row.role === 'plugin-script').map(row => row.phase), ['start', 'spawn', 'finish']);
 });
 
 test('retains plugin errors and projects bounded snapshot timing without secrets', async () => {
@@ -149,6 +196,122 @@ test('samples completed Windows Codex PowerShell queries in the eight unmatched 
   assert.equal(records.filter(row => row.commandRole === 'windows-system-powershell').length, 64);
   assert.equal(records.length, 72);
   assert(!JSON.stringify(records).includes('private-encoded-command'));
+});
+
+// The component trace file must never receive invocation or result payloads.
+test('records only completed Codex component command facts and preserves the original results', async (t) => {
+  const { root, entry, other } = await fixture(t);
+  const system = path.join(root, 'private-system');
+  const command = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await fs.mkdir(path.dirname(command), { recursive: true });
+  await fs.writeFile(command, 'fixture');
+  const shellArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', 'private-script'];
+  const records = [];
+  const success = Object.freeze({ exitCode: 0, stdout: 'private-output', stderr: 'private-stderr' });
+  const timeout = Object.assign(new Error('private-error'), { name: 'NativeCliError', reason: 'timeout', exitCode: 124,
+    cleanupError: new Error('private-cleanup-error'), operationDiagnostic: { code: 'nativeCliTimedOut', safeMessage: 'private-message' } });
+  const original = Promise.resolve(success);
+  const originalError = Promise.reject(timeout);
+  let calls = 0;
+  const wrapped = createManagedTraceRunner(invocation => {
+    calls++;
+    assert.equal(invocation.env.SECRET, 'private-environment');
+    return invocation.command === command ? originalError : original;
+  }, { entries: [entry], client: 'codex', platform: 'win32', env: { SystemRoot: system },
+    mode: 'codex-component-install', emit: record => records.push(record) });
+  const env = { SECRET: 'private-environment' };
+  assert.equal(wrapped({ command: entry, args: ['--version'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'list', '--marketplace', 'private-market', '--json'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'marketplace', 'list', '--json'], env }), original);
+  await original;
+  assert.equal(wrapped({ command: command, args: shellArgs, env }), originalError);
+  await assert.rejects(originalError, error => error === timeout);
+  assert.equal(wrapped({ command: other, args: ['--version'], env }), original);
+  assert.equal(wrapped({ command: entry, args: ['plugin', 'add', 'private-selector'], env }), original);
+  await original;
+  assert.equal(calls, 6);
+  assert.deepEqual(records.map(({ elapsedMs, ...record }) => record), [
+    ...['codex-version', 'codex-plugin-list', 'codex-marketplace-list'].map(category => ({ phase: 'finish', category,
+      threw: false, exitCode: 0, timedOut: false, cleanupUnconfirmed: false })),
+    { phase: 'finish', category: 'windows-system-powershell', threw: true, exitCode: 124, timedOut: true,
+      cleanupUnconfirmed: true, reason: 'timeout', errorCode: 'nativeCliTimedOut' },
+  ]);
+  assert(records.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0));
+  assert(!JSON.stringify(records).includes('private-'));
+  for (let index = 0; index < 70; index++) await assert.rejects(wrapped({ command, args: shellArgs, env }));
+  assert.equal(records.filter(row => row.category === 'windows-system-powershell').length, 64);
+});
+
+// These two diagnostics must capture the original operations and conclusions
+// at the runner boundary without forwarding any private invocation or output.
+test('projects Windows Grok probes and Darwin Claude removal cleanup from the original native runner', async (t) => {
+  const { entry, other } = await fixture(t);
+  const sentinel = 'private-native-input';
+  const nativeError = (message, reason = 'exit') => Object.assign(new Error(sentinel), { name: 'NativeCliError',
+    cleanupError: message ? new Error(message) : undefined, reason, exitCode: reason === 'timeout' ? 124 : 1,
+    stdout: sentinel, stderr: sentinel, invocation: { env: { SECRET: sentinel } } });
+  const markerFailure = nativeError(`Process tree cleanup unconfirmed: POSIX process marker lookup failed (stage=termination-start, attempts=1, reason=callback-error, code=${sentinel}).`);
+  const identityFailure = nativeError('Process tree cleanup unconfirmed: POSIX process identity lookup failed.');
+  const cleanupTimeout = nativeError('Native CLI cleanup unconfirmed: cleanup timed out.');
+  const unsafeFailure = nativeError(`Native CLI cleanup unconfirmed: could not signal process group ${sentinel}.`);
+  const timeout = nativeError(undefined, 'timeout');
+  const success = { exitCode: 0, stdout: sentinel, stderr: sentinel };
+  for (const { client, platform, mode, calls } of [
+    { client: 'grok', platform: 'win32', mode: 'grok-component-discovery', calls: [
+      [process.execPath, [entry, '--version'], timeout, 'grok-version'],
+      [process.execPath, [entry, 'plugin', '--help'], success, 'grok-plugin-help'],
+      [process.execPath, [entry, 'plugin', 'list', '--help'], success, 'grok-plugin-list-help'],
+      [entry, ['--version'], success, 'grok-version'],
+      [process.execPath, [entry, 'plugin', 'list', '--json'], success],
+      [other, [entry, '--version'], success],
+      [other, ['--version'], success],
+    ] },
+    { client: 'claude', platform: 'darwin', mode: 'claude-component-remove', calls: [
+      [entry, ['--version'], success, 'claude-version'],
+      [entry, ['plugin', 'marketplace', 'list', '--json'], success, 'claude-marketplace-list'],
+      [entry, ['plugin', 'disable', sentinel, '--scope', 'local'], markerFailure, 'claude-plugin-disable', 'marker-lookup'],
+      [entry, ['plugin', 'list', '--json'], identityFailure, 'claude-plugin-list', 'identity-lookup'],
+      [entry, ['plugin', 'uninstall', sentinel, '--scope', 'local'], cleanupTimeout, 'claude-plugin-uninstall', 'cleanup-deadline'],
+      ...[
+        ['could not signal process group SIGTERM.', 'process-group-sigterm'],
+        ['could not signal process group SIGKILL.', 'process-group-sigkill'],
+        ['could not verify process group exit.', 'process-group-exit-check'],
+        ['child PID is unavailable.', 'child-pid-unavailable'],
+      ].map(([message, kind]) => [entry, ['plugin', 'list', '--json'], nativeError(`Native CLI cleanup unconfirmed: ${message}`),
+        'claude-plugin-list', kind]),
+      [entry, ['plugin', 'list', '--json'], unsafeFailure, 'claude-plugin-list'],
+      [entry, ['plugin', 'disable', sentinel, '--scope', 'user'], success],
+    ] },
+  ]) {
+    const records = [];
+    let expectedInvocation;
+    let original;
+    const wrapped = createManagedTraceRunner(invocation => {
+      assert.equal(invocation, expectedInvocation);
+      return original;
+    }, { entries: [entry], client, platform, mode, emit: record => records.push(record) });
+    for (const [command, args, value, category, cleanupKind] of calls) {
+      expectedInvocation = { command, args, env: { SECRET: sentinel } };
+      original = value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+      const before = records.length;
+      assert.equal(wrapped(expectedInvocation), original);
+      if (value instanceof Error) await assert.rejects(original, error => error === value);
+      else assert.equal(await original, value);
+      if (!category) assert.equal(records.length, before);
+      else {
+        assert.equal(records.length, before + 1);
+        const record = records.at(-1);
+        assert.equal(record.category, category);
+        assert.equal(record.exitCode, value.exitCode);
+        assert.equal(record.timedOut, value === timeout);
+        assert.equal(record.cleanupUnconfirmed, Boolean(value.cleanupError));
+        assert.equal(record.cleanupKind, cleanupKind);
+      }
+    }
+    assert(!JSON.stringify(records).includes(sentinel));
+  }
 });
 
 // Test Value Gate: private diagnostics retain the invocation fields, including
@@ -408,6 +571,19 @@ test('does not install by default and requires every hosted guard', async (t) =>
     AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: path.join(root, 'trace.jsonl') };
   assert.deepEqual(managedTraceConfiguration(valid, 'linux'), { entries: [entry], client: 'codex', file: valid.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE });
   assert.equal(managedTraceConfiguration({ ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi' }, 'win32').client, 'pi');
+  const antigravity = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'antigravity' };
+  assert.equal(managedTraceConfiguration(antigravity, 'win32').client, 'antigravity');
+  assert.equal(managedTraceConfiguration(antigravity, 'linux'), undefined);
+  const grok = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'grok' };
+  assert.equal(managedTraceConfiguration(grok, 'win32'), undefined);
+  for (const [client, mode, host, otherHost] of [
+    ['grok', 'grok-component-discovery', 'win32', 'darwin'],
+    ['claude', 'claude-component-remove', 'darwin', 'win32'],
+  ]) {
+    const compact = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: client, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: mode };
+    assert.equal(managedTraceConfiguration(compact, host).mode, mode);
+    assert.equal(managedTraceConfiguration(compact, otherHost), undefined);
+  }
   for (const name of Object.keys(valid)) {
     const missing = { ...valid }; delete missing[name]; assert.equal(managedTraceConfiguration(missing, 'linux'), undefined);
   }
@@ -424,4 +600,45 @@ test('does not install by default and requires every hosted guard', async (t) =>
     assert.equal(managedTraceConfiguration({ ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: client }, 'darwin').client, client);
   }
   assert.equal(managedTraceConfiguration(valid, 'freebsd'), undefined);
+});
+
+// A malformed trace must not prevent the original qualification result from being reported.
+test('reads only ordinary, bounded managed trace files', async (t) => {
+  const { readManagedTrace } = await import('./native-platform-runtime.mjs');
+  const { root } = await fixture(t);
+  const file = path.join(root, 'trace.jsonl');
+  const record = { phase: 'finish' };
+  const line = JSON.stringify(record) + '\n';
+  assert.equal(await readManagedTrace(undefined), undefined);
+  assert.deepEqual(await readManagedTrace(file), { state: 'not-created', records: [] });
+  assert.deepEqual(await readManagedTrace(root), { state: 'unavailable', records: [] });
+
+  await fs.writeFile(file, '');
+  assert.deepEqual(await readManagedTrace(file), { state: 'captured', records: [] });
+  await fs.writeFile(file, line + '{');
+  assert.deepEqual(await readManagedTrace(file), { state: 'partial-or-invalid-jsonl', records: [record] });
+  await fs.writeFile(file, line.repeat(257));
+  assert.deepEqual(await readManagedTrace(file), { state: 'over-limit', records: [] });
+  await fs.writeFile(file, ' '.repeat(256 * 1024 - line.length) + line);
+  assert.deepEqual(await readManagedTrace(file), { state: 'captured', records: [record] });
+  await fs.appendFile(file, ' ');
+  assert.deepEqual(await readManagedTrace(file), { state: 'over-limit', records: [] });
+
+  if (process.platform !== 'win32') {
+    await fs.writeFile(file, line);
+    const link = path.join(root, 'linked.jsonl');
+    await fs.symlink(file, link);
+    assert.deepEqual(await readManagedTrace(link), { state: 'unavailable', records: [] });
+
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const pipe = path.join(root, 'pipe.jsonl');
+    await run('mkfifo', [pipe]);
+    const runtime = new URL('./native-platform-runtime.mjs', import.meta.url).href;
+    const probe = `import { readManagedTrace } from ${JSON.stringify(runtime)};
+      process.stdout.write(JSON.stringify(await readManagedTrace(process.argv[1])));`;
+    const { stdout } = await run(process.execPath, ['--input-type=module', '-e', probe, pipe], { timeout: 5000 });
+    assert.deepEqual(JSON.parse(stdout), { state: 'unavailable', records: [] });
+  }
 });

@@ -1,4 +1,5 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
+import { createSafeNeutralCwd, grokUserWorkspace } from '../intent/scope-context.js';
 import { NativeCliError, runNativeCliChecked, type NativeCliResult } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
@@ -25,6 +26,11 @@ export function piProjectRegistrationHidden(binding: DeploymentBinding, observat
     && observation.physicalKey === binding.physicalKey && observation.registration === 'unknown'
     && observation.diagnostics.some((diagnostic) => diagnostic.code === 'piProjectRegistrationNotVisible')
     && !observation.diagnostics.some((diagnostic) => ['piNativeObservationUnconfirmed', 'deploymentPostcheckFailed'].includes(diagnostic.code));
+}
+
+export function piProjectEmptyDeliveryObserved(binding: DeploymentBinding, observation: DeploymentObservation): boolean {
+  return piProjectRegistrationHidden(binding, observation) && observation.package === 'absent'
+    && observation.ownership === 'absent' && observation.configuration?.activation === 'absent';
 }
 
 /** Action success does not rewrite the later read-only registration observation. */
@@ -68,6 +74,24 @@ export async function executeNativeLifecycle(ctx: MutationContext,
 /** Native verbs are fixed by the adapter, never supplied by a renderer. */
 async function executeNativeLifecycleEffect(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>, effect: PlannedEffect): Promise<MutationOutcome> {
+  if (prepared.plan.binding.route === 'grok-cli') {
+    const env = ctx.env ?? process.env;
+    const workspace = await grokUserWorkspace(env, true);
+    if (workspace) return dispatchNativeEffect({ ...ctx, cwd: workspace }, prepared, effect);
+    if (effect.kind !== 'unregister' && effect.kind !== 'deactivate') blocked('nativeTrustRequired');
+    // Removing an exact registration does not require folder trust.
+    const neutral = await createSafeNeutralCwd(env, true);
+    try {
+      return await dispatchNativeEffect({ ...ctx, cwd: neutral.executionCwd }, prepared, effect);
+    } finally {
+      await neutral.dispose();
+    }
+  }
+  return dispatchNativeEffect(ctx, prepared, effect);
+}
+
+async function dispatchNativeEffect(ctx: MutationContext,
+  prepared: PreparedDeployment<PlatformDriverState>, effect: PlannedEffect): Promise<MutationOutcome> {
   const { binding, evidence } = prepared.plan;
   const { identity, product, before } = prepared.driverState;
   if (!identity) blocked('nativeIdentityUnconfirmed');
@@ -96,7 +120,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       return ctx.services.setActivation(binding, identity, enabled);
     }
     if (binding.route === 'pi-package') return { mutation: 'none', changed: false };
-    if (enabled && binding.route === 'grok-cli' && before.grokScopeAuthorization === 'denied') {
+    if (enabled && binding.route === 'grok-cli' && before.grokScopeAuthorization !== 'granted') {
       blocked('nativeTrustRequired');
     }
     if (binding.route === 'claude-marketplace') {

@@ -2,16 +2,26 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
+  acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
-import { executePublicAw } from './native-platform-public-process.mjs';
+import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|client[,client...]> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]'
+  + `\nClients are ${Object.keys(clients).join(', ')}.`;
 class Unverified extends Error {}
+
+function selectPlatforms(selection) {
+  if (selection === 'all') return Object.keys(clients);
+  const platforms = selection?.split(',') ?? [];
+  if (!platforms.length || platforms.some(platform => !Object.hasOwn(clients, platform))
+    || new Set(platforms).size !== platforms.length) throw new Error('invalid-arguments');
+  return platforms;
+}
 
 export function parseArgs(args) {
   const options = {};
@@ -27,11 +37,13 @@ export function parseArgs(args) {
     if (Object.keys(options).length !== 2 || !options['source-sha']) throw new Error('invalid-arguments');
     return options;
   }
-  if (!options.candidate || !options.report || !(options.client === 'all' || Object.hasOwn(clients, options.client))
+  const platforms = selectPlatforms(options.client);
+  if (!options.candidate || !options.report
     || Boolean(options.install) === Boolean(options.executable)
-    || options.executable && (options.client === 'all' || !path.isAbsolute(options.executable))
+    || options.executable && (platforms.length !== 1 || !path.isAbsolute(options.executable))
     || Object.keys(options).some((key) => ['write-candidate', 'source-sha'].includes(key))) throw new Error('invalid-arguments');
-  if (options['mixed-native-aw'] && (options.client !== 'all' || !options.install || !options['public-aw'])) throw new Error('invalid-arguments');
+  if (options['mixed-native-aw'] && (!options.install || !options['public-aw']
+    || !mixedNativePlatforms.every(platform => platforms.includes(platform)))) throw new Error('invalid-arguments');
   return options;
 }
 
@@ -136,21 +148,6 @@ export function readPublicAwEnvelope(stdout, expectedStatus) {
   const value = JSON.parse(stdout);
   if (value?.schemaVersion !== 2 || value.status !== expectedStatus) throw new Error('public-aw-unexpected-envelope');
   return value;
-}
-
-async function readManagedTrace(file) {
-  if (!file) return undefined;
-  const records = [];
-  try {
-    if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
-    const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
-    if (lines.length > 256) return { state: 'over-limit', records };
-    for (const line of lines) {
-      try { records.push(JSON.parse(line)); }
-      catch { return { state: 'partial-or-invalid-jsonl', records }; }
-    }
-    return { state: 'captured', records };
-  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
 }
 
 // Project only fixed stage names and times from this fixture's own debug log.
@@ -299,7 +296,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           && (expectedExitCode === 3 && expectedStatus === 'blocked' || expectedExitCode === 4 && expectedStatus === 'partial');
         const grokSyncArgs = ['plugin', 'sync', `qualification/${ctx.pluginName}`, '--context', 'user', '--target', 'grok', '--yes'];
         const expectedGrokSafetyBlock = options.publicAw && platform === 'grok' && scope === 'user'
-          && expectedExitCode === 3 && expectedStatus === 'blocked'
+          && (expectedExitCode === 3 && expectedStatus === 'blocked' || expectedExitCode === 4 && expectedStatus === 'partial')
           && args.length === grokSyncArgs.length && args.every((arg, index) => arg === grokSyncArgs[index]);
         const expectedNonzero = trustBootstrap || expectedIncompleteStatus || expectedGrokSafetyBlock;
         if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !expectedNonzero) {
@@ -327,10 +324,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const start = performance.now();
         const jobTiming = () => ({ startedAt, returnedAt: new Date().toISOString(), elapsedMs: performance.now() - start, timeoutMs });
         try {
-          result = await executePublicAw({ executable: process.execPath, prefix: [
-            ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
-            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
-          { cwd, env: commandEnv, timeoutMs });
+          result = await executePublicAw(publicAwNodeLauncher(path.join(repoRoot, 'packages/cli/dist/index.js'), trace),
+            [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])], { cwd, env: commandEnv, timeoutMs });
         } catch (error) {
           const nativeManagedTrace = await readManagedTrace(traceFile);
           report.commands.push(redactScope({ aw: args, cwd, processFailure: error?.message,
@@ -422,7 +417,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         return { version: actual };
       });
       if (options.publicAw) {
-        await qualifyPublicAw(ctx);
+        await qualifyPublicAw(ctx, { components: process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1' });
         for (const id of requiredPublicChecks(platform, scope)) {
           if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
         }
@@ -439,7 +434,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     report.reason = redactScope(error?.message ?? 'qualification-failed');
     report.remaining = 'not-run-after-incomplete-scenario';
   } finally {
-    try { await fs.rm(root, { recursive: true, force: true }); report.cleanup = 'completed'; }
+    try { await removeQualificationRoot(root); report.cleanup = 'completed'; }
     catch (error) {
       report.cleanup = 'failed'; report.status = 'failed';
       report.cleanupError = redactScope({ code: error?.code, syscall: error?.syscall, path: error?.path });
@@ -448,18 +443,30 @@ export async function runScope(platform, scope, launcher, options = {}) {
   return report;
 }
 
+export async function removeQualificationRoot(root) {
+  // Windows can keep an executable mapped briefly after its Job has closed.
+  // Bound retries for the entire fixture, including deeply nested packages.
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rm(root, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (process.platform !== 'win32' || attempt === 5 || !['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(error.code)) throw error;
+      await delay((attempt + 1) * 100);
+    }
+  }
+}
+
 async function cleanupClientAcquisition(installRoot, result) {
-  try { await fs.rm(installRoot, { recursive: true, force: true }); result.acquisitionCleanup = 'completed'; }
+  try { await removeQualificationRoot(installRoot); result.acquisitionCleanup = 'completed'; }
   catch (error) {
     result.acquisitionCleanup = 'failed'; result.status = 'failed';
     result.acquisitionCleanupError = redact({ code: error?.code, syscall: error?.syscall, path: error?.path }, installRoot);
   }
 }
 
-export async function run(options) {
-  const codexBehaviorRequested = options['public-aw'] && ['all', 'codex'].includes(options.client);
-  const grokPublicRequested = options['public-aw'] && ['all', 'grok'].includes(options.client);
-  const loopbackRequested = options['public-aw'] && ['all', 'codex', 'grok', 'copilot'].includes(options.client);
+export async function run(options, acquire = acquireClient) {
+  const selectedPlatforms = selectPlatforms(options.client);
+  const codexBehaviorRequested = options['public-aw'] && selectedPlatforms.includes('codex');
+  const loopbackRequested = options['public-aw'] && selectedPlatforms.some(platform => ['codex', 'grok', 'copilot'].includes(platform));
   const mixedPublicAwRequested = Boolean(options['mixed-native-aw']);
   const mixedClients = new Map();
   const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
@@ -497,19 +504,16 @@ export async function run(options) {
     uncovered: [...(options['public-aw'] ? [] : ['public-aw-install-end-to-end']),
       ...(options['public-aw'] ? ['invocation-controls-outside-tested-scenarios'] : ['skill-invocation-controls']),
       ...(codexBehaviorRequested ? ['agents-execution-outside-three-codex-user-roles'] : ['agents-execution']),
-      ...(grokPublicRequested ? ['grok-user-same-source-refresh-with-host-authorization-denied'] : []),
       'external-model-invocation', 'mcp-execution', 'hook-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor'], clients: [],
     uncoveredReasons: { cursor: 'separate-fixed-interface-probe',
-      antigravity: 'public-user-scope-runs-through-dedicated-qualification',
-      ...(grokPublicRequested ? { 'grok-user-same-source-refresh-with-host-authorization-denied':
-        'Grok 1.0.77 on macOS arm64 kept projectTrusted=true in credential-free User neutral directories with exact denied-folder entries. A separate Project plugin produced denial only in its own directory.' } : {}) },
+      antigravity: 'public-user-scope-runs-through-dedicated-qualification' },
   };
   try {
     report.candidate = await verifyCandidate(options.candidate);
     report.processManagement = await processManagementInfo();
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
-    for (const platform of options.client === 'all' ? Object.keys(clients) : [options.client]) {
+    for (const platform of selectedPlatforms) {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
       report.clients.push(result);
       if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
@@ -522,7 +526,7 @@ export async function run(options) {
         let clientBin;
         if (options.install) {
           installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
-          const acquired = await acquireClient(platform, installRoot);
+          const acquired = await acquire(platform, installRoot);
           launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
           if (mixedPublicAwRequested && mixedNativePlatforms.includes(platform)) {
             mixedClients.set(platform, { ...acquired, installRoot, result });

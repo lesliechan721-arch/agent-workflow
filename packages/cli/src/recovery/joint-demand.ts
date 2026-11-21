@@ -3,7 +3,7 @@ import { resolveWorkContext, type WorkContext } from '../intent/work-context.js'
 import { createEmptyPreferences, type AgentId, type DeploymentPreferences } from '../intent/deployment-preferences.js';
 import { resolvePluginDependencyClosure, resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { readDemand, resolveDelivery, type DemandRoot, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
-import type { RecoveryDiagnostic } from './receipt.js';
+import type { RecoveryDiagnostic, RecoveryTarget } from './receipt.js';
 import type { NativeSharedReference, NativeSharedReferenceView } from '../utils/native-demand.js';
 import type { RecoveryStatus } from './status.js';
 import { hasSharedUserPackage } from '../platforms/layout.js';
@@ -47,6 +47,40 @@ export interface JointDemandPlan {
 
 export const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
 
+// Independently installed native packages can provide static Skills to a project.
+export function hasInheritableSkills({ manifest }: PluginMeta): boolean {
+  return Boolean(manifest.skills) && !manifest.extensions && !manifest.mcpServers && !manifest.artifacts
+    && !manifest.config && !manifest.managedCommands && !manifest.nativeTools
+    && !manifest.scripts?.artifacts?.render && !manifest.scripts?.preApply;
+}
+
+export function isInstalledSkillProvider(target: RecoveryTarget): boolean {
+  return target.scope === 'user' && target.observation === 'verified' && hasReadyProviderSkills(target);
+}
+
+export function hasReadyProviderSkills(target: Pick<RecoveryTarget, 'content' | 'blockers' | 'componentGaps' | 'installedComponentCount' | 'reasons'>): boolean {
+  return target.content === 'satisfied'
+    && !target.blockers.length && !target.componentGaps?.length && (target.installedComponentCount ?? 0) > 0
+    && !target.reasons?.some((entry) => entry.code === 'opencodePluginLoadFailed');
+}
+
+export interface ProjectSkillProvider {
+  pluginId: string;
+  target: AgentId;
+  sourceIdentity: string;
+  projectCopy: 'absent' | 'owned' | 'blocked';
+  userNeedsRepair: boolean;
+  userAbsent: boolean;
+}
+
+export function projectSkillCandidates(plan: JointDemandPlan): JointPlacement[] {
+  return plan.placements.filter((project) => project.scope === 'project' && !canReuseProviderAcrossScopes(project.target)
+    && project.plugin.sourceIdentity && hasInheritableSkills(project.plugin)
+    && project.contributions.every((entry) => entry.path.length > 1)
+    && plan.placements.some((user) => user.scope === 'user' && user.target === project.target && user.pluginId === project.pluginId
+      && user.plugin.sourceIdentity === project.plugin.sourceIdentity && user.plugin.catalogLogicalIdentity === project.plugin.catalogLogicalIdentity));
+}
+
 type PlacementPosition = Pick<JointPlacement, 'pluginId' | 'target' | 'scope'>;
 const placementKey = ({ pluginId, target, scope }: PlacementPosition): string => [pluginId, target, scope].join('\0');
 
@@ -75,9 +109,9 @@ export function indexJointDependencies(demand: JointDemandPlan) {
   }
   function directProviders(consumer: PlacementPosition): JointPlacement[] {
     return dependencyIds(consumer.pluginId).flatMap((pluginId) => {
+      const user = consumer.scope === 'project' ? placements.get(placementKey({ ...consumer, pluginId, scope: 'user' })) : undefined;
       const provider = placements.get(placementKey({ ...consumer, pluginId }))
-        ?? (consumer.scope === 'project' && canReuseProviderAcrossScopes(consumer.target)
-          ? placements.get(placementKey({ ...consumer, pluginId, scope: 'user' })) : undefined);
+        ?? (user?.contributions.some((entry) => entry.scope === 'project') ? user : undefined);
       return provider ? [provider] : [];
     });
   }
@@ -139,7 +173,7 @@ function protectedCatalogDependencies(demand: DemandSnapshot, root: DemandRoot):
   } catch { return []; }
 }
 
-export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPlan {
+export function deriveJointDemand(snapshot: JointDemandSnapshot, skillProviders: readonly ProjectSkillProvider[] = []): JointDemandPlan {
   const result: JointDemandPlan = { roots: [], placements: [], errors: [], complete: true };
   const preferences = snapshot.preferences;
   const demands = [snapshot.user, ...(snapshot.project ? [snapshot.project] : [])];
@@ -204,7 +238,9 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
         if (entry.state !== 'required') continue;
         for (const plugin of closure) {
           const pluginId = plugin.pluginId!;
-          const key = `${plugin.catalogLogicalIdentity ?? plugin.sourceIdentity ?? plugin.sourceId}\0${pluginId}\0${target}`;
+          const identity = plugin.catalogLogicalIdentity ?? plugin.sourceIdentity ?? plugin.sourceId;
+          const nativeSource = canReuseProviderAcrossScopes(target) ? '' : plugin.sourceIdentity;
+          const key = [identity, nativeSource, pluginId, target].join('\0');
           const existing = placements.get(key);
           const contribution = { root: root.pluginId, scope: demand.scope, path: paths.get(pluginId)! };
           if (existing) existing.contributions.push(contribution);
@@ -235,13 +271,32 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
       entry.state = 'unknown'; entry.blockers.push({ code: 'jointDemandUnknown', message: '完整需求未知，不能确定项目提供位置。' });
     }
   }
+  for (const placement of placements.values()) {
+    const problem = skillProviders.find((item) => !item.userAbsent && (item.projectCopy === 'blocked' || item.userNeedsRepair) && item.pluginId === placement.pluginId
+      && item.target === placement.target && item.sourceIdentity === placement.plugin.sourceIdentity);
+    if (!problem || !placement.contributions.some((entry) => entry.scope === 'user')) continue;
+    if (placement.contributions.some((entry) => entry.scope === 'project' && entry.path.length === 1)) continue;
+    for (const contribution of placement.contributions.filter((entry) => entry.scope === 'project')) {
+      const root = result.roots.find((item) => item.scope === 'project' && item.target === placement.target && item.pluginId === contribution.root);
+      if (!root || root.state !== 'required') continue;
+      root.state = 'blocked';
+      if (problem.userNeedsRepair) {
+        const userRoot = placement.contributions.find((entry) => entry.scope === 'user')!.root;
+        root.blockers.push({ code: 'userSkillProviderNotReady', pluginId: placement.pluginId,
+          subject: { pluginId: userRoot, scope: 'user', target: placement.target },
+          message: `个人 Skill ${placement.pluginId} 尚未就绪。请先同步个人根 ${userRoot}，再重试项目安装。` });
+      } else root.blockers.push({ code: 'projectSkillProviderConflict', pluginId: placement.pluginId,
+        message: `无法确认个人 Skill ${placement.pluginId} 在项目中的可用性。请检查项目的包、权限和启用设置。` });
+    }
+  }
   result.placements = [...placements.values()].flatMap((placement) => {
     const contributions = placement.contributions.filter((contribution) => result.roots.some((entry) =>
       entry.pluginId === contribution.root && entry.scope === contribution.scope
       && entry.target === placement.target && entry.state === 'required'));
-    // Separate native directories need their dependency closure in each scope.
-    // Explicit roots also keep each scope's package, activation or generic output.
-    if (!canReuseProviderAcrossScopes(placement.target)
+    const inheritedSkills = placement.scope === 'user' && skillProviders.some((item) => !item.userAbsent && item.projectCopy !== 'blocked'
+      && item.pluginId === placement.pluginId && item.target === placement.target && item.sourceIdentity === placement.plugin.sourceIdentity);
+    // Explicit roots keep each scope's package, activation or generic output.
+    if ((!canReuseProviderAcrossScopes(placement.target) && !inheritedSkills)
       || contributions.some((item) => item.scope === 'project' && item.path.length === 1)) {
       return (['user', 'project'] as const).flatMap((scope) => {
         const scoped = contributions.filter((item) => item.scope === scope);

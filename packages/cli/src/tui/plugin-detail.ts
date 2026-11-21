@@ -15,10 +15,12 @@ import {
 import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel,
   type PluginListItemViewModel } from './model.js';
+import { projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
+import type { Diagnostic } from '../output/public-result.js';
 import type { InventoryState as ProjectInventoryState,
   InventoryRoot, ScopedInventoryViewModel } from './scoped-inventory.js';
 
-export interface PluginDetailPlacement {
+export interface PluginDetailPlacement extends ComponentDelivery {
   platform?: PlatformName;
   agent?: AgentId;
   delivery?: 'native' | 'agent-skills';
@@ -34,6 +36,7 @@ export interface PluginDetailPlacement {
   expectedVersion?: string;
   installedVersion?: string;
   reasonCodes: string[];
+  deliveryNotices?: Diagnostic[];
 }
 
 function agentForPlatform(platform: PlatformName): AgentId {
@@ -248,12 +251,14 @@ export function buildPluginDetailSubject(options: {
         ...(target.agent ? { agent: target.agent } : {}),
         ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      Object.assign(placement, projectComponentDelivery(target));
+      if (target.deliveryNotices) placement.deliveryNotices = target.deliveryNotices;
       if (target.delivery === 'native') placement.statusState = target.state === 'ready' ? 'ready'
         : target.state === 'pending' ? 'needsSync' : target.state === 'blocked' ? 'blocked' : undefined;
       if (target.expectedVersion) placement.expectedVersion = target.expectedVersion;
       if (target.installedVersion) placement.installedVersion = target.installedVersion;
       if (target.observation) placement.observation = target.observation;
-      placement.actual ||= target.actual === true;
+      placement.actual = target.satisfaction !== 'not-applicable' && (placement.actual || target.actual === true);
       if (target.state === 'unknown' || target.state === 'blocked') {
         placement.observation = 'unknown';
         placement.statusState = target.state === 'blocked' ? 'blocked' : undefined;
@@ -276,12 +281,14 @@ export function buildPluginDetailSubject(options: {
         ...(target.agent ? { agent: target.agent } : {}),
         ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      Object.assign(placement, projectComponentDelivery(target));
+      if (target.deliveryNotices) placement.deliveryNotices = target.deliveryNotices;
       if (target.delivery === 'native') placement.statusState = target.state === 'ready' ? 'ready'
         : target.state === 'pending' ? 'needsSync' : target.state === 'blocked' ? 'blocked' : undefined;
       if (target.expectedVersion) placement.expectedVersion = target.expectedVersion;
       if (target.installedVersion) placement.installedVersion = target.installedVersion;
       if (target.observation) placement.observation = target.observation;
-      placement.actual ||= target.actual === true;
+      placement.actual = target.satisfaction !== 'not-applicable' && (placement.actual || target.actual === true);
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
       if (!target.platform || !targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {

@@ -33,6 +33,7 @@ export {
 export type { ProviderProcessDependencies } from './process.js'
 export {
   assertProcessTreeInspectionAvailable,
+  hasOnlyZombieLinuxProcessGroupMembers,
   observeProcessTree,
   terminateProcessTree,
 } from './process-tree.js'

@@ -19,6 +19,78 @@ function listResult(pluginIds: readonly string[]) {
 }
 
 describe('Codex native observation session', () => {
+  // Test Value Gate: a Windows timeout must recover its own scope once, shared by both consumers.
+  it('retries a cleaned-up Windows probe timeout in the same scope and shares the result', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const exactCwd = isolation.layout.fixtureCwd;
+    const env = { ...isolation.env, AW_NATIVE_CLI_TIMEOUT_MS: undefined };
+    const neutralReads: Array<{ cwd?: string; args: string[]; timeoutMs?: number }> = [];
+    let exactReads = 0;
+    const session = await createCodexNativeObservationSession({
+      exactCwd, env, probe: { platform: 'win32' },
+      runner: async (invocation) => {
+        if (invocation.cwd === exactCwd) {
+          exactReads += 1;
+          return listResult([]);
+        }
+        const { cwd, args, timeoutMs } = invocation;
+        neutralReads.push({ cwd, args, timeoutMs });
+        if (neutralReads.length === 1) {
+          throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+        }
+        return listResult(['demo@aw']);
+      },
+    });
+    try {
+      const [user, project] = await Promise.all([
+        session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' }),
+        session.snapshot('aw', 'project'),
+      ]);
+      expect(user.observation.state).toBe('observed');
+      expect(user.activations.user).toBe(true);
+      expect(project.exact?.has('demo@aw')).toBe(false);
+      expect(project.neutral?.has('demo@aw')).toBe(true);
+      expect(exactReads).toBe(1);
+      expect(neutralReads).toHaveLength(2);
+      expect(neutralReads[0]?.cwd).not.toBe(exactCwd);
+      expect(neutralReads[0]?.args).toEqual(['plugin', 'list', '--marketplace', 'aw', '--json']);
+      expect(neutralReads[0]?.timeoutMs).toBe(5_000);
+      expect(neutralReads[1]).toEqual(neutralReads[0]);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  // Test Value Gate: only a cleaned-up timeout on the eligible host can spend the one retry.
+  it.each([
+    { scenario: 'persistent timeout', platform: 'win32', attempts: 2 },
+    { scenario: 'explicit timeout', platform: 'win32', attempts: 1 },
+    { scenario: 'other host', platform: 'darwin', attempts: 1 },
+  ] as const)('preserves the observation boundary for $scenario', async ({ scenario, platform, attempts }) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const env = { ...isolation.env };
+    for (const key of Object.keys(env)) {
+      if (key.toUpperCase() === 'AW_NATIVE_CLI_TIMEOUT_MS') delete env[key];
+    }
+    if (scenario === 'explicit timeout') env.aw_native_cli_timeout_ms = '1000';
+    const timeouts: Array<number | undefined> = [];
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd, env, probe: { platform },
+      runner: async (invocation) => {
+        timeouts.push(invocation.timeoutMs);
+        throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+      },
+    });
+    try {
+      const { observation, observations } = await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+      expect(observation.state).toBe('failed');
+      expect(observations.user).toBe(false);
+      expect(timeouts).toEqual(Array.from({ length: attempts }, () => 5_000));
+    } finally {
+      await session.dispose();
+    }
+  });
+
   // Test Value Gate: one cancelled read must not release the neutral cwd while another invalidated read still cleans up.
   it.each([
     ['plugin', false], ['snapshot', false], ['plugin', true], ['snapshot', true],

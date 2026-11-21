@@ -2,18 +2,19 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import {
-  assertPlatformCapabilities, assertPluginComponent, getComponentFeatureRequirements, getUnmetFeatureRequirements, isSkillInvocationFeature,
+  assertPlatformCapabilities, assertPluginComponent, getComponentFeatureRequirements, getMissingDeliveryRequirements, isSkillInvocationFeature,
   validatePortableSkillName,
   getHookHandlerContract,
   renderHookDefinitionGroup,
   type AgentContent, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
+import type { Diagnostic } from '../output/public-result.js';
 import type { DeploymentBinding, HostContribution, ProjectionInput, ProjectionResult, StageContext } from './contracts.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getNativePackageName } from './layout.js';
 import { ProjectionFiles, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath, type ProjectedFile } from './projection-files.js';
 import { projectCodeExtension } from './projection-code-extension.js';
 import { bindPlatformCommandResources } from './projection-command-resources.js';
-import { generateCodexPermissionArtifacts, mergeClaudePermissions } from '../generators/permissions.js';
+import { generateCodexPermissionArtifacts, mergeClaudePermissions, selectPlatformInvocationPolicy } from '../generators/permissions.js';
 import { supplementRelativePath } from './supplement-layout.js';
 
 type Agent = Extract<PluginComponent, { kind: 'agent' }>;
@@ -57,7 +58,9 @@ function composedAgentPrompt(agent: Agent, instructions: Instruction[]): string 
 function agentMarkdown(input: ProjectionInput, agent: Agent, instructions: Instruction[]): string {
   const platform = input.binding.platform;
   const content: AgentContent = agent.content;
-  if (content.promptMode && content.promptMode !== 'host-default') throw new Error('platformProjectionPromptModeUnsupported');
+  if (content.promptMode && content.promptMode !== 'host-default' && !(platform === 'claude' && content.promptMode === 'replace')) {
+    throw new Error('platformProjectionPromptModeUnsupported');
+  }
   const metadata: Record<string, unknown> = { name: nameFor(input, agent), description: content.description,
     model: content.model, tools: content.tools };
   if (platform === 'antigravity') metadata.inheritCustomizations = true;
@@ -132,8 +135,16 @@ export function projectSkillDocument(platform: DeploymentBinding['platform'], co
   const metadata = YAML.parse(match[1]!) as Record<string, unknown>;
   const rename = metadata.name !== name;
   metadata.name = name;
+  const preserveVersion = (platform === 'codex' || platform === 'opencode') && Object.hasOwn(metadata, 'version');
+  if (preserveVersion) {
+    const extensions = metadata.metadata as Record<string, unknown> | undefined;
+    const version = String(metadata.version);
+    if (extensions?.version !== undefined && extensions.version !== version) throw new Error('platformProjectionSkillMetadataConflict');
+    metadata.metadata = { ...extensions, version };
+    delete metadata.version;
+  }
   const changed = projectSkillInvocation(platform, component, original, metadata, files);
-  return changed || rename ? Buffer.from(`---\n${YAML.stringify(metadata)}---\n${original.slice(match[0].length)}`) : bytes;
+  return changed || rename || preserveVersion ? Buffer.from(`---\n${YAML.stringify(metadata)}---\n${original.slice(match[0].length)}`) : bytes;
 }
 
 function projectSkills(input: ProjectionInput, files: ProjectionFiles, components: PluginComponent[]): void {
@@ -204,17 +215,35 @@ function projectHooks(input: ProjectionInput, files: ProjectionFiles, hooks: Hoo
     for (const instruction of instructions) if (instruction.content.paths?.length) throw new Error('platformProjectionInstructionPathsUnsupported');
     const rootVariable = platform === 'codex' ? '${CODEX_PLUGIN_ROOT}' : '${CLAUDE_PLUGIN_ROOT}';
     const contexts: Record<string, string> = {};
-    const main = instructions.filter((instruction) => instruction.content.coverage.includes('main'));
-    const children = instructions.filter((instruction) => instruction.content.coverage.some((audience) => audience !== 'main'));
-    for (const [event, selected] of [['SessionStart', main], ['SubagentStart', children]] as const) {
+    for (const [audience, key] of [['main', 'SessionStart'], ['plugin-agents', 'plugin'], ['other-agents', 'other']] as const) {
+      const selected = instructions.filter((instruction) => instruction.content.coverage.includes(audience));
       if (!selected.length) continue;
       const text = selected.map((instruction) => instruction.content.content).join('\n\n');
       const maxBytes = input.capabilities.features['instruction.coverage']?.maxBytes;
       if (maxBytes !== undefined && Buffer.byteLength(text) > maxBytes) throw new Error('platformProjectionInstructionTooLarge');
-      contexts[event] = text;
+      contexts[key] = text;
+    }
+    if (platform === 'codex' && contexts.plugin !== contexts.other) throw new Error('platformProjectionInstructionCoverageUnsupported');
+    for (const event of ['SessionStart', 'SubagentStart']) {
+      if (event === 'SessionStart' ? !contexts.SessionStart : !contexts.plugin && !contexts.other) continue;
       add(event, { hooks: [{ type: 'command', command: `node "${rootVariable}/scripts/aw-instructions.mjs" ${event}` }] });
     }
-    files.add('scripts/aw-instructions.mjs', `const contexts = ${JSON.stringify(contexts)};\nconst event = process.argv[2];\nif (!Object.hasOwn(contexts, event)) throw new Error('Unsupported instruction event');\nprocess.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:event,additionalContext:contexts[event]}}));\n`, instructions.map((instruction) => instruction.id));
+    const lines = [
+      "import { readFileSync } from 'node:fs';",
+      `const contexts = ${JSON.stringify(contexts)};`,
+      'const event = process.argv[2];',
+      'let text = contexts.SessionStart;',
+      "if (event === 'SubagentStart') {",
+    ];
+    if (platform === 'claude' && contexts.plugin !== contexts.other) {
+      // Claude reports the authoritative plugin-scoped role identifier on this hook.
+      lines.push("  const { agent_type } = JSON.parse(readFileSync(0, 'utf8'));",
+        "  if (typeof agent_type !== 'string') throw new Error('Missing subagent type');",
+        `  text = agent_type.startsWith(${JSON.stringify(getNativePackageName(input.binding.plugin) + ':')}) ? contexts.plugin : contexts.other;`);
+    } else lines.push('  text = contexts.plugin ?? contexts.other;');
+    lines.push("} else if (event !== 'SessionStart') throw new Error('Unsupported instruction event');",
+      'if (text) process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:event,additionalContext:text}}));', '');
+    files.add('scripts/aw-instructions.mjs', lines.join('\n'), instructions.map((instruction) => instruction.id));
     ids.push(...instructions.map((instruction) => instruction.id));
   }
   if (!Object.keys(eventMap).length) return;
@@ -234,7 +263,9 @@ function projectRules(input: ProjectionInput, files: ProjectionFiles, instructio
       if (instruction.content.paths?.length) files.add(`rules/${name}.md`, markdown({ trigger: 'glob', globs: instruction.content.paths.join(', ') }, instruction.content.content), [instruction.id]);
     } else if (platform === 'copilot') {
       if (instruction.content.paths?.length) throw new Error('platformProjectionInstructionPathsUnsupported');
-      files.add(`com.github.copilot/rules/${name}.md`, instruction.content.content, [instruction.id]);
+      if (instruction.content.coverage.includes('main')) {
+        files.add(`com.github.copilot/rules/${name}.md`, instruction.content.content, [instruction.id]);
+      }
     }
   }
   const alwaysOn = instructions.filter((instruction) => !instruction.content.paths?.length);
@@ -281,7 +312,8 @@ function projectManifest(input: ProjectionInput, files: ProjectionFiles, selecte
   }
   const manifest: Record<string, unknown> = { ...metadata };
   if (has('skill')) manifest.skills = './skills/';
-  if (has('agent')) manifest.agents = './agents/';
+  // Claude's agents field accepts Markdown files. Omit it to scan the default agents/ directory.
+  if (platform !== 'claude' && has('agent')) manifest.agents = './agents/';
   if (has('mcp')) manifest.mcpServers = platform === 'cursor' ? './mcp.json' : './.mcp.json';
   if (files.files.has('hooks/hooks.json')) manifest.hooks = './hooks/hooks.json';
   if (has('instruction') && platform === 'cursor') manifest.rules = './rules/';
@@ -300,6 +332,7 @@ export function projectSupplementFile(binding: DeploymentBinding, component: Plu
   }
   if (binding.platform === 'grok' && component.kind === 'instruction') {
     if (component.content.paths?.length) throw new Error('platformProjectionInstructionPathsUnsupported');
+    if (!component.content.coverage.includes('main')) throw new Error('platformProjectionInstructionAudienceUnsupported');
     return { relativePath, content: component.content.content.replace(/\r\n/gu, '\n') };
   }
   throw new Error('platformProjectionSupplementKindUnsupported');
@@ -353,7 +386,14 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
   assertPlatformCapabilities(input.capabilities);
   if (input.capabilities.platform !== input.binding.platform || input.capabilities.scope !== input.renderUnit.renderScope.kind
     || input.policy.platform !== input.binding.platform) throw new Error('platformProjectionInputMismatch');
-  if (input.policy.permissions.length && !['codex', 'claude'].includes(input.binding.platform)) throw new Error('platformProjectionInvocationPolicyUnsupported');
+  const diagnostics: Diagnostic[] = [];
+  if (input.renderUnit.output !== 'supplement') {
+    const selection = selectPlatformInvocationPolicy(input.policy, {
+      pluginId: input.binding.plugin.pluginId, target: input.binding.platform, scope: input.binding.scope.kind,
+    });
+    diagnostics.push(...selection.diagnostics);
+    input = { ...input, policy: selection.policy };
+  }
   const platform = input.binding.platform;
   const unit = input.renderUnit;
   if ((platform === 'generic') !== (unit.output === 'generic')
@@ -364,15 +404,22 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
   const ids = new Set<string>();
   const files = new ProjectionFiles();
   const hostFiles = new ProjectionFiles();
-  let selected = input.components.filter((component) => input.renderUnit.kinds.includes(component.kind));
+  const selectedForUnit = (component: PluginComponent): boolean => {
+    if (platform === 'grok' && component.kind === 'instruction') {
+      return component.content.coverage.includes('main') ? unit.kinds.includes('instruction') : unit.kinds.includes('agent');
+    }
+    return unit.kinds.includes(component.kind);
+  };
+  let selected = input.components.filter(selectedForUnit);
+  const hasInstructionAgentRecipients = (unit.kinds.includes('agent') || platform === 'grok' && unit.output === 'supplement')
+    && input.components.some((component) => component.kind === 'agent');
   for (const component of input.components) {
     assertPluginComponent(component, { platform: input.binding.platform });
     if (ids.has(component.id)) throw new Error('platformProjectionIdentityConflict');
     ids.add(component.id);
     let skillText: string | undefined;
     if (component.kind === 'skill') skillText = resourceBytes(input, component.id, 'SKILL.md', component.content.files['SKILL.md']!).bytes.toString('utf8');
-    const requirements = getComponentFeatureRequirements(component, { skillText, deliveryOnly: true });
-    if (input.capabilities.kinds[component.kind].status !== 'supported' || getUnmetFeatureRequirements(requirements, input.capabilities).length) {
+    if (getMissingDeliveryRequirements(component, input.capabilities, skillText, hasInstructionAgentRecipients).length) {
       throw new Error('platformProjectionCapabilityUnsupported');
     }
     // Validate native names for the whole same-scope set, even when the current
@@ -382,13 +429,15 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
   if (platform !== 'pi' && platform !== 'opencode') {
     const packageRoot = input.resources.commandResources?.length ? (await getDeploymentLayout(ctx, input.binding)).packageRoot : '';
     input = { ...input, components: bindPlatformCommandResources(input, packageRoot, ctx.platform ?? process.platform) };
-    selected = input.components.filter((component) => input.renderUnit.kinds.includes(component.kind));
+    selected = input.components.filter(selectedForUnit);
   }
   if (!selected.length && (!input.policy.permissions.length || input.renderUnit.output !== 'package')) {
-    return { renderUnitId: input.renderUnit.id, bundle: null, supplements: [], components: [], diagnostics: [] };
+    return { renderUnitId: input.renderUnit.id, bundle: null, supplements: [], components: [], diagnostics };
   }
   if (input.binding.platform === 'generic' && selected.some((component) => component.kind !== 'skill')) throw new Error('platformProjectionGenericKindUnsupported');
   const instructions = input.components.filter((component): component is Instruction => component.kind === 'instruction');
+  const roleInstructionIds = ['copilot', 'grok'].includes(platform) ? selected.filter((component) =>
+    component.kind === 'instruction' && component.content.coverage.includes('plugin-agents')).map((component) => component.id) : [];
   let supplements: HostContribution[] = [];
   if (input.renderUnit.output === 'supplement') {
     supplements = await supplementContributions(ctx, input, files, selected);
@@ -402,8 +451,7 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
         if (input.binding.platform === 'opencode') continue;
         const name = nameFor(input, agent);
         const relative = input.binding.platform === 'copilot' ? `com.github.copilot/agents/${name}.agent.md` : `agents/${name}.md`;
-        files.add(relative, agentMarkdown(input, agent, instructions), [agent.id,
-          ...(input.binding.platform === 'copilot' ? instructions.filter((instruction) => instruction.content.coverage.includes('plugin-agents')).map((instruction) => instruction.id) : [])]);
+        files.add(relative, agentMarkdown(input, agent, instructions), [agent.id, ...roleInstructionIds]);
       }
       const servers = projectMcp(input, files, selected.filter((component): component is Mcp => component.kind === 'mcp'));
       if (!['pi', 'opencode'].includes(input.binding.platform)) {
@@ -432,8 +480,9 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
       ? path.join(stagingRoot, contribution.stagingPath) : path.join(outputRoot, contribution.stagingPath) }));
     for (const component of files.components) component.relativeOutputs.sort();
     return { renderUnitId: input.renderUnit.id,
-      bundle: input.renderUnit.output === 'package' && files.files.size > 0 ? { stagingRoot: outputRoot, contentDigest: files.digest() } : null,
-      supplements, components: files.components, diagnostics: [] };
+      bundle: input.renderUnit.output === 'package' && files.files.size > 0 ? { stagingRoot: outputRoot, contentDigest: files.digest(),
+        ...(platform === 'pi' && files.files.has('index.mjs') ? { piExtensionDigest: files.digest('index.mjs') } : {}) } : null,
+      supplements, components: files.components, diagnostics };
   } catch (error) {
     await fs.remove(stagingRoot);
     throw error;

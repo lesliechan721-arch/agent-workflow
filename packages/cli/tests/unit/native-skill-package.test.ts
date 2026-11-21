@@ -33,13 +33,16 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-// Test-only qualification facts permit successful orchestration. They do not
-// qualify a real client; resolution, projection, ownership and status stay real.
+// Supply test-only runtime qualification and a Claude delivery mapping. The
+// adapter still resolves, projects, publishes and inspects the actual bytes.
 function qualifySkillCapabilities(input: PlatformCapabilitiesV2): PlatformCapabilitiesV2 {
   const capabilities = structuredClone(input);
   capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
   for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
     capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) };
+  }
+  if (capabilities.platform === 'claude' && capabilities.deliveryFeatures) {
+    capabilities.deliveryFeatures.push({ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] });
   }
   return capabilities;
 }
@@ -191,7 +194,7 @@ console.log(JSON.stringify(plan));
   const apply = async (target: Awaited<ReturnType<typeof build>>) => {
     const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
     expect(result.status, JSON.stringify(result)).toBe('succeeded');
-    expect(result.deploymentReceipts?.flatMap((receipt) => receipt.effects)).toEqual(expect.arrayContaining([
+    expect(result.deploymentReceipts?.flatMap((receipt) => receipt.effects), JSON.stringify(result)).toEqual(expect.arrayContaining([
       expect.objectContaining({ status: 'applied', mutation: 'confirmed' }),
     ]));
     return target;
@@ -242,12 +245,16 @@ describe('Native Skill package projection', () => {
   it.each(['missing Skill', 'changed resource', 'invalid projection evidence'] as const)(
     'detects Claude dynamic %s during read-only inspection', async (damage) => {
       const { inspect, nativeCalls, rendererLog, payloadRoot, skillRoot } = await claudeHealthFixture();
-      expect((await inspect()).content).toBe('satisfied');
+      expect(await inspect()).toMatchObject({ content: 'satisfied', deploymentObservations: [{ after: {
+        package: 'present', registration: 'present', scopeRegistration: 'present', ownership: 'aw',
+        components: [{ id: 'claude-skill', presence: 'present' }],
+      } }] });
       const rendersBefore = await fs.readFile(rendererLog, 'utf8');
+      const resourcePath = path.join(skillRoot, 'scripts', 'run.mjs');
+      const markerPath = path.join(payloadRoot, '.agent-workflows-owner.json');
       if (damage === 'missing Skill') await fs.remove(skillRoot);
-      else if (damage === 'changed resource') await fs.appendFile(path.join(skillRoot, 'scripts', 'run.mjs'), '\n// changed\n');
+      else if (damage === 'changed resource') await fs.appendFile(resourcePath, '\n// changed\n');
       else {
-        const markerPath = path.join(payloadRoot, '.agent-workflows-owner.json');
         const marker = await fs.readJson(markerPath);
         marker.nativeProjection.contentDigest = 'invalid';
         await fs.writeJson(markerPath, marker);
@@ -267,6 +274,8 @@ describe('Native Skill package projection', () => {
       expect(await fs.readFile(rendererLog, 'utf8')).toBe(rendersBefore);
       expect(nativeCalls.filter((args) => !['plugin list --json', 'plugin marketplace list --json'].includes(args.join(' ')))).toEqual([]);
       if (damage === 'missing Skill') expect(await fs.pathExists(skillRoot)).toBe(false);
+      else if (damage === 'changed resource') expect(await fs.readFile(resourcePath, 'utf8')).toContain('// changed\n');
+      else expect(await fs.readJson(markerPath)).toMatchObject({ nativeProjection: { contentDigest: 'invalid' } });
     },
   );
 

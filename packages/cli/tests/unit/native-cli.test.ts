@@ -1,4 +1,5 @@
-import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -815,6 +816,111 @@ describe('native-cli', () => {
     },
   );
 
+  // A real child must own the process group AW signals during cleanup.
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'starts the real POSIX CLI in its own process group',
+    async () => {
+      let childPid: number | undefined;
+      const result = await execFileNativeCliRunner({
+        command: process.execPath,
+        args: ['-e', `
+          const { execFileSync } = require('node:child_process');
+          const group = execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' });
+          process.stdout.write(group.trim());
+        `],
+        agentKind: 'claude',
+        env: { PATH: '/bin:/usr/bin' },
+        onSpawn: ({ pid }) => { childPid = pid; },
+      });
+
+      expect(childPid).toBeGreaterThan(1);
+      expect(Number(result.stdout)).toBe(childPid);
+    },
+  );
+
+  // The POSIX launcher must drain both pipes and decode UTF-8 across reads.
+  it.skipIf(process.platform === 'win32')('preserves large UTF-8 output on both POSIX streams', async () => {
+    const stdout = '😀'.repeat(200_000) + '\nstdout complete\n';
+    const stderr = '界'.repeat(230_000) + '\nstderr complete\n';
+    const response = await execFileNativeCliRunner({
+      command: process.execPath,
+      args: ['-e', `
+        const out = Buffer.from('😀'.repeat(200_000) + '\\nstdout complete\\n');
+        const err = Buffer.from('界'.repeat(230_000) + '\\nstderr complete\\n');
+        process.stdout.write(out.subarray(0, 1));
+        process.stderr.write(err.subarray(0, 1));
+        setTimeout(() => {
+          process.stdout.write(out.subarray(1));
+          process.stderr.write(err.subarray(1));
+        }, 10);
+      `],
+      agentKind: 'claude',
+      env: {},
+    });
+
+    expect(response.exitCode).toBe(0);
+    expect(response.stdout === stdout, 'stdout differs from what the child wrote').toBe(true);
+    expect(response.stderr === stderr, 'stderr differs from what the child wrote').toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'bounds POSIX output and cleans up a child that ignores TERM after overflowing',
+    async () => {
+      const error = await execFileNativeCliRunner({
+        command: process.execPath,
+        args: ['-e', `
+          process.on('SIGTERM', () => {});
+          process.stderr.write('warning', () => process.stdout.write('x'.repeat(2 * 1024 * 1024)));
+          setTimeout(() => {}, 2_000);
+        `],
+        agentKind: 'claude',
+        env: {},
+        timeoutMs: 1_000,
+      }).catch((failure: unknown) => failure);
+
+      expect(error).toBeInstanceOf(NativeCliError);
+      expect(error).toMatchObject({ exitCode: 1, reason: 'exit', stderr: 'warning', cleanupError: undefined,
+        cause: { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' } });
+      expect(Buffer.byteLength((error as NativeCliError).stdout)).toBe(1024 * 1024);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')('reports a real POSIX spawn ENOENT as a missing executable', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-cli-missing-'));
+    try {
+      const running = execFileNativeCliRunner({ command: path.join(root, 'missing'), args: [], env: {}, timeoutMs: 100 });
+      await expect(running).rejects.toMatchObject({ reason: 'exit', stdout: '', stderr: '' });
+      await expect(running).rejects.toSatisfy(isNativeCliExecutableMissingError);
+    } finally {
+      await fs.remove(root);
+    }
+  });
+
+  // A trusted CLI's successful root exit skips the marker audit. That leaves
+  // group cleanup responsible for an unmarked child still holding the pipe.
+  it.skipIf(process.platform === 'win32')('cleans a real POSIX group member and keeps its final output', async () => {
+    const descendant = `
+      process.once('SIGTERM', () => process.stdout.write('descendant terminated\\n', () => process.exit(0)));
+      setTimeout(() => {}, 1_000);
+      process.send('ready');
+    `;
+    const response = await execFileNativeCliRunner({
+      command: process.execPath,
+      args: ['-e', `
+        const { spawn } = require('node:child_process');
+        const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {
+          env: {}, stdio: ['ignore', 'inherit', 'ignore', 'ipc'],
+        });
+        child.once('message', () => process.stdout.write('root exited\\n', () => process.exit(0)));
+      `],
+      agentKind: 'claude',
+      env: {},
+      timeoutMs: 2_000,
+    });
+
+    expect(response).toEqual(result('root exited\ndescendant terminated\n'));
+  });
+
   // A root exit can precede the execFile callback. Return the complete output
   // within the grace window while still signaling and verifying the group.
   it.each([
@@ -885,6 +991,155 @@ describe('native-cli', () => {
         : result(stdout, stderr));
       await completion;
       expect(killProcess.mock.calls).toEqual([[-321, 'SIGTERM'], [-321, 'SIGKILL'], [-321, 0]]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Reproduce the Darwin TERM result at the signal boundary while using the
+  // real launcher, group-existence check, stdio, and marker audit.
+  it.skipIf(process.platform !== 'darwin' || !hostProcessInspectionAvailable)(
+    'keeps complete output from an exited Darwin CLI when the denied process group is gone',
+    async () => {
+      let childPid: number | undefined;
+      const killProcess = vi.fn((pid: number, signal?: number | NodeJS.Signals) => {
+        expect(pid).toBe(-childPid!);
+        if (signal === 0) return process.kill(pid, 0);
+        if (signal === 'SIGTERM') throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+        throw new Error('The test must not signal a group after its absence is confirmed.');
+      });
+      const runner = createExecFileNativeCliRunner({ killProcess });
+
+      await expect(runner({
+        command: process.execPath,
+        args: ['-e', "process.stdout.write('complete stdout'); process.stderr.write('complete stderr');"],
+        env: {},
+        onSpawn: ({ pid }) => { childPid = pid; },
+      })).resolves.toEqual(result('complete stdout', 'complete stderr'));
+      expect(killProcess.mock.calls).toEqual([[-childPid!, 'SIGTERM'], [-childPid!, 0]]);
+    },
+  );
+
+  it.each([
+    { name: 'TERM after the root exited', deniedSignal: 'SIGTERM', abortDuringAudit: false, auditFailure: false },
+    { name: 'KILL after the grace period', deniedSignal: 'SIGKILL', abortDuringAudit: false, auditFailure: false },
+    { name: 'cancellation during the audit', deniedSignal: 'SIGTERM', abortDuringAudit: true, auditFailure: false },
+    { name: 'failed marker audit', deniedSignal: 'SIGTERM', abortDuringAudit: false, auditFailure: true },
+  ] as const)('requires complete Darwin output and an applicable audit after $name', async ({
+    deniedSignal, abortDuringAudit, auditFailure,
+  }) => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null, kill: vi.fn() });
+      const controller = new AbortController();
+      const denied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      const auditError = new Error('Process tree cleanup unconfirmed: POSIX process marker lookup failed.');
+      const { promise: audit, resolve: finishAudit, reject: failAudit } = Promise.withResolvers<void>();
+      const terminateProcessTree = vi.fn(() => audit);
+      let auditFinished = false;
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === deniedSignal) throw denied;
+        if (signal === 0 && auditFinished) throw Object.assign(new Error('missing process group'), { code: 'ESRCH' });
+        return true;
+      });
+      let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
+      const runner = createExecFileNativeCliRunner({
+        platform: 'darwin',
+        execFile: (_command, _args, _options, completed) => { callback = completed; return child; },
+        observeProcessTree: () => ({ pid: 321, onFailure: () => () => undefined, dispose: () => {} }),
+        terminateProcessTree,
+        killProcess,
+      });
+      const onSettled = vi.fn();
+      const running = runner({ command: 'cursor-agent', args: ['--help'], signal: controller.signal }).then(onSettled, onSettled);
+
+      child.emit('exit');
+      await vi.advanceTimersByTimeAsync(35);
+      expect(onSettled).not.toHaveBeenCalled();
+      expect(terminateProcessTree).not.toHaveBeenCalled();
+      callback!(null, 'complete stdout', 'complete stderr');
+      await vi.advanceTimersByTimeAsync(deniedSignal === 'SIGTERM' ? 0 : 65);
+      expect(terminateProcessTree).toHaveBeenCalledTimes(1);
+      expect(onSettled).not.toHaveBeenCalled();
+      const terminatingSignals = deniedSignal === 'SIGTERM' ? [[-321, 'SIGTERM']] : [[-321, 'SIGTERM'], [-321, 'SIGKILL']];
+      expect(killProcess.mock.calls).toEqual(terminatingSignals);
+      if (abortDuringAudit) controller.abort();
+      if (auditFailure) failAudit(auditError);
+      else {
+        auditFinished = true;
+        finishAudit();
+      }
+      await running;
+
+      expect(onSettled).toHaveBeenCalledExactlyOnceWith(abortDuringAudit || auditFailure
+        ? expect.objectContaining({
+          reason: abortDuringAudit ? 'aborted' : 'exit',
+          stdout: 'complete stdout', stderr: 'complete stderr',
+          cleanupError: expect.objectContaining({ cause: denied }),
+        })
+        : result('complete stdout', 'complete stderr'));
+      expect(killProcess.mock.calls).toEqual(abortDuringAudit || auditFailure ? terminatingSignals : [...terminatingSignals, [-321, 0]]);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { name: 'group still present', platform: 'darwin', exitCode: 0, probe: true, signalZero: 'present' },
+    { name: 'signal zero is also denied', platform: 'darwin', exitCode: 0, probe: true, signalZero: 'EPERM' },
+    { name: 'signal zero fails otherwise', platform: 'darwin', exitCode: 0, probe: true, signalZero: 'EIO' },
+    { name: 'callback reports truncated output', platform: 'darwin', exitCode: 0, probe: false, signalZero: 'ESRCH', overflow: true },
+    { name: 'command exits non-zero', platform: 'darwin', exitCode: 7, probe: false, signalZero: 'ESRCH' },
+    { name: 'command was cancelled', platform: 'darwin', exitCode: null, probe: false, signalZero: 'ESRCH' },
+    { name: 'trusted success skips the marker audit', platform: 'darwin', exitCode: 0, probe: false, signalZero: 'ESRCH', trusted: true },
+    { name: 'a marker audit could not be prepared', platform: 'darwin', exitCode: 0, probe: false, signalZero: 'ESRCH', observationUnavailable: true },
+    { name: 'host is Linux', platform: 'linux', exitCode: 0, probe: false, signalZero: 'ESRCH' },
+  ] as const)('keeps denied group cleanup unconfirmed when $name', async (scenario) => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321, exitCode: scenario.exitCode, signalCode: null, kill: vi.fn(),
+      });
+      const denied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal !== 0) throw denied;
+        if (scenario.signalZero === 'present') return true;
+        throw Object.assign(new Error('signal zero failed'), { code: scenario.signalZero });
+      });
+      const observeProcessTree = vi.fn((pid: number) => {
+        if ('observationUnavailable' in scenario) throw new Error('marker audit unavailable');
+        return { pid, onFailure: () => () => undefined, dispose: () => {} };
+      });
+      let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
+      const runner = createExecFileNativeCliRunner({
+        platform: scenario.platform,
+        execFile: (_command, _args, _options, completed) => { callback = completed; return child; },
+        observeProcessTree,
+        terminateProcessTree: async () => {},
+        killProcess,
+      });
+      const cancelled = scenario.exitCode === null;
+      const trusted = 'trusted' in scenario;
+      const running = runner({ command: trusted ? 'claude' : 'cursor-agent', args: ['--help'], signal: controller.signal })
+        .catch((error: unknown) => error);
+      if (cancelled) controller.abort();
+      else child.emit('exit');
+      const overflow = 'overflow' in scenario ? new RangeError('stdout maxBuffer length exceeded') : null;
+      callback!(overflow, 'stdout', 'stderr');
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(running).resolves.toMatchObject({
+        reason: cancelled ? 'aborted' : 'exit',
+        stdout: 'stdout', stderr: 'stderr',
+        cleanupError: expect.objectContaining({ cause: denied }),
+      });
+      expect(killProcess.mock.calls).toEqual(scenario.probe ? [[-321, 'SIGTERM'], [-321, 0]] : [[-321, 'SIGTERM']]);
+      expect(observeProcessTree).toHaveBeenCalledTimes(trusted ? 0 : 1);
+      expect(child.kill).toHaveBeenCalledTimes(cancelled ? 1 : 0);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -1288,6 +1543,62 @@ describe('native-cli', () => {
     },
   );
 
+  // Exercise concurrent, real process cleanup across completion and cancellation paths.
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'cleans only its own descendants when native POSIX marker scans are shared', async () => {
+      const runner = createExecFileNativeCliRunner({ coalescePosixMarkerScans: true });
+      const unrelated = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], { stdio: 'ignore' });
+      const unrelatedClosed = once(unrelated, 'close');
+      const modes = [
+        ['normal-inherited', 'inherit', undefined, 0],
+        ['normal-closed', 'ignore', undefined, 0],
+        ['exit', 'inherit', 'exit', 7],
+        ['timeout', 'inherit', 'timeout', 124],
+        ['abort', 'inherit', 'aborted', 1],
+      ] as const;
+      try {
+        const results = await Promise.allSettled(modes.map(async ([mode, output, reason, exitCode]) => {
+          const script = `
+            const { spawn } = require('node:child_process');
+            const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], {
+              detached: true, stdio: ['ignore', ${JSON.stringify(output)}, ${JSON.stringify(output)}],
+            });
+            descendant.unref();
+            process.stdout.write(String(descendant.pid) + '\\n');
+            if (${JSON.stringify(reason)} === 'exit') process.exit(7);
+            if (${JSON.stringify(reason)} !== undefined) setTimeout(() => {}, 10_000);
+          `;
+          const controller = new AbortController();
+          let abortTimer: NodeJS.Timeout | undefined;
+          try {
+            const response = await runner({
+              command: process.execPath, args: ['-e', script], signal: controller.signal,
+              ...(reason === undefined ? {} : { agentKind: 'claude' }),
+              timeoutMs: mode === 'timeout' ? 500 : 3_000,
+              onSpawn() {
+                if (mode === 'abort') abortTimer = setTimeout(() => controller.abort(), 500);
+              },
+            }).catch((error: unknown) => error);
+            expect(response).toMatchObject(reason === undefined ? { exitCode } : {
+              exitCode, reason, cleanupError: undefined,
+            });
+            const pid = Number.parseInt((response as NativeCliResult | NativeCliError).stdout.trim(), 10);
+            expect(pid).toBeGreaterThan(1);
+            expect(() => process.kill(pid, 0)).toThrow();
+          } finally {
+            if (abortTimer) clearTimeout(abortTimer);
+          }
+        }));
+        expect(results).toEqual(modes.map(() => ({ status: 'fulfilled', value: undefined })));
+        expect(unrelated.exitCode).toBeNull();
+        expect(unrelated.signalCode).toBeNull();
+      } finally {
+        if (unrelated.exitCode === null && unrelated.signalCode === null) unrelated.kill();
+        await unrelatedClosed;
+      }
+    },
+  );
+
   it.each(['codex', 'claude', 'git'])(
     'signals the same POSIX process group for %s',
     async (command) => {
@@ -1411,7 +1722,7 @@ describe('native-cli', () => {
   });
 
   it('fails closed when trusted POSIX CLI process-group exit cannot be confirmed', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     try {
       const child = Object.assign(new EventEmitter(), {
         pid: 321,

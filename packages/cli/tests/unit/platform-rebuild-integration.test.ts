@@ -199,6 +199,54 @@ async function nativeEvidenceFixture(platform: 'copilot' | 'antigravity' | 'pi',
 }
 
 describe('native evidence checks', () => {
+  // A role with a new tool restriction must not keep running with its old defaults.
+  it.each([
+    { withSkill: false, foreign: false }, { withSkill: true, foreign: false },
+    { withSkill: false, foreign: true }, { withSkill: true, foreign: true },
+  ])('withdraws a previously installed Pi role at its exclusive destination (with Skill: $withSkill, user file: $foreign)', async ({ withSkill, foreign }) => {
+    const item = await nativeEvidenceFixture('pi');
+    const manifest = await fs.readJson(item.input.plugin.manifestPath);
+    if (!withSkill) delete manifest.skills;
+    const role = { name: 'reviewer', description: 'Review changes', prompt: 'Review the change.' };
+    const rolePath = path.join(item.layout.packageRoot, 'agents/aw-team-evidence-demo-reviewer.md');
+    const sync = async (restricted: boolean) => {
+      manifest.extensions = { agents: [{ ...role, ...(restricted ? { tools: [] } : {}) }] };
+      await fs.writeJson(item.input.plugin.manifestPath, manifest);
+      const plugin = { ...item.input.plugin, manifest: (await readPluginManifest(item.root, { mode: 'bundle' })).manifest };
+      await item.context.platformRebuildSession!.dispose();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, plugin, command: 'sync' });
+      return executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+    };
+    try {
+      const old = await sync(false);
+      expect(old.status, JSON.stringify(old)).toBe('succeeded');
+      expect(await fs.readFile(rolePath, 'utf8')).toContain(role.prompt);
+      if (foreign) {
+        const note = path.join(item.layout.packageRoot, 'my-notes.txt');
+        await fs.writeFile(note, 'Keep my notes.');
+        const retained = await sync(true);
+        expect(retained.status, JSON.stringify(retained)).toBe('failed');
+        expect(retained.deploymentReceipts?.[0]?.diagnostics).toContainEqual(expect.objectContaining({
+          code: 'previousDeploymentRetained', detail: { reasonCode: 'previousDeploymentRetained', path: item.layout.packageRoot },
+        }));
+        expect(await fs.readFile(note, 'utf8')).toBe('Keep my notes.');
+        expect(await fs.readFile(rolePath, 'utf8')).toContain(role.prompt);
+        await fs.unlink(note);
+      }
+      const restricted = await sync(true);
+      expect(restricted.status, JSON.stringify(restricted)).toBe('succeeded');
+      expect(restricted.deploymentReceipts![0]!.unmet).toContainEqual(expect.objectContaining({
+        name: 'reviewer', requiredFeatures: [{ feature: 'agent.tools', values: ['none'] }],
+      }));
+      expect(await fs.pathExists(rolePath)).toBe(false);
+      if (withSkill) expect(await fs.readFile(path.join(item.layout.packageRoot, 'skills/check/SKILL.md'), 'utf8')).toContain('Check evidence.');
+      else expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
+      expect((await sync(true)).deploymentReceipts?.[0]?.effects).toEqual([]);
+    } finally { await item.context.platformRebuildSession?.dispose(); }
+  });
+
   it.each([false, true])('refreshes static and rendered Pi Skills when invocation is unverified=%s', async (unverified) => {
     const item = await nativeEvidenceFixture('pi');
     try {
@@ -262,6 +310,36 @@ console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('sk
       expect(await Promise.all(inventoryCwds().map((cwd) => fs.pathExists(cwd)))).toEqual([false, false, false]);
       expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
     } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // An already built target can receive an observation batch that was used
+  // before a same-path client changed its advertised version.
+  it('independently probes a cached Pi target before returning it', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    await item.context.platformRebuildSession!.dispose();
+    const bin = path.join(item.input.cwd, 'pi-probe-bin');
+    const entry = path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi');
+    await fs.outputFile(entry, 'controlled Pi entry', { mode: 0o755 });
+    let version = '1.5.0';
+    let probes = 0;
+    const context = { ...item.context, env: { ...item.context.env, PATH: bin }, preparedArtifactRenderResults: new Map(),
+      nativeCliRunner: async (request: Parameters<typeof item.runner>[0]) => {
+        if (request.args[0] === '--version') { probes++; return { exitCode: 0, stdout: `pi coding agent ${version}`, stderr: '' }; }
+        return item.runner(request);
+      } };
+    context.platformRebuildSession = new PlatformRebuildSession(context);
+    const integration = createRebuildIntegration({ context });
+    try {
+      await integration.buildTarget(item.input);
+      await withNativeObservationBatch({ runner: context.nativeCliRunner }, async (batch) => {
+        const ctx = { cwd: item.input.cwd, env: context.env, ...batch };
+        expect((await getAgentPluginAdapter('pi').discover(ctx)).installations[0]?.version).toBe('1.5.0');
+        const before = probes;
+        version = '1.5.1';
+        await expect(integration.buildTarget({ ...item.input, observationBatch: batch })).rejects.toThrow('operationPlanStale');
+        expect(probes).toBeGreaterThan(before);
+      });
+    } finally { await context.platformRebuildSession.dispose(); }
   });
 
   // Test Value Gate: a shared ordinary read must not hide native registration

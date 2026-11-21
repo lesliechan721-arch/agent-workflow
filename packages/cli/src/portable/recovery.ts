@@ -10,6 +10,7 @@ import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import { mapInstallReads, type InstallAdmission } from '../recovery/install-concurrency.js';
 import type { ScopeContext } from '../intent/scope-context.js';
 import { parsePortableSkillFrontmatter, validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
+import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { skillInvocationWarning } from '../utils/skill-invocation-warning.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { materializePortableSkillsToDirectory } from './commands.js';
@@ -35,6 +36,7 @@ export interface PortableRecoveryOptions {
   cleanup?: PortableCleanupOptions;
 }
 export interface PortableTarget {
+  componentId?: string;
   skill: string;
   agent: PortableAgent;
   physicalPath: string;
@@ -79,6 +81,7 @@ export interface PortablePreparation {
   mode?: 'deploy' | 'cleanup';
   cleanupOptions?: PortableCleanupOptions;
   diagnostics?: PortablePreparationDiagnostic[];
+  policyNotices?: RecoveryDiagnostic[];
 }
 interface PortablePreparationDiagnostic {
   code: string;
@@ -213,11 +216,11 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
     options.signal?.throwIfAborted();
     let stage: PortablePreparationDiagnostic['stage'] = 'catalog-binding';
     try {
-      const { providerConfigs = [], ...bindingInput } = await resolvePortableCatalogBindingInput({
+      const { providerConfigs = [], policyNotices = [], ...bindingInput } = await resolvePortableCatalogBindingInput({
         ...options, platform: agent, cwd: layout.cwd, catalogReadScope });
       const generation = path.join(layout.generationRoot, portableJsonDigest(options.selector).slice(7),
-        // Earlier generations could omit Skills whose invocation preferences had no executor.
-        portableJsonDigest({ platform: agent, bindingInput, skillInvocation: 'advisory' }).slice(7));
+        // Previous generations requested only Skills and cannot account for the other component kinds.
+        portableJsonDigest({ platform: agent, bindingInput, componentDelivery: 'all-kinds' }).slice(7));
       base.generations![agent] = generation;
       if (!base.generation) base.generation = generation;
       stage = 'generation-path';
@@ -251,17 +254,27 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       }
       base.logicalIdentity = bindingInput.source.logicalIdentity;
       bindings.push([agent, materialized.binding.finalDigest]);
+      const applicableNotices = policyNotices.filter((notice) => !notice.subject?.pluginId || !options.excludedPluginIds?.includes(notice.subject.pluginId));
+      if (applicableNotices.length) (base.policyNotices ??= []).push(...applicableNotices);
       const candidates = materialized.marker.selectedSkills.filter((candidate) =>
         !options.excludedPluginIds?.includes(candidate.providerPluginId));
+      const incompleteProviders = new Set<string>();
+      const skillIds = new Map<string, string>();
       const gaps = materialized.binding.preparation.flatMap((unit): PortableComponentGap[] => {
         const providerPluginId = `${materialized.binding.source.kind === 'catalog-snapshot' ? materialized.binding.source.sourceId : ''}/${unit.plugin}`;
         if (options.excludedPluginIds?.includes(providerPluginId)) return [];
+        if (unit.unmet.some((gap) => !isDeliveryCapabilityGap(gap) || !unit.declaredGapIds?.includes(gap.id))) {
+          incompleteProviders.add(providerPluginId);
+        }
+        for (const component of unit.components.filter((entry) => entry.kind === 'skill')) {
+          skillIds.set(`${providerPluginId}/${component.name}`, component.id);
+        }
         return unit.unmet.map((gap) => ({ ...gap, providerPluginId, agent, renderScope: unit.renderScope }));
       });
       base.unmet.push(...gaps);
       expectedSkills += candidates.length;
       confirmedInputs += 1;
-      if (gaps.length && !candidates.length) base.globalBlockers.push('portableComponentsUnmet');
+      if (gaps.some((gap) => !isDeliveryCapabilityGap(gap)) && !candidates.length) base.globalBlockers.push('portableComponentsUnmet');
       stage = 'skill-validation';
       if (new Set(candidates.map((candidate) => normalizePortableSkillName(candidate.name))).size !== candidates.length) {
         base.globalBlockers.push('portableOutputConflict'); continue;
@@ -294,6 +307,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
           skill: candidate.name, identity, expectedDigest: candidate.filesDigest, configDigest });
         base.targets.push({ ...fromObservation(observed, agent, candidate.providerPluginId, candidate.filesDigest),
           ...(invocationWarnings.has(candidate.name) ? { invocationWarning: invocationWarnings.get(candidate.name) } : {}),
+          componentId: skillIds.get(`${candidate.providerPluginId}/${candidate.name}`),
           configDigest, sourcePath: path.join(generation, 'skills', candidate.name), ownerIdentity: identity, disposition: 'write',
           // A complete matching identity is sufficient to repair damaged weak metadata.
           ...(observed.blocker === 'portableOwnerDamaged' ? { blocker: undefined } : {}) });
@@ -304,18 +318,34 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         scope: options.scope, signal: options.signal, checkContent: (owner) => owner.logicalIdentity === base.logicalIdentity
           && providers.has(owner.pluginId) && !candidates.some((candidate) => candidate.name === owner.skill
             && candidate.providerPluginId === owner.pluginId) });
+      if (gaps.length && !installed.complete) base.globalBlockers.push('portableObservationFailed');
       for (const observed of installed.targets) {
         const owner = observed.owner ?? observed.recoverableIdentity;
         if (!owner || !providers.has(owner.pluginId) || owner.logicalIdentity !== base.logicalIdentity
           || candidates.some((candidate) => candidate.name === owner.skill && candidate.providerPluginId === owner.pluginId)) continue;
-        if (gaps.some((gap) => gap.providerPluginId === owner.pluginId)) {
+        const unverifiedPreviousContents = gaps.some((gap) => gap.providerPluginId === owner.pluginId)
+          && (!observed.owner || observed.installedDigest !== observed.owner.filesDigest);
+        if (incompleteProviders.has(owner.pluginId) || unverifiedPreviousContents) {
           base.targets.push({ ...fromObservation(observed, agent, owner.pluginId, observed.owner?.filesDigest ?? ''),
-            ownerIdentity: owner, disposition: 'retain', blocker: 'portableComponentsUnmet' });
+            ownerIdentity: owner, disposition: 'retain', blocker: 'previousDeploymentRetained' });
           continue;
         }
         base.targets.push({ ...fromObservation(observed, agent, owner.pluginId, observed.owner?.filesDigest ?? ''),
           disposition: 'remove', observation: observed.observation === 'satisfied' ? 'drifted' : observed.observation,
           contentState: observed.contentState === 'current' ? 'stale' : observed.contentState });
+      }
+      // A foreign or damaged marker may be omitted by the owned-output scan.
+      // A named, skipped Skill still identifies an exact destination to inspect.
+      for (const gap of gaps) {
+        if (gap.kind !== 'skill' || !gap.name || base.targets.some((target) => target.agent === agent && target.skill === gap.name)) continue;
+        // A legacy renderer's display name need not be a legal Skill directory.
+        try { validatePortableSkillName(gap.name); } catch { continue; }
+        const identity: PortableOwnerIdentity = { pluginId: gap.providerPluginId, logicalIdentity: base.logicalIdentity,
+          platform: agent, scope: options.scope, skill: gap.name };
+        const observed = await observePortableSkill({ destinationRoot: layout.targetRoot(agent), skill: gap.name, identity });
+        if (observed.observation === 'absent') continue;
+        base.targets.push({ ...fromObservation(observed, agent, gap.providerPluginId, ''), ownerIdentity: identity,
+          disposition: 'retain', blocker: observed.blocker ?? 'previousDeploymentRetained' });
       }
     } catch (error) {
       if (recoveryInterruptionCode(error, options.signal)) throw error;
@@ -444,7 +474,7 @@ export async function executePortableRecovery(options: {
   let outputsMayHaveChanged = false;
   const finish = (targets: PortableExecutionTarget[], globalBlockers: string[]): PortableExecution => {
     const blockers = [...new Set([...globalBlockers, ...targets.flatMap((target) => target.blockers),
-      ...(prepared.unmet.length ? ['portableComponentsUnmet'] : [])])];
+      ...(prepared.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) ? ['portableComponentsUnmet'] : [])])];
     const succeeded = targets.filter((target) => target.execution === 'applied' || target.execution === 'no-op').length;
     const ok = blockers.length === 0 && succeeded === targets.length;
     return { targets, blockers, globalBlockers, unmet: prepared.unmet, outputsMayHaveChanged,
@@ -499,7 +529,7 @@ export async function executePortableRecovery(options: {
         && outcome.configDigest === target.configDigest && outcome.providerPluginId === target.providerPluginId);
       if (failed) return { ...failed.outcome, agent: target.agent };
       const blockers = target.blocker ? [target.blocker] : [];
-      if (!cleanup && target.disposition === 'retain') blockers.push('portableComponentsUnmet');
+      if (!cleanup && target.disposition === 'retain') blockers.push('previousDeploymentRetained');
       if (!cleanup && (target.observation === 'drifted' || target.disposition === 'remove') && !options.authorizeUpdate) {
         blockers.push('portableUpdateAuthorizationRequired');
       }

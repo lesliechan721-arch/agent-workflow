@@ -1,4 +1,6 @@
 import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
@@ -8,7 +10,7 @@ import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS, MINIMUM_AGENT_VERSIONS } from '
 import { discoverCodexExecutables, rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { extractStrictSemVerTokenFromVersionOutput } from '../utils/agent-version.js';
 import { compareStrictSemVer } from '../utils/manifest.js';
-import { NativeCliError, runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
+import { NATIVE_CLI_TIMEOUT_ENV, NativeCliError, runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
 import { getCodexHome, getClaudeHome, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
 import { resolveWindowsNpmCommand } from '../utils/windows-npm-shim.js';
 import { assertTestReadablePath } from '../utils/test-path-fence.js';
@@ -39,7 +41,15 @@ export function selectNativeProduct(products: readonly ProductInstallation[]): P
   const usable = (product: ProductInstallation): boolean => product.availability === 'available' && product.entry?.kind === 'cli';
   return products.find((product) => product.product === 'cli' && usable(product)) ?? products.find(usable);
 }
+const SHARED_NATIVE_PROBE_PLATFORMS: readonly NodeJS.Platform[] = [];
+export const supportsSharedNativeProbe = SHARED_NATIVE_PROBE_PLATFORMS.includes(process.platform);
+export interface PlacementProbeGroup {
+  scope: 'user' | 'project';
+  probes: Map<string, { runner: ReadContext['runner']; signal: ReadContext['signal']; result: Promise<string | null> }>;
+}
 export interface ReadContext {
+  /** Lent only to initial resolutions of a single placement group, before rendering. */
+  placementProbeGroup?: PlacementProbeGroup;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
@@ -144,14 +154,69 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
   }
   return path.join(home, platform === 'antigravity' ? '.gemini/config' : `.${platform}`);
 }
-async function probe(ctx: ReadContext, command: string, args: string[]): Promise<string> {
+async function probe(ctx: ReadContext, command: string, args: string[],
+  timeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS): Promise<string> {
   ctx.signal?.throwIfAborted();
   const result = await runNativeCli({ command, args, cwd: ctx.cwd, env: ctx.env,
-    signal: ctx.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
+    signal: ctx.signal, timeoutMs }, ctx.runner);
   if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > MAX_PROBE_OUTPUT_BYTES) {
     throw new Error('probeFailed');
   }
   return `${result.stdout}\n${result.stderr}`;
+}
+/** Script launchers can select another program without changing their own file. */
+async function nativeImageIdentity(command: string, os: NodeJS.Platform): Promise<string[] | undefined> {
+  if (!path.isAbsolute(command)) return undefined;
+  const real = await fs.realpath(command);
+  if (os !== 'win32') await fs.access(real, constants.X_OK);
+  const file = await open(real, 'r');
+  try {
+    const header = Buffer.alloc(4);
+    const [{ bytesRead }, stat] = await Promise.all([file.read(header, 0, 4, 0), file.stat({ bigint: true })]);
+    // PE, ELF and Mach-O (including universal binaries).
+    const known = os === 'win32' ? header.readUInt16BE() === 0x4d5a
+      : os === 'linux' ? header.readUInt32BE() === 0x7f454c46
+      : ['feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca'].includes(header.toString('hex'));
+    if (bytesRead !== 4 || !stat.isFile() || !known) return undefined;
+    return [real, stat.dev, stat.ino, stat.size, stat.ctimeNs, stat.mtimeNs, stat.mode].map(String);
+  } finally { await file.close(); }
+}
+
+async function placementVersion(ctx: ReadContext, platform: PlatformTarget, product: ProductInstallation,
+  command: string, args: string[], read: () => Promise<string | null>): Promise<string | null> {
+  const group = ctx.placementProbeGroup;
+  // The complete version/identity decision is the shareable result. A Node
+  // entry or shim retains its independent probe until its final target is known.
+  if (!group || args.length !== 1 || args[0] !== '--version'
+    || !['claude', 'pi', 'antigravity', 'codex'].includes(platform)) return read();
+  const host = ctx.platform ?? process.platform;
+  let image: string[] | undefined;
+  try { image = await nativeImageIdentity(command, host); }
+  catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
+  if (!image) return read();
+  ctx.signal?.throwIfAborted();
+  const key = JSON.stringify([platform, product.id, image, command, args, group.scope, ctx.cwd,
+    Object.entries(ctx.env ?? process.env).sort(([a], [b]) => a.localeCompare(b)), host,
+    ctx.arch ?? process.arch, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS]);
+  const previous = group.probes.get(key);
+  if (previous && previous.runner === ctx.runner && previous.signal === ctx.signal) {
+    let version: string | null = null;
+    try { version = await previous.result; }
+    catch (error) { rethrowFatalError(error); }
+    ctx.signal?.throwIfAborted();
+    if (version && platformVersionSupported(platform, version)) return version;
+  }
+  const entry = { runner: ctx.runner, signal: ctx.signal, result: read() };
+  group.probes.set(key, entry);
+  try {
+    const version = await entry.result;
+    ctx.signal?.throwIfAborted();
+    if (!platformVersionSupported(platform, version) && group.probes.get(key) === entry) group.probes.delete(key);
+    return version;
+  } catch (error) {
+    if (group.probes.get(key) === entry) group.probes.delete(key);
+    throw error;
+  }
 }
 async function present(file: string): Promise<boolean> {
   try { return (await fs.stat(file)).isFile(); }
@@ -223,10 +288,32 @@ async function isPinnedPiEntry(ctx: ReadContext, invocation: NativeCliInvocation
   return false;
 }
 
+function grokManagementInterfaceConfirmed(help: string, listHelp: string): boolean {
+  // Grok's formatted help lists commands and flags on their own rows. A
+  // reference to --json in an option description does not declare that flag.
+  const commandNames = /^Commands:[ \t]*\r?$/mu.test(help)
+    ? Array.from(help.matchAll(/^[ \t]+([a-z][\w-]*)(?=[ \t]|\r?$)/gmu), (match) => match[1])
+    : help.split(/[\s,[\]|]+/u);
+  const hasJson = /^Options:[ \t]*\r?$/mu.test(listHelp)
+    ? /^[ \t]+(?:-\w,[ \t]+)?--json(?=[ \t]|\r?$)/mu.test(listHelp)
+    : listHelp.split(/[\s,[\]|]+/u).includes('--json');
+  return hasJson && ['install', 'uninstall', 'enable', 'disable'].every((name) => commandNames.includes(name));
+}
+
 async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext): Promise<DiscoveryResult> {
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
   const candidates = await cliPaths(profile.names, ctx);
+  // Slow Windows launches can use one reserve shared across PATH entries.
+  // Fast entries leave the reserve available to later candidates.
+  const host = ctx.platform ?? process.platform;
+  const arch = ctx.arch ?? process.arch;
+  const hasVersionReserve = host === 'win32' && (platform === 'copilot'
+    || (platform === 'antigravity' && (arch === 'x64' || arch === 'arm64'))
+    || (platform === 'grok' && arch === 'x64'));
+  const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && arch === 'x64';
+  const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
+  let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
     'A client entry could not be inspected safely. Repair its permissions or launcher and check again.')] : [];
   const checkCandidate = async (executable: string): Promise<{ product: ProductInstallation; failure?: Diagnostic }> => {
@@ -234,19 +321,48 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
-      const versionOutput = await probe(ctx, invocation.command, invocation.args);
-      if (!profile.identity.test(versionOutput)
-        && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
-        const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
-        if (!profile.identity.test(help)) {
-          product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');
+      const readVersion = async (): Promise<string | null> => {
+        const startedAt = extraVersionBudgetMs > 0 ? performance.now() : undefined;
+        let versionOutput: string;
+        try {
+          versionOutput = await probe(ctx, invocation.command, invocation.args, versionTimeoutMs + extraVersionBudgetMs);
+        } catch (error) {
+          if (!(error instanceof NativeCliError) || error.reason !== 'timeout') throw error;
+          extraVersionBudgetMs = 0;
+          if (!canRetryFirstVersion || executable !== candidates.paths[0] || error.name === 'AbortError' || error.cleanupError
+            || readEnvironmentValue(ctx.env ?? process.env, NATIVE_CLI_TIMEOUT_ENV, 'win32') !== undefined) throw error;
+          versionOutput = await probe(ctx, invocation.command, invocation.args, versionTimeoutMs);
+        } finally {
+          if (startedAt !== undefined) {
+            const extraElapsedMs = Math.max(0, Math.ceil(performance.now() - startedAt) - versionTimeoutMs);
+            extraVersionBudgetMs = Math.max(0, extraVersionBudgetMs - extraElapsedMs);
+          }
+        }
+        if (!profile.identity.test(versionOutput)
+          && !(platform === 'pi' && await isPinnedPiEntry(ctx, invocation, versionOutput.trim()))) {
+          const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
+          if (!profile.identity.test(help)) {
+            product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');
+          }
+        }
+        return platform === 'cursor' ? versionOutput.match(/\b(\d{4}\.\d{2}\.\d{2}-[a-z0-9]+)\b/u)?.[1] ?? null
+          : extractStrictSemVerTokenFromVersionOutput(platform === 'opencode'
+            ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ')
+            : platform === 'copilot' ? versionOutput.replace(/^GitHub Copilot CLI ([^\s]+)\.\r?$/gmu, 'GitHub Copilot CLI $1') : versionOutput);
+      };
+      const version = ctx.placementProbeGroup
+        ? await placementVersion(ctx, platform, product, invocation.command, invocation.args, readVersion) : await readVersion();
+      product.version = version;
+      if (platform === 'grok') {
+        // Grok has an interface gate instead of an invented numeric minimum.
+        const baseArgs = invocation.args.slice(0, -1);
+        const help = await probe(ctx, invocation.command, [...baseArgs, 'plugin', '--help']);
+        const list = await probe(ctx, invocation.command, [...baseArgs, 'plugin', 'list', '--help']);
+        if (!grokManagementInterfaceConfirmed(help, list)) {
+          product.availability = 'unsupported'; product.reasonCodes = ['clientInstallInterfaceUnsupported'];
+          return { product };
         }
       }
-      const version = platform === 'cursor' ? versionOutput.match(/\b(\d{4}\.\d{2}\.\d{2}-[a-z0-9]+)\b/u)?.[1] ?? null
-        : extractStrictSemVerTokenFromVersionOutput(platform === 'opencode'
-          ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ')
-          : platform === 'copilot' ? versionOutput.replace(/^GitHub Copilot CLI ([^\s]+)\.\r?$/gmu, 'GitHub Copilot CLI $1') : versionOutput);
-      product.version = version;
       if (!version) {
         product.reasonCodes = ['clientVersionUnknown'];
         if (platform === 'grok') product.availability = 'available';
@@ -255,16 +371,6 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
         const compatible = platformVersionSupported(platform, version);
         product.availability = compatible ? 'available' : 'unsupported';
         product.reasonCodes = compatible ? [] : ['clientVersionUnsupported'];
-      }
-      if (platform === 'grok' && product.availability === 'available') {
-        // Grok has an interface gate instead of an invented numeric minimum.
-        const baseArgs = invocation.args.slice(0, -1);
-        const help = await probe(ctx, invocation.command, [...baseArgs, 'plugin', '--help']);
-        const list = await probe(ctx, invocation.command, [...baseArgs, 'plugin', 'list', '--help']);
-        if (!['install', 'uninstall', 'enable', 'disable'].every((name) => new RegExp(`\\b${name}\\b`, 'u').test(help))
-          || !list.includes('--json')) {
-          product.availability = 'unsupported'; product.reasonCodes = ['clientInstallInterfaceUnsupported'];
-        }
       }
     } catch (error) {
       rethrowFatalError(error);
@@ -299,14 +405,32 @@ function result(platform: PlatformTarget, installations: ProductInstallation[], 
 async function discoverCodex(ctx: ReadContext): Promise<DiscoveryResult> {
   const found = await discoverCodexExecutables({ ...ctx, queryRunner: ctx.runner });
   const products: ProductInstallation[] = [];
+  let retryVersionOnTimeout = (ctx.platform ?? os.platform()) === 'win32' && (ctx.arch ?? os.arch()) === 'arm64';
   for (const candidate of found.candidates) {
     const executable = candidate.manager.argsPrefix[0] ?? candidate.manager.command;
     const entry: HostEntry = { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot('codex', ctx) };
     const product = installation('codex', candidate.manager.kind === 'app' ? 'app' : 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
-      const output = await probe(ctx, candidate.manager.command, [...candidate.manager.argsPrefix, '--version']);
-      const version = extractStrictSemVerTokenFromVersionOutput(output);
-      if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) throw new Error('clientIdentityUnconfirmed');
+      const args = [...candidate.manager.argsPrefix, '--version'];
+      const readVersion = async () => {
+        let output: string;
+        try {
+          output = await probe(ctx, candidate.manager.command, args);
+        } catch (error) {
+          if (!retryVersionOnTimeout || !(error instanceof NativeCliError) || error.reason !== 'timeout'
+            || error.name === 'AbortError' || error.cleanupError
+            || readEnvironmentValue(ctx.env ?? process.env, NATIVE_CLI_TIMEOUT_ENV, 'win32') !== undefined) throw error;
+          retryVersionOnTimeout = false;
+          output = await probe(ctx, candidate.manager.command, args);
+        }
+        const version = extractStrictSemVerTokenFromVersionOutput(output);
+        if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) {
+          throw new Error('clientIdentityUnconfirmed');
+        }
+        return version;
+      };
+      const version = ctx.placementProbeGroup
+        ? await placementVersion(ctx, 'codex', product, candidate.manager.command, args, readVersion) : await readVersion();
       product.version = version;
       product.availability = platformVersionSupported('codex', version) ? 'available' : 'unsupported';
       product.reasonCodes = product.availability === 'available' ? [] : ['clientVersionUnsupported'];

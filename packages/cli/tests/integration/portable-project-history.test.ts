@@ -38,7 +38,8 @@ async function fixture(scope: 'user' | 'project' = 'project', twoSkills = false,
   await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), [
     "import fs from 'node:fs';",
     "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
-    `fs.appendFileSync(${JSON.stringify(renderLog)}, context.platform + '\\n');`,
+    "const batch = context.allowedOutputKinds.includes('skill') ? 'skill' : 'non-skill';",
+    `fs.appendFileSync(${JSON.stringify(renderLog)}, context.platform + ':' + batch + '\\n');`,
     `const names = ${JSON.stringify(twoSkills ? ['alpha', 'beta'] : ['alpha'])};`,
     "const components = names.map(name => ({id:name,kind:'skill',name,content:{files:{'SKILL.md':{text:'---\\nname: '+name+'\\ndescription: Test skill\\n---\\nTone: '+context.config.values.tone+' Platform: '+context.platform+' Scope: '+context.scope},'README.md':{text:'Skill readme'},'references/guide.md':{text:'Complete local guide.'},'.hidden':{text:'retain hidden bytes'}}}}));",
     "console.log(JSON.stringify({version:3,components:components.filter(item => context.allowedOutputKinds.includes(item.kind)),omitted:[],unmet:[]}));",
@@ -76,7 +77,7 @@ async function apply(options: Awaited<ReturnType<typeof fixture>>['options'], au
 }
 
 describe('Portable writer through real Catalog and renderer', () => {
-  // Test Value Gate: two mixed-install children encountering the same cold generation must publish one renderer result.
+  // Test Value Gate: two mixed-install children encountering the same cold generation must share both renderer batches.
   it('materializes the shared cold generic generation once for a mixed install', async () => {
     installNativeTestQualification({ platforms: ['opencode'], discovery: true });
     const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
@@ -110,7 +111,8 @@ describe('Portable writer through real Catalog and renderer', () => {
       expect(receipt.ok, JSON.stringify(receipt.targetResults.map(({ agent, blockers, backend }) => ({ agent, blockers, backend })))).toBe(true);
       expect(receipt.targetResults).toHaveLength(2);
       for (const target of receipt.targetResults) expect(target).toMatchObject({ execution: 'applied', observation: 'verified' });
-      expect((await fs.readFile(value.renderLog, 'utf8')).split('\n').filter((line) => line === 'generic')).toHaveLength(1);
+      expect((await fs.readFile(value.renderLog, 'utf8')).split('\n').filter((line) => line.startsWith('generic:')).sort())
+        .toEqual(['generic:non-skill', 'generic:skill']);
       expect(await fs.readFile(path.join(context.targetHomes.home, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'))
         .toContain('Platform: generic Scope: user');
     } finally { clearTimeout(timeout); release(); observe.mockRestore(); parallelism.mockRestore(); await context.dispose(); }

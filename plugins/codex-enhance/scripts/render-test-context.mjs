@@ -13,7 +13,7 @@ export function context(values = {}, platform = 'codex', kinds = ['skill', 'agen
   return { schemaVersion: 2, surface: 'agent-plugin', platform, scope,
     allowedOutputKinds: kinds, changedConfigKeys: [], previousComponents: [],
     config: { values: { ...structuredClone(defaults), ...values } },
-    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile',
+    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile', deliveryFeatures: [],
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },

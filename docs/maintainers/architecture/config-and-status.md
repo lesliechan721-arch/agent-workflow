@@ -56,6 +56,7 @@ flowchart TD
 - **观测与内容事实状态（RecoveryTarget）**：
   - `observation`：为现场观测事实枚举（`'verified' | 'missing' | 'unknown'`）；
   - `content`：为现场内容匹配事实枚举（`'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown'`）。两者均为**机器状态事实，绝非内容签名或哈希摘要**。
+  - `satisfaction: 'not-applicable'` 表示只有能力缺口且实际安装数为 0 的目标已收敛。可以同时有 `content: 'satisfied'`，因此按目前可执行的工作计为 ready。实际安装和继承关系仍由独立的 `installed`、`inherited-user` 表达。
 - **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
 - **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。清单错误保留稳定细分原因、安全位置和相关 scope；坏 header 只提供诊断线索，不授予 owner 权限。已证明独立的错误不传播到无关目标，不能证明无关时保留对应覆盖缺口；共享位置和真实依赖的影响仍传播。重复用户文件错误合并，不能丢失作用范围。
 - **精确选择**：先解析完整必要依赖、provider、共享位置和碰撞关系，再对所选插件/target 观察。显式选择依赖时 inventory 包含该依赖及 requiredBy、需求和提供者 scope，不把它提升为 Intent root。无过滤查询仍按直接根聚合。
@@ -78,13 +79,17 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
-Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。status 核对 AW 归属和实际文件字节。摘要过期且已确认旧产物时显示待同步。记录缺失、损坏或文件无法核对时保留 unknown。重新 sync 可重建记录。Codex 只在 Project 生成角色时，核对参与渲染的范围。若同一轮也生成过有意为空的包，则另核对现有空结果记录的包单元和实际缺席。
+静态组件的输入摘要采用该类别的写入方式和所需字段的交付映射。显式跨类别前提仍采用宿主运行资格，动态 renderer 仍绑定完整的能力输入。Pi 角色已就绪时，状态根据现场扩展更新执行提示，单纯的扩展变动不要求同步角色文件。
 
-成功有意空集合使用既有 platforms 命名空间内可重建的空结果 receipt。它绑定精确 binding/scope、全部 render units 与可只读复算的来源、资源、配置和派生能力结论；不是安装或删除凭证。缺失、损坏或过期时提示重新准备。匹配 receipt 后仍检查实际包、注册、激活与补足，不能掩盖撤销失败或 foreign 残留。它不使用包含 staging 或旧现场的操作 fingerprint。
+Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。补足记录的摘要覆盖绑定、输入和每个产物的组件 ID、文件名及内容摘要。有包和仅有补足文件的交付都用这份记录。只生成补足文件时，交付记录另外绑定本次完整输入、已核实的包缺席、实际交付的补足组件 ID 和权限提示。Grok 的个人规则与项目规则均适用。独立 `status` 复查包与登记，并对完整的补足集合逐个查归属和文件字节。缺失显示待修复，外来文件显示冲突。清单漏项或受损时保留未确认。旧版补足清单须与同一绑定的完整空包交付记录中的全部补足 ID 一致才可复用。旧包缺席证据仍可与完整补足记录一起使用。普通 `sync` 可重新准备、核验并写入完整补足记录。输入摘要过期且已确认旧产物时显示待同步。
+
+成功有意为空的原生集合，以及经确认只包含能力缺口的零产物结果，使用既有 platforms 命名空间内可重建的证据。零产物 receipt 绑定精确 binding/scope、全部 render units 和可只读复算的来源、资源、配置、派生能力。交付证据保留本次能力缺口及实际交付组件。缺失、损坏或过期时仍需重新准备。匹配证据后继续检查实际包、登记、激活与补足，按实际情况报告撤销失败或 foreign 残留。删除权限由独立的现场归属证据决定。
+
+原生交付证据可记录未施加的命令权限动作与安全规则标识，供当前输入相符时的只读状态查询使用。只含这些提示的证据不改变目标就绪判定。若无法保留提示，已核验的交付依旧完成。[CLI 诊断合同](../../reference/cli.md#4-业务-payload-的边界)
 
 空结果的写入与状态读取都接受已确认的原生登记缺失、目录包缺失且登记不适用，或当前 scope 独立引用已撤销。接口未报告 activation 时不伪造 disabled，也不因该字段 unknown 拒绝这些缺席事实；Project 继承的 enabled 不代表独立项目引用。User 原生 enabled 不能因本地条目缺项而被认作空结果，foreign/unknown 归属与残留补足继续阻止确认。
 
-generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有准备成功、无 unmet 且明确有意为空时，才可在匹配证据及现场条件下报告成功空集合。全部 unmet 保留旧 Skill；混合集合可以写入独立的可支持 Skill，但保留受缺口影响的旧输出并报告 partial，不能由候选列表为空推导删除权限或 satisfied。
+generic 的准备 generation 同样保留来源绑定中的完整 `unmet`。匹配当前证据、现场没有未处理的输出且缺口仅来自平台能力时，可以确认零产物就绪。混合集合按已确认的 Skill 成品和能力缺口显示交付结果。受影响的旧 Skill 按声明和归属保护处理，仍有旧残留或其他未满足项时按实际结果待处理。候选列表为空本身不授予删除权限。
 
 ## 3. 现场证据、共享引用与 scope
 
@@ -96,7 +101,7 @@ TUI 安装在准备 Review 和取得写锁后各自校验当前 Active Catalog�
 
 状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Grok 使用 list/inspect 的各自字段。Pi list 仅提供可见包与 scope，activation 保持 unknown。缺少 Project 段时，该范围的登记保持未确认。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
 
-Pi 首次 ensure 只有在源位置、归属和物理 slot 均确认为不存在时，才可把新独占源交给原生 install。宿主命令自行执行信任门禁，AW 不授信；unknown 不允许替换或删除既有内容。成功后按原生 list 可报告的精确登记核验。普通包用登记及内容确认即可就绪。Agents 组件另核对实际消费者配置、访问、授权和能力。
+Pi 首次 ensure 只有在源位置、归属和物理 slot 均确认为不存在时，才可把新独占源交给原生 install。宿主命令自行执行信任门禁，AW 不授信；unknown 不允许替换或删除既有内容。成功后按原生 list 可报告的精确登记核验。普通包用登记及内容确认即可就绪。Agents 组件另核对实际消费者配置、访问、授权和能力。AW 在固定包位置核对归属、扩展声明和发布时记录的 `index.mjs` 摘要后，角色消费者检查跳过已证实由 AW 生成的 Hook、MCP 和 Instruction 扩展。缺少入口摘要或入口内容漂移时，按实际扩展继续观察。入口摘要仅供角色消费者检查。
 
 Pi 的 Project 移除可按本次原生命令确认撤销：正式 runner 正常完成、退出 0、无 stderr，且明确回报移除精确来源。后续有效 list 仅缺少 Project 段时，这份动作回执允许继续既有 AW 专属、无共享引用的包清理，以及本次停用和有意空集合汇总；查询失败、无效输出或仍有登记均不接受。通用观察的 registration 仍为 unknown，不从 settings 或动作回执改写，也不把本次确认保存为后续状态真值。
 
@@ -110,11 +115,17 @@ Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输�
 
 已按平台核对的非 Codex 联合安装组，以及单独的 Copilot、Pi 原生路由，可以在紧邻执行时完成一次完整入口核验。它适用于一个已冻结的非空 ensure 部署，组件齐全、现有包和归属可确定，动作只涉及发布、登记、刷新或启用。带脚本、托管命令写入、阻断或补足删除的目标分别检查。Codex 使用自己的登记和启用复核。Pi 有效清单仅缺 Project 段时，还要求包及归属均为 absent、无共享引用、全部 owner 槽位为空，动作仅为发布与登记。此时 registration 保持 unknown，原生客户端仍可拒绝未信任项目。入口核验失败沿用 preflight 错误路径。成功结果仅供这次调用的首个生命周期检查使用，写后观察、rebase 和最终状态都重新取证。
 
+Pi 的首包登记可能使原生清单显示此前不可见的 Project 段。同批后续 ensure 对原先没有目标包、归属和本地登记的目标，可以接受其登记由段不可见变成已确认缺席。新清单的全部 Project 来源必须精确匹配本批在同一项目配置和客户端中确认的登记，其他冻结证据继续逐项核对。
+
 联合安装按平台判断是否需要在返回 Review 前刷新预览。同一平台只有一个完整的 ensure 组、该组的目标均通过准备时，首轮预览已经封存全部候选。其它平台或独立的 Portable 组可以在同一批次中存在。一个平台有多个 scope 或共享来源候选时，在各组准备完成后再刷新并冻结。来源激活后的重准备、锁内复核与写后的真实读取继续各自执行。产品面与 scope 必须明确，unknown 保留覆盖缺口。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 
-逻辑需求和物理输出分别判断。Codex、Claude、Copilot 共享包按 canonical user scope 渲染，需求 scope 与原生查询上下文分别保留；独立 scope 路由不因存在用户需求就省略项目部署。同 physicalKey 只算一个物理实例，但保留所有实际产品面与需求引用。
+逻辑需求和物理输出分别判断。Codex、Claude、Copilot 共享包按 canonical user scope 渲染，需求 scope 与原生查询上下文分别保留；项目继承已有的同源个人依赖时，`providerScope` 指向 `user`。独立范围的依赖须核对实际安装，项目直接声明的根保留自己的部署。同 physicalKey 只算一个物理实例，但保留所有实际产品面与需求引用。
+
+个人 Skill 依赖已经可用、当前项目还留有经核实的旧副本时，需求可以满足，同时全量状态显示 `inSync: false`。项目根的 `projectSkillDuplicatePending` 提示标出具体依赖，按根查询也能取得清理副本的同步命令。TUI 将对应项目根列为待同步。只同步项目却遇到损坏的个人依赖时，回执先给出提供依赖的个人根，再给出项目根的恢复动作。
+
+移除个人需求时，如果项目的替代副本写入或核验失败，原个人输出继续可用。同步项目根可恢复项目依赖。原移除回执给出核对项目状态和按目标清理个人残留的指引。需求已撤销后，是否保留这份个人输出由用户决定。
 
 原生命令在项目中报告 enabled 时，即使没有显式项目条目，也保留 enabled。neutral 与项目查询的差异说明上下文结果，不还原安装由哪个 scope 发起。显式条目和 AW Intent 用于共享引用与精确写入保护，继承启用本身不是独立项目引用。
 

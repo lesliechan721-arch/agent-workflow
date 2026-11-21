@@ -7,11 +7,12 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { addOfficialCatalog, qualifyShippedGitInstall, ordinaryGitSkills as ordinarySkills } from './native-platform-shipped-git.mjs';
+import { rolePlatform, shippedRoles } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { prepareEnvironment, repoRoot, sha256 } from './native-platform-runtime.mjs';
 import { getAgentPluginAdapters } from '../../packages/cli/dist/src/platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../../packages/cli/dist/src/platforms/capabilities.js';
-import { COMPONENT_KINDS, readPluginManifest, getComponentFeatureRequirements, getUnmetFeatureRequirements, normalizeStaticPluginComponents, resolveInvocationPolicy } from '../../packages/cli/dist/src/utils/manifest.js';
+import { COMPONENT_KINDS, readPluginManifest, getComponentFeatureRequirements, normalizeStaticPluginComponents, resolveInvocationPolicy } from '../../packages/cli/dist/src/utils/manifest.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../packages/cli/dist/src/utils/artifact-renderer.js';
 
 const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('yaml');
@@ -45,7 +46,7 @@ async function declaredSkills(directory) {
     if (source === undefined) continue; // Author-only directory (e.g. eval inputs).
     const { fields, body } = skillFields(source);
     assert.equal(fields.name, name);
-    skills.set(name, { fields, body, source });
+    skills.set(name, { fields, body });
   }
   return skills;
 }
@@ -100,7 +101,7 @@ async function assertGitProjection({ adapter, ctx, binding, unit, capabilities, 
   return names;
 }
 
-export async function qualifyShippedCatalog() {
+export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
   const catalog = path.join(repoRoot, 'packages/cli/plugins-dist');
   const snapshot = await fs.readFile(path.join(catalog, 'catalog-manifest.json'));
   const sourceIdentity = `sha256:${sha256(snapshot)}`;
@@ -128,98 +129,115 @@ export async function qualifyShippedCatalog() {
     plugins.push({ ...plugin, sourceId: 'official', pluginId: `official/${entry.name}`, sourceIdentity });
   }
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-shipped-catalog-user-'));
-  const report = { level: 'candidate-projection-with-simulated-darwin-arm64-cli-discovery', scope: 'user', plugins: {}, gitToolkit: {} };
+  const report = { level: staticOnly ? 'static-preparation-with-simulated-darwin-arm64-cli-discovery' : 'candidate-projection-with-simulated-darwin-arm64-cli-discovery', scopes: ['user', 'project'], plugins: {}, projectPlugins: {}, gitToolkit: {} };
   try {
     const ctx = { env: await prepareEnvironment(root), cwd: root };
     const profileHost = { platform: 'darwin', arch: 'arm64' };
-    for (const plugin of plugins) {
-      const { manifest } = plugin;
-      const inventory = { requiredAwCapabilities: manifest.requires.aw.capabilities, dependencies: manifest.dependencies ?? [],
-        producer: manifest.scripts?.artifacts?.render ? 'renderer' : 'static', platforms: {} };
-      report.plugins[manifest.name] = inventory;
-      for (const adapter of adapters.filter(adapter => manifest.platforms.includes(adapter.platform))) {
-        const platform = adapter.platform;
-        const expectation = userTargets[platform];
-        const configRoot = path.join(ctx.env.HOME, platform);
-        await fs.mkdir(configRoot, { recursive: true });
-        const product = platform === 'generic'
-          ? { product: 'generic', availability: 'notApplicable', entry: { kind: 'generic', root: configRoot } }
-          : { product: 'cli', availability: 'available', entry: { kind: 'cli', executable: path.join(configRoot, platform), configRoot } };
-        const installation = { id: platform, ...product, version: expectation.version, reasonCodes: [] };
-        const resolution = await adapter.resolve(ctx, { plugin: { ...plugin, version: manifest.version },
-          scope: { kind: 'user' }, operation: 'ensure', recoveryCandidates: [],
-          discovery: { platform, installations: [installation], availability: product.availability, diagnostics: [] } });
-        const [binding] = resolution.bindings;
-        const unit = resolution.renderUnits.find(item => item.kinds.includes('skill'));
-        assert(binding && unit, `Missing User Skill render unit for ${platform}`);
-        const capabilities = adapter.capabilities({ binding, renderUnit: unit, profile: getQualifiedPlatformProfile(platform, profileHost),
-          observation: { prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } } });
-        const staticResourceRoot = manifest.skills ? path.join(plugin.rootDir, platform) : plugin.rootDir;
-        const options = { pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform, capabilities };
-        const expected = await normalizeStaticPluginComponents(options);
-        const config = await resolveArtifactRenderConfig({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
-          pluginName: manifest.name, manifest, platform, ...ctx, referencePlugins: plugins, scope: 'user' });
-        const prepared = manifest.scripts?.artifacts?.render || manifest.name === 'git-toolkit'
-          ? await preparePlatformComponents({ plugin, platform, ...ctx, config, capabilities, renderScope: 'user',
-            kinds: COMPONENT_KINDS, staticResourceRoot, staticExpected: expected, commandEnv: ctx.env })
-          : { expected };
-        const { components, unmet, omitted } = prepared.expected;
-        const label = `${manifest.name}/${platform}`;
-        assert(components.length + unmet.length + omitted.length > 0, `${label} silently produced no outcomes`);
-        inventory.platforms[platform] = { prepared: components.map(c => ({ id: c.id, requires: getComponentFeatureRequirements(c) })),
-          unmet: unmet.map(({ id, reasonCode, requiredFeatures }) => ({ id, reasonCode, requiredFeatures })), omitted };
-        if (manifest.skills) {
-          const declared = await declaredSkills(path.join(staticResourceRoot, manifest.skills));
-          // Source declarations form the independent delivery oracle. Capability
-          // evidence describes the host policy; it never removes a shipped Skill.
-          const authorSkills = authors.get(manifest.name).skills;
-          const names = [...authorSkills.keys()].sort();
-          assert.deepEqual([...declared.keys()].sort(), names, label);
-          const preparedNames = [];
-          const unmetNames = [];
-          for (const [name, { fields, source }] of authorSkills) {
-            for (const flag of ['user-invocable', 'disable-model-invocation']) {
-              assert.equal(declared.get(name).fields[flag], fields[flag], `${label}/${name}/${flag}`);
+    for (const [scope, pluginInventory] of [['user', report.plugins], ['project', report.projectPlugins]]) {
+      for (const plugin of plugins) {
+        const { manifest } = plugin;
+        if (staticOnly && !manifest.skills) continue;
+        const inventory = { requiredAwCapabilities: manifest.requires.aw.capabilities, dependencies: manifest.dependencies ?? [],
+          producer: manifest.scripts?.artifacts?.render ? 'renderer' : 'static', platforms: {} };
+        pluginInventory[manifest.name] = inventory;
+        for (const adapter of adapters.filter(adapter => manifest.platforms.includes(adapter.platform))) {
+          const platform = adapter.platform;
+          const expectation = userTargets[platform];
+          const configRoot = path.join(ctx.env.HOME, platform);
+          await fs.mkdir(configRoot, { recursive: true });
+          const product = platform === 'generic'
+            ? { product: 'generic', availability: 'notApplicable', entry: { kind: 'generic', root: configRoot } }
+            : { product: 'cli', availability: 'available', entry: { kind: 'cli', executable: path.join(configRoot, platform), configRoot } };
+          const installation = { id: platform, ...product, version: expectation.version, reasonCodes: [] };
+          const resolution = await adapter.resolve(ctx, { plugin: { ...plugin, version: manifest.version },
+            scope: scope === 'user' ? { kind: scope } : { kind: scope, projectRoot: root }, operation: 'ensure', recoveryCandidates: [],
+            discovery: { platform, installations: [installation], availability: product.availability, diagnostics: [] } });
+          const [binding] = resolution.bindings;
+          const unit = resolution.renderUnits.find(item => item.kinds.includes('skill'));
+          assert(binding && unit, `Missing ${scope} Skill render unit for ${platform}`);
+          const capabilities = adapter.capabilities({ binding, renderUnit: unit, profile: getQualifiedPlatformProfile(platform, profileHost),
+            observation: { prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } } });
+          const staticResourceRoot = manifest.skills ? path.join(plugin.rootDir, platform) : plugin.rootDir;
+          const options = { pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform, capabilities };
+          const expected = await normalizeStaticPluginComponents(options);
+          let prepared = { expected };
+          if (!staticOnly && (manifest.scripts?.artifacts?.render || manifest.name === 'git-toolkit')) {
+            const config = await resolveArtifactRenderConfig({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+              pluginName: manifest.name, manifest, platform, ...ctx, referencePlugins: plugins, scope: unit.renderScope.kind });
+            prepared = await preparePlatformComponents({ plugin, platform, ...ctx, config, capabilities, renderScope: unit.renderScope.kind,
+              kinds: COMPONENT_KINDS, staticResourceRoot, staticExpected: expected, commandEnv: ctx.env });
+          }
+          const { components, unmet, omitted } = prepared.expected;
+          const label = `${manifest.name}/${platform}/${scope}`;
+          assert(components.length + unmet.length + omitted.length > 0, `${label} silently produced no outcomes`);
+          inventory.platforms[platform] = { prepared: components.map(c => ({ id: c.id, requires: getComponentFeatureRequirements(c) })),
+            unmet: unmet.map(({ id, reasonCode, requiredFeatures }) => ({ id, reasonCode, requiredFeatures })), omitted };
+          if (manifest.skills) {
+            const declared = await declaredSkills(path.join(staticResourceRoot, manifest.skills));
+            // Source declarations form the independent delivery oracle. Capability
+            // evidence describes the host policy; it never removes a shipped Skill.
+            const authorSkills = authors.get(manifest.name).skills;
+            const names = [...authorSkills.keys()].sort();
+            assert.deepEqual([...declared.keys()].sort(), names, label);
+            for (const [name, { fields, body }] of authorSkills) {
+              assert.equal(declared.get(name).body, body, `${label}/${name}/SKILL.md`);
+              for (const flag of ['user-invocable', 'disable-model-invocation']) {
+                assert.equal(declared.get(name).fields[flag], fields[flag], `${label}/${name}/${flag}`);
+              }
             }
-            const requirements = getComponentFeatureRequirements({ id: `skill:${name}`, name, kind: 'skill',
-              content: { files: { 'SKILL.md': { text: source } } } });
-            // Only these three preferences can fall back to documentation. A
-            // missing execution feature (e.g. a tool allowlist) still matters.
-            const required = requirements.filter(({ feature }) =>
-              !['skill.invocation.manual', 'skill.invocation.model', 'skill.visibility'].includes(feature));
-            const missing = getUnmetFeatureRequirements(required, capabilities);
-            if (missing.length) {
-              unmetNames.push(name);
-              assert.deepEqual(unmet.find(c => c.id === `skill:${name}`)?.requiredFeatures, missing, `${label}/${name}`);
-            } else preparedNames.push(name);
+            // All current static Skills have deliverable bodies. The invocation
+            // and visibility preferences in their headers are checked separately.
+            const staticSkills = component => prepared.expected.sources[component.id] === 'static' && component.kind === 'skill';
+            assert.deepEqual(components.filter(staticSkills).map(c => c.name).sort(), names, label);
+            assert.deepEqual(unmet.filter(staticSkills), [], label);
+            inventory.platforms[platform].authoredInvocation = Object.fromEntries([...declared]
+              .filter(([, { fields }]) => Object.hasOwn(fields, 'user-invocable') || Object.hasOwn(fields, 'disable-model-invocation'))
+              .map(([name, { fields }]) => [name, { userInvocable: fields['user-invocable'],
+                disableModelInvocation: fields['disable-model-invocation'] }]));
+            if (!staticOnly && manifest.name === 'git-toolkit' && scope === 'user') {
+              const proven = capabilities.features['skill.invocation.model'];
+              assert.equal(proven.status === 'supported' && proven.values.includes('false'), expectation.manual, label);
+              report.gitToolkit[platform] = await assertGitProjection({ adapter, ctx, binding, unit, capabilities, prepared,
+                manifest, declared, stage: path.join(root, 'projection', platform) });
+            }
           }
-          assert.deepEqual(components.filter(c => prepared.expected.sources[c.id] === 'static' && c.kind === 'skill').map(c => c.name).sort(), preparedNames.sort(), label);
-          assert.deepEqual(unmet.filter(c => prepared.expected.sources[c.id] === 'static' && c.kind === 'skill').map(c => c.name).sort(), unmetNames.sort(), label);
-          inventory.platforms[platform].authoredInvocation = Object.fromEntries([...declared]
-            .filter(([, { fields }]) => Object.hasOwn(fields, 'user-invocable') || Object.hasOwn(fields, 'disable-model-invocation'))
-            .map(([name, { fields }]) => [name, { userInvocable: fields['user-invocable'],
-              disableModelInvocation: fields['disable-model-invocation'] }]));
-          if (manifest.name === 'git-toolkit') {
-            const proven = capabilities.features['skill.invocation.model'];
-            assert.equal(proven.status === 'supported' && proven.values.includes('false'), expectation.manual, label);
-            report.gitToolkit[platform] = await assertGitProjection({ adapter, ctx, binding, unit, capabilities, prepared,
-              manifest, declared, stage: path.join(root, 'projection', platform) });
+          if (!staticOnly && manifest.scripts?.artifacts?.render) {
+            // The two current role-dependent renderers have their own independent
+            // outcome oracle. A new renderer requires its own output contract.
+            assert(['agent-subagent', 'codex-enhance'].includes(manifest.name),
+              `Add an independent output expectation for shipped renderer ${manifest.name}`);
+            const names = manifest.artifacts.sourceDirs.map(directory => path.basename(directory)).sort();
+            const skills = components.filter(c => c.kind === 'skill').map(c => c.name).sort();
+            assert.deepEqual(skills, platform === 'codex' ? names : [], label);
+            const offered = platform === 'codex' || platform === 'claude' && manifest.name === 'agent-subagent';
+            if (offered) {
+              assert.deepEqual([...skills, ...unmet.filter(c => c.kind === 'skill').map(c => c.name)].sort(), names, label);
+              assert.deepEqual(omitted, [], label);
+            } else {
+              const ids = manifest.name === 'agent-subagent' ? ['spawn-subagent-skill'] : ['codex-advisor-skill', 'codex-explore-skill'];
+              assert.deepEqual(omitted.map(c => ({ id: c.id, reason: c.reason })).sort((a, b) => a.id.localeCompare(b.id)),
+                ids.map(id => ({ id, reason: 'not-offered' })), label);
+            }
+            const roles = shippedRoles[manifest.name];
+            let roleSet = prepared.expected;
+            if (scope === 'project' && platform === 'codex') {
+              const roleUnit = resolution.renderUnits.find(unit => unit.output === 'supplement');
+              assert.equal(roleUnit?.renderScope.kind, 'project');
+              const roleConfig = await resolveArtifactRenderConfig({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+                pluginName: manifest.name, manifest, platform, ...ctx, referencePlugins: plugins, scope: 'project' });
+              const roleCapabilities = adapter.capabilities({ binding, renderUnit: roleUnit, profile: getQualifiedPlatformProfile(platform, profileHost),
+                observation: { prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } } });
+              roleSet = (await preparePlatformComponents({ plugin, platform, ...ctx, config: roleConfig, capabilities: roleCapabilities,
+                renderScope: 'project', kinds: roleUnit.kinds, staticResourceRoot, commandEnv: ctx.env })).expected;
+              inventory.platforms[platform].projectSupplement = roleSet.components.map(component => component.id);
+            }
+            assert.deepEqual(roleSet.components.filter(c => c.kind === 'agent').map(c => c.name).sort(), rolePlatform(platform) ? roles : [], label);
+            assert.deepEqual(roleSet.unmet.filter(c => c.kind === 'agent').map(c => c.name).sort(), rolePlatform(platform) ? [] : roles, label);
           }
-        }
-        if (manifest.scripts?.artifacts?.render) {
-          // The two current role-dependent renderers have their own independent
-          // outcome oracle. A new renderer requires its own output contract.
-          assert(['agent-subagent', 'codex-enhance'].includes(manifest.name),
-            `Add an independent output expectation for shipped renderer ${manifest.name}`);
-          const names = manifest.artifacts.sourceDirs.map(directory => path.basename(directory)).sort();
-          const skills = components.filter(c => c.kind === 'skill').map(c => c.name).sort();
-          assert.deepEqual([...skills, ...unmet.filter(c => c.kind === 'skill').map(c => c.name)].sort(), names, label);
-          assert.deepEqual(skills, platform === 'codex' ? names : [], label);
-          assert.deepEqual(omitted, [], label);
-          assert([...components, ...unmet].some(c => c.kind === 'agent'), label);
         }
       }
     }
+    if (staticOnly) return report;
     assert.deepEqual(Object.keys(report.gitToolkit).sort(), Object.keys(userTargets).sort());
     // Generic has a real local writer and needs no host CLI. Its public receipt
     // and installed files catch errors downstream from adapter projection.
@@ -242,7 +260,10 @@ export async function qualifyShippedCatalog() {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  const report = await qualifyShippedCatalog();
-  if (process.argv[2]) await fs.writeFile(process.argv[2], JSON.stringify(report, null, 2) + '\n');
+  const args = process.argv.slice(2);
+  const staticOnly = args.includes('--static-only');
+  const output = args.find(arg => arg !== '--static-only');
+  const report = await qualifyShippedCatalog({ staticOnly });
+  if (output) await fs.writeFile(output, JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify({ level: report.level, plugins: Object.keys(report.plugins), gitToolkit: report.gitToolkit }));
 }

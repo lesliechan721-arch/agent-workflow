@@ -4,7 +4,9 @@ import type { ReactNode } from 'react';
 import stringWidth from 'string-width';
 
 import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
+import { hasComponentDeliveryNotice, isDeliveryNoticeCode, isInstallationAdvisory, type ComponentDelivery } from '../output/component-delivery.js';
 import { ObjectCardFrame } from './components.js';
+import { componentDeliveryLines, deliveryNoticeText } from './deployment-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
 import { Pager } from './reader.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from './plugin-detail.js';
@@ -83,8 +85,21 @@ const projectStates: Record<ProjectInventoryState, { label: string; status: TuiS
 };
 
 export type EntityPlacementFact = Pick<PluginDetailPlacement, 'platform' | 'agent' | 'delivery' | 'scope' | 'observation'
-  | 'statusState' | 'projectState' | 'declared' | 'actual' | 'installedVersion' | 'expectedVersion'>
-  & { shared: boolean };
+  | 'statusState' | 'projectState' | 'declared' | 'actual' | 'installedVersion' | 'expectedVersion' | 'deliveryNotices'>
+  & ComponentDelivery & { shared: boolean };
+
+function installedHealth(fact: ComponentDelivery & Pick<PluginDetailPlacement, 'deliveryNotices'>) {
+  if (fact.satisfaction === 'not-applicable') return { label: '当前平台无适用组件', status: 'success' as const, symbol: '✓' };
+  if (hasComponentDeliveryNotice(fact) || fact.deliveryNotices?.some(({ code, severity }) => severity === 'warning' && isInstallationAdvisory(code))) {
+    return { label: '已安装 · 有提示', status: 'success' as const, symbol: '✓' };
+  }
+  return projectStates.ready;
+}
+
+function deliveryDetailLines(fact: ComponentDelivery & Pick<PluginDetailPlacement, 'deliveryNotices'>): string[] {
+  return [...componentDeliveryLines(fact), ...(fact.deliveryNotices ?? []).map(({ code, detail, subject }) =>
+    `  ${deliveryNoticeText(code, detail, subject?.field)}`)];
+}
 
 function placementIdentity(fact: Pick<EntityPlacementFact, 'platform' | 'agent' | 'delivery' | 'scope'>): string {
   return [fact.agent ?? '', fact.delivery ?? '', fact.platform ?? '', fact.scope].join(':');
@@ -95,9 +110,10 @@ function placementHealth(fact: EntityPlacementFact) {
   if (fact.statusState === 'orphaned') {
     return { label: '残留待处理', status: 'warning' as const, symbol: '!' };
   }
+  if (fact.satisfaction === 'not-applicable') return installedHealth(fact);
   if (fact.observation === 'unknown') return projectStates.unknown;
-  if (fact.projectState) return projectStates[fact.projectState];
-  if (fact.statusState === 'ready') return projectStates.ready;
+  if (fact.projectState) return fact.projectState === 'ready' ? installedHealth(fact) : projectStates[fact.projectState];
+  if (fact.statusState === 'ready') return installedHealth(fact);
   if (fact.statusState === 'needsSync') return projectStates.pending;
   if (fact.statusState === 'absent') {
     return { label: '未安装', status: 'muted' as const, symbol: '○' };
@@ -115,7 +131,7 @@ function placementFields(fact: EntityPlacementFact): CardCell[] {
     ...(fact.shared ? [muted('[共用个人安装]')] : []),
     ...(fact.declared && !fact.actual
       ? [muted(fact.scope === 'project' ? '[项目声明]' : '[使用声明]')] : []),
-    ...(health.label === '未安装' ? [] : [plain(`安装版本 ${fact.installedVersion ?? '未确认'}`)]),
+    ...(health.label === '未安装' || fact.satisfaction === 'not-applicable' ? [] : [plain(`安装版本 ${fact.installedVersion ?? '未确认'}`)]),
     statusCell(health.label, health.status, health.symbol),
   ];
 }
@@ -133,6 +149,8 @@ function fromProjectTarget(
     projectState: target.state,
     statusState: detail?.statusState,
     installedVersion: detail?.installedVersion ?? target.installedVersion,
+    satisfaction: target.satisfaction, componentGaps: target.componentGaps, installedComponentCount: target.installedComponentCount,
+    installedComponentIds: target.installedComponentIds, deliveryNotices: target.deliveryNotices,
   };
 }
 
@@ -176,13 +194,16 @@ function pluginFacts(subject: PluginDetailSubject, width: number) {
   for (const placement of subject.placements) {
     const health = placementHealth({ ...placement, shared: placement.sharedWithCurrentProject });
     const label = placement.agent ? agentLabel(placement.agent) : placement.platformLabel;
-    const version = placement.installedVersion ?? '—';
+    const version = placement.satisfaction === 'not-applicable' ? '—' : placement.installedVersion ?? '—';
     const changed = placement.installedVersion && subject.catalogVersion && tryParseStrictSemVer(placement.installedVersion) && tryParseStrictSemVer(subject.catalogVersion)
       && compareStrictSemVer(placement.installedVersion, subject.catalogVersion) < 0;
     addFields(lines, sections, `placement:${placementIdentity(placement)}`, width,
       [plain(pad(label, 13)), { text: pad(`${health.symbol} ${health.label}`, 11), role: 'tableStatus', status: health.status },
         plain(`${showLocation ? pad(scopeLabel(placement.scope), 12) : ''}${version}`),
         ...(changed ? [{ text: '↑', role: 'tableStatus' as const, status: 'warning' as const }] : [])]);
+    for (const [index, line] of deliveryDetailLines(placement).entries()) {
+      addFields(lines, sections, `delivery:${placementIdentity(placement)}:${index}`, width, [muted(line)]);
+    }
     if (health.status === 'error' || placement.observation === 'unknown') {
       const reasons: Record<string, string> = {
         permissionDenied: '没有写入权限', sourceUnavailable: '插件来源不可用',
@@ -218,7 +239,7 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
   if (root.agentResults) {
     const declared = root.section === 'declared';
     const pending = root.agentResults.length > 0 && root.agentResults.every((target) =>
-      target.observation === 'missing' || target.content === 'absent');
+      target.satisfaction !== 'not-applicable' && (target.observation === 'missing' || target.content === 'absent'));
     const residue = subject.placements.some((entry) => entry.scope === root.scope && entry.statusState === 'orphaned');
     const dependency = !declared && !residue && subject.relations.incoming.some((entry) => entry.declared)
       && root.agentResults.some((target) => target.observation === 'verified');
@@ -231,19 +252,22 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
     for (const blocker of root.blockers ?? []) addFields(lines, sections, `blocker:${blocker.code}`, width,
       [statusCell(recoveryReason(blocker.code), 'warning', '!')]);
     for (const target of root.agentResults) {
+      const installed = root.targets.find((entry) => entry.agent === target.agent
+        || !entry.agent && entry.platform === target.agent);
       const state: ProjectInventoryState = target.blockers.length > 0 || target.content === 'conflict' ? 'blocked'
-        : target.observation === 'verified' ? 'ready'
+        : target.satisfaction === 'not-applicable' || target.observation === 'verified' ? 'ready'
           : target.observation === 'missing' || target.content === 'drifted' ? 'pending' : 'unknown';
       const health = target.satisfaction === 'unsupported' || target.reasons?.some((reason) => reason.code === 'deliveryUnsupported')
         ? { label: '不支持', status: 'muted' as const, symbol: '–' }
         : target.satisfaction === 'excluded' ? { label: '已关闭', status: 'muted' as const, symbol: '◇' }
-          : projectStates[state];
-      const installed = root.targets.find((entry) => entry.agent === target.agent
-        || !entry.agent && entry.platform === target.agent);
+          : state === 'ready' ? installedHealth({ ...target, deliveryNotices: installed?.deliveryNotices }) : projectStates[state];
       addFields(lines, sections, `agent:${target.agent}`, width,
         [statusCell(agentLabel(target.agent), health.status, health.symbol), plain(health.label),
-          ...(installed?.installedVersion ? [muted(installed.installedVersion)] : [])]);
-      for (const reason of [...target.blockers, ...(target.reasons ?? [])]) addFields(lines, sections,
+          ...(target.satisfaction !== 'not-applicable' && installed?.installedVersion ? [muted(installed.installedVersion)] : [])]);
+      for (const [index, line] of deliveryDetailLines({ ...target, deliveryNotices: installed?.deliveryNotices }).entries()) {
+        addFields(lines, sections, `agent:${target.agent}:delivery:${index}`, width, [muted(line)]);
+      }
+      for (const reason of [...target.blockers, ...(target.reasons ?? []).filter(({ code }) => !isDeliveryNoticeCode(code))]) addFields(lines, sections,
         `agent:${target.agent}:${reason.code}`, width, [muted(`  └ ${recoveryReason(reason.code)}`)]);
     }
     if (root.agentResults.length === 0) addFields(lines, sections, 'agents', width,

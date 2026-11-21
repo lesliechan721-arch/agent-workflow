@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,400 @@ import test from 'node:test';
 import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { clients } from './native-platform-runtime.mjs';
+import { componentReceiptEvidence, grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
+import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
+import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
+
+const publicResponse = (command, data) => ({
+  exitCode: 0, terminationReason: 'complete', stderr: '',
+  stdout: JSON.stringify({ schemaVersion: 2, command, status: 'success', data, diagnostics: [] }),
+});
+
+// A process can fail before its first observation or return a timed-out Windows Job result.
+test('keeps the public command and actual scope when the process has no snapshots', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-source-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: [] }));
+  const helperFailures = { 'helper-failure': {}, 'helper-timeout': { timedOut: true }, 'helper-signal': { signal: 'SIGTERM' },
+    'helper-max-buffer': { maxBufferExceeded: true }, 'helper-truncated': { stdoutTruncated: true }, 'helper-wrong-command': {} };
+  for (const outcome of ['timeout', 'preflight', 'signal', 'invalid-output', ...Object.keys(helperFailures)]) {
+    const command = outcome === 'preflight' ? 'source.add' : 'target.set';
+    const privateMessage = 'private fixture output that must stay out of the report';
+    const result = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args) {
+        const called = args.slice(0, 2).join('.');
+        if (called !== command) return publicResponse(called, { availability: [{ id: 'generic', installations: [] }] });
+        if (outcome === 'preflight') throw new Error(privateMessage);
+        if (outcome === 'signal') return { exitCode: null, signal: 'SIGTERM', terminationReason: 'complete', stdout: privateMessage };
+        if (Object.hasOwn(helperFailures, outcome)) {
+          const receipt = publicResponse(outcome === 'helper-wrong-command' ? 'plugin.status' : called, { raw: privateMessage });
+          return { ...receipt, exitCode: 250, descendantCleanupGuaranteed: true, stderr: privateMessage, ...helperFailures[outcome] };
+        }
+        if (outcome === 'invalid-output') return { exitCode: 1, terminationReason: 'complete', stdout: privateMessage };
+        return { exitCode: 124, timedOut: true, cancelled: false, terminationReason: 'timeout', descendantCleanupGuaranteed: true,
+          stdout: privateMessage, stderr: privateMessage };
+      },
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.commandFailures?.length, 1);
+    const [failure] = result.commandFailures;
+    assert.equal(failure.command, command);
+    if (command === 'target.set') {
+      assert.equal(failure.scope, 'user');
+    } else assert(!Object.hasOwn(failure, 'scope'));
+    if (outcome === 'timeout') {
+      assert.equal(failure.timedOut, true);
+      assert.equal(failure.terminationReason, 'timeout');
+      assert.equal(failure.descendantCleanupGuaranteed, true);
+    } else if (outcome === 'signal') {
+      assert.equal(failure.exitCode, null);
+      assert.equal(failure.signal, 'SIGTERM');
+    } else if (Object.hasOwn(helperFailures, outcome)) {
+      assert.equal(failure.exitCode, 250);
+      assert.equal(failure.stage, 'execute');
+      assert(!Object.hasOwn(failure, 'descendantCleanupGuaranteed'));
+      assert.deepEqual(failure.awReceipt, outcome === 'helper-failure' ? { status: 'success' } : undefined, outcome);
+    } else if (outcome === 'invalid-output') {
+      assert.equal(failure.exitCode, 1);
+      assert.equal(failure.stage, 'response');
+    }
+    assert(!JSON.stringify(result).includes(privateMessage));
+  }
+});
+
+// A plausible payload from another command, or a failed receipt with exit 0,
+// must stop the qualification before its next command consumes the result.
+test('binds component receipts to the requested command and public status and exit code', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-receipt-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: ['agent-subagent', 'codex-enhance']
+    .map(name => ({ name, dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest' })) }));
+  const commands = ['target.set', 'source.add', 'source.sync', 'plugin.install', 'plugin.status'];
+  for (const { request, command = request, status, exitCode, diagnostics = [], valid = false } of [
+    { request: 'target.set', command: 'plugin.status', status: 'success', exitCode: 0 },
+    { request: 'plugin.install', status: 'failed', exitCode: 0 },
+    { request: 'plugin.status', status: 'failed', exitCode: 0 },
+    { request: 'plugin.install', status: 'partial', exitCode: 1 },
+    { request: 'target.set', status: 'success', exitCode: 0, diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] },
+    { request: 'plugin.install', status: 'partial', exitCode: 4, valid: true },
+    { request: 'plugin.install', status: 'partial', exitCode: 1, valid: true,
+      diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] },
+  ]) {
+    const calls = [];
+    const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args, { env }) {
+        const called = args.slice(0, 2).join('.');
+        calls.push(called);
+        if (called === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+          sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+        }));
+        const data = called === 'target.set' ? { availability: [{ id: 'generic', installations: [] }] } : { targetResults: [] };
+        const result = publicResponse(called, data);
+        if (called !== request) return result;
+        return { ...result, exitCode, stdout: JSON.stringify({ schemaVersion: 2, command, status, data, diagnostics }) };
+      },
+    });
+    assert.equal(report.status, 'failed');
+    assert.deepEqual(calls, valid ? commands : commands.slice(0, commands.indexOf(request) + 1));
+    assert.equal(report.commandFailures.length, 1);
+    const [failure] = report.commandFailures;
+    assert.equal(failure.command, request);
+    assert.equal(failure.exitCode, exitCode);
+    assert.equal(failure.stage, valid ? 'command' : 'response');
+    assert.equal(failure.awReceipt?.status, valid ? status : undefined);
+  }
+});
+
+// Test Value Gate: published evidence must keep each independent Catalog failure and omit private command data.
+test('records separate, redacted failures from the public component Catalog report', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-catalog-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  const roleNames = { 'agent-subagent': ['subagent'], 'codex-enhance': ['codex-explore', 'codex-advisor'] };
+  const staticPlugins = ['first-static', 'second-static', 'third-static'];
+  const names = [...Object.keys(roleNames), ...staticPlugins];
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: names.map(name => ({
+    name, source: name, dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest',
+  })) }));
+  for (const name of staticPlugins) {
+    const folder = path.join(catalog, name, '.agents-plugin');
+    await fs.mkdir(folder, { recursive: true });
+    await fs.writeFile(path.join(folder, 'plugin.json'), JSON.stringify({ skills: 'skills' }));
+  }
+  const pluginId = name => `qualification-official/${name}`;
+  const targets = Object.entries(roleNames).map(([name, roles]) => ({ pluginId: pluginId(name), scope: 'project',
+    target: 'generic', blockerCodes: [], deploymentReceipts: [], componentGaps: roles.map(role => ({ id: `agent:${role}`,
+      kind: 'agent', name: role, providerPluginId: pluginId(name), reasonCode: 'interface-unsupported', requiredFeatures: ['agent'] })) }));
+  const privateValues = ['/host/private/profile', 'FAKE_ENVIRONMENT=private', 'secret-marker-value', 'fake-credential', 'raw invocation body', 'unsafeDiagnosticCode'];
+  const privateText = privateValues.join(' ');
+  const startTime = 'Sat Nov 21 09:01:02 2026';
+  const affectedProcess = { pid: 43, ppid: 41, startTime, markerMatches: false };
+  const first = { stage: 'observation', reason: 'known-process-marker-missing', rootPid: 41, affectedPids: [43],
+    processes: [...Array.from({ length: 40 }, (_, index) => ({ pid: 100 + index })), { ...affectedProcess, command: privateText }] };
+  const last = { ...first, stage: 'cleanup', reason: 'process-marker-unreadable' };
+
+  const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env }) {
+      const command = args.slice(0, 2).join('.');
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'generic', installations: [] }] });
+      if (command === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+        sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+      }));
+      if (command === 'plugin.status') return publicResponse(command, { targetResults: targets, inSync: true,
+        allSatisfied: true, counts: { pending: 0 } });
+      if (args[2] === pluginId('first-static')) {
+        throw Object.assign(new Error(privateText), { name: 'ProviderProcessCleanupError', env: { credentials: privateText },
+          result: { ...publicResponse(command, {}), exitCode: 1, stdout: JSON.stringify({
+            schemaVersion: 2, command, status: 'failed', data: { raw: privateText }, diagnostics: [
+              { code: 'processCleanupUnconfirmed', severity: 'error', message: privateText,
+                detail: { reasonCode: 'unsafeDiagnosticCode', path: privateText } },
+              { code: 'unsafeDiagnosticCode', severity: 'error', message: privateText },
+            ], nextActions: [{ argv: [privateText] }],
+          }), stderr: privateText, timedOut: false },
+          publicAwProcessDiagnostics: [first, { ...first, reason: 'intermediate' }, last],
+          publicAwProcessNames: [{ pid: 43, processName: 'grok', startTime, source: 'identity-ps-ucomm', args: [privateText] }],
+          publicAwMarkerRows: [{ pid: 43, queryId: 7, commandForm: 'parenthesized', markerMatches: false,
+            command: privateText, startupEnvironment: { status: 'complete', environmentBytes: 58, environment: privateText } }],
+          qualificationMarkerIdentityConfirmations: { source: 'observer-local-post-marker-identity-query', omitted: 0,
+            records: [{ pid: 43, result: 'present', raw: privateText }] },
+        });
+      }
+      if (args[2] === pluginId('second-static')) {
+        throw Object.assign(new Error(privateText), { processTreeDiagnostics: [{ stage: 'cleanup', rootPid: 74,
+          reason: 'root-marker-missing', affectedPids: [74], processes: [{ pid: 74, command: privateText }] }] });
+      }
+      if (args[2] === pluginId('third-static')) {
+        return { ...publicResponse(command, {}), exitCode: 3, stderr: privateText, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: { targetResults: [{
+            pluginId: pluginId('third-static'), target: 'generic', scope: 'project', execution: 'not-run',
+            blockerCodes: ['operationPlanStale', 'unsafeDiagnosticCode'], componentGaps: [{ raw: privateText }],
+          }] },
+        }) };
+      }
+      return publicResponse(command, { targetResults: targets });
+    },
+  });
+  assert.equal(report.status, 'failed');
+  assert.match(report.reason, /Shipped plugin installation failed: first-static, second-static, third-static/u);
+  const [cleanup, later, blocked] = report.commandFailures;
+  assert.equal(report.commandFailures.length, 3);
+  assert.deepEqual([cleanup.command, cleanup.stage, cleanup.scope, cleanup.pluginIds, cleanup.error],
+    ['plugin.install', 'execute', 'project', [pluginId('first-static')], 'ProviderProcessCleanupError']);
+  assert.equal(cleanup.exitCode, 1);
+  assert.deepEqual(cleanup.awReceipt, { status: 'failed', diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] });
+  assert.deepEqual(cleanup.processDiagnostics.map(row => row.reason), [first.reason, last.reason]);
+  assert.equal(cleanup.processDiagnostics[0].processes.length, 32);
+  assert.equal(cleanup.processDiagnostics[0].omittedProcesses, 9);
+  assert.deepEqual(cleanup.processDiagnostics[0].processes.find(row => row.pid === 43), affectedProcess);
+  assert.equal(cleanup.processNames[0].processName, 'grok');
+  assert.equal(cleanup.markerRows[0].startupEnvironment.environmentBytes, 58);
+  assert.equal(cleanup.markerIdentityConfirmations.records[0].result, 'present');
+  assert.deepEqual([later.command, later.stage, later.pluginIds, later.processDiagnostics[0].rootPid],
+    ['plugin.install', 'execute', [pluginId('second-static')], 74]);
+  assert.equal(later.awReceipt, undefined);
+  assert.deepEqual([blocked.command, blocked.stage, blocked.exitCode, blocked.awReceipt], ['plugin.install', 'command', 3,
+    { status: 'blocked', targets: [{ pluginId: pluginId('third-static'), target: 'generic', scope: 'project',
+      execution: 'not-run', blockerCodes: ['operationPlanStale'] }] }]);
+  const published = JSON.stringify(report);
+  for (const privateValue of privateValues) assert(!published.includes(privateValue));
+});
+
+// The failed installation must own its bounded native command evidence even
+// when a later status read succeeds or trace output is unavailable.
+test('scopes the Codex candidate native trace to the failing Project install', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-codex-test-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  const pluginIds = ['agent-subagent', 'codex-enhance'].map(name => `qualification-official/${name}`);
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: pluginIds.map(id => ({
+    name: id.split('/')[1], dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest',
+  })) }));
+  const sentinel = 'private_candidate_payload';
+  const outcome = { category: 'windows-system-powershell', elapsedMs: 29998, threw: true,
+    exitCode: 124, timedOut: true, cleanupUnconfirmed: true, reason: 'timeout', errorCode: 'nativeCliTimedOut' };
+  const staleMessage = 'operationPlanStale: deployment evidence changed after the ordinary observation.';
+  for (const traced of [true, false]) {
+    let traceFile;
+    let statusCalls = 0;
+    const report = await runComponentQualification({ platform: 'codex', scope: 'project', suite: 'candidate', catalog,
+      clientPath: process.env.PATH, traceEntry: process.execPath }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args, { env }) {
+        const command = args.slice(0, 2).join('.');
+        if (command !== 'plugin.install') {
+          assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
+          assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, undefined);
+        }
+        if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'codex', installations: [] }] });
+        if (command === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+          sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+        }));
+        if (command === 'plugin.status') statusCalls++;
+        if (command !== 'plugin.install') return publicResponse(command, {});
+        assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, 'codex-component-install');
+        assert.deepEqual(JSON.parse(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES), [process.execPath]);
+        traceFile = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
+        if (traced) await fs.writeFile(traceFile, [
+          { phase: 'installation', state: 'installed' }, { phase: 'finish', ...outcome, argv: [sentinel], stdout: sentinel,
+            stderr: sentinel, command: sentinel, env: { SECRET: sentinel }, causeCode: sentinel },
+          { phase: 'finish', category: sentinel },
+        ].map(row => JSON.stringify(row)).join('\n') + '\n');
+        return { ...publicResponse(command, {}), exitCode: 3, stderr: sentinel, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [{ code: 'operationPlanStale', message: sentinel }],
+          data: { targetResults: [
+            { pluginId: pluginIds[0], target: 'codex', scope: 'user', execution: 'failed', blockerCodes: ['processCleanupUnconfirmed'],
+              deploymentReceipts: [{ diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error', message: sentinel }] }] },
+            { pluginId: pluginIds[0], target: 'codex', scope: 'project', execution: 'not-run',
+              blockerCodes: ['operationPlanStale'], componentGaps: [{ stdout: sentinel }], deploymentReceipts: [{
+                diagnostics: [{ code: 'operationPlanStale', severity: 'error', message: staleMessage, detail: { path: sentinel } }],
+              }] },
+          ] },
+        }) };
+      },
+    });
+    assert.equal(report.status, 'failed');
+    assert.equal(statusCalls, 1);
+    assert.match(report.reason, /Shipped role plugin installation failed/u);
+    assert.equal(report.commandFailures.length, 1);
+    const [failure] = report.commandFailures;
+    assert.deepEqual(failure.pluginIds, pluginIds);
+    assert.deepEqual(failure.awReceipt.targets.map(({ scope }) => scope), ['project']);
+    assert.deepEqual(failure.awReceipt.targets[0].diagnostics, [{ code: 'operationPlanStale', severity: 'error', reason: staleMessage }]);
+    assert.deepEqual(failure.nativeCommandTrace, traced ? { state: 'captured', installation: 'installed', records: [outcome] }
+      : { state: 'not-created', records: [] });
+    assert(!JSON.stringify(report).includes(sentinel));
+    await assert.rejects(fs.stat(traceFile), { code: 'ENOENT' });
+  }
+});
+
+// Adjacent independent installs must keep separate native evidence, including
+// when AW returns partial and the next install fails outside the AW process.
+test('keeps Windows Codex Project matrix traces attached to the right installs', async () => {
+  const traceFiles = [];
+  const installs = [];
+  const sentinel = 'private_matrix_payload';
+  const report = await runComponentQualification({ platform: 'codex', scope: 'project', suite: 'matrix',
+    clientPath: process.env.PATH, traceEntry: process.execPath }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env, cwd }) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      if (command !== 'plugin.install') assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'codex', installations: [] }] });
+      if (command === 'dev.plugin.create') {
+        const folder = path.join(cwd, 'plugins', 'single-skill', '.agents-plugin');
+        await fs.mkdir(folder, { recursive: true });
+        await fs.writeFile(path.join(folder, 'plugin.json'), '{}');
+      }
+      if (command !== 'plugin.install') return publicResponse(command, {});
+      const pluginId = args[2];
+      installs.push(pluginId);
+      assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, 'codex-component-install');
+      const traceFile = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
+      traceFiles.push(traceFile);
+      await assert.rejects(fs.stat(traceFile), { code: 'ENOENT' });
+      await fs.writeFile(traceFile, JSON.stringify({ phase: 'finish', category: 'codex-version', elapsedMs: installs.length,
+        exitCode: 0, threw: false, argv: [sentinel], stdout: sentinel, stderr: sentinel, env: { SECRET: sentinel } }) + '\n', { flag: 'wx' });
+      const target = { pluginId, target: 'codex', scope: 'project', blockerCodes: [] };
+      if (pluginId === 'matrix/single-skill') {
+        const folder = path.join(cwd, 'fixture-package');
+        const skill = path.join(folder, 'skills', 'single-skill-skill');
+        await fs.mkdir(skill, { recursive: true });
+        await fs.writeFile(path.join(skill, 'SKILL.md'), 'qualification-skill-revision-1');
+        return publicResponse(command, { remainingTargets: [], targetResults: [{ ...target, execution: 'applied',
+          observation: 'verified', content: 'satisfied', deploymentReceipts: [{ after: { package: 'present', ownership: 'aw',
+            components: [{ id: 'skill:single-skill-skill', presence: 'present' }],
+            nativeIdentity: { packageId: 'single-skill', sourceLocation: folder } } }] }] });
+      }
+      if (pluginId === 'matrix/single-mcp') return publicResponse(command, { remainingTargets: [
+        { pluginId, target: 'codex', scope: 'user', extra: sentinel },
+        { pluginId: 'unrelated/plugin', target: 'claude', scope: 'project', extra: sentinel },
+      ] });
+      const value = { schemaVersion: 2, command, status: 'partial', diagnostics: [
+        { code: 'operationPlanStale', message: sentinel, detail: { reasonCode: sentinel } },
+        { code: 'platformExecutionFailed', detail: { reasonCode: 'deploymentPathsChanged' } }, { code: sentinel },
+      ], data: { targetResults: [{ ...target, execution: 'not-run', blockerCodes: ['operationPlanStale', sentinel],
+        deploymentReceipts: [{ diagnostics: [{ code: 'operationPlanStale', severity: 'error', message: sentinel,
+          detail: { reasonCode: 'deploymentObservationChanged', path: sentinel } }] }],
+      }] } };
+      return { ...publicResponse(command, {}), exitCode: pluginId === 'matrix/single-agent' ? 4 : 250, stdout: JSON.stringify(value) };
+    },
+  });
+  assert.deepEqual(installs, ['matrix/single-skill', 'matrix/single-agent', 'matrix/single-mcp', 'matrix/single-hook']);
+  assert.equal(new Set(traceFiles).size, installs.length);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.cells[0].observed, 'installed');
+  const incomplete = { id: 'matrix/single-mcp', exitCode: 0, status: 'success', remainingTargetCount: 2 };
+  assert.deepEqual(report.installFailures.find(row => row.id === incomplete.id), incomplete);
+  assert.deepEqual(report.cells.find(row => row.kind === 'mcp').failure, incomplete);
+  assert.deepEqual(report.commandFailures[0].awReceipt, { status: 'partial',
+    diagnostics: [{ code: 'operationPlanStale' }, { code: 'platformExecutionFailed' }],
+    targets: [{ pluginId: 'matrix/single-agent', target: 'codex', scope: 'project', execution: 'not-run', blockerCodes: ['operationPlanStale'],
+      diagnostics: [{ code: 'operationPlanStale', severity: 'error', reasonCode: 'deploymentObservationChanged' }] }] });
+  assert.deepEqual(report.commandFailures.map(failure => [failure.pluginIds[0], failure.stage, failure.exitCode,
+    failure.nativeCommandTrace.records[0].elapsedMs]), [['matrix/single-agent', 'command', 4, 2], ['matrix/single-hook', 'execute', 250, 4]]);
+  assert(!JSON.stringify(report).includes(sentinel));
+});
+
+// A blocked target preference is just one AW command. Its evidence must
+// distinguish missing samples from a started native check without other targets.
+test('retains Grok target selection evidence with or without a Windows command trace', async () => {
+  const sentinel = 'private_grok_discovery_payload';
+  const sample = { category: 'grok-version', elapsedMs: 5010, threw: true, exitCode: 124, timedOut: true, reason: 'timeout' };
+  for (const traceState of ['captured', 'not-created', 'disabled']) {
+    const traced = traceState === 'captured';
+    const traceEnabled = traceState !== 'disabled';
+    const calls = [];
+    const report = await runComponentQualification({ platform: 'grok', scope: 'user', suite: 'matrix',
+      clientPath: process.env.PATH, ...(traceEnabled ? { traceEntry: process.execPath } : {}) }, {
+      executeCommand: async () => ({ exitCode: 0 }),
+      async executeAw(_launcher, args, { env }) {
+        const command = args.slice(0, 2).join('.');
+        calls.push(command);
+        assert.equal(command, 'target.set');
+        assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, traceEnabled ? 'grok-component-discovery' : undefined);
+        if (traced) await fs.writeFile(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, [
+          { phase: 'finish', ...sample, stdout: sentinel, env: sentinel, cleanupKind: 'identity-lookup' },
+          { phase: 'finish', ...sample, category: 'claude-plugin-list', stderr: sentinel },
+        ].map(item => JSON.stringify(item)).join('\n') + '\n', { flag: 'wx' });
+        return { ...publicResponse(command, {}), exitCode: 3, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: { availability: [
+            { id: 'claude', availability: 'unknown', installations: [], diagnostics: [{ code: 'clientProbeFailed', message: sentinel }] },
+            { id: 'grok', availability: 'unknown', ...(traced ? { installations: [{ product: 'cli', availability: 'unknown',
+              id: sentinel, reasonCodes: ['clientProbeFailed', sentinel], entry: { executable: sentinel }, version: sentinel }] }
+              : { installations: [], diagnostics: [{ code: 'clientEntryUnresolved', message: sentinel, detail: { path: sentinel } },
+                { code: sentinel }, { code: { raw: sentinel } }, null] }) },
+          ] },
+        }) };
+      },
+    });
+    assert.deepEqual(calls, ['target.set']);
+    assert.equal(report.status, 'failed');
+    const [failure] = report.commandFailures;
+    assert.deepEqual(failure.awReceipt, { status: 'blocked', targetAvailability: { target: 'grok', availability: 'unknown',
+      ...(traced ? { installations: [{ availability: 'unknown', reasonCodes: ['clientProbeFailed'] }] }
+        : { installations: [], diagnosticCodes: ['clientEntryUnresolved'] }) } });
+    const expectedTrace = traceEnabled ? { state: traceState, records: traced ? [sample] : [] } : undefined;
+    assert.deepEqual(failure.nativeCommandTrace, expectedTrace);
+    assert(!JSON.stringify(report).includes(sentinel));
+  }
+});
+
+// Test Value Gate: an explicit write scope is independent of the context used to inspect status.
+test('scopes removal failure evidence to the requested target and retains command diagnostics', () => {
+  const pluginId = 'matrix/hook-only';
+  const diagnostics = [{ code: 'processCleanupUnconfirmed', severity: 'error' }];
+  const target = { pluginId, target: 'claude', execution: 'failed' };
+  const rows = [{ ...target, scope: 'user', blockerCodes: ['platformExecutionFailed'] },
+    { ...target, scope: 'project', blockerCodes: ['processCleanupUnconfirmed'] }];
+  const value = { schemaVersion: 2, command: 'plugin.remove', status: 'failed', diagnostics, data: { targetResults: rows } };
+  const request = { command: 'plugin.remove', scope: 'project', pluginIds: [pluginId] };
+  const removal = componentReceiptEvidence(value, request, 'claude').awReceipt;
+  assert.deepEqual(removal, { status: 'failed', diagnostics, targets: [rows[1]] });
+  const status = componentReceiptEvidence({ ...value, command: 'plugin.status' },
+    { command: 'plugin.status', context: 'project', pluginIds: [pluginId] }, 'claude').awReceipt;
+  assert.deepEqual(status.targets, rows);
+});
 
 // Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
 test('requires OpenCode explicit observation to report a scoped runtime outcome', () => {
@@ -102,18 +496,21 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
 });
 
 // Test Value Gate: batch discovery must preserve both acquisition prefixes,
-// including the original npm package identity behind the Windows Pi shim.
+// including the npm package behind the Windows Pi shim when the runner's
+// temporary directory and the resolved package entry have different spellings.
 test('exposes both acquired clients in one isolated public PATH', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-batch-path-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const claudeBin = path.join(root, 'claude-tool');
   const piBin = path.join(root, 'pi-tool');
+  const piBinAlias = path.join(root, 'pi-bin-alias');
   const piPackage = path.join(piBin, 'node_modules', ...clients.pi.package.split('/'));
   const piEntry = path.join(piPackage, 'cli.js');
   const claudeEntry = path.join(root, 'acquired-claude');
   const runnerGit = path.join(root, 'runner-git');
   const unrelated = path.join(root, 'unrelated');
   await fs.mkdir(piPackage, { recursive: true });
+  await fs.symlink(piBin, piBinAlias, process.platform === 'win32' ? 'junction' : 'dir');
   await fs.mkdir(runnerGit);
   await fs.writeFile(path.join(runnerGit, 'git.exe'), 'Git fixture');
   await fs.writeFile(claudeEntry, 'Claude fixture');
@@ -123,10 +520,10 @@ test('exposes both acquired clients in one isolated public PATH', async t => {
   const base = { root, env, project: root };
   const [claude, pi] = await preparePublicClientPaths([
     { ...base, platform: 'claude', clientBin: claudeBin, launcher: { executable: claudeEntry, prefix: [] } },
-    { ...base, platform: 'pi', clientBin: piBin, launcher: { executable: process.execPath, prefix: [piEntry] } },
+    { ...base, platform: 'pi', clientBin: piBinAlias, launcher: { executable: process.execPath, prefix: [piEntry] } },
   ]);
   const directories = env.PATH.split(path.delimiter);
-  assert.deepEqual(directories.slice(0, 2), [claudeBin, piBin]);
+  assert.deepEqual(directories.slice(0, 2), [claudeBin, piBinAlias]);
   assert(!directories.includes(unrelated));
   assert.deepEqual(await fs.readFile(claude), await fs.readFile(claudeEntry));
   if (process.platform === 'win32') {
@@ -135,6 +532,28 @@ test('exposes both acquired clients in one isolated public PATH', async t => {
     const launcher = await resolveWindowsNpmCommand({ command: 'pi', binName: 'pi', packageName: clients.pi.package, cwd: root, env });
     assert.deepEqual(launcher, { command: process.execPath, argsPrefix: [await fs.realpath(piEntry)] });
   } else assert.equal(pi, await fs.realpath(piEntry));
+});
+
+test('Grok only offers trust recovery for a fully explained dependency chain', () => {
+  const row = (pluginId, blocker) => ({ pluginId, scope: 'user', target: 'grok', blockerCodes: [blocker] });
+  const parent = row('official/agent-subagent', 'nativeTrustRequired');
+  const child = row('official/codex-enhance', 'dependencyInstallFailed');
+  const grandchild = row('official/consumer', 'dependencyInstallFailed');
+  const value = { data: { targetResults: [grandchild, child, parent] }, diagnostics: [] };
+  const edges = new Map([[parent.pluginId, []], [child.pluginId, [parent.pluginId]], [grandchild.pluginId, [child.pluginId]]]);
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), [parent]);
+  const propagated = { ...child, execution: 'not-run', blockerCodes: ['dependencyInstallFailed', 'nativeTrustRequired'] };
+  const mixed = { ...value, data: { targetResults: [grandchild, propagated, parent] } };
+  assert.deepEqual(grokTrustTargets(mixed, edges, new Set()), [parent]);
+  assert.deepEqual(grokTrustTargets(mixed, new Map([...edges, [child.pluginId, []]]), new Set()), []);
+  assert.deepEqual(grokTrustTargets({ ...mixed, data: { targetResults: [{ ...propagated, execution: 'partial' }, parent] } }, edges, new Set()), []);
+  assert.deepEqual(grokTrustTargets(value, edges, new Set([parent.pluginId])), []);
+  assert.deepEqual(grokTrustTargets(value, new Map([...edges, [child.pluginId, []]]), new Set()), []);
+  value.data.targetResults.push(row('official/unrelated', 'operationPlanStale'));
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), []);
+  value.data.targetResults.pop();
+  value.diagnostics.push({ code: 'preApplyFailed', severity: 'error' });
+  assert.deepEqual(grokTrustTargets(value, edges, new Set()), []);
 });
 
 function removalFixture(platform = 'codex', scope = 'user', {
@@ -254,6 +673,74 @@ test('requires native absence for an exclusive removal', async () => {
   assert.deepEqual(await readPublicRemovedNativeScope(fixture.ctx, 3, fixture.result, fixture.pluginId), {
     retainedRegistration: false,
     target: { level: 'native-management-state', active: false, present: false },
+    neutral: { level: 'native-management-state', active: false, present: false },
+  });
+});
+
+// A retained native package and a removed Codex role may coexist in one receipt.
+test('binds retained marketplace bytes to this package and its separately removed contribution', () => {
+  const { ctx, pluginId, plan, target, receipt } = removalFixture('codex', 'project');
+  const directory = path.join(ctx.project, 'marketplace', 'plugins', ctx.pluginName);
+  const role = path.join(ctx.project, '.codex', 'agents', 'fixture.toml');
+  const before = { physicalKey: plan.physicalKey, directory, contributions: new Set([role]) };
+  const matches = input => confirmedSharedRetention({ ...ctx, id: pluginId }, input, before);
+  receipt.after.nativeIdentity.sourceLocation = directory;
+  plan.effects.push({ id: 'role', kind: 'remove-owned', destination: role });
+  receipt.effects.push({ id: 'role', status: 'applied', mutation: 'confirmed' });
+  assert(matches(target));
+  for (const change of [
+    row => { row.deploymentPlans[0].sharedReferences = 'none'; },
+    row => { row.deploymentReceipts[0].after.ownership = 'foreign'; },
+    row => { row.deploymentReceipts[0].after.nativeIdentity.sourceLocation += '-other'; },
+    row => { row.deploymentReceipts[0].after.consumers[0].activation = 'enabled'; },
+    row => { row.deploymentReceipts[0].effects[0].mutation = 'possible'; },
+    row => { row.deploymentReceipts[0].diagnostics = []; },
+    row => { row.deploymentPlans[0].effects[1].destination = directory; },
+    row => { row.deploymentReceipts[0].effects[1].status = 'skipped'; },
+  ]) {
+    const altered = structuredClone(target);
+    change(altered);
+    assert.equal(matches(altered), false);
+  }
+});
+
+// Test Value Gate: the component removal harness must launch the Copilot npm
+// entry through Windows Job and read a fresh inventory in both directories.
+test('reads retained Copilot components through the isolated client launcher', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-copilot-removal-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const { ctx, pluginId, result, receipt, target } = removalFixture('copilot', 'project', { root });
+  const directory = path.join(root, 'marketplace', ctx.pluginName);
+  const component = path.join(directory, 'component.md');
+  const content = 'Retained component.\n';
+  await fs.mkdir(ctx.project);
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(component, content);
+  receipt.after.nativeIdentity.sourceLocation = directory;
+  target.deploymentObservations = [{ after: receipt.after }];
+  Object.assign(result.data, { requirements: { roots: [] }, remainingTargets: [] });
+  result.diagnostics = [];
+
+  const clientBin = path.join(root, 'npm prefix');
+  const packageRoot = path.join(clientBin, 'node_modules', ...clients.copilot.package.split('/'));
+  const entry = path.join(packageRoot, 'cli.js');
+  await fs.mkdir(packageRoot, { recursive: true });
+  await fs.writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: clients.copilot.package, bin: { copilot: 'cli.js' } }));
+  const disabled = [{ name: ctx.pluginName, version: '0.1.1', enabled: false }];
+  await fs.writeFile(entry, ['#!/usr/bin/env node',
+    "require('node:assert/strict').deepEqual(process.argv.slice(2), ['plugin', 'list', '--json']);",
+    "const directory = require('node:path').basename(process.cwd());",
+    "if (!['project', 'neutral-removal'].includes(directory)) process.exit(2);",
+    `console.log(JSON.stringify(directory === 'project' ? ${JSON.stringify(disabled)} : []));`,
+  ].join('\n'), { mode: 0o755 });
+  const env = await prepareEnvironment(root);
+  await preparePublicClientPath({ ...ctx, root, env, clientBin, launcher: { executable: process.execPath, prefix: [entry] } });
+  const report = { removals: [], updated: { id: 'another-fixture' } };
+  await verifyFixtureRemoval({ ...ctx, root, env, result: async () => ({ exitCode: 0, value: result }) }, report, result,
+    { id: pluginId, installed: [{ path: path.relative(root, component), kind: 'agent',
+      sha256: createHash('sha256').update(content).digest('hex') }] }, new Set(), []);
+  assert.deepEqual(report.removals[0].activeAfter, {
+    target: { level: 'native-management-state', active: false, present: true, version: '0.1.1' },
     neutral: { level: 'native-management-state', active: false, present: false },
   });
 });

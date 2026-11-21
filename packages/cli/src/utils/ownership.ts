@@ -7,6 +7,8 @@ import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
+import { readPackageContentDigest } from './package-content.js';
+import { getPhysicalKey } from '../platforms/identity.js';
 
 import type { PlatformTarget, Scope } from '../types.js';
 import type { PhysicalIdentity } from '../platforms/contracts.js';
@@ -60,13 +62,14 @@ export interface NativeProjectionEvidence {
   components: Array<{ id: string; nativeName: string; relativeOutputs: string[] }>;
   inputDigest: string;
   contentDigest: string;
+  piExtensionDigest?: string;
 }
 export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3; nativeProjection?: NativeProjectionEvidence };
 
 function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjectionEvidence {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Native projection evidence must be an object.');
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => !['components', 'inputDigest', 'contentDigest', 'physicalIdentity', 'preparation'].includes(key))
+  if (Object.keys(record).some((key) => !['components', 'inputDigest', 'contentDigest', 'physicalIdentity', 'preparation', 'piExtensionDigest'].includes(key))
     || !Array.isArray(record.components)
     || typeof record.inputDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.inputDigest)
     || typeof record.contentDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.contentDigest)) throw new Error('Native projection evidence is invalid.');
@@ -103,7 +106,11 @@ function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjecti
     if (new Set(outputs).size !== outputs.length) throw new Error('Native projection outputs must be unique.');
     return { id: component.id, nativeName: component.nativeName, relativeOutputs: outputs };
   });
-  return { components, inputDigest: record.inputDigest, contentDigest: record.contentDigest, physicalIdentity: physical as unknown as PhysicalIdentity, ...(record.preparation ? { preparation: record.preparation } : {}) };
+  const piExtensionDigest = record.piExtensionDigest;
+  const hasPiExtensionDigest = typeof piExtensionDigest === 'string' && /^sha256:[a-f0-9]{64}$/u.test(piExtensionDigest)
+    && physical.route === 'pi-package' && components.some((component) => component.relativeOutputs.includes('index.mjs'));
+  return { components, inputDigest: record.inputDigest, contentDigest: record.contentDigest, physicalIdentity: physical as unknown as PhysicalIdentity,
+    ...(record.preparation ? { preparation: record.preparation } : {}), ...(hasPiExtensionDigest ? { piExtensionDigest } : {}) };
 }
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
@@ -602,6 +609,13 @@ async function inspectPathAt(
     if (canonicalPath && path.basename(actualPath) !== component.identity.artifactKey) {
       return foreignProbe(component, 'ownerMismatch', publicOwner(marker));
     }
+    if (component.kind === 'owned-directory' && component.identity.platform === 'antigravity'
+      && component.identity.scope === 'project') {
+      const projection = marker.nativeProjection;
+      const content = projection && getPhysicalKey(projection.physicalIdentity) === component.identity.physicalKey
+        ? await readPackageContentDigest(actualPath, SKILL_OWNER_MARKER, true).catch(() => undefined) : undefined;
+      if (!content || content !== projection?.contentDigest) return foreignProbe(component, 'unownedContent', publicOwner(marker));
+    }
     return { state: 'present' };
   }
   if (!stats.isFile()) return foreignProbe(component, 'typeMismatch');
@@ -891,7 +905,7 @@ async function cleanupPathComponent(options: {
     return;
   }
 
-  // A matching marker/header is deletion authorization. Content drift is intentionally out of scope.
+  // The quarantine probe repeats the component's exact deletion authorization.
   try {
     await fs.remove(quarantinePath);
   } catch (error) {

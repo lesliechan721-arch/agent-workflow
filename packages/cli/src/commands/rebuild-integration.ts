@@ -126,6 +126,13 @@ export function finalizePreparedPlatformRebuildSession(results: Map<string, Plug
   for (const session of platformRebuildSessions.get(results)?.values() ?? []) session.freezeMarketplaceCandidates();
 }
 
+export function recordPreparedGrokProjectRetirement(results: Map<string, PluginProcessResult>,
+  ...retirement: Parameters<PlatformRebuildSession['recordGrokProjectRetirement']>): void {
+  const sessions = platformRebuildSessions.get(results);
+  sessions?.get('grok')?.recordGrokProjectRetirement(...retirement);
+  sessions?.get(undefined)?.recordGrokProjectRetirement(...retirement);
+}
+
 export async function disposePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): Promise<void> {
   const sessions = platformRebuildSessions.get(results);
   platformRebuildSessions.delete(results);

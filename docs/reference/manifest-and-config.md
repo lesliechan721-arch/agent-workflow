@@ -112,6 +112,8 @@ aw dev plugin capabilities --surface config --json
 
 组件类别固定为 `skill | mcp | agent | hook | instruction`。Skills 是按需任务方法，Agents 必须有实际独立执行上下文，Hooks 是宿主事件，Instructions 是持续上下文或规则。`preApply` 和托管 shell 命令不属于宿主 Hooks 或独立 slash commands。Skill 的显式调用可以由宿主显示为 slash 入口，仍须保留调用、自动调用和可见性控制。
 
+插件作者决定各平台提供的内容、替代方案及有意省略的项。使用下述 `agentOverrides` 调整支持覆盖的静态条目，或由 [renderer](plugin-runtime.md#3-动态-renderer-与-platformcomponentplan-合同) 按平台提供完整声明。例如，作者可以为 `generic` 提供无需原生子代理的 Skill 正文。AW 按平台的标准映射交付能够保留声明含义的组件，并逐项报告不能交付的原因。原始声明仍可在对应来源和插件版本中查阅。
+
 ```ts
 type FeatureRequirement = { feature: string; values?: string[] };
 type InstructionAudience = 'main' | 'plugin-agents' | 'other-agents';
@@ -139,7 +141,7 @@ type InstructionContent = {
 
 `agentOverrides` 是平台 ID 到字段覆盖或 `null` 的映射。`null` 表示本平台有意不提供；未指定沿用公共条目，数组整体替换，不递归合并任意宿主配置，不允许覆盖稳定 `id`。权限 override 仍只接受明确支持的策略字段，平台键合法不等于平台执行了该策略。
 
-Agent 未提供 `model` 或 `tools` 时使用实际消费者默认；`tools: []` 明确要求无工具。`promptMode` 缺省 `host-default`，其实际组合语义由固定平台 profile 说明；指定模型、工具限制或 append/replace 时必须有等价支持。Pi 仅交付角色声明，由用户已有的兼容消费者执行；文件写入不证明可调用。
+Agent 未提供 `model` 或 `tools` 时使用实际消费者默认。`tools: []` 明确要求无工具。`promptMode` 缺省 `host-default`，其实际组合语义由固定平台 profile 说明。指定模型、工具限制或 append/replace 时必须有等价映射。缺少必要映射会跳过该执行入口，例如无法表达 `tools: []` 时跳过角色，继续安装同包的独立组件。Pi 的角色交付和执行扩展见[平台架构](../maintainers/architecture/platforms.md#2-原生包正文与-lifecycle-路由)。
 
 Instructions 的 `coverage` 必填且非空，正文直接注入；`paths` 有值时还要求路径匹配能力。只支持部分 audience 时，仅投影支持部分，并以原组件 ID 关联具体缺失 audience。模型、工具权限和 Hook 阻断不属于可分离语义。
 

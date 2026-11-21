@@ -105,7 +105,7 @@ export interface ProjectionInput {
 }
 export interface ProjectionResult {
   renderUnitId: string;
-  bundle: { stagingRoot: string; contentDigest: string } | null;
+  bundle: { stagingRoot: string; contentDigest: string; piExtensionDigest?: string } | null;
   supplements: HostContribution[];
   components: Array<{ id: string; nativeName: string; relativeOutputs: string[] }>;
   diagnostics: Diagnostic[];
@@ -163,6 +163,8 @@ export interface DeploymentConfigurationObservation {
   reasonCodes: string[];
 }
 export interface DeploymentObservation {
+  /** Historical Project copy at the previous Antigravity namespaced path. */
+  antigravityLegacyProjectPackage?: { path: string; state: 'owned' | 'unconfirmed' };
   /** Version read from the verified owned package descriptor; absence means unknown. */
   packageVersion?: string;
   /** Observed native installation bytes; absence does not confirm the installed content. */
@@ -188,10 +190,26 @@ export interface DeploymentObservation {
     activation: Activation;
     load: 'observed' | 'not-observed' | 'unknown' | 'not-applicable';
   }>;
+  /** Exact component and reader facts, when the operation already obtained native policy evidence. */
+  skillInvocationPolicies?: Array<{ componentId: string; productId: string; features: FeatureRequirement[] }>;
   components: Array<{ id: string; presence: Presence; reasonCodes: string[] }>;
   nativeIdentity: NativeIdentity | null;
   prerequisites: RuntimePrerequisites;
   diagnostics: Diagnostic[];
+}
+export interface GrokOrderEntry {
+  sourceRoot: string | null;
+  key: string;
+}
+/** Operation-local facts for rechecking confirmed Grok writes within one host scope. */
+interface GrokScopeEvidence {
+  scopeDigest: string;
+  /** Exact, exclusive User registration (installed copy and source) for the Project target's name. */
+  userRegistrationDigest?: string;
+  sourceDigests: string[];
+  hookOrder: GrokOrderEntry[];
+  resourceOrder: GrokOrderEntry[][];
+  instructions: Array<{ rulePath: string | null; digest: string }>;
 }
 export interface RuntimePrerequisites {
   agentConsumers: {
@@ -206,6 +224,7 @@ export interface RuntimePrerequisites {
     sources: Array<{ name: string; version: string | null; path: string; scope: string;
       origin: 'native' | 'compatibility' | 'unknown'; enabled: boolean | null; effectiveComponents: string[] }>;
     overlaps: string[];
+    grokScopeEvidence?: GrokScopeEvidence;
   };
 }
 export interface AgentConsumerObservation {
@@ -265,7 +284,8 @@ export interface QualifiedPlatformProfile {
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
     platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
   /** Native CLI invocation coverage for this host and these activation scopes. */
-  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] };
+  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[];
+    unsupported?: { scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] } };
   agentConsumers: Array<{
     id: string;
     minimumVersion: string;
@@ -306,11 +326,14 @@ export interface MutationOutcome {
   /** Exact Pi 1.5 Project remove acknowledgment, valid only for this action. */
   unregisterConfirmed?: true;
 }
+export type DeploymentEvidenceChangeReason = 'deploymentInputsChanged' | 'clientDiscoveryChanged'
+  | 'deploymentObservationChanged' | 'deploymentReferencesChanged' | 'deploymentPathsChanged'
+  | 'marketplaceChanged' | 'deploymentEvidenceReadFailed';
 export interface MutationContext extends ReadContext {
   /** Operation-local receipts for native actions on a shared registration. */
   nativeEffects?: Map<string, Promise<MutationOutcome>>;
   services: {
-    verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean>;
+    verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean | DeploymentEvidenceChangeReason>;
     publishPackage(binding: DeploymentBinding, bundle: NonNullable<ProjectionResult['bundle']>, destination: string,
       component: import('../utils/ownership.js').OwnedComponent): Promise<MutationOutcome>;
     writeContribution(binding: DeploymentBinding, contribution: HostContribution,

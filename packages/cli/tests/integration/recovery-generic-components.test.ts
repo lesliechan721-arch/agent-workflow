@@ -28,6 +28,10 @@ describe('generic complete component expectations', () => {
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 fs.appendFileSync(${JSON.stringify(calls)}, 'render\\n');
+if (!context.allowedOutputKinds.includes('skill')) {
+  const role = {id:'reviewer', name:'reviewer', kind:'agent', content:{description:'Review',prompt:'Review the change.'}};
+  console.log(JSON.stringify({version:3,components:context.config.values.mode === 'role' ? [role] : [],omitted:[],unmet:[]})); process.exit(0);
+}
 const skill = (id, text, policy = '') => ({id, kind:'skill', name:id, content:{files:{
   'SKILL.md':{text:'---\\nname: '+id+'\\ndescription: Fixture skill.\\n'+policy+'---\\n'+text+'\\n'},
   'README.md':{text:'Fixture skill.\\n'}
@@ -123,6 +127,21 @@ console.log(JSON.stringify({version:3,
     expect(updated).toContain('skill.invocation.model');
     expect(await fs.readFile(path.join(output, 'fresh/SKILL.md'), 'utf8')).toContain('New independent skill.');
     expect((await read()).allSatisfied).toBe(true);
+
+    // The old owner marker still identifies the directory after a user adds a file.
+    // A new complete declaration may retire only the other, unmodified Skill.
+    const personalNote = path.join(output, 'tool', 'notes.txt');
+    await fs.writeFile(personalNote, 'Personal notes.');
+    await configure('role');
+    const withUserFile = await prepare();
+    expect(groupTargets(withUserFile)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skill: 'tool', disposition: 'retain', blocker: 'previousDeploymentRetained' }),
+      expect.objectContaining({ skill: 'fresh', disposition: 'remove' }),
+    ]));
+    expect((await executeRecovery(withUserFile, { yes: true })).ok).toBe(false);
+    expect(await fs.readFile(personalNote, 'utf8')).toBe('Personal notes.');
+    expect(await fs.pathExists(path.join(output, 'fresh'))).toBe(false);
+    await fs.unlink(personalNote);
 
     await configure('empty');
     const empty = await prepare();

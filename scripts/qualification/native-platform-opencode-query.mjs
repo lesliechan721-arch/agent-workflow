@@ -283,7 +283,7 @@ async function observeNativeSkill(url) {
   receipt.requests.push(operation);
   const observation = {
     status: 'unverified', reason: 'query-not-completed', httpStatus: null, matchCount: null, nativeMatches: [],
-    evidence: 'fixed-v2.0.0-GET-skill-registry; no-model-adoption-claim',
+    evidence: 'V2-GET-skill-registry; no-model-adoption-claim',
     grading: 'missing-or-unavailable-is-nonblocking; explicit-AW-location-or-content-mismatch-fails',
   };
   receipt.skillObservation = observation;
@@ -331,15 +331,19 @@ async function observeNativeSkill(url) {
   const matches = response.data.filter(item => item?.id === skillName || item?.name === skillName);
   observation.matchCount = matches.length;
   observation.locationMatchesRequestedCwd = samePath(response.location?.directory, input.cwd);
-  observation.nativeMatches = matches.map(item => ({
-    id: typeof item.id === 'string' ? safe(item.id) : null,
-    name: typeof item.name === 'string' ? safe(item.name) : null,
-    description: typeof item.description === 'string' ? safe(item.description) : null,
-    location: typeof item.location === 'string' ? safe(item.location) : null,
-    locationSha256: typeof item.location === 'string' ? sha256(item.location) : null,
-    contentSha256: typeof item.content === 'string' ? sha256(item.content) : null,
-    contentByteLength: typeof item.content === 'string' ? Buffer.byteLength(item.content) : null,
-  }));
+  observation.nativeMatches = matches.map(item => {
+    const location = item.path ?? item.location;
+    return {
+      id: typeof item.id === 'string' ? safe(item.id) : null,
+      name: typeof item.name === 'string' ? safe(item.name) : null,
+      description: typeof item.description === 'string' ? safe(item.description) : null,
+      autoinvoke: item.autoinvoke ?? null,
+      location: typeof location === 'string' ? safe(location) : null,
+      locationSha256: typeof location === 'string' ? sha256(location) : null,
+      contentSha256: typeof item.content === 'string' ? sha256(item.content) : null,
+      contentByteLength: typeof item.content === 'string' ? Buffer.byteLength(item.content) : null,
+    };
+  });
   if (!matches.length) { observation.reason = 'AW-fixture-not-listed; background-discovery-or-loading-unverified'; return; }
   const expectedText = Buffer.from(input.skillBase64, 'base64').toString('utf8');
   const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u.exec(expectedText);
@@ -347,11 +351,14 @@ async function observeNativeSkill(url) {
   const expectedContent = expectedText.slice(frontmatter[0].length);
   const expectedLocation = path.join(input.fixtureDirectory, input.skillRelativePath);
   const item = matches[0];
+  const location = item.path ?? item.location;
   observation.expectedLocation = safe(expectedLocation);
   observation.expectedLocationSha256 = sha256(expectedLocation);
   observation.expectedContentSha256 = sha256(expectedContent);
-  observation.locationExactMatch = samePath(item.location, expectedLocation)
-    && await fs.realpath(item.location) === await fs.realpath(expectedLocation);
+  observation.locationExactMatch = samePath(location, expectedLocation)
+    && (item.path === undefined || samePath(item.path, expectedLocation))
+    && (item.location === undefined || samePath(item.location, expectedLocation))
+    && await fs.realpath(location) === await fs.realpath(expectedLocation);
   observation.contentExactMatch = item.content === expectedContent;
   if (matches.length !== 1 || !observation.locationMatchesRequestedCwd || item.id !== skillName || item.name !== skillName
     || !observation.locationExactMatch || !observation.contentExactMatch) {
@@ -365,7 +372,7 @@ async function observeNativeSkill(url) {
     if (item.autoinvoke !== false || !item.description) fail('scope-manual-skill-policy-mismatch');
     const ordinary = response.data.find(candidate => candidate.id === 'opencode');
     if (!ordinary?.description || ordinary.autoinvoke === false) fail('scope-manual-skill-guidance-control-mismatch');
-    receipt.manualSkill = await observeManualSkill(url, item);
+    receipt.manualSkill = await observeManualSkill(url, item, location);
     receipt.manualSkill.ordinarySkillControl = { id: ordinary.id, eligibleForModelGuidance: true };
   }
 }
@@ -404,7 +411,7 @@ async function requestManualSkillApi(url, endpoint, body) {
   } finally { request?.destroy(); }
 }
 
-async function observeManualSkill(url, item) {
+async function observeManualSkill(url, item, location) {
   const session = await requestManualSkillApi(url, '/api/session', {
     title: 'AW offline skill qualification', location: { directory: input.cwd },
   });
@@ -419,7 +426,7 @@ async function observeManualSkill(url, item) {
     text, skills: [{ id: item.id, mention: { start: 0, end: text.length, text } }], resume: false,
   });
   const attachment = prompt?.data?.payload?.skills;
-  const prefix = `<skill_content name="${item.name}">\n# Skill: ${item.name}\n\n${item.content.trim()}\n\nBase directory for this skill: ${path.dirname(item.location)}\n`;
+  const prefix = `<skill_content name="${item.name}">\n# Skill: ${item.name}\n\n${item.content.trim()}\n\nBase directory for this skill: ${path.dirname(location)}\n`;
   if (prompt?.data?.type !== 'user' || prompt.data.sessionID !== id || prompt.data.payload.text !== text || attachment?.length !== 1
     || attachment[0]?.id !== item.id || attachment[0]?.name !== item.name || !attachment[0]?.text?.startsWith(prefix)) {
     fail('scope-manual-skill-attachment-mismatch');

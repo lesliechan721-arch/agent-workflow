@@ -1,9 +1,12 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 
+import { currentNativeCliInterruption } from './native-cli-interruption.js';
 import {
   createWindowsJobInvocation,
+  hasOnlyZombieLinuxProcessGroupMembers,
   observeProcessTree,
   prepareWindowsJobHelper,
   terminateProcessTree,
@@ -15,7 +18,7 @@ import { getCodexHome } from './state-paths.js';
 import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
 import { resolveWindowsNpmCommand } from './windows-npm-shim.js';
 
-const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
+export const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
 const MIN_NATIVE_CLI_TIMEOUT_MS = 1_000;
 const MAX_NATIVE_CLI_TIMEOUT_MS = 600_000;
@@ -23,9 +26,15 @@ const NATIVE_CLI_CLEANUP_TIMEOUT_MS = 4_500;
 const NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS = 100;
 const NATIVE_CLI_PROCESS_GROUP_POLL_MS = 25;
 const NATIVE_CLI_PROCESS_GROUP_VERIFY_MS = 4_000;
+const NATIVE_CLI_LINUX_GROUP_INSPECTION_INTERVAL_MS = 250;
+// Keep the same per-stream limit as the Windows execFile path.
+const NATIVE_CLI_MAX_BUFFER_BYTES = 1024 * 1024;
 const NATIVE_CLI_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
+const INSTALL_POSIX_MARKER_SCAN_PLATFORMS: readonly NodeJS.Platform[] = ['darwin'];
+const installPosixMarkerScans = Symbol('installPosixMarkerScans');
 
 export interface NativeCliInvocation {
+  [installPosixMarkerScans]?: true;
   command: string;
   args: string[];
   agentKind?: 'codex' | 'claude';
@@ -168,6 +177,16 @@ function usesDefaultNativeCliBackend(runner: NativeCliRunner): boolean {
   return runner === execFileNativeCliRunner;
 }
 
+export function withInstallNativeMarkerScans(runner: NativeCliRunner): NativeCliRunner {
+  if (!INSTALL_POSIX_MARKER_SCAN_PLATFORMS.includes(process.platform) || !usesDefaultNativeCliBackend(runner)) {
+    return runner;
+  }
+  return retainNativeCliRunnerBackend(
+    (invocation) => runner({ ...invocation, [installPosixMarkerScans]: true }),
+    runner,
+  );
+}
+
 export function setNativeCliRunnerOverrideForTests(
   runner: NativeCliRunner | null,
 ): void {
@@ -297,6 +316,7 @@ interface NativeCliChildProcess {
 
 /** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
 interface ExecFileNativeCliRunnerDependencies {
+  coalescePosixMarkerScans?: boolean;
   execFile?: (
     command: string,
     args: string[],
@@ -324,6 +344,23 @@ const defaultNativeCliExecFile: NonNullable<
   execFile(command, args, options, (error, stdout, stderr) => {
     callback(error, stdout, stderr);
   });
+
+function capturePosixNativeCliOutput(stream: Readable, onOverflow: () => void): () => string {
+  const chunks: Buffer[] = [];
+  let remaining = NATIVE_CLI_MAX_BUFFER_BYTES;
+  const collect = (chunk: Buffer): void => {
+    if (chunk.length <= remaining) {
+      chunks.push(chunk);
+      remaining -= chunk.length;
+      return;
+    }
+    if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+    stream.removeListener('data', collect);
+    onOverflow();
+  };
+  stream.on('data', collect);
+  return () => Buffer.concat(chunks).toString('utf8');
+}
 
 function delayNativeCliCleanup(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
@@ -353,23 +390,11 @@ interface SuccessfulNativeCliOutput {
 async function terminateNativeCliProcessGroup(
   pid: number,
   killProcess: typeof process.kill,
+  allowDarwinPermissionDeniedProbe: boolean,
+  inspectLinuxGroup: boolean,
   successfulOutput?: SuccessfulNativeCliOutput,
-): Promise<void> {
+): Promise<Error | undefined> {
   const groupPid = -pid;
-  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
-    try {
-      killProcess(groupPid, signal);
-      return true;
-    } catch (error) {
-      if (isProcessGroupMissing(error)) {
-        return false;
-      }
-      throw new Error(
-        `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
-        { cause: error },
-      );
-    }
-  };
   const groupExists = (): boolean => {
     try {
       killProcess(groupPid, 0);
@@ -384,10 +409,30 @@ async function terminateNativeCliProcessGroup(
       );
     }
   };
+  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean | Error => {
+    try {
+      killProcess(groupPid, signal);
+      return true;
+    } catch (error) {
+      if (isProcessGroupMissing(error)) {
+        return false;
+      }
+      const denied = new Error(
+        `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
+        { cause: error },
+      );
+      if (allowDarwinPermissionDeniedProbe && successfulOutput && readNativeCliErrorCode(error) === 'EPERM') {
+        // Stop signaling this group. The audit may still need to clean up
+        // observed descendants before the final group-existence check.
+        return denied;
+      }
+      throw denied;
+    }
+  };
 
   const termSent = signalGroup('SIGTERM');
-  if (!termSent && successfulOutput) {
-    // Group absence allows an early check once execFile has delivered all output.
+  if (termSent !== true && successfulOutput) {
+    // Group absence allows an early check once both output streams have closed.
     let graceTimer: NodeJS.Timeout | undefined;
     const grace = new Promise<void>((resolve) => {
       graceTimer = setTimeout(resolve, NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
@@ -400,10 +445,20 @@ async function terminateNativeCliProcessGroup(
   } else {
     await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
   }
-  signalGroup('SIGKILL');
-  for (let elapsedMs = 0; groupExists(); elapsedMs += NATIVE_CLI_PROCESS_GROUP_POLL_MS) {
-    if (elapsedMs >= NATIVE_CLI_PROCESS_GROUP_VERIFY_MS) {
+  if (termSent instanceof Error) return termSent;
+  const killSent = signalGroup('SIGKILL');
+  if (killSent instanceof Error) return killSent;
+  const deadline = performance.now() + NATIVE_CLI_PROCESS_GROUP_VERIFY_MS;
+  let nextInspection = performance.now() + NATIVE_CLI_PROCESS_GROUP_POLL_MS;
+  while (groupExists()) {
+    const now = performance.now();
+    if (now >= deadline) {
       throw new Error('Native CLI cleanup unconfirmed: process group is still running.');
+    }
+    // Linux signal 0 can still see zombies awaiting reaping by PID 1.
+    if (inspectLinuxGroup && termSent && killSent && now >= nextInspection) {
+      if (await hasOnlyZombieLinuxProcessGroupMembers(pid, deadline - now)) return;
+      nextInspection = performance.now() + NATIVE_CLI_LINUX_GROUP_INSPECTION_INTERVAL_MS;
     }
     await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_POLL_MS);
   }
@@ -415,7 +470,8 @@ function settleNativeCliTerminationCleanup(
   observation: ProcessTreeObservation | undefined,
   requireConfirmedCleanup: boolean,
   allowUnobservedWindowsProcessOnNormalCompletion: boolean,
-  processGroup: boolean,
+  processGroupPlatform: NodeJS.Platform | undefined,
+  inspectLinuxGroup: boolean,
   allowUnavailablePosixAudit: boolean,
   processTreeAuditPreparationError: Error | undefined,
   killProcess: typeof process.kill,
@@ -449,12 +505,25 @@ function settleNativeCliTerminationCleanup(
 
   return new Promise((resolve) => {
     let settled = false;
+    let permissionDeniedGroupSignal: Error | undefined;
     const finish = (cleanupError?: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
+      if (permissionDeniedGroupSignal && !cleanupError) {
+        cleanupError = permissionDeniedGroupSignal;
+        // At this point the marker audit has finished and any signals it sent
+        // are behind us. Only a missing group confirms cleanup after EPERM.
+        if (successfulOutput?.canEndGrace()) {
+          try {
+            killProcess(-childPid, 0);
+          } catch (error) {
+            if (isProcessGroupMissing(error)) cleanupError = undefined;
+          }
+        }
+      }
       child.stdout?.destroy?.();
       child.stderr?.destroy?.();
       if (cleanupError) {
@@ -470,11 +539,14 @@ function settleNativeCliTerminationCleanup(
 
     let cleanup: Promise<void>;
     try {
-      cleanup = processGroup
+      cleanup = processGroupPlatform
         ? (async () => {
             let processGroupError: Error | undefined;
             try {
-              await terminateNativeCliProcessGroup(childPid, killProcess, successfulOutput);
+              permissionDeniedGroupSignal = await terminateNativeCliProcessGroup(
+                childPid, killProcess, processGroupPlatform === 'darwin' && observation !== undefined,
+                inspectLinuxGroup, successfulOutput,
+              );
             } catch (error) {
               processGroupError = error instanceof Error
                 ? error
@@ -498,6 +570,7 @@ function settleNativeCliTerminationCleanup(
             }
 
             if (processGroupError) throw processGroupError;
+            if (permissionDeniedGroupSignal && auditError) throw permissionDeniedGroupSignal;
             if (
               auditError &&
               !(allowUnavailablePosixAudit && isPosixProcessInspectionUnavailableError(auditError))
@@ -556,6 +629,7 @@ export function createExecFileNativeCliRunner(
     (dependencies.terminateProcessTree ? undefined : observeProcessTree);
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
   const platform = dependencies.platform ?? process.platform;
+  const usesPosixSpawn = platform !== 'win32' && !dependencies.execFile;
   const killProcess = dependencies.killProcess ?? process.kill;
   const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation;
   const usesDefaultWindowsJob = !dependencies.execFile && !createWindowsJobInvocationImpl;
@@ -611,8 +685,7 @@ export function createExecFileNativeCliRunner(
       let callbackError: unknown;
       let callbackOutput: { stdout: string; stderr: string } | undefined;
       let notifySuccessfulOutput: (() => void) | undefined;
-      let streamedStdout = '';
-      let streamedStderr = '';
+      let readStreamedOutput = (): Pick<NativeCliResult, 'stdout' | 'stderr'> => ({ stdout: '', stderr: '' });
       let timeout: NodeJS.Timeout | undefined;
       let processTreeObservation: ProcessTreeObservation | undefined;
       let processTreeCleanup: Promise<Error | undefined> | undefined;
@@ -638,7 +711,12 @@ export function createExecFileNativeCliRunner(
           child.pid !== undefined
         ) {
           try {
-            processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+            if (observeProcessTreeImpl === observeProcessTree &&
+              (invocation[installPosixMarkerScans] || dependencies.coalescePosixMarkerScans)) {
+              processTreeObservation = observeProcessTree(child.pid, processMarker, { coalescePosixMarkerScans: true });
+            } else {
+              processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+            }
           } catch (error) {
             processTreeAuditPreparationError = new Error(
               'Native CLI cleanup unconfirmed: POSIX process marker lookup failed.',
@@ -652,7 +730,8 @@ export function createExecFileNativeCliRunner(
           processTreeObservation,
           requireConfirmedCleanup,
           allowUnobservedWindowsProcessOnNormalCompletion,
-          cleanupStrategy === 'process-group',
+          cleanupStrategy === 'process-group' ? platform : undefined,
+          usesPosixSpawn && platform === 'linux',
           allowUnavailablePosixAudit,
           processTreeAuditPreparationError,
           killProcess,
@@ -698,10 +777,7 @@ export function createExecFileNativeCliRunner(
         if (!terminationReason) {
           return;
         }
-        const output = callbackOutput ?? {
-          stdout: streamedStdout,
-          stderr: streamedStderr,
-        };
+        const output = callbackOutput ?? readStreamedOutput();
         rejectOnce(new NativeCliError({
           invocation,
           exitCode: terminationReason === 'timeout' ? 124 : 1,
@@ -787,7 +863,7 @@ export function createExecFileNativeCliRunner(
 
       const finishCallback = (cleanupError?: Error): void => {
         if (terminationReason) return;
-        const output = callbackOutput ?? { stdout: streamedStdout, stderr: streamedStderr };
+        const output = callbackOutput ?? readStreamedOutput();
         const childFailed =
           child.exitCode != null && child.exitCode !== 0 || child.signalCode != null;
         if (callbackError || childFailed) {
@@ -798,7 +874,7 @@ export function createExecFileNativeCliRunner(
           const exitCode =
             callbackExitCode !== undefined
               ? callbackExitCode
-              : child.exitCode != null
+              : child.exitCode != null && !(usesPosixSpawn && child.exitCode === 0)
                 ? child.exitCode
               : isAbortLikeError(callbackError) ||
                   isTimeoutLikeError(callbackError, invocation.timeoutMs)
@@ -845,7 +921,7 @@ export function createExecFileNativeCliRunner(
                 ready: callbackOutput === undefined
                   ? new Promise<void>((resolve) => { notifySuccessfulOutput = resolve; })
                   : Promise.resolve(),
-                canEndGrace: () => terminationReason === undefined,
+                canEndGrace: () => terminationReason === undefined && callbackOutput !== undefined && callbackError == null,
               }
             : undefined;
         void cleanupProcessTree(
@@ -864,57 +940,90 @@ export function createExecFileNativeCliRunner(
 
       const processMarker = randomUUID();
       const trustedAgentCli = isAgentNativeCliInvocation(invocation);
-      child = execFileImpl(
-        windowsJobInvocation?.command ?? executableCommand,
-        windowsJobInvocation?.args ?? executableArgs,
-        {
-          // Ordinary cwd strings also identify native trust scopes. Preserve
-          // them while retaining the existing libuv handling for long paths.
-          cwd: platform === 'win32' && invocation.cwd !== undefined
-            && path.win32.resolve(invocation.cwd).length >= 260
-            ? path.win32.toNamespacedPath(invocation.cwd)
-            : invocation.cwd,
-          env: {
-            ...(invocation.env ?? process.env),
-            [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
-          },
-          detached: platform !== 'win32',
-          windowsHide: true,
+      const options = {
+        // Ordinary cwd strings also identify native trust scopes. Preserve
+        // them while retaining the existing libuv handling for long paths.
+        cwd: platform === 'win32' && invocation.cwd !== undefined
+          && path.win32.resolve(invocation.cwd).length >= 260
+          ? path.win32.toNamespacedPath(invocation.cwd)
+          : invocation.cwd,
+        env: {
+          ...(invocation.env ?? process.env),
+          [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
         },
-        (error, stdout, stderr) => {
-          if (settled) {
-            return;
-          }
-          callbackError = error;
-          callbackOutput = { stdout, stderr };
+        detached: platform !== 'win32',
+        windowsHide: true,
+      };
+      const onOutput = (error: unknown, output: Pick<NativeCliResult, 'stdout' | 'stderr'>): void => {
+        if (settled) return;
+        callbackError = error;
+        callbackOutput = output;
 
-          if (terminationReason) {
-            if (cleanupStrategy === 'windows-job') {
-              if (windowsJobCloseTimer) {
-                clearTimeout(windowsJobCloseTimer);
-                windowsJobCloseTimer = undefined;
-              }
-              finishTermination();
-            }
-            return;
-          }
+        if (terminationReason) {
           if (cleanupStrategy === 'windows-job') {
-            queueMicrotask(() => finishCallback());
-            return;
+            if (windowsJobCloseTimer) {
+              clearTimeout(windowsJobCloseTimer);
+              windowsJobCloseTimer = undefined;
+            }
+            finishTermination();
           }
-          if (cleanupStrategy === 'on-demand-tree') {
-            queueMicrotask(() => finishCallback());
-            return;
-          }
-          if (error == null) notifySuccessfulOutput?.();
-          queueMicrotask(() => startCompletion(
-            platform === 'win32' &&
-            error === null &&
-            (child.exitCode == null || child.exitCode === 0) &&
-            child.signalCode == null,
-          ));
-        },
-      );
+          return;
+        }
+        if (cleanupStrategy === 'windows-job' || cleanupStrategy === 'on-demand-tree') {
+          queueMicrotask(() => finishCallback());
+          return;
+        }
+        if (error == null) notifySuccessfulOutput?.();
+        queueMicrotask(() => startCompletion(
+          platform === 'win32' &&
+          error === null &&
+          (child.exitCode == null || child.exitCode === 0) &&
+          child.signalCode == null,
+        ));
+      };
+
+      if (usesPosixSpawn) {
+        // execFile does not forward detached. The child must lead the process
+        // group that cleanup signals, even if its root has already exited.
+        const spawned = spawn(executableCommand, executableArgs, options);
+        child = spawned;
+        const outputLimitExceeded = (stream: 'stdout' | 'stderr'): void => {
+          if (settled || callbackError != null) return;
+          callbackError = Object.assign(new RangeError(`${stream} maxBuffer length exceeded`), {
+            code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+          });
+          startCompletion();
+        };
+        const readStdout = capturePosixNativeCliOutput(spawned.stdout, () => outputLimitExceeded('stdout'));
+        const readStderr = capturePosixNativeCliOutput(spawned.stderr, () => outputLimitExceeded('stderr'));
+        readStreamedOutput = () => ({ stdout: readStdout(), stderr: readStderr() });
+        spawned.once('error', (error) => onOutput(error, readStreamedOutput()));
+        spawned.once('close', () => {
+          if (!settled && callbackOutput === undefined) onOutput(callbackError ?? null, readStreamedOutput());
+        });
+      } else {
+        child = execFileImpl(
+          windowsJobInvocation?.command ?? executableCommand,
+          windowsJobInvocation?.args ?? executableArgs,
+          options,
+          (error, stdout, stderr) => onOutput(error, { stdout, stderr }),
+        );
+        let streamedStdout = '';
+        let streamedStderr = '';
+        readStreamedOutput = () => ({ stdout: streamedStdout, stderr: streamedStderr });
+        const stdoutListener = (chunk: unknown): void => {
+          streamedStdout += renderNativeCliOutputChunk(chunk);
+        };
+        const stderrListener = (chunk: unknown): void => {
+          streamedStderr += renderNativeCliOutputChunk(chunk);
+        };
+        child.stdout?.on('data', stdoutListener);
+        child.stderr?.on('data', stderrListener);
+        detachOutputListeners = () => {
+          child.stdout?.removeListener?.('data', stdoutListener);
+          child.stderr?.removeListener?.('data', stderrListener);
+        };
+      }
       if (child.pid !== undefined) {
         try { invocation.onSpawn?.({ pid: child.pid }); } catch { /* Diagnostic only. */ }
       }
@@ -922,18 +1031,6 @@ export function createExecFileNativeCliRunner(
         processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
       }
 
-      const stdoutListener = (chunk: unknown): void => {
-        streamedStdout += renderNativeCliOutputChunk(chunk);
-      };
-      const stderrListener = (chunk: unknown): void => {
-        streamedStderr += renderNativeCliOutputChunk(chunk);
-      };
-      child.stdout?.on('data', stdoutListener);
-      child.stderr?.on('data', stderrListener);
-      detachOutputListeners = () => {
-        child.stdout?.removeListener?.('data', stdoutListener);
-        child.stderr?.removeListener?.('data', stderrListener);
-      };
       if (cleanupStrategy !== 'on-demand-tree' && cleanupStrategy !== 'windows-job') {
         child.once('exit', () => {
           if (!terminationReason) {
@@ -964,7 +1061,26 @@ export function createExecFileNativeCliRunner(
   };
 }
 
-export const execFileNativeCliRunner: NativeCliRunner = createExecFileNativeCliRunner();
+const runDefaultNativeCli = createExecFileNativeCliRunner();
+
+export const execFileNativeCliRunner: NativeCliRunner = async (invocation) => {
+  const interruption = currentNativeCliInterruption();
+  if (!interruption) return runDefaultNativeCli(invocation);
+
+  const signal = AbortSignal.any(invocation.signal
+    ? [interruption.signal, invocation.signal] : [interruption.signal]);
+  const finish = interruption.track();
+  let cleanupFailed = false;
+  try {
+    return await runDefaultNativeCli({ ...invocation, signal });
+  } catch (error) {
+    cleanupFailed = error instanceof NativeCliError && error.cleanupError !== undefined;
+    throw error;
+  } finally {
+    const pendingExit = finish(cleanupFailed);
+    if (pendingExit) await pendingExit;
+  }
+};
 
 function normalizeNativeCliCommandName(command: string): string {
   const normalizedPath = command.replaceAll('\\', '/');

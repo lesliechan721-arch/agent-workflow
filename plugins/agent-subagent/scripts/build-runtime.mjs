@@ -1,4 +1,4 @@
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -11,10 +11,12 @@ const entries = [
   'skills/spawn-subagent/scripts/runtime/windows-native.mjs',
 ];
 
-const nativeReader = process.env.AW_PLUGIN_NATIVE_READER;
-if (!nativeReader || !path.isAbsolute(nativeReader)) throw new Error('AW must supply the generated native tool reader.');
-const readerStat = await lstat(nativeReader);
+const readerPath = process.env.AW_PLUGIN_NATIVE_READER;
+if (!readerPath || !path.isAbsolute(readerPath)) throw new Error('AW must supply the generated native tool reader.');
+const readerStat = await lstat(readerPath);
 if (!readerStat.isFile() || readerStat.isSymbolicLink()) throw new Error('The generated native tool reader must be a regular file.');
+// Match the physical plugin root so the bundle never embeds a temporary directory alias.
+const nativeReader = await realpath(readerPath);
 
 // AW runs this script in a staging copy. Keep the source tree editable and make
 // the Guide's delivered runtime independent of the plugin's package directory.

@@ -23,6 +23,7 @@ import {
 import {
   OWNED_TEXT_HEADER_PREFIX,
   SHARED_OWNER_TOKEN_PREFIX,
+  inspectOwnedComponents,
   parseSharedOwnerToken,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
@@ -31,7 +32,7 @@ import {
 } from './ownership.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
-import { getDeploymentLayout, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
+import { getDeploymentLayout, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
 import { deploymentPackageComponent } from '../platforms/inspection.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
@@ -1313,6 +1314,16 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
           ? path.join(layout.physicalIdentity.namespaceRoot, 'plugins', layout.nativeIdentity.packageId) : layout.packageRoot;
         if (canonicalizePathThroughExistingAncestorSync(expectedPackageRoot) !== canonicalizePathThroughExistingAncestorSync(packageRoot)
           || getPhysicalKey(layout.physicalIdentity) !== marker.physicalKey) throw new Error('nativeOwnerPlacementMismatch');
+        const projectComponent = isAntigravityProjectDirectory(binding) ? deploymentPackageComponent(binding, layout) : undefined;
+        if (projectComponent) {
+          const owned = await inspectOwnedComponents({ components: [projectComponent] });
+          if (owned.components[0]?.state !== 'present') {
+            errors.push(inventoryError(new Error('The Antigravity project package has unconfirmed content.'), packageRoot,
+              'nativeOwnerContentUnconfirmed', options.env, options.cwd, { global: false, platform: descriptor.platform,
+                scope: descriptor.scope, sourceId: marker.sourceId, pluginName: marker.plugin }));
+            continue;
+          }
+        }
         const inspectCopy = !options.observationPlugins || options.observationPlugins.has(marker.pluginId)
           || options.observationPlugins.has(marker.pluginId.slice(marker.pluginId.indexOf('/') + 1));
         if (antigravityCopy && inspectCopy) {
@@ -1321,7 +1332,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
           if (!projection || getPhysicalKey(projection.physicalIdentity) !== marker.physicalKey
             || await readPlatformPackageContentDigest(packageRoot) !== projection.contentDigest) throw new Error('nativeCopyContentUnconfirmed');
         }
-        const component: OwnedComponent = { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
+        const component: OwnedComponent = projectComponent ?? { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
         const scopes: Scope[] = descriptor.scope === 'user' && options.scope !== 'user'
           && ['codex', 'claude', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
         const pathEvidence = options.collectPathEvidence === false ? undefined : await offlineOwnedPathEvidence(packageRoot);

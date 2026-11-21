@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
-import { clients, sha256, fixedClientVersion } from './native-platform-runtime.mjs';
+import { clients, sha256, fixedClientVersion, repoRoot } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
-import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
 import { addOfficialCatalog, qualifyShippedGitInstall } from './native-platform-shipped-git.mjs';
+import { runComponentQualification } from './native-platform-public-components.mjs';
 import { qualifyPiAgentPermission, qualifyPublicPlatformCases } from './native-platform-public-cases.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
@@ -29,7 +30,7 @@ export async function observeNativeWorkingDirectory(ctx) {
 
 // Expose the acquired client to public AW discovery. Only the temporary npm
 // prefix or this scope's private bin is writable; no user launcher is changed.
-async function preparePublicClientEntry(ctx) {
+export async function preparePublicClientEntry(ctx) {
   const directory = ctx.clientBin ?? path.join(ctx.root, 'client-bin');
   await fs.mkdir(directory, { recursive: true });
   assert(ctx.launcher.prefix.length <= 1, 'Public AW requires a direct client entry.');
@@ -39,9 +40,10 @@ async function preparePublicClientEntry(ctx) {
   const destination = path.join(directory, `${ctx.platform === 'antigravity' ? 'agy' : ctx.platform}${windows ? npmEntry ? '.cmd' : '.exe' : ''}`);
   if (windows && npmEntry) {
     const { renderNpmCmdShim } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
-    const relative = path.relative(directory, entry);
-    assert(!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`),
-      'The acquired npm entry must be inside its temporary prefix.');
+    const relative = path.relative(await fs.realpath(directory), await fs.realpath(entry));
+    if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+      throw new Error('client-entry-outside-acquired-prefix');
+    }
     const content = renderNpmCmdShim(relative.replaceAll('/', '\\'));
     try { await fs.writeFile(destination, content, { flag: 'wx' }); }
     catch (error) { if (error.code !== 'EEXIST') throw error; assert.equal(await fs.readFile(destination, 'utf8'), content); }
@@ -344,7 +346,54 @@ export async function requireProductionSkillProfile(ctx) {
   }
 }
 
-export async function qualifyPublicAw(ctx) {
+async function observePublicComponentSuites(ctx, publicClientEntry) {
+  const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
+  const failures = [];
+  for (const scope of scopes) {
+    const suites = ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate'];
+    if (scope === 'project') suites.push('project-inheritance');
+    if (ctx.platform === 'grok' && scope === 'project') suites.push('grok-hook-pair', 'grok-rule-pair', 'grok-user-hook-pair');
+    for (const suite of suites) {
+      try {
+        await ctx.check('public-components-' + scope + '-' + suite, async () => {
+          const hostedTrace = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+          let traceEntry;
+          if (hostedTrace && process.platform === 'win32') {
+            if (['copilot', 'antigravity', 'grok'].includes(ctx.platform)) traceEntry = ctx.launcher.prefix[0] ?? publicClientEntry;
+            else if (ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite)) traceEntry = publicClientEntry;
+          }
+          if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
+            traceEntry = publicClientEntry;
+          }
+          const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
+            ...(traceEntry ? { traceEntry } : {}),
+            ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
+          if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
+          assert.equal(result.status, 'passed', result.reason);
+          return result;
+        });
+      } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
+    }
+  }
+  return failures;
+}
+
+export async function qualifyPublicAw(ctx, { components = false } = {}) {
+  if (!components) return qualifyPublicLifecycle(ctx);
+  // Component delivery has its own file and receipt evidence. Collect it before
+  // the runtime/session observer can defer a platform with an unknown profile.
+  const entry = await preparePublicClientPath(ctx);
+  const failures = await observePublicComponentSuites(ctx, entry);
+  try {
+    await qualifyPublicLifecycle(ctx, entry);
+  } catch (error) {
+    if (!failures.length) throw error;
+    failures.push('public lifecycle: ' + error.message);
+  }
+  assert.deepEqual(failures, []);
+}
+
+async function qualifyPublicLifecycle(ctx, preparedEntry) {
   if (!['codex', 'pi', 'grok', 'copilot', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'antigravity') {
     if (ctx.scope !== 'user' || process.env.GITHUB_ACTIONS !== 'true') await ctx.defer('antigravity-public-aw-limited-to-hosted-user');
@@ -352,7 +401,7 @@ export async function qualifyPublicAw(ctx) {
     // Check before even target preferences are written in the isolated AW home.
     await requireProductionSkillProfile(ctx);
   }
-  const expectedEntry = await preparePublicClientPath(ctx);
+  const expectedEntry = preparedEntry ?? await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => assertPublicClientDiscovery(
     await ctx.aw(['target', 'set', ctx.platform]), ctx, expectedEntry));
@@ -400,13 +449,8 @@ export async function qualifyPublicAw(ctx) {
     else if (ctx.platform === 'pi') await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
       JSON.stringify({ [ctx.project]: true, [ctx.neutral]: true }) + '\n');
     else if (ctx.platform === 'grok') {
-      assert.equal(clients.grok.version, '1.0.77');
       const canonical = await fs.realpath(ctx.project);
-      const home = await fs.realpath(ctx.env.GROK_HOME);
-      // Fixed-version empirical trust state for this isolated directory only.
-      // This grants no production permission to trust user projects.
-      await fs.writeFile(path.join(home, 'trusted_folders.toml'),
-        `[folders.${JSON.stringify(canonical)}]\ntrusted = true\ndecided_at = ${Math.floor(Date.now() / 1000)}\n`);
+      await writeGrokFixtureFolderDecisions(ctx.env, [[canonical, true]]);
       return { level: 'fixture-config', interface: 'empirical-isolated-folder-trust-state',
         exactVersion: '1.0.77', project: 'exact-canonical-fixture-project', productionAutomaticTrust: false };
     }
@@ -516,6 +560,31 @@ export async function qualifyPublicAw(ctx) {
   await qualifyPublicPlatformCases(ctx, { pluginId, ready, status });
   await ctx.check('public-update', async () => {
     await publishRevision(2);
+    if (ctx.platform === 'grok' && ctx.scope === 'user') {
+      const workspace = await fs.realpath(grokUserWorkspace(ctx));
+      await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, false], [ctx.project, true]]);
+      const inspection = JSON.parse((await ctx.command(['inspect', '--json'], workspace)).stdout);
+      assert.equal(path.relative(workspace, inspection.cwd), '');
+      assert.equal(inspection.projectRoot, null);
+      assert.equal(typeof inspection.projectTrusted, 'boolean');
+      const inventory = async () => JSON.parse((await ctx.command(['plugin', 'list', '--json'], workspace)).stdout)
+        .filter(row => row.name === ctx.pluginName);
+      const registered = await inventory();
+      assert.equal(registered.length, 1);
+      assert.equal(path.relative(registered[0].path, ctx.grokInstalledPackage), '');
+      const skill = path.join(ctx.grokInstalledPackage, 'skills', ctx.skillName, 'SKILL.md');
+      const oldSkill = await fs.readFile(skill);
+      const refused = await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'],
+        ctx.project, { expectedExitCode: 4, expectedStatus: 'partial' });
+      const target = refused.data.targetResults.find(row => row.pluginId === pluginId && row.target === 'grok' && row.scope === 'user');
+      assert.deepEqual(target?.blockerCodes, ['nativeTrustRequired']);
+      assert(refused.diagnostics.some(item => item.subject?.pluginId === pluginId && item.detail?.reasonCode === 'grokNativeRefreshWorkspaceTrust'));
+      assert.deepEqual(await inventory(), registered);
+      assert.deepEqual(await fs.readFile(skill), oldSkill);
+      await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, true], [ctx.project, false]]);
+      return { ...await syncedRevision(2), explicitFolderRefusal: { runtimeProjectTrusted: inspection.projectTrusted,
+        retainedRegistration: true, retainedSkillSha256: sha256(oldSkill) } };
+    }
     return syncedRevision(2);
   });
   await ctx.check('public-update-native-scope', () => nativeScope(2));

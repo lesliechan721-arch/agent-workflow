@@ -180,6 +180,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
   - `profile`：保存 platform、scope、`inputDigest` 和已验证的非敏感配置覆盖。Review profile 的 `id` 必须严格等于 `${platform}-${scope}`（如 `codex-user`）；
   - `artifacts`：数组形式，记录生成物的 kind（`eval-target` | `eval-workspace` | `eval-cases` | `portable-skill` | `review-skill`）、相对路径与 sha256 摘要；
   - `preparation`：必填非空数组；每个实际准备的平台/插件记录 `plugin`、`platform`、`renderScope`、`profileId`、`capabilitiesDigest`、`expectedDigest`、`resourceDigest`、`renderInputDigest`、`outputs: [{path,digest}]`、`components: [{id,kind,name,source}]`、`omitted` 与 `unmet`。`source` 为 static/dynamic，输出路径是相对路径。只记录摘要和规范身份，不记录配置原值或私有绝对路径。Review 保留并核验原生投影摘要；Eval/export 的 outputs 为空，最终 Skill/工作区由 artifacts 绑定。缺少 preparation 的绑定须重新 prepare。
+  - `preparation[].declaredGapIds?: string[]`：用于 `generic` 恢复，列出在本次准备中具有完整组件声明的 `unmet[].id`。每个 ID 必须关联同一单元的一个 `unmet`。旧 renderer 若只返回缺项且未提供完整内容，恢复继续保护相关旧输出。删除还须按现场证明 AW 独占归属。[旧输出保护](../maintainers/architecture/lifecycle.md#平台执行入口与结果)
   - Review profile 的 `requestedSkills` 记录显式选择；其 inputDigest 包含固定 capabilities。动态集合通过真实准备及绑定取得，inspect 不运行 renderer。
   - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput、preparation 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。
 - **Eval 输入绑定（`evalInput`）**：
@@ -395,7 +396,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
     - **Linux 不可读形式与身份确认**：未匹配正标记且完整 command 为 `[comm]`（可带固定 `<defunct>` 后缀）时，按 procps 的参数不可读形式处理，复用上述原预算内的一次 marker 复查。带普通参数或环境的方括号前缀不属于该形式。仅运行期 `observation` 阶段，在复查 callback 完成后，对仍为 `null` 且匹配原 PID/启动时间的相关候选，共用一次直接启动的新身份查询，不复用共享在途查询。新表必须完整可解析，且受控 observer 或 sentinel 的启动身份锚点有效；只对原 PID 完全不在该表中的候选，排除本次 marker 失败判断。查询失败、空表、残缺表、无效锚点、超时、身份替换及同一身份仍在（包括新表中变为 `Z`）均不能取得这一排除结果。此结果不证明旧 marker 成功，不覆盖旧 marker 快照、不删除已知身份、不授权新信号；后续完成与清理仍使用各阶段独立的新查询和原门禁。复查变为可读但缺标记仍为 `false` 失败；常规可读负例不增加等待退出的机会。同一身份离组后仍保持相关；原表、复查表及新身份表中已证的离组违规和已锁存失败均保留。marker 复查本身已证退出、zombie 或身份替换时，保持原有身份保护，不认领或 signal 替代身份。该方括号分类不增加 Darwin 的 ps 复查。
     - **macOS 标题改写补证**：`process.title` 的 NUL 填充可能使 `ps` 提前停止，漏掉仍保留的启动标记。对相关存活且缺失或不可读的 PID，使用系统 JXA 调用 `KERN_PROCARGS2`，只在内核实际返回的启动字符串区中匹配完整 NUL 边界的精确随机标记，再立即核对新的 PID/启动时间。该区包含 argv、启动环境与 Apple 附加字符串，不能完整证明 token 来自环境区，也不检测运行时环境变量修改；此采样路径不是强隔离。只补读 `ps` 的负例或不可读行，原有正匹配歧义保持。
     - 补证批量读取本次候选，不缓存跨次成功；权限或无法读取保持 `null`，辅助程序失败或无效结果保持查询失败。已退出、zombie 或身份替换必须由新身份表证明，不能只凭 sysctl 错误推断退出。原行与新身份表中的进程组违规均保留，已锁存失败不被补证清除。
-    - Linux 的原始读取、新身份查询、复查与阶段等待共用2秒绝对预算。macOS 的预检与运行期观察允许首次查询最多5秒，之后的复查及内核补证共用最多2秒，并受首次查询开始后7秒的绝对截止约束；不因新步骤重置这一截止。终止开始、升级信号及最终核验仍各自共用2秒阶段预算，等待旧查询和确认也计入该预算；外层清理时限保持不变。若补证后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
+    - Linux 的原始读取、新身份查询、复查与阶段等待共用 2 秒。macOS 预检和运行期观察的首次查询最多 5 秒。运行期若某个相关进程的标记不可读，第二次完整进程表查询最多 5 秒。仍需按 PID 核验时，内核标记查询及随后的启动身份确认共用最多 2 秒。所有步骤均须在首轮查询开始后 7 秒内完成，并服从调用方更早的截止。终止开始、升级信号和最终核验各自共用 2 秒，计入等待在途查询和再次确认的时间。若补证后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
   - **检查失效保护**：Engine 在运行期观察该合同，发现违规或检查失效时，Engine 立即 fail closed：**丢弃 grade 并停止 batch，绝不盲杀 foreign 进程**。
   - **Unmanaged 模式与收尾边界**：
     - POSIX managed 模式仅代表引擎具备进程检查能力并尝试追踪协作式后代，**绝不是 OS 内核级别的强制 containment**；

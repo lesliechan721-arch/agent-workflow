@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { retainNativeCliRunnerBackend, type NativeCliRunner } from '../utils/native-cli.js';
+import { retainNativeCliRunnerBackend, withInstallNativeMarkerScans, type NativeCliRunner } from '../utils/native-cli.js';
 import { canonicalizePathThroughExistingAncestorSync } from '../utils/state-paths.js';
 import { recoveryInterruptionCode } from './interruption.js';
 
@@ -189,7 +189,8 @@ const limitedNativeRunners = new WeakSet<NativeCliRunner>();
 export function limitInstallNativeRunner(runner: NativeCliRunner, limit = installConcurrencyLimits().reads): NativeCliRunner {
   if (limitedNativeRunners.has(runner)) return runner;
   const admission = createInstallAdmission({ limit });
-  const limited = retainNativeCliRunnerBackend((invocation) => admission.run([], () => runner(invocation), invocation.signal), runner);
+  const installRunner = withInstallNativeMarkerScans(runner);
+  const limited = retainNativeCliRunnerBackend((invocation) => admission.run([], () => installRunner(invocation), invocation.signal), runner);
   limitedNativeRunners.add(limited);
   return limited;
 }

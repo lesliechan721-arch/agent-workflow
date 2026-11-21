@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
+import { getPhysicalKey } from '../../src/platforms/identity.js';
 import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
@@ -54,6 +55,23 @@ describe('Antigravity native copy', () => {
     expect((await item.inspect()).nativePackageContentDigest).toBe(nextDigest);
   });
 
+  // Test Value Gate: the CLI inventory cannot grade a separate App reader
+  // even when both products share the verified personal package copy.
+  it('attributes the personal registration activation to the CLI only', async () => {
+    const item = await fixture();
+    item.binding.consumers.push({ id: 'app', product: 'app', version: null, availability: 'available', reasonCodes: [],
+      entry: { kind: 'directory', configRoot: resolvePlatformConfigRoot('antigravity', item.ctx) } });
+    expect((await item.inspect()).consumers).toMatchObject([
+      { productId: 'agy', activation: 'enabled', load: 'unknown' },
+      { productId: 'app', activation: 'unknown', load: 'unknown' },
+    ]);
+    item.rows.length = 0;
+    expect((await item.inspect()).consumers).toMatchObject([
+      { productId: 'agy', activation: 'disabled', load: 'unknown' },
+      { productId: 'app', activation: 'unknown', load: 'unknown' },
+    ]);
+  });
+
   // Test Value Gate: an AW source marker alone cannot authorize native replacement.
   it.each(['missing-marker', 'foreign-owner', 'weak-owner', 'wrong-physical-identity', 'modified-body', 'extra-data', 'outside-path', 'source-path', 'shared-path'] as const)(
     'retains unconfirmed or shared native data for %s', async (boundary) => {
@@ -93,4 +111,27 @@ describe('Antigravity native copy', () => {
     item.rows.length = 0;
     expect(await item.inspect()).toMatchObject({ package: 'absent', ownership: 'absent', registration: 'absent', consumers: [{ activation: 'disabled' }] });
   });
+});
+
+// Test Value Gate: a real short name can equal the previous slug of another
+// plugin and must neither be retired nor make that plugin need migration.
+it('recognizes a different Antigravity Project plugin at the old basename', async () => {
+  const { ctx, binding: user } = await fixture();
+  const scope = { kind: 'project' as const, projectRoot: ctx.cwd };
+  const binding = { ...user, route: 'antigravity-directory' as const, physicalKey: '', scope };
+  const other = { ...binding, plugin: { ...binding.plugin, pluginId: 'team/aw-team-demo' } };
+  const layout = await getDeploymentLayout(ctx, other);
+  other.physicalKey = getPhysicalKey(layout.physicalIdentity);
+  expect(path.basename(layout.packageRoot)).toBe('aw-team-demo');
+  const owner = deploymentPackageComponent(other, layout);
+  await fs.outputJson(path.join(owner.path, '.antigravity-plugin/plugin.json'), { name: 'aw-team-demo', version: '1.0.0' });
+  await writeSkillOwnerMarker({ skillRoot: owner.path, allowedRoot: owner.allowedRoot, identity: owner.identity, nativeProjection: {
+    physicalIdentity: layout.physicalIdentity, inputDigest: `sha256:${'b'.repeat(64)}`,
+    contentDigest: (await readPlatformPackageContentDigest(owner.path))!, components: [],
+  } });
+  binding.physicalKey = getPhysicalKey((await getDeploymentLayout(ctx, binding)).physicalIdentity);
+  expect((await inspectDeployment(ctx, other)).ownership).toBe('aw');
+  const observed = await inspectDeployment(ctx, binding);
+  expect(observed.ownership).toBe('absent');
+  expect(observed.antigravityLegacyProjectPackage).toBeUndefined();
 });

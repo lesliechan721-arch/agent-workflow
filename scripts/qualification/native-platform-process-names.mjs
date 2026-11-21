@@ -6,7 +6,8 @@ const START = '(\\w{3}\\s+\\w{3}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2}\\s+\\d{4})'
 const identityAndName = new RegExp(`^(\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+\\S+\\s+${START})(?:[ \\t]+(.*))?$`, 'u');
 const normalizeStart = (value) => value.trim().replace(/\s+/gu, ' ');
 const nameFailureReasons = new Set(['marked-process-group-changed', 'root-marker-missing',
-  'known-process-marker-missing', 'initial-group-marker-missing', 'process-marker-unreadable']);
+  'known-process-marker-missing', 'initial-group-marker-missing', 'process-marker-unreadable',
+  'live-descendants-before-completion']);
 
 // Hosted qualification diagnostics only. The extra column changes this query's
 // output size and failure surface. Project every row back to the identity schema;
@@ -59,10 +60,10 @@ export function createProcessNameDiagnostic(runCommand = execFile) {
       });
     },
     snapshot(diagnostics = []) {
-      const first = diagnostics.find((item) => nameFailureReasons.has(item.reason));
-      if (!first) return [];
-      return [...recent.values()].filter((row) => first.affectedPids.includes(row.pid) && first.processes.some((item) =>
-        item.pid === row.pid && normalizeStart(item.startTime ?? item.knownStartTime ?? '') === row.startTime))
+      const failures = diagnostics.filter((item) => nameFailureReasons.has(item.reason));
+      return [...recent.values()].filter((row) => failures.some((failure) => failure.affectedPids.includes(row.pid)
+        && failure.processes.some((item) => item.pid === row.pid
+          && normalizeStart(item.startTime ?? item.knownStartTime ?? '') === row.startTime)))
         .slice(0, 8).map((row) => ({ ...row }));
     },
     stop() { closed = true; },

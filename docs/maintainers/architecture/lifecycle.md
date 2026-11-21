@@ -6,7 +6,7 @@
 
 两份 Intent 使用 schema 3：`sources` 绑定 Catalog logical identity，`roots` 只保存 source-qualified plugin ID。用户声明位于 `<AW_HOME>/plugin-intents.json`，项目声明位于当前项目 `.agent-workflows/plugin-intents.json`。本机只有一个 `<AW_HOME>/deployment-preferences.json`：schema 2、`targets` 和 `exclusions: [{plugin, target}]`；没有项目偏好或依赖位置 override。初始 targets 为空；排除记录在关闭、重新启用本机 target 后保留。
 
-普通 sync/status 在项目内读取用户与当前项目，在项目外只读用户；显式 `--context user` 不解析调用项目。每个 target 独立展开两份完整依赖闭包，再过滤本次 root/target。相同插件的用户和项目需求按固定平台布局解析。共享原生包合并物理产物，activation 保持各自 scope；Cursor、OpenCode、Pi 等独立 scope 位置不能因用户需求存在就省略项目部署。共享提供者缺失或损坏时修该提供者，失败不改用另一条路由。source-qualified 身份不同不按短名称合并。未知 Intent 或来源不当空需求，不能据此删除、去重或复用。
+普通 sync/status 在项目内读取用户与当前项目，在项目外只读用户；显式 `--context user` 不解析调用项目。每个 target 独立展开两份完整依赖闭包，再过滤本次 root/target。相同插件的用户和项目需求按固定平台布局解析。共享原生包合并物理产物，activation 保持各自 scope。项目直接声明的插件仍有项目部署。项目引用的依赖按下文规则选择提供位置。共享提供者缺失或损坏时修该提供者，失败不改用另一条路由。source-qualified 身份不同不按短名称合并。未知 Intent 或来源不当空需求，不能据此删除、去重或复用。
 
 固定布局由 adapter resolve 按真实产品入口、物理 namespace、scope 和原生身份确定。冲突按真实物理位置判断，不从 target 名称组合推断。共享单元固定 render scope，同一位置的 scope、来源、类别或集合不一致时阻断该组，不按执行顺序覆盖。结构合法的偏好可保存，Review 保留冲突原因和旧输出。
 
@@ -14,6 +14,8 @@
 
 公开命令、模式组合、确认和输出字段的完整合同见 [CLI 参考](../../reference/cli.md)。CLI 始终非交互；TUI 保留 Review。公共结果通过 `status/data/diagnostics/nextActions` 输出，生命周期将内部 intent/agent 投影为 requirements/target，保留执行、观察、内容三轴与实际变化。内部回执和业务存储格式保持独立。
 所有强配置在现有 AW_HOME mutation lock 下原子提交。Review 冻结两份声明、偏好、来源、配置与输出证据，执行锁内重读；stale 不写。依赖提供者失败阻止相关消费者，独立目标继续。共享 Native 包体及 activation 分别观察和报告，不扫描历史项目，不把共享刷新说成更新了其它项目的独立包。
+
+平台 adapter 在执行第一个写入动作前复核部署证据。如果在此处发现变化，部署回执的 `operationPlanStale.detail.reasonCode` 标出证据类别，包括客户端发现、部署观察、共享引用、路径、市场或其它安装输入。读取失败时记录 `deploymentEvidenceReadFailed`。子进程清理无法确认时优先记录 `processCleanupUnconfirmed`。
 
 恢复回执继续逐目标报告 execution、observation、content，以及声明、偏好、配置、输出四类变化。部分完成、unknown、blocked 和 failed 不报全部成功。status 严格只读，不运行 renderer、preApply 或来源刷新；coverage 明确用户与当前项目范围，未选 targets 时有需求不等于已满足。cleanup、reinstall、source sync 或新版本始终保留至少一个可用恢复路径。
 
@@ -46,7 +48,7 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
-`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
+`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
 
 独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。需要扫描多个宿主的现有登记时，读取会等这些位置的写入结束，以免把正在更新的清单当作损坏。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
 
@@ -62,7 +64,7 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 插件依赖来自 manifest `dependencies`，在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图。安装按目标及其实际 provider scope 建立依赖。提供者完成写入并通过所需的现场校验后，对应消费者才可以执行。独立部署可以先完成，命令按稳定的依赖优先顺序报告结果。
 
-dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。对允许跨 scope 复用的布局，User 需要的共同依赖由 User 提供；scope 独立的 Native 布局在各自 scope 物化。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
+dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。Codex、Claude、Copilot 和 generic 沿用共享提供者规则。Antigravity、Cursor、Grok、OpenCode 和 Pi 的项目可以继承已安装且健康的同源个人静态 Skill 依赖。仅有个人声明时，只安装项目根仍可将缺少的依赖安装到项目。显式项目根、需要按范围渲染、运行安装脚本或生成专属配置的包保留各自的部署。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 
 只同步项目根时，如果它复用的个人依赖已核验健康，重试会跳过该依赖的安装脚本。同时选择个人根且它也需要这项依赖时，该依赖的个人安装脚本执行一次。generic 核对 AW 所有权、内容摘要，以及升级时已确认移除的旧 Skill。共享个人包的原生平台核对依赖文件与宿主登记，项目仍执行自己的启用步骤。安装脚本可能改变依赖。首次安装、同步和重建都会在脚本之后、消费者写入之前重新核对它实际使用的直接和间接依赖，包括经多条路径复用的个人依赖。核对失败只阻断依赖它的写入，独立目标可以完成。显式选择该个人插件时仍按普通同步处理。
 
@@ -72,9 +74,9 @@ dependency placement 由 User/Project 完整需求闭包自动决定，不提供
 
 普通 remove 默认清理本次取消需求后失去全部引用的依赖输出，包括传递依赖。候选限于本次请求原依赖闭包、所选物理 scope 和本机执行 targets，且必须没有独立 Intent、没有剩余需求或已观察到的现存消费者，并有充分 live ownership 证据。精确请求按 root×Agent 保留对应关系，不能展开为插件和 Agent 的全部组合；依赖候选只来自同一 Agent 上被选根的贡献，未选位置的现存消费者仍保护其依赖。未知需求、来源或消费者依赖关系不能当作无引用。`--keep-dependencies` 保留这些依赖；它不改变所选根的移除或提供位置切换。清理按依赖者优先执行；依赖者移除失败时，保留它需要的依赖，报告未完成项。Review 冻结依赖清理的精确位置，锁内按同一证据重验。
 
-所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断；取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
+所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断。当前项目中归属明确的原生包在取消声明或从 Active 下架后，仍可保护同源个人 Skill 依赖。无法读取依赖闭包时，保护限于该来源和目标下可能被继承的个人包。用 `remove --only outputs` 清理项目包，或核验已存在的健康项目副本后，可以继续卸载。取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
 
-项目已声明、尚未安装的插件也会保护它需要的 User 提供者。读取某个依赖的插件清单失败时，已绑定 Active 的 Catalog 依赖条目可以确认哪些根可能共用提供者。分目录部署的 Native 目标在各自 scope 观察。允许共用的目标上，Project 显式根有自己的部署需求，其余可能借用 User 的依赖保留为未知。普通 remove 保留仍可能被引用的提供者及其声明。对于 generic，若 Project 也显式声明同一提供者，Review 和写锁内均核实项目副本属于 AW、内容完整且依赖满足后，可以移除 User 副本。索引也无法确认闭包时，保留同来源、同目标、对应提供范围的保护。执行安装或重新放置仍需取得完整的插件清单。
+项目已声明、尚未安装的插件也会保护它需要的 User 提供者。读取某个依赖的插件清单失败时，已绑定 Active 的 Catalog 依赖条目可以确认哪些根可能共用提供者。分目录部署的 Native 目标分别观察个人与当前项目的实际提供位置。允许共用的目标上，Project 显式根有自己的部署需求，其余可能借用 User 的依赖保留为未知。普通 remove 保留仍可能被引用的提供者及其声明。对于 generic，若 Project 也显式声明同一提供者，Review 和写锁内均核实项目副本属于 AW、内容完整且依赖满足后，可以移除 User 副本。索引也无法确认闭包时，保留同来源、同目标、对应提供范围的保护。执行安装或重新放置仍需取得完整的插件清单。
 
 ## 安装、重建、卸载与清理
 
@@ -110,11 +112,13 @@ CLI/TUI 共用 adapter 注册表和发现结果。实际入口、配置根、版
 
 discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻断真实依赖分组，其他平台继续。参数错误、共同强配置损坏、无法取得唯一锁、共同授权缺失和用户中断仍可整体停止。共享发布失败只阻断其消费者，不回滚其他平台成功。
 
-包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实。Grok 许可与 Pi Agents 消费者授权各有自己的门禁。OpenCode 可选运行观测不影响目录交付。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
+包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实，包括 Grok 所需的信任状态。Pi 的执行扩展及 OpenCode 的可选运行观测按各自证据报告。组件缺口保留 `requiredFeatures` 的具体 feature/values、缺口 ID 和可用的 `componentId`，例如缺少 Hook 阻断或一个 Instructions audience。无能力要求的真正未满足项使用空数组。
 
 原生动作回执与后续只读状态分开：Pi Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 
-成功有意空集合在 Review 中明确撤销旧输出，新目标为成功 no-op；全部 unmet 或渲染失败不触发空集卸载。部分 unmet 时，可更新独立支持的组件，但保留旧补足文件，不将本次缺少投影当作作者关闭；此保护不依赖原生包是否存在。取消一个需求不删除仍被引用的共享包或命令绑定。preApply 失败不清旧输出，Grok 同 scope Instructions 渲染失败也不能发布缺正文的 Agent 包。
+完整声明只缺平台能力时，适用组件照常交付，缺口随同结果报告。所有项都跳过时保留需求，完成零项交付。已完成或无适用项的目标在输入、能力和现场证据相同时无需重新写入。配置、版本、能力变化或实际产物漂移会重新求值。真正缺少依赖或资源、renderer 失败、权限拒绝及原生写入失败仍保留未完成与恢复路径。
+
+成功有意空集合在 Review 中明确撤销旧输出，新目标可为成功 no-op。完整的新声明如果明确请求了一个旧入口无法保留的限制，Review 只撤回已证实归 AW 独占、当前作用域的旧入口，例如新版要求无工具但当前适配器不能表达该限制的角色。旧 renderer 只返回 `unmet` 而未提供完整声明时，保留缺少撤回依据的旧项。共享、外来、归属未知以及撤销失败的内容继续受保护，已观察到仍可能生效的旧输出随结果单列，并保留适用的恢复方法。取消需求时保留仍被引用的共享包或命令绑定。preApply 失败时保留旧输出，Grok 同 scope 的 Instructions 渲染失败时停止相关 Agent 包的发布。
 
 结果按本次真实范围汇总：全部完成 success/0；有完成部分、有效部分结果或 confirmed/possible 变更为 partial/4；全部执行前受阻且无业务变更为 blocked/3；执行失败且无有效部分或已知/可能变更为 failed/1。成功保存需求、配置或偏好也是已提交变更。超时或异常后先有限 observe，重试重新 prepare，不盲目重放。
 

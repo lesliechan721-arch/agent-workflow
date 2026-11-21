@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -64,6 +65,40 @@ export async function prepareEnvironment(root) {
   }
   for (const name of ['gitconfig', 'npmrc', 'npmrc-global']) await fs.writeFile(path.join(root, name), '');
   return env;
+}
+
+export async function readManagedTrace(file) {
+  if (!file) return undefined;
+  const records = [];
+  const byteLimit = 256 * 1024;
+  try {
+    if (!(await fs.lstat(file)).isFile()) return { state: 'unavailable', records };
+    // POSIX open cannot follow a link or wait for a FIFO substituted after lstat.
+    const flags = process.platform === 'win32' ? 'r' : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    const input = Buffer.alloc(byteLimit + 1);
+    const handle = await fs.open(file, flags);
+    let offset = 0;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) return { state: 'unavailable', records };
+      if (stat.size > byteLimit) return { state: 'over-limit', records };
+      while (offset < input.length) {
+        const { bytesRead } = await handle.read(input, offset, input.length - offset, offset);
+        if (!bytesRead) break;
+        offset += bytesRead;
+      }
+    } finally {
+      await handle.close();
+    }
+    if (offset > byteLimit) return { state: 'over-limit', records };
+    const lines = input.toString('utf8', 0, offset).split('\n').filter((line) => line.trim());
+    if (lines.length > 256) return { state: 'over-limit', records };
+    for (const line of lines) {
+      try { records.push(JSON.parse(line)); }
+      catch { return { state: 'partial-or-invalid-jsonl', records }; }
+    }
+    return { state: 'captured', records };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
 }
 
 export const fixedClientVersion = platform => platform === 'antigravity' ? '1.3.4' : clients[platform].version;

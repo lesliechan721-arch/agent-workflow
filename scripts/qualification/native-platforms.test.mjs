@@ -6,10 +6,10 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
-  observeQualification, readSharedProviderStages } from './native-platforms.mjs';
+import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, removeQualificationRoot,
+  readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
+import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
@@ -191,6 +191,91 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.equal(versionFrom('unknown'), null);
 });
 
+// Test Value Gate: invalid group syntax must fail before any install, and the
+// mixed scenario must never run with an executable or a missing native target.
+test('accepts explicit client groups and rejects incomplete mixed qualification requests', () => {
+  const options = (selection, ...flags) => ['--candidate', 'candidate.json', '--client', selection, '--report', 'report.json', ...flags];
+  const mixed = ['--public-aw', '--mixed-native-aw'];
+  assert.doesNotThrow(() => parseArgs(options('codex,pi,claude', '--install', ...mixed)));
+  assert.doesNotThrow(() => parseArgs(options('copilot,grok,opencode', '--install', '--public-aw')));
+  assert.doesNotThrow(() => parseArgs(options('codex', '--executable', path.resolve('client'))));
+  for (const selection of ['', ',codex', 'codex,', 'codex,,pi', 'codex, pi', 'codex,codex', 'codex,unknown', 'codex,all', 'all,pi']) {
+    assert.throws(() => parseArgs(options(selection, '--install')), /invalid-arguments/);
+  }
+  assert.throws(() => parseArgs(options('codex,pi', '--executable', path.resolve('client'))), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('all', '--executable', path.resolve('client'))), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('claude,pi', '--install', '--mixed-native-aw')), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('codex,claude', '--install', ...mixed)), /invalid-arguments/);
+  assert.throws(() => parseArgs(options('codex,pi', '--install', ...mixed)), /invalid-arguments/);
+});
+
+// Test Value Gate: a group must keep trying selected clients after a download
+// failure and report any missing mixed participant, even with a valid candidate.
+test('qualifies the selected group with the same candidate and scope requirements', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-group-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const candidate = path.join(root, 'candidate.json');
+  const client = path.join(root, 'client.mjs');
+  const reportPath = path.join(root, 'report.json');
+  const sourceSha = process.env.GITHUB_SHA ?? 'a'.repeat(40);
+  await writeCandidate(candidate, sourceSha);
+  await fs.writeFile(client, 'console.log("0.0.0");\n');
+  const acquired = [];
+  const options = (selection, ...flags) => parseArgs(['--candidate', candidate, '--client', selection, '--report', reportPath,
+    '--install', '--public-aw', ...flags]);
+  const acquire = async (platform, installRoot) => {
+    acquired.push({ platform, installRoot });
+    if (platform !== 'pi') throw new Error('client-install-failed');
+    return { launcher: { executable: process.execPath, prefix: [client] }, binDirectory: root };
+  };
+
+  const report = await run(options('codex,pi,claude', '--mixed-native-aw'), acquire);
+  assert.equal(report.candidate?.sourceSha, sourceSha);
+  assert.deepEqual(report.clients.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.deepEqual(acquired.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), true);
+  assert.equal(report.boundary.modelRequests, 'loopback qualification fixtures only');
+  assert.equal(report.mixedPublicAw?.status, 'failed');
+  assert.deepEqual(report.mixedPublicAw?.unavailable, ['claude']);
+  const pi = report.clients.find(({ platform }) => platform === 'pi');
+  assert.deepEqual(pi.scopes.map(({ scope }) => scope), ['user', 'project']);
+  assert.deepEqual(pi.publicAw.map(({ scope }) => scope), ['user', 'project']);
+  assert(report.clients.every(({ acquisitionCleanup }) => acquisitionCleanup === 'completed'));
+
+  const second = await run(options('copilot,grok,opencode'), acquire);
+  assert.equal(second.candidate?.manifestSha256, report.candidate.manifestSha256);
+  const grokUnavailable = process.platform === 'darwin' && process.arch === 'x64'
+    || process.platform === 'win32' && process.arch === 'arm64';
+  assert.deepEqual(second.clients.map(({ platform, status }) => [platform, status]), [
+    ['copilot', 'failed'], ['grok', grokUnavailable ? 'excluded' : 'failed'], ['opencode', 'failed'],
+  ]);
+  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
+  assert.equal(second.status, 'failed');
+  assert.equal(second.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), false);
+  assert.equal(second.boundary.modelRequests, 'loopback qualification fixtures only');
+  assert.equal(second.mixedPublicAw, undefined);
+
+  await fs.writeFile(candidate, JSON.stringify({ schemaVersion: 1, sourceSha, files: {} }));
+  const acquiredCount = acquired.length;
+  const unbound = await run(options('claude,pi'), acquire);
+  assert.equal(unbound.reason, 'candidate-content-mismatch');
+  assert.equal(unbound.status, 'failed');
+  assert.equal(unbound.boundary.modelRequests, 'none');
+  assert.equal(acquired.length, acquiredCount);
+  for (const { installRoot } of acquired) {
+    assert.equal(await fs.stat(installRoot).then(() => false, error => error.code === 'ENOENT'), true);
+  }
+});
+
+// Test Value Gate: a fixed unavailable distribution can be excluded, while a
+// required client's missing evidence or failure must prevent a passing group.
+test('preserves required failures and unknowns when aggregating client results', () => {
+  assert.equal(aggregateQualificationStatus(['passed', 'excluded']), 'passed');
+  assert.equal(aggregateQualificationStatus(['excluded', 'passed', 'unverified']), 'unverified');
+  assert.equal(aggregateQualificationStatus(['unverified', 'excluded', 'failed', 'passed']), 'failed');
+});
+
 // Test Value Gate: a green AW envelope must not pass the two-client run when
 // either client's target or its actual native registration is absent.
 test('requires an applied native registration for both targets in one public batch', () => {
@@ -334,6 +419,39 @@ test('uses actual AW projection bytes for both candidate revisions', async () =>
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+// A busy image in a private qualification root failed a Windows run after
+// all 20 OpenCode Project checks passed. A persistent lock must still fail.
+test('removes a Windows qualification executable only after its lock is released', { skip: process.platform !== 'win32' }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-locked-exe-'));
+  const executable = path.join(root, 'client.exe');
+  let child;
+  let closed;
+  let release;
+  try {
+    await fs.writeFile(executable, 'qualification fixture');
+    const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    // Hold an actual non-delete-sharing handle. An executable image mapping alone can allow unlink on NTFS.
+    const holdFile = "$ErrorActionPreference='Stop'; $file=[IO.File]::Open($env:AW_TEST_LOCK_FILE, 'Open', 'Read', 'Read'); "
+      + "try { [Console]::Write('1'); [Console]::Out.Flush(); [void][Console]::ReadLine() } finally { $file.Dispose() }";
+    child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', holdFile],
+      { env: { ...isolatedEnvironment(root), AW_TEST_LOCK_FILE: executable }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    closed = once(child, 'close');
+    const signal = AbortSignal.timeout(30_000);
+    const ready = await Promise.race([once(child.stdout, 'data', { signal }), closed]);
+    assert.ok(Buffer.isBuffer(ready[0]) && ready[0].toString() === '1', 'Expected confirmation that the fixture file is locked');
+    await assert.rejects(removeQualificationRoot(root), error => ['EBUSY', 'EPERM', 'EACCES'].includes(error.code));
+    release = setTimeout(() => child.stdin.end(), 150);
+    await removeQualificationRoot(root);
+    assert.equal((await closed)[0], 0);
+    await assert.rejects(fs.stat(root), { code: 'ENOENT' });
+  } finally {
+    clearTimeout(release);
+    if (child?.exitCode === null) child.kill();
+    await closed?.catch(() => {});
+    await removeQualificationRoot(root);
+  }
+});
+
 test('a real child version mismatch fails before public AW installation and cleans its temporary home', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-process-test-'));
   const observed = path.join(root, 'observed.json');
@@ -424,6 +542,30 @@ test('Linux private marker row evidence preserves a real missing-marker failure'
       if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
     }
   }
+});
+
+// The actual public AW entry uses birth ticks throughout its lease. A child
+// with a readable wrong marker must fail even when it exits before cleanup.
+test('Linux public AW verifies the sentinel and rejects a real unmarked child with procfs', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async options => {
+    const preload = path.join(options.cwd, 'wrong-marker.cjs');
+    await fs.writeFile(preload, `
+      require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},1800)'], {
+        env: { AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER: 'incorrect' }, stdio: 'ignore',
+      });
+    `);
+    const launcher = { executable: process.execPath, prefix: ['--require', preload, path.join(repoRoot, 'packages/cli/dist/index.js')] };
+    await assert.rejects(executePublicAw(launcher, ['--version'], options), error => {
+      const first = error.publicAwProcessDiagnostics?.[0];
+      assert.equal(first?.stage, 'observation');
+      assert.match(first.sentinel.startTime, /^\d+$/u);
+      assert.equal(first.sentinel.markerMatches, true);
+      assert.match(error.message, /lost its process marker/);
+      return true;
+    });
+  });
 });
 
 // Native Grok uses the same strict observer. Diagnostic wiring must retain

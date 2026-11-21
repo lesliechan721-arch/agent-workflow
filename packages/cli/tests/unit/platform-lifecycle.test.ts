@@ -14,6 +14,7 @@ import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { createNativeLifecycleServices } from '../../src/platforms/lifecycle-native-services.js';
 import { readCodexConfigFile, upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import type { OwnedComponent } from '../../src/utils/ownership.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const root = path.resolve('/tmp/aw-platform-lifecycle-fixture');
 const confirmed: MutationOutcome = { changed: true, mutation: 'confirmed' };
@@ -76,7 +77,7 @@ function supplementOnlyFixture(): LifecyclePrepareInput {
   return input;
 }
 function context(after: DeploymentObservation): MutationContext {
-  return { cwd: root, env: { HOME: root }, runner: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })), inspect: vi.fn(async () => after),
+  return { cwd: root, env: getCurrentSourceTestIsolation().env, runner: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })), inspect: vi.fn(async () => after),
     services: { verifyEvidence: vi.fn(async () => true), publishPackage: vi.fn(async () => confirmed), writeContribution: vi.fn(async () => confirmed),
       removeOwned: vi.fn(async () => confirmed), setActivation: vi.fn(async () => confirmed), registerMarketplace: vi.fn(async () => confirmed) } };
 }
@@ -242,28 +243,33 @@ describe('native platform lifecycle', () => {
     expect(preparePlatformLifecycle(input).status).toBe('blocked');
   });
 
-  it('writes a supported supplement while retaining an unmet supplement without a package replacement', async () => {
+  it.each(['static', 'legacy-renderer', 'complete-renderer'] as const)('withdraws an unsafe role only with its full declaration (%s)', async (source) => {
     const input = supplementOnlyFixture();
     input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', reasonCode: 'capability-unverified',
       requiredFeatures: [{ feature: 'agent.tools', values: ['allowlist'] }] }];
+    input.expected.sources['role-b'] = source === 'static' ? 'static' : 'dynamic';
+    if (source === 'complete-renderer') input.expected.declaredComponentIds = ['role-a', 'role-b'];
     const plan = prepared(input);
     const ctx = context(input.observation);
     const receipt = await executePlatformLifecycle(ctx, plan);
-    expect(plan.plan.effects).toMatchObject([{ kind: 'write-supplement', componentIds: ['role-a'], destination: path.join(root, 'agents/a.toml') }]);
+    expect(plan.plan.effects[0]).toMatchObject({ kind: 'write-supplement', componentIds: ['role-a'], destination: path.join(root, 'agents/a.toml') });
     expect(ctx.services.writeContribution).toHaveBeenCalledTimes(1);
-    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+    expect(ctx.services.removeOwned).toHaveBeenCalledTimes(source === 'legacy-renderer' ? 0 : 1);
+    expect(receipt.diagnostics.filter(({ code }) => code === 'previousDeploymentRetained')).toEqual(source === 'legacy-renderer'
+      ? [expect.objectContaining({ severity: 'error', detail: { reasonCode: 'previousDeploymentRetained', path: path.join(root, 'agents/b.toml') } })] : []);
     expect(ctx.services.publishPackage).not.toHaveBeenCalled();
     expect(ctx.services.registerMarketplace).not.toHaveBeenCalled();
     expect(ctx.runner).not.toHaveBeenCalled();
     expect(receipt.unmet).toEqual([{ ...input.expected.unmet[0], productIds: [] }]);
   });
 
-  it('keeps supplement-only output when all requested components are unmet', () => {
+  it('keeps supplement-only output when a required dependency is missing', () => {
     const input = supplementOnlyFixture();
     input.expected.components = [];
-    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', requiredFeatures: [], reasonCode: 'capability-unverified' }];
+    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', requiredFeatures: [], reasonCode: 'dependency-unmet' }];
     input.projections = [];
-    expect(preparePlatformLifecycle(input)).toMatchObject({ status: 'blocked', diagnostics: [expect.objectContaining({ code: 'noSupportedComponents' })] });
+    expect(preparePlatformLifecycle(input)).toMatchObject({ status: 'blocked', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformComponentsUnmet' }),
+      expect.objectContaining({ code: 'previousDeploymentRetained' })]) });
   });
 
   it('cleans an intentionally closed supplement-only set without creating or removing a native package', async () => {
@@ -505,15 +511,26 @@ describe('native platform lifecycle', () => {
     expect(ctx.runner).toHaveBeenCalledTimes(1);
   });
 
-  it('stops stale plans before any writer or native command', async () => {
+  it.each([false, 'deploymentPathsChanged', 'read error', 'cleanup error'] as const)('stops stale plans before writing and reports the verified reason (%s)', async (failure) => {
     const input = fixture();
     const ctx = context(input.observation);
-    vi.mocked(ctx.services.verifyEvidence).mockResolvedValue(false);
+    const verify = vi.mocked(ctx.services.verifyEvidence);
+    if (failure === 'read error') verify.mockRejectedValue(new Error('private file details'));
+    else if (failure === 'cleanup error') verify.mockRejectedValue(Object.assign(new Error('private cleanup details'), {
+      operationDiagnostic: { code: 'processCleanupUnconfirmed', safeMessage: 'Process cleanup could not be confirmed.' },
+    }));
+    else verify.mockResolvedValue(failure);
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
     expect(ctx.services.publishPackage).not.toHaveBeenCalled();
     expect(ctx.runner).not.toHaveBeenCalled();
-    expect(receipt.diagnostics[0]?.code).toBe('operationPlanStale');
-    expect(receipt.effects.every((effect) => effect.mutation === 'none')).toBe(true);
+    const [diagnostic] = receipt.diagnostics;
+    expect(diagnostic?.code).toBe(failure === 'cleanup error' ? 'processCleanupUnconfirmed' : 'operationPlanStale');
+    const reasonCode = failure === 'read error' ? 'deploymentEvidenceReadFailed' : failure === 'deploymentPathsChanged' ? failure : undefined;
+    expect(diagnostic?.detail).toEqual(reasonCode ? { reasonCode } : undefined);
+    expect(receipt.effects.length).toBeGreaterThan(0);
+    expect(receipt.effects.every((effect) => effect.status === 'blocked' && effect.mutation === 'none' && effect.diagnostics[0] === diagnostic)).toBe(true);
+    expect(receipt.after.registration).toBe(failure === 'cleanup error' ? 'unknown' : input.observation.registration);
+    expect(JSON.stringify(receipt)).not.toMatch(/private (file|cleanup) details/u);
   });
 
   it('ensures a matching package and activation without writing again', async () => {
@@ -892,6 +909,58 @@ describe('platform inspection and native activation', () => {
     const services = createNativeLifecycleServices({ ...ctx, runner }, input.evidence);
     await expect(services.registerMarketplace(input.binding, layout.nativeIdentity)).rejects.toMatchObject({ code: 'marketplaceRegistrationForeign', mutation: 'none' });
     expect(runner.mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'marketplace', 'list', '--json']]);
+  });
+
+  // Test Value Gate: a live catalog row cannot stand in for registration, or
+  // authorize mutation when its origin or activation is unconfirmed.
+  it.each([
+    { kind: 'disabled installed package', scope: 'user', owned: true, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'aw', activation: 'disabled' },
+    { kind: 'disabled User enrollment with missing package', scope: 'project', userEntry: false, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'disabled Project enrollment with missing package', scope: 'project', projectEntry: false, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'shared Project enrollment with missing package', scope: 'project', repoEntry: true, location: 'canonical', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'absent', activation: 'disabled' },
+    { kind: 'unreadable User enrollment in Project', scope: 'project', userEntry: 'invalid', location: 'canonical', marketplace: true, enabled: false,
+      registration: 'unknown', ownership: 'unknown', activation: 'unknown' },
+    { kind: 'foreign live row', scope: 'user', location: 'foreign', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'foreign', activation: 'disabled' },
+    { kind: 'live row with no location', scope: 'user', location: 'missing', marketplace: true, enabled: false,
+      registration: 'present', ownership: 'unknown', activation: 'disabled' },
+    { kind: 'live row with no marketplace', scope: 'user', location: 'canonical', marketplace: false, enabled: false,
+      registration: 'present', ownership: 'unknown', activation: 'disabled' },
+    { kind: 'live row with unreported activation', scope: 'user', location: 'canonical', marketplace: true, enabled: undefined,
+      registration: 'present', ownership: 'absent', activation: 'unknown' },
+  ] as const)('preserves distinct Copilot evidence for $kind', async (scenario) => {
+    const ctx = await environment();
+    const { binding } = fixture('copilot-marketplace');
+    const configRoot = path.join(ctx.cwd, '.copilot');
+    binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/copilot', configRoot };
+    if (scenario.scope === 'project') binding.scope = { kind: 'project', projectRoot: ctx.cwd };
+    const layout = await getDeploymentLayout(ctx, binding);
+    binding.physicalKey = layout.renderUnits[0]!.physicalKey;
+    if ('owned' in scenario) {
+      const owner = deploymentPackageComponent(binding, layout);
+      await fs.outputFile(path.join(layout.packageRoot, SKILL_OWNER_MARKER), createSkillOwnerMarkerContent(owner.identity));
+    }
+    if ('userEntry' in scenario) await fs.outputJson(path.join(configRoot, 'settings.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.userEntry },
+    });
+    if ('projectEntry' in scenario) await fs.outputJson(path.join(layout.activationPath, 'settings.local.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.projectEntry },
+    });
+    if ('repoEntry' in scenario) await fs.outputJson(path.join(layout.activationPath, 'settings.json'), {
+      enabledPlugins: { [layout.nativeIdentity.registrationId!]: scenario.repoEntry },
+    });
+    const installedFrom = scenario.location === 'canonical' ? layout.marketplaceRoot
+      : scenario.location === 'foreign' ? path.join(ctx.cwd, 'foreign-marketplace') : undefined;
+    const runner = async (call: NativeCliInvocation) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(call.args[1] === 'marketplace'
+      ? scenario.marketplace ? [{ name: layout.marketplaceName, source: `Local: ${layout.marketplaceRoot}` }] : []
+      : [{ name: layout.nativeIdentity.packageId, marketplace: layout.marketplaceName, source: 'live', installedFrom, enabled: scenario.enabled }]) });
+    const after = await inspectDeployment({ ...ctx, runner }, binding);
+    expect(after).toMatchObject({ ownership: scenario.ownership, registration: scenario.registration,
+      consumers: [{ activation: scenario.activation }] });
   });
 
   // Test Value Gate: slow Copilot inventories must overlap without an early

@@ -1,7 +1,9 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
 import { commandResult, type CommandResult, type NextAction } from '../output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
+import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentNotices, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
+import { isDeliveryNoticeCode } from '../output/component-delivery.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
@@ -12,7 +14,7 @@ import { readPluginManifest } from '../utils/manifest.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { readRecoveryStatus } from '../recovery/status.js';
 
-import { recoveryRootDisposition, type RecoveryTarget } from '../recovery/receipt.js';
+import { recoveryRootDisposition, userSkillProviderRepairs, type RecoveryTarget } from '../recovery/receipt.js';
 
 export interface PublicPluginQueryOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion?: string; scope?: string; context?: string;
@@ -112,21 +114,34 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const inventory = status.inventory?.filter((entry) => selectedPlugin(entry.pluginId)).map((entry) => ({ pluginId: entry.pluginId, sourceId: entry.source, sourceState: entry.sourceState,
       blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map((target) => projectTarget(target)) })) ?? null;
     const diagnostics = status.errors.map((error) => publicDiagnostic(error));
+    const selectedTargets = (status.inventory ?? []).filter((entry) => selectedPlugin(entry.pluginId))
+      .flatMap((entry) => entry.targetResults.filter((target) => selectedTarget(target.agent)));
+    diagnostics.push(...projectDeploymentNotices(selectedTargets));
     const pending = new Map<string, { root: Pick<RecoveryTarget, 'pluginId' | 'scope' | 'agent'>; reason: string }>();
+    const syncActions = new Map<string, NextAction>();
     const positionKey = (pluginId: string, scope: Scope, agent: string) => JSON.stringify([pluginId, scope, agent]);
     const declared = (pluginId: string, scope: Scope) => declarations.find((item) => item.scope === scope)?.roots?.includes(pluginId);
     for (const entry of status.inventory ?? []) if (selectedPlugin(entry.pluginId)) {
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
       for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
         const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-        diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, error.subject ?? subject,
+        diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((error) => publicDiagnostic(error, error.subject ?? subject,
           error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
+        for (const root of userSkillProviderRepairs(target)) {
+          if (!declared(root.pluginId, root.scope)) continue;
+          const reason = publicDiagnostic('userSkillProviderNotReady').message;
+          syncActions.set(positionKey(root.pluginId, root.scope, root.agent), recoverySyncAction(root, reason));
+          if (target.relation === 'root' && declared(target.pluginId, target.scope)) {
+            pending.set(positionKey(target.pluginId, target.scope, target.agent), { root: target, reason });
+          }
+        }
         for (const reason of target.reasons ?? []) {
+          if (isDeliveryNoticeCode(reason.code) || reason.code === SKILL_INVOCATION_NOTICE) continue;
           const diagnostic = publicDiagnostic(reason, reason.subject ?? subject, 'warning');
           diagnostics.push(diagnostic);
           if (!['platformInputDrift', 'platformContentDrift', 'nativePackageContentDrift',
             'cursorWorkspaceOpenMissing', 'nativeActivationDisabled', 'platformPackageMissing', 'nativeRegistrationMissing',
-            'nativePackageMissing', 'componentOutputMissing'].includes(reason.code)) continue;
+            'nativePackageMissing', 'componentOutputMissing', 'antigravityProjectPackageMigrationPending', 'projectSkillDuplicatePending'].includes(reason.code)) continue;
           // Inventory rows aggregate the physical providers' diagnostics under their declared root.
           // A direct query for a dependency carries its actual contributing declarations instead.
           const roots = target.relation === 'dependency' ? (target.contributions ?? []).map((item) => ({
@@ -141,7 +156,6 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
         }
       }
     }
-    const syncActions = new Map<string, NextAction>();
     for (const { root, reason } of pending.values()) {
       const otherScope = root.scope === 'project' ? 'user' : 'project';
       const both = pending.has(positionKey(root.pluginId, otherScope, root.agent));

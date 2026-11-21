@@ -379,7 +379,7 @@ describe('preApply script', () => {
     expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
   });
 
-  it('routes a Windows script through the Job helper and waits for helper close after abort', async () => {
+  function startWindowsJobScript() {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const stdin = new PassThrough();
@@ -414,6 +414,11 @@ describe('preApply script', () => {
       cwd: '/',
       env: {},
     }, { timeoutMs: 2_000, signal: controller.signal, onSpawn });
+    return { child, controller, running, spawn, onSpawn, observeProcessTree, terminateProcessTree };
+  }
+
+  it('routes a Windows script through the Job helper and waits for helper close after abort', async () => {
+    const { child, controller, running, spawn, onSpawn, observeProcessTree, terminateProcessTree } = startWindowsJobScript();
     expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 321 });
     let settled = false;
     void running.then(() => { settled = true; }, () => { settled = true; });
@@ -433,6 +438,47 @@ describe('preApply script', () => {
     );
     expect(observeProcessTree).not.toHaveBeenCalled();
     expect(terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  // Windows can report that the helper is already gone before Node delivers close.
+  it.each([
+    [0, true], [7, true], [250, false], [251, false], [null, false],
+  ] as const)('uses the closing Windows Job status %s when a stop signal was refused', async (exitCode, confirmed) => {
+    const { child, controller, running } = startWindowsJobScript();
+    child.kill.mockReturnValue(false);
+    const reason = new Error('script aborted');
+    const stopped = running.catch((error: unknown) => error);
+    controller.abort(reason);
+    child.emit('close', exitCode, null);
+
+    if (confirmed) expect(await stopped).toBe(reason);
+    else expect(await stopped).toMatchObject({ operationDiagnostic: { code: 'pluginProcessCleanupFailed' } });
+  });
+
+  it('retains an actual Windows Job stop error if a close event follows', async () => {
+    const { child, controller, running } = startWindowsJobScript();
+    const error = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    child.kill.mockImplementation(() => { child.emit('error', error); return false; });
+    const stopped = running.catch((cause: unknown) => cause);
+    controller.abort();
+    child.emit('close', 0, null);
+    expect(await stopped).toMatchObject({ cause: error, operationDiagnostic: { code: 'pluginProcessCleanupFailed' } });
+  });
+
+  it('keeps cleanup unconfirmed if a Windows Job closes after the stop timer has fired', async () => {
+    vi.useFakeTimers();
+    try {
+      const { child, controller, running } = startWindowsJobScript();
+      child.kill.mockReturnValue(false);
+      const stopped = running.catch((error: unknown) => error);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(4_500);
+      child.emit('close', 0, null);
+      expect(await stopped).toMatchObject({ message: 'Windows Job helper exit could not be confirmed.',
+        operationDiagnostic: { code: 'pluginProcessCleanupFailed' } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

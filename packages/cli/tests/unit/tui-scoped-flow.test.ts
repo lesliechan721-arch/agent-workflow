@@ -99,6 +99,23 @@ it('distinguishes stale before execution from a stale target after a sibling was
   expect(history.preview(identity.recordId)?.content).not.toContain('untrusted-backend-detail');
 });
 
+it('keeps the declared User repair ahead of its dependent Project in history', () => {
+  const project = { pluginId: 'team/b', agent: 'opencode' as const, scope: 'project' as const, delivery: null };
+  const issue = { code: 'userSkillProviderNotReady', pluginId: 'team/d', message: 'Repair the User dependency.',
+    subject: { pluginId: 'team/a', scope: 'user' as const, target: 'opencode' as const } };
+  const receipt: RecoveryReceipt = {
+    schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'sync', ok: false,
+    intent: { state: 'valid', roots: ['team/b'] }, requestedRoots: ['team/b'], requestedTargets: [project],
+    selection: { agents: ['opencode'], origin: 'argument', preferences: 'valid' },
+    reviewedUserRoots: ['team/a'], blockers: [], errors: [], remainingTargets: [project], recoveryActions: [],
+    declarationChanged: false, configChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
+    targetResults: [{ ...project, relation: 'root', execution: 'not-run', observation: 'unknown', blockers: [issue], requiredBy: ['team/b'] }],
+  };
+  const history = projectScopedRecoveryHistory(receipt, { recordId: 'provider', epoch: 0, operationId: 'sync', createdAtMs: 0 });
+  expect(history.diagnostics[0]?.detailLines).toEqual(['aw plugin status --context project --json',
+    'aw plugin sync team/a --context user --target opencode', 'aw plugin sync team/b --context project --target opencode']);
+});
+
 // A single dependency can supply the same declared root at both User and Project.
 it('exports one recovery command for both unfinished scopes and keeps the successful root', () => {
   const position = (name: string, scope: 'user' | 'project') =>

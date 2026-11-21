@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { getPlatformCapabilities, getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
+import { getPhysicalKey } from '../../src/platforms/identity.js';
+import { piAgentConsumerDiagnostic } from '../../src/platforms/inspection-pi.js';
 import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
@@ -37,8 +40,8 @@ async function fixture(platform: 'pi' | 'grok', project = false) {
   return { ctx, host, binding, layout, caps, setPiList: (value: string) => { piList = value; } };
 }
 
-async function consumer(root: string, version = '0.22.0') {
-  await fs.outputJson(path.join(root, 'package.json'), { name: '@tintinweb/pi-subagents', version, pi: { extensions: ['./index.ts'] } });
+async function consumer(root: string, version = '0.22.0', name = '@tintinweb/pi-subagents') {
+  await fs.outputJson(path.join(root, 'package.json'), { name, version, pi: { extensions: ['./index.ts'] } });
   await fs.outputFile(path.join(root, 'index.ts'), 'export default function () {}');
 }
 
@@ -60,7 +63,7 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
   await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const secondBin = path.join(item.ctx.cwd, 'other-bin');
   if (multipleCli) await fs.outputFile(path.join(secondBin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const env = { ...item.ctx.env, PATH: [bin, ...(multipleCli ? [secondBin] : [])].join(path.delimiter) };
+  const env: NodeJS.ProcessEnv = { ...item.ctx.env, PATH: [bin, ...(multipleCli ? [secondBin] : [])].join(path.delimiter) };
   const root = path.join(item.ctx.cwd, 'grok-plugin');
   await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name: 'example', version: '1.0.0',
     description: 'Grok trust and stale fixture.', platforms: ['grok'], skills: './skills',
@@ -70,6 +73,8 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/example', sourceIdentity: item.binding.plugin.sourceIdentity });
   const installed = path.join(item.host, 'installed-plugins/local-123');
   const state = { trusted, enabled: true, source: '', registered: false };
+  await fs.ensureDir(env.AW_HOME!);
+  const workspace = path.join(await fs.realpath(env.AW_HOME!), 'runtime', 'user');
   const queryCwds = new Set<string>();
   const nativeWrites: string[][] = [];
   const runner: NonNullable<RebuildExecutionContext['nativeCliRunner']> = async ({ args, cwd }) => {
@@ -80,11 +85,12 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
       name: 'example', repo_key: 'local-123', version: '1.0.0', path: installed, source: state.source }] : []);
     else if (args[0] === 'inspect') {
       queryCwds.add(cwd);
-      stdout = JSON.stringify({ grokVersion: '1.0.77', cwd, projectRoot: null, projectTrusted: state.trusted,
+      stdout = JSON.stringify({ grokVersion: '1.0.77', cwd, projectRoot: null, projectTrusted: cwd === workspace ? state.trusted : true,
         configSources: { layers: [{ role: 'user', path: path.join(item.host, 'config.toml') }] },
         plugins: state.registered ? [{ name: 'example', scope: 'user', path: installed, enabled: state.enabled }] : [],
         skills: [], agents: [], mcpServers: [] });
     } else {
+      expect(cwd).toBe(workspace);
       nativeWrites.push([...args]);
       if (args[0] === 'plugin' && args[1] === 'install') {
         state.source = args[2]!; state.registered = true; state.enabled = true;
@@ -104,20 +110,52 @@ async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = fa
     catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0' } });
   const observe = () => inspectDeployment({ ...item.ctx, env, runner }, item.binding);
   const grant = async () => {
-    await runner({ command: path.join(bin, 'grok'), cwd: item.ctx.cwd, env,
+    await runner({ command: path.join(bin, 'grok'), cwd: workspace, env,
       args: ['plugin', 'install', item.layout.packageRoot, '--trust'] });
+    if (trusted !== undefined) await fs.outputFile(path.join(item.host, 'trusted_folders.toml'),
+      `[folders.${JSON.stringify(workspace)}]\ntrusted = ${trusted}\ndecided_at = 1\n`);
     // Explicit native consent happens between AW commands, with a new Review.
     await context.platformRebuildSession?.dispose();
     delete context.platformRebuildSession;
     context.preparedArtifactRenderResults = new Map();
     integration = createRebuildIntegration({ context });
   };
-  return { item, state, queryCwds, nativeWrites, context, get integration() { return integration; }, prepare, observe, grant };
+  return { item, state, workspace, queryCwds, nativeWrites, context, get integration() { return integration; }, prepare, observe, grant };
 }
 
 describe('public native consumer observation', () => {
-  // Test Value Gate: runtime trust does not grant new-source consent, and fresh
-  // neutral query directories must not invalidate an unchanged prepared action.
+  // A trusted caller, linked runtime or nested project configuration cannot authorize User maintenance.
+  it.each(['home', 'nested-config', 'workspace-mcp', 'home-repo', 'linked-runtime', 'detected-project', 'unknown-project'] as const)(
+    'reports Grok folder trust only for a neutral User workspace with %s', async (scenario) => {
+      const item = await fixture('grok');
+      const env: NodeJS.ProcessEnv = { ...item.ctx.env, AW_HOME: undefined };
+      const home = env.HOME!;
+      await Promise.all(['.codex', '.claude', '.grok'].map((name) => fs.ensureDir(path.join(home, name))));
+      await fs.outputFile(path.join(home, 'AGENTS.md'), 'global');
+      const runtime = path.join(home, '.aw', 'runtime');
+      if (scenario === 'linked-runtime') {
+        await fs.ensureDir(path.dirname(runtime));
+        await fs.symlink(item.ctx.cwd, runtime, 'junction');
+      }
+      await fs.ensureDir(path.join(runtime, 'user'));
+      const workspace = await fs.realpath(path.join(runtime, 'user'));
+      await fs.outputFile(path.join(item.host, 'trusted_folders.toml'),
+        `[folders.${JSON.stringify(workspace)}]\ntrusted = true\ndecided_at = 1\n`);
+      if (scenario === 'nested-config') await fs.ensureDir(path.join(runtime, '.grok'));
+      if (scenario === 'workspace-mcp') await fs.outputJson(path.join(runtime, 'user', '.mcp.json'), { mcpServers: {} });
+      if (scenario === 'home-repo') await fs.ensureDir(path.join(home, '.git'));
+      const cwds = new Set<string>();
+      const observed = await inspectDeployment({ ...item.ctx, env, runner: async ({ args, cwd }) => {
+        cwds.add(cwd);
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? [] :
+          { grokVersion: '1.0.77', projectRoot: scenario === 'detected-project' ? home : scenario === 'unknown-project' ? undefined : null, projectTrusted: true,
+            plugins: [], skills: [], agents: [], mcpServers: [] }) };
+      } }, item.binding);
+      expect(observed.grokScopeAuthorization).toBe(scenario === 'home' ? 'granted' : 'unknown');
+      expect(cwds.has(workspace)).toBe(['home', 'detected-project', 'unknown-project'].includes(scenario));
+    });
+
+  // The host can trust the caller and temporary directories independently of the User workspace.
   it.each([true, false, undefined])('uses Grok native User trust=%s through preparation and execution', async (trusted) => {
     const test = await grokRebuildFixture(trusted);
     try {
@@ -125,7 +163,8 @@ describe('public native consumer observation', () => {
       const repeat = await test.observe();
       expect(test.queryCwds.size).toBe(2);
       expect(repeat.prerequisites.nativeSources?.configurationEvidence).toBe(before.prerequisites.nativeSources?.configurationEvidence);
-      expect(before.grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
+      expect(before.grokScopeAuthorization).toBe('unknown');
+      expect(await fs.pathExists(test.workspace)).toBe(false);
       const target = await test.prepare();
       const result = await executeRebuildOperation({ command: 'sync', target, driver: test.integration.driver });
       expect(result.status).toBe('failed');
@@ -134,8 +173,11 @@ describe('public native consumer observation', () => {
       ]);
       expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
       expect(test.nativeWrites).toEqual([]);
+      await test.grant();
+      // Grok with only a Skill can report true even for a missing or denied folder decision.
+      test.state.trusted = true;
+      expect((await test.observe()).grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
       if (trusted) {
-        await test.grant();
         const synced = await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });
         expect(synced.status, JSON.stringify(synced)).toBe('succeeded');
         expect((await test.observe()).registration).toBe('present');
@@ -143,6 +185,13 @@ describe('public native consumer observation', () => {
         const refreshed = await executeRebuildOperation({ command: 'reinstall', target: refresh, driver: test.integration.driver });
         expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
         expect(test.nativeWrites.filter((args) => args[0] === 'plugin' && args[1] === 'install')).toHaveLength(2);
+      } else {
+        const refresh = await test.prepare('reinstall');
+        const result = await executeRebuildOperation({ command: 'reinstall', target: refresh, driver: test.integration.driver });
+        expect(result.deploymentReceipts?.flatMap((receipt) => receipt.effects.flatMap((effect) => effect.diagnostics))).toContainEqual(
+          expect.objectContaining({ detail: { reasonCode: 'grokNativeRefreshWorkspaceTrust', path: test.item.layout.packageRoot } }));
+        expect(test.nativeWrites).toEqual([['plugin', 'install', test.item.layout.packageRoot, '--trust']]);
+        expect((await test.observe()).registration).toBe('present');
       }
     } finally { await test.context.platformRebuildSession?.dispose(); }
   });
@@ -356,31 +405,161 @@ describe('public native consumer observation', () => {
     expect(filtered.prerequisites.agentConsumers.configurationEvidence).not.toBe(consumerInstalled.prerequisites.agentConsumers.configurationEvidence);
   });
 
-  // Test Value Gate: actual config and manifests distinguish absence, filtering,
-  // trust and package access without granting unqualified invocation semantics.
-  it('reports complete Pi absence and actual installed version/filter/allowlist facts through capabilities', async () => {
+  it('observes a generated Pi extension without reading the sibling package Skill bytes', async () => {
     const item = await fixture('pi');
-    expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers).toMatchObject({ observation: 'complete', candidates: [] });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['consumer-missing']);
+    const sibling = { ...item.binding, plugin: { ...item.binding.plugin, pluginId: 'team/guide' } };
+    const layout = await getDeploymentLayout(item.ctx, sibling);
+    sibling.physicalKey = getPhysicalKey(layout.physicalIdentity);
+    const root = layout.packageRoot;
+    const file = path.join(root, 'index.mjs');
+    const skill = path.join(root, 'skills', 'guide', 'SKILL.md');
+    const code = 'export default function register(pi) { pi.on("session_start", () => {}); }\n';
+    await fs.outputJson(path.join(root, 'package.json'), { name: 'guide', version: '1.0.0',
+      pi: { extensions: ['./index.mjs'], skills: ['./skills'] } });
+    await fs.outputFile(file, code);
+    await fs.outputFile(skill, 'Guide content.\n'.repeat(64000));
+    await fs.outputJson(item.layout.activationPath, { packages: [root] });
+    item.setPiList(`User packages:\n  ${root}\n    ${root}\n`);
+    const nativeProjection = { physicalIdentity: layout.physicalIdentity, inputDigest: `sha256:${'c'.repeat(64)}`,
+      contentDigest: (await readPlatformPackageContentDigest(root))!, components: [
+        { id: 'hook:guide', nativeName: 'guide', relativeOutputs: ['index.mjs'] },
+        { id: 'skill:guide', nativeName: 'guide', relativeOutputs: ['skills/guide/SKILL.md'] },
+      ] };
+    const owner = { skillRoot: root, allowedRoot: path.dirname(root), identity: deploymentPackageComponent(sibling, layout).identity };
+    const observe = async () => (await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.observation;
+    const read = vi.spyOn(fs, 'readFile');
+    try {
+      await writeSkillOwnerMarker({ ...owner, nativeProjection });
+      expect(await observe()).toBe('unknown');
+      await writeSkillOwnerMarker({ ...owner, nativeProjection: { ...nativeProjection,
+        piExtensionDigest: `sha256:${createHash('sha256').update(code).digest('hex')}` } });
+      expect(await observe()).toBe('complete');
+      const reads = read.mock.calls.map(([filename]) => filename);
+      expect(reads).toContain(file);
+      expect(reads).not.toContain(skill);
+    } finally { read.mockRestore(); }
+  });
+
+  // Optional consumer settings control the delivered-role warning. No warning
+  // should claim a role was installed when the package delivered none.
+  it('reports Pi extension absence, filtering and package access after role delivery', async () => {
+    const item = await fixture('pi');
+    const warning = async (ids = ['reviewer']) => piAgentConsumerDiagnostic(item.binding, await inspectDeployment(item.ctx, item.binding), ids);
+    expect(await warning([])).toBeUndefined();
+    expect(await warning()).toMatchObject({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode: 'piAgentConsumerMissing' } });
     const root = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
     await consumer(root);
     await fs.outputJson(item.layout.activationPath, { packages: [{ source: 'npm:@tintinweb/pi-subagents@0.22.0', extensions: [] }] });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['consumer-disabled']);
+    expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
     await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0'] });
-    await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), { name: '@team/example' });
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['different-package'] });
     const denied = await inspectDeployment(item.ctx, item.binding);
     expect(denied.prerequisites.agentConsumers.candidates[0]).toMatchObject({ id: '@tintinweb/pi-subagents', version: '0.22.0',
       enabled: 'yes', trust: 'trusted', packageAccess: 'denied', settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
-    expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['policy-blocked']);
+    expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentPackageAccessDenied' } });
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['example'] });
-    const allowed = await item.caps();
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({
       scope: { kind: 'user' }, packageAccess: 'allowed', trust: 'trusted',
       settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
-    expect(allowed.kinds.agent).toMatchObject({ status: 'unverified', reasonCodes: ['capability-unverified'] });
+    expect(await warning()).toBeUndefined();
+    const targetSource = path.relative(item.host, item.layout.packageRoot).split(path.sep).join('/');
+    await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0', targetSource] });
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: [targetSource.toUpperCase()] });
+    expect(await warning()).toBeUndefined();
     await consumer(root, '99.0.0');
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({ version: '99.0.0', packageAccess: 'unknown' });
+    expect(await warning()).toBeUndefined();
+  });
+
+  it('uses Pi’s resolved extension location and honors filters when multiple consumers are present', async () => {
+    const item = await fixture('pi');
+    const nico = path.join(item.ctx.cwd, 'legacy-global', 'pi-subagents');
+    const tintin = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(nico, '0.89.1', 'pi-subagents');
+    await consumer(tintin);
+    const nicoSource = 'npm:pi-subagents@0.89.1';
+    const tintinSource = 'npm:@tintinweb/pi-subagents@0.22.0';
+    item.setPiList(`User packages:\n  ${nicoSource} (filtered)\n    ${nico}\n  ${tintinSource}\n    ${tintin}\n`);
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
+    const observe = async (extensions: string[]) => {
+      await fs.outputJson(item.layout.activationPath, { packages: [{ source: nicoSource, extensions }, tintinSource] });
+      return inspectDeployment(item.ctx, item.binding);
+    };
+    const allowed = await observe(['!*.ts', '+./index.ts']);
+    expect(allowed.prerequisites.agentConsumers.candidates).toEqual([
+      expect.objectContaining({ id: 'pi-subagents', enabled: 'yes', packageAccess: 'allowed' }),
+      expect.objectContaining({ id: '@tintinweb/pi-subagents', enabled: 'yes', packageAccess: 'denied' }),
+    ]);
+    expect(piAgentConsumerDiagnostic(item.binding, allowed, ['reviewer'])).toBeUndefined();
+    const blocked = await observe(['*.ts', '+./index.ts', '-index.ts']);
+    expect(piAgentConsumerDiagnostic(item.binding, blocked, ['reviewer'])).toMatchObject({
+      detail: { reasonCode: 'piAgentConsumerUnavailable' },
+    });
+  });
+
+  it.each(['0.87.0', '0.89.1'])('reports known pi-subagents %s incompatibility for a bare AW package source', async (version) => {
+    const item = await fixture('pi');
+    const nico = path.join(item.host, 'npm/node_modules/pi-subagents');
+    const tintin = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(nico, version, 'pi-subagents');
+    await consumer(tintin);
+    await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), {
+      name: item.layout.nativeIdentity.packageId, version: '1.0.0', pi: { subagents: { agents: ['./agents'] } },
+    });
+    const targetSource = path.relative(item.host, item.layout.packageRoot).split(path.sep).join('/');
+    const observe = async (target: string, ...otherSources: string[]) => {
+      await fs.outputJson(item.layout.activationPath, { packages: ['npm:pi-subagents', target, ...otherSources] });
+      return piAgentConsumerDiagnostic(item.binding, await inspectDeployment(item.ctx, item.binding), ['reviewer']);
+    };
+    expect(await observe(targetSource)).toMatchObject({ detail: { reasonCode: 'piAgentPackageSourceUnsupported' } });
+    expect(await observe(`./${targetSource}`)).toBeUndefined();
+    expect(await observe(targetSource, 'npm:@tintinweb/pi-subagents')).toBeUndefined();
+    await consumer(nico, '99.0.0', 'pi-subagents');
+    expect(await observe(targetSource)).toBeUndefined();
+  });
+
+  it('uses trusted Pi Project overrides and checks access to a Project package even with a User consumer', async () => {
+    const item = await fixture('pi', true);
+    const user = path.join(item.host, 'npm/node_modules/pi-subagents');
+    const project = path.join(item.ctx.cwd, '.pi/npm/node_modules/pi-subagents');
+    const trust = path.join(item.host, 'trust.json');
+    await consumer(user, '0.87.0', 'pi-subagents');
+    await consumer(project, '0.87.0', 'pi-subagents');
+    await fs.outputJson(trust, { [await fs.realpath(item.ctx.cwd)]: true });
+    await fs.outputJson(path.join(item.host, 'settings.json'), { packages: ['npm:pi-subagents@0.87.0'] });
+    const observe = async (override: object) => {
+      await fs.outputJson(item.layout.activationPath, { packages: [{ source: 'npm:pi-subagents', ...override }] });
+      return inspectDeployment(item.ctx, item.binding);
+    };
+    const replaced = await observe({ extensions: [] });
+    expect(replaced.prerequisites.agentConsumers.candidates).toEqual([
+      expect.objectContaining({ scope: item.binding.scope, enabled: 'no' }),
+    ]);
+    expect(piAgentConsumerDiagnostic(item.binding, replaced, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
+    const delta = await observe({ autoload: false, extensions: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, delta, ['reviewer'])).toBeUndefined();
+    const excluded = await observe({ autoload: false, extensions: ['!*.ts'] });
+    expect(piAgentConsumerDiagnostic(item.binding, excluded, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
+    await fs.outputJson(trust, { [await fs.realpath(item.ctx.cwd)]: false });
+    const denied = await observe({ extensions: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, denied, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piProjectTrustRequired' } });
+  });
+
+  it('withholds a missing Pi consumer warning when an unknown extension or unreadable settings could affect it', async () => {
+    const item = await fixture('pi');
+    const unknownPackage = path.join(item.ctx.cwd, 'custom-extension');
+    await consumer(unknownPackage, '1.0.0', 'custom-extension');
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot, unknownPackage] });
+    const unknown = await inspectDeployment(item.ctx, item.binding);
+    expect(unknown.prerequisites.agentConsumers).toMatchObject({ observation: 'unknown', candidates: [] });
+    expect(piAgentConsumerDiagnostic(item.binding, unknown, ['reviewer'])).toBeUndefined();
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot] });
+    await fs.outputFile(path.join(item.host, 'subagents.json'), '{');
+    const unreadable = await inspectDeployment(item.ctx, item.binding);
+    expect(unreadable.configuration?.activation).toBe('enabled');
+    expect(unreadable.prerequisites.agentConsumers.observation).toBe('unknown');
+    expect(piAgentConsumerDiagnostic(item.binding, unreadable, ['reviewer'])).toBeUndefined();
   });
 
   it('observes project trust independently and does not fabricate a consumer from a source string', async () => {
@@ -404,6 +583,7 @@ describe('public native consumer observation', () => {
   it('keeps Grok native activation, local configuration, load and Claude overlap independent', async () => {
     const item = await fixture('grok');
     const name = item.layout.nativeIdentity.packageId;
+    await fs.ensureDir(path.join(item.ctx.env!.AW_HOME!, 'runtime', 'user'));
     const installed = path.join(item.host, 'installed-plugins', 'local-123');
     const compatible = path.join(item.ctx.env!.HOME!, '.claude', 'plugins', 'cache', name);
     await fs.outputJson(path.join(compatible, '.claude-plugin/plugin.json'), { name, version: '2.0.0' });
@@ -414,7 +594,7 @@ describe('public native consumer observation', () => {
     let active = false;
     const list = [{ status: 'installed', name, repo_key: 'local-123', version: '1.0.0', path: installed, source: item.layout.packageRoot }];
     item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? list : {
-      grokVersion: '1.0.77', projectTrusted: false, configSources: { layers: [{ role: 'user', path: config }] },
+      grokVersion: '1.0.77', projectRoot: null, projectTrusted: false, configSources: { layers: [{ role: 'user', path: config }] },
       plugins: [{ name, scope: 'user', path: installed, enabled: true }, { name, scope: 'user', path: compatible, enabled: true },
         { name: 'extra-native', scope: 'user', path: extraNative, enabled: true },
         { name: 'unknown-extra', scope: 'user', path: path.join(item.ctx.cwd, 'unknown-extra'), enabled: true }],
@@ -587,7 +767,8 @@ describe('public native consumer observation', () => {
       policy = 'on';
       const after = await read();
       expect(after).toEqual({ ...before, prerequisites: { ...before.prerequisites,
-        nativeSources: { ...before.prerequisites.nativeSources!, configurationEvidence: expect.any(String) } } });
+        nativeSources: { ...before.prerequisites.nativeSources!, configurationEvidence: expect.any(String),
+          grokScopeEvidence: { ...before.prerequisites.nativeSources!.grokScopeEvidence, scopeDigest: expect.any(String) } } } });
       expect(after.prerequisites.nativeSources?.configurationEvidence).not.toBe(before.prerequisites.nativeSources?.configurationEvidence);
       const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
       expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });

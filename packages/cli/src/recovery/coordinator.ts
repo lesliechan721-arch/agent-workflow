@@ -1,5 +1,6 @@
 import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 import path from 'node:path';
+import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { CatalogSourceInventoryIncompleteError } from '../utils/catalog-source-references.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
@@ -60,7 +61,7 @@ import { selectAgents, writePreferences,
 import { calculateIntentDigest } from '../intent/intent-codec.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
-import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
+import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
 import { prepareJointRecovery, executeJointRecovery, type JointRecoveryState } from './joint-coordinator.js';
 import { createEmptyNativeDemandView, type NativeSharedReferenceView } from '../utils/native-demand.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -388,7 +389,12 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
     ].filter((deployment) => deployment.binding.plugin.pluginId === pluginId
       && deployment.binding.platform === platform && deployment.binding.scope.kind === plan.options.scope)
       .map((deployment) => [deployment.binding.id, deployment]));
-    if (deploymentPlans.size) target.deploymentPlans = [...deploymentPlans.values()];
+    if (deploymentPlans.size) {
+      target.deploymentPlans = [...deploymentPlans.values()];
+      const gaps = target.deploymentPlans.flatMap(({ expected, evidence }) =>
+        scopeNativeComponentGaps(expected.unmet, target, evidence.renderUnits));
+      if (gaps.length) target.componentGaps = uniqueRecoveryComponentGaps(gaps);
+    }
     const exclusions = [
       ...(group.preview.deploymentExclusions ?? []),
       ...(result.deploymentExclusions ?? []),
@@ -496,6 +502,33 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
         target.observation = succeeded ? 'verified' : 'unknown';
         target.content = succeeded ? 'satisfied' : 'unknown';
       }
+      if (deployments.length && plan.command !== 'cleanup' && plan.command !== 'uninstall') {
+        const gaps = deployments.flatMap((entry) =>
+          scopeNativeComponentGaps(entry.unmet, target, deploymentPlans.get(entry.bindingId)?.evidence.renderUnits));
+        if (gaps.length) target.componentGaps = uniqueRecoveryComponentGaps(gaps);
+        const installed = new Set(deployments.flatMap((entry) => {
+          const deployment = deploymentPlans.get(entry.bindingId);
+          if (!deployment) return [];
+          const ids = new Set(deployment.expected.components.map(({ id }) => id));
+          if (!succeeded) {
+            const partial = new Set(deployment.effects.filter((effect) => (effect.kind === 'publish-package' || effect.kind === 'write-supplement')
+              && entry.effects.some((actual) => actual.id === effect.id && actual.status === 'applied' && actual.mutation === 'confirmed'))
+              .flatMap((effect) => effect.componentIds));
+            for (const id of ids) if (!partial.has(id)) ids.delete(id);
+          }
+          for (const gap of entry.unmet) if (!isDeliveryCapabilityGap(gap)) ids.delete(gap.componentId ?? gap.id);
+          return entry.after.components.filter(({ id, presence, reasonCodes }) =>
+            ids.has(id) && presence === 'present' && !reasonCodes.length).map(({ id }) => id);
+        }));
+        if (installed.size || succeeded && target.deploymentPlans?.every(({ expected }) => !expected.components.length)) {
+          target.installedComponentCount = installed.size;
+          target.installedComponentIds = [...installed];
+        }
+        if (succeeded && !target.blockers.length && gaps.every(isDeliveryCapabilityGap)) {
+          if (installed.size) target.satisfaction = 'installed';
+          else if (gaps.length && target.deploymentPlans?.every(({ expected }) => !expected.components.length)) target.satisfaction = 'not-applicable';
+        }
+      }
       if (!succeeded && !target.blockers.length) block(target, 'nativeRecoveryFailed');
     }
   }
@@ -528,20 +561,26 @@ function portableResults(plan: RecoveryPlan, prepared: PortablePreparation): voi
     const observations = prepared.targets.filter((entry) => entry.agent === agent);
     const gaps = (prepared.unmet ?? []).filter((gap) => gap.agent === agent);
     if (gaps.length) target.componentGaps = gaps;
+    const blockingGap = gaps.some((gap) => !isDeliveryCapabilityGap(gap));
     target.content = observations.some((entry) => entry.observation === 'conflict') ? 'conflict'
       : observations.some((entry) => entry.observation === 'unknown') ? 'unknown'
       : observations.some((entry) => entry.observation === 'drifted') ? 'drifted'
       : observations.some((entry) => entry.observation === 'absent') ? 'absent'
-      : observations.length || prepared.intentionalEmpty && gaps.length === 0 ? 'satisfied' : 'unknown';
-    if (gaps.length && target.content !== 'conflict') target.content = 'unknown';
+      : observations.length || prepared.intentionalEmpty || gaps.length && !blockingGap && !prepared.blockers.length ? 'satisfied' : 'unknown';
+    if ((blockingGap || observations.some((entry) => entry.disposition === 'retain')) && target.content !== 'conflict') target.content = 'unknown';
     target.observation = target.content === 'satisfied' ? 'verified'
       : target.content === 'absent' ? 'missing' : 'unknown';
     for (const gap of gaps) plan.changes.push(`组件未满足 · ${gap.providerPluginId} · ${gap.componentId ?? gap.id} · ${gap.reasonCode}`
       + gap.requiredFeatures.map((requirement) => ` · ${requirement.feature}${requirement.values ? `: ${requirement.values.join(', ')}` : ''}`).join(''));
     for (const code of [...prepared.globalBlockers, ...observations.flatMap((entry) => entry.blocker
-      && !(entry.disposition === 'retain' && entry.blocker === 'portableComponentsUnmet') ? [entry.blocker] : [])]) {
+      && !(entry.disposition === 'retain' && entry.blocker === 'previousDeploymentRetained') ? [entry.blocker] : [])]) {
       block(target, code, portablePreparationDiagnostic(prepared, diagnostic(code), agent));
     }
+    const retained = observations.filter((entry) => entry.disposition === 'retain');
+    if (retained.length) target.reasons = retained.map((entry) => retainedOutputDiagnostic(
+      entry.providerPluginId, agent, target.scope, entry.physicalPath, `skill.${entry.skill}`));
+    const policyNotices = prepared.policyNotices?.filter((notice) => notice.subject?.target === agent);
+    if (policyNotices?.length) (target.reasons ??= []).push(...policyNotices);
     target.backend = observations.map((entry) => ({ skill: entry.skill, providerPluginId: entry.providerPluginId,
       requiredBy: portableRequiredBy(plan, prepared, entry), observation: entry.observation,
       ownership: entry.ownership, associatedAgents: entry.associatedAgents }));
@@ -563,12 +602,13 @@ function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
   const preparedTargets = prepared.targets.filter((entry) => entry.agent === agent);
   const gaps = (prepared.unmet ?? []).filter((gap) => gap.agent === agent);
   if (gaps.length) target.componentGaps = gaps;
-  const intentionalEmpty = prepared.mode === 'deploy' && prepared.intentionalEmpty && gaps.length === 0 && prepared.blockers.length === 0
+  const blockingGap = gaps.some((gap) => !isDeliveryCapabilityGap(gap));
+  const completeEmpty = prepared.mode === 'deploy' && (prepared.intentionalEmpty || gaps.length > 0 && !blockingGap) && prepared.blockers.length === 0
     && globalBlockers.length === 0 && preparedTargets.every((entry) => entry.disposition === 'remove')
     && outcomes.length === preparedTargets.length
     && outcomes.every((entry) => entry.observation === 'absent' && entry.blockers.length === 0
       && ['applied', 'no-op'].includes(entry.execution));
-  target.execution = (prepared.mode === 'cleanup' || intentionalEmpty) && outcomes.length === 0 && !globalBlockers.length ? 'no-op' : outcomes.length > 0 && outcomes.every((entry) => entry.execution === 'no-op') ? 'no-op'
+  target.execution = (prepared.mode === 'cleanup' || completeEmpty) && outcomes.length === 0 && !globalBlockers.length ? 'no-op' : outcomes.length > 0 && outcomes.every((entry) => entry.execution === 'no-op') ? 'no-op'
     : outcomes.length > 0 && outcomes.every((entry) => ['applied', 'no-op'].includes(entry.execution)) ? 'applied'
     : outcomes.some((entry) => ['applied', 'no-op'].includes(entry.execution)) ? 'partial'
     : outcomes.some((entry) => entry.execution === 'failed') ? 'failed' : 'not-run';
@@ -585,14 +625,28 @@ function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
   if (prepared.mode === 'cleanup' && globalBlockers.length === 0
     && outcomes.every((entry) => entry.observation === 'absent' && entry.blockers.length === 0)) {
     target.observation = 'missing'; target.content = 'absent';
-  } else if (intentionalEmpty) {
+  } else if (completeEmpty) {
     target.observation = 'verified'; target.content = 'satisfied';
   }
-  if (gaps.length) {
+  if (prepared.mode === 'deploy') {
+    const installed = contentOutcomes.filter((entry) => entry.providerPluginId === target.pluginId
+      && entry.disposition === 'write' && entry.observation === 'satisfied' && !entry.blockers.length);
+    if (installed.length || !globalBlockers.length && contentOutcomes.every((entry) =>
+      entry.disposition === 'retain' || entry.observation === 'satisfied' || entry.observation === 'absent')) {
+      target.installedComponentCount = installed.length;
+      if (installed.every((entry) => entry.componentId)) target.installedComponentIds = installed.map((entry) => entry.componentId!);
+    }
+    if (target.content === 'satisfied' && !blockingGap && !globalBlockers.length && outcomes.every((entry) => !entry.blockers.length)
+      && (target.execution === 'applied' || target.execution === 'no-op')) {
+      if (installed.length) target.satisfaction = 'installed';
+      else if (gaps.some((gap) => gap.providerPluginId === target.pluginId)) target.satisfaction = 'not-applicable';
+    }
+  }
+  if (blockingGap || contentOutcomes.some((entry) => entry.disposition === 'retain')) {
     if (target.execution === 'applied' || target.execution === 'no-op') target.execution = 'partial';
     if (target.content !== 'conflict') target.content = 'unknown';
     target.observation = 'unknown';
-    block(target, 'portableComponentsUnmet');
+    if (blockingGap) block(target, 'portableComponentsUnmet');
   }
   target.backend = outcomes.map((entry) => ({ skill: entry.skill, providerPluginId: entry.providerPluginId,
     requiredBy: portableRequiredBy(plan, prepared, entry), observation: entry.observation,
@@ -613,7 +667,8 @@ function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation
 }
 
 function isHealthyPortableProvider(group: PortablePreparation): boolean {
-  return !group.blockers.length && !group.unmet.length && (group.intentionalEmpty || group.targets.length > 0)
+  return !group.blockers.length && group.unmet.every(isDeliveryCapabilityGap)
+    && (group.intentionalEmpty || group.unmet.length > 0 || group.targets.length > 0)
     && group.targets.every((target) => target.disposition === 'write' && target.ownership === 'aw'
       && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest);
 }
@@ -1572,6 +1627,8 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
   });
   return { inputs: plan.joint?.evidence ?? [plan.originalIntent, plan.preferencesEvidence],
     catalog: plan.command === 'install' ? plan.demand.catalogOperationContext?.generationSetDigest : undefined,
+    pendingUserSkills: plan.joint?.pendingUserSkills,
+    providerRetirements: plan.joint ? [...plan.joint.providerRetirements] : undefined,
     command: plan.command, dependencyCleanupTargets: plan.dependencyCleanupTargets,
     declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
     children: (plan.joint?.children ?? [plan]).map(describe) };

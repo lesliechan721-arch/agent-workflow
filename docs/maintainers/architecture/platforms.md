@@ -6,6 +6,8 @@
 
 target 为 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。具体 Agent 使用原生包或原生扩展，必要宿主资源由 AW 明确托管；generic 仅管理通用 Skills。Native 失败不改走散文件安装。
 
+八个原生目标在 User 和 Project 范围按标准映射处理 Skill、Agent、MCP、Hook 和 Instruction。平台可用、AW 可写入的语义和已验证的宿主运行能力分别判断。运行资格缺口本身不阻断安全交付。作者输入、映射和运行资格的字段见[运行时合同](../../reference/plugin-runtime.md#33-平台能力与具体要求)，结果与恢复见[生命周期](lifecycle.md#平台执行入口与结果)。
+
 CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。显式 status `--observe-native` 的 OpenCode 私有本地服务启动与副作用见[状态与配置](config-and-status.md#31-只读观察)。
 
 一个 target 包含本机已识别且受支持的 CLI/App；Claude 与 Copilot 只识别 CLI。未安装的另一产品面不自动成为要求。某产品面可用即可选择 target，其他已发现面仍保留限制；没有基础可用路径时依事实报告 missing/unsupported/unknown。App 已存在但缺少可用入口不能报 missing。发现覆盖不足也不能报 missing。
@@ -28,27 +30,40 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 
 数字门槛是必要接口条件，不是完整运行资格。已开放的普通 Skill 使用同一接口最低条件，不要求版本等于历史实测值；OS、架构、产品、scope 与组件限制仍分别检查。一个完整受支持入口即可提供当前能力，其他入口的资格缺口不能单独降级该入口。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。Pi 的 npm JS 入口每次运行原生版本 probe。仅在原生输出为 `1.5.0`、元数据为 `@earendil-works/pi-coding-agent@1.5.0` 且 `bin.pi` 精确指向本次 `dist/bundle/cli.js` 时省去重复 help。元数据读取有界，不是发布者签名；缺失、损坏、不匹配或越界时回到原帮助身份 probe，不缓存版本或降低最低版本条件。
 
+Windows 上的 Copilot CLI、Windows x64 和 arm64 上的 Antigravity CLI，以及 Windows x64 上的 Grok Build，各自在发现时共享一次 5 秒的版本查询启动余量。每个入口的首次 `--version` 在 5 秒基础时限上加上剩余余量，最多可连续运行 10 秒。提前返回时只扣除超出基础时限的部分，剩余时间供后续入口使用。执行器报告探测超时会耗尽该余量。Antigravity 和 Grok 每个入口只执行一次版本探测。Grok 随后的插件管理和 JSON 清单接口检查各有 5 秒时限。任一查询失败时入口状态为 unknown，查询成功但缺少所需命令或 `--json` 时为 unsupported。Windows x64 的 Copilot 首个 PATH 入口若耗尽 10 秒，在确认清理、探测未取消且未设置 `AW_NATIVE_CLI_TIMEOUT_MS` 时，可在同一入口及工作目录再查询一次，期限为 5 秒。共享本次发现的消费者取得同一结果。成功输出须通过客户端身份和最低版本核验，需要 `--help` 补证身份时期限为 5 秒。持续失败保留未知。
+
 Pi 的一次只读发现最多并行检查两个独立入口。每个入口先读自身版本，再按上述条件决定是否执行 help。候选与普通失败诊断保持 PATH 顺序。取消或失败时等待本批全部探测结束，优先报告未确认的进程清理错误。
 
-普通 Skill 的历史实测范围如下；版本是证据样本，不是运行白名单。Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Claude CLI `2.1.317` 在六环境开放 User/Project 普通 Skill，依据[管理与有效启用状态记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)；Skill 发现/加载仍未知，不作为该有限管理资格的阻塞。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User/Project 普通 Skill；User 依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)，Project 依据[四环境项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json)，后者使用精确临时项目的固定版本经验信任状态，Skill 发现/加载仍未知，公开 AW Project 编排与动态消费字节仍须新 Hosted 实测。OpenCode CLI `2.0.0` 在上述六环境开放 User/Project 普通 Skill，依据[管理、实际消费字节与有效 scope 记录](../../../scripts/qualification/evidence/native-opencode-skills-2026-11-13.json)；POSIX 使用已批准的普通管理观察，Windows 保留实际 Job 结果，均不提升 Provider 或 OS 隔离声明。其公开 AW 全链仍由新的对应报告独立判断。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理和有效作用域，已取得的 Skill 发现证据另列；App、调用控制、模型采用及其他组件不继承资格；其他版本满足接口最低条件时可尝试普通管理，但不继承这些实际运行证据。公开 AW 完整编排仍须单独验证。 验收以 AW 管理的安装和更新正确、scope 有效状态可证为准；动态渲染须额外核对平台实际消费位置的字节，普通加载/模型采用未知单独记录，不作为该管理验收的阻塞。AW 托管输出仍验证生成与更新，平台采用未知不阻塞。
+普通 Skill 的原生管理资格按下列历史实测记录判断。
 
-Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开放 User 普通 Skill，依据[六环境 User 叶证据](../../../scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json)。记录包含安装、版本更新、同版本正文刷新、目标 Git 项目与外部 neutral 的有效启用状态、实际副本字节、owner 保留及移除后双侧缺席。Linux 双架构与 macOS x64 来自原运行，macOS ARM64 与 Windows 双架构来自剩余环境补测，原运行的失败与容量取消保持。Project、App、其他 host、Agent 等其他组件仍 unverified；其他版本按相同接口最低条件判断，实测证据仍限于记录版本；Skill 加载、模型采用和会话 trust 未知独立记录。Linux x64 公开 AW 链已另行验证；该 Native 记录不证明其他宿主的公开 AW 完整编排，须由新的对应报告判断。
+- Codex CLI `0.167.0` 和 Pi CLI `1.5.0` 覆盖 Linux、macOS、Windows 的 x64/arm64。[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)
+- Copilot CLI `1.0.95` 在同样六环境取得 User/Project 证据，Project 需要显式宿主信任。Claude CLI `2.1.317` 在六环境取得 User/Project 管理与有效启用证据，Skill 发现与加载保持未知。[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json) · [Claude 管理与启用记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)
+- Grok CLI `1.0.77` 在 Linux x64/arm64、macOS arm64、Windows x64 取得 User/Project 证据。Project 使用固定版本的临时项目与信任条件，Skill 发现与加载保持未知。[Grok User 记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json) · [Grok Project 记录](../../../scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json)
+- OpenCode CLI `2.0.0` 在六环境取得 User/Project 管理、实际消费字节与有效范围证据。POSIX 使用普通管理观察，Windows 保留 Job 结果，Provider 与 OS 隔离另行判断。[OpenCode 原生记录](../../../scripts/qualification/evidence/native-opencode-skills-2026-11-13.json)
+
+原生管理资格限于记录中的产品、宿主、范围和行为。App、会话加载、调用策略、模型采用、动态内容的实际消费字节和公开 AW 全链分别按其证据判断。版本达到接口最低条件即可沿当前安全路由准备交付，历史实测范围另行保留。
+
+Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境取得 User 普通 Skill 管理证据。记录覆盖安装、版本更新、同版本正文刷新、目标 Git 项目和 neutral 的有效启用、实际副本字节、归属以及移除。Linux x64 的公开 AW 编排已另行验证。Project、App、其他宿主及其他组件的运行证据分别核对。[六环境 User 记录](../../../scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json)
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 每次发现先在当前用户注册的 Main 包中查找 `OpenAI.Codex`，存在候选时核对开始菜单的精确 `<PackageFamilyName>!App`、架构和路径链，再做有界搜索。包查询失败时仍查开始菜单，有对应家族则报告发现不完整。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
-手动 Skill 与普通 Skill 使用同一交付路径。AW 交付完整正文和资源，并写入宿主定义的调用字段。安装回执按实际产品、激活范围和入口判断哪条限制已验证。多个客户端读取同一份文件时，只有所有可用读者都具备相应资格，AW 才能确认该限制。未验证的控制在成功提示中逐项列出，其他技能继续更新。[固定版本取证](../../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
+Windows arm64 的 Codex 平台发现中，固定 5 秒的 `--version` 超时且已确认进程清理时，同一入口可再探测一次。每轮发现最多重试一次，每次仍为 5 秒。已配置 `AW_NATIVE_CLI_TIMEOUT_MS`、取消或清理未确认时沿用单次执行规则。重新取得的结果仍需通过身份和最低版本核验，持续失败的产品面保持未知。
+
+手动 Skill 与普通 Skill 使用同一交付路径。AW 交付完整正文和资源，并写入宿主定义的调用字段。多个客户端读取同一份文件时，逐个判断资格及适用限制。安装提示按[CLI 诊断合同](../../reference/cli.md#4-业务-payload-的边界)生成。Antigravity 仅提示实际读者已知不支持的控制或可靠证据观察到的策略降级。缺少会话实测时保持未知资格，安装回执省略该提示。[固定版本取证](../../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
 
 | 客户端 | 显式入口与自动调用控制 | 资格与安装提示 |
 | --- | --- | --- |
 | Codex | 用户选择 Skill，`agents/openai.yaml` 的 `allow_implicit_invocation` 控制隐式调用 | 0.167.0 CLI 的 User 在六个宿主验证了显式正文和自动候选。Project 使用同一加载器和独立激活，接口最低版本为 0.155.0。桌面 App 与 CLI 共读时提示 App 的验证缺口 |
 | Claude Code | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 2.1.317 的会话命令列表与模型上下文可核对两项行为。按有记录的宿主和 scope 判断 |
 | Pi | `/skill:技能名`，原生 frontmatter 禁止自动调用 | 1.5.0 的显式正文、自动候选和安装范围均有独立检查 |
-| OpenCode | `@技能名`，V2 注册时写入 `autoinvoke: false` | 2.0.0 的原生登记、显式附件正文及作用域可独立检查 |
+| OpenCode | `@技能名`，手动 Skill 注册时写入 `autoinvoke: false`。2.0.0 读取 `location`，2.2.6 读取 `path`，两字段指向同一份 `SKILL.md` | 2.0.0 和 2.2.6 均可独立检查原生登记、显式附件正文及作用域 |
 | Copilot CLI | `/插件名:技能名`，原生 frontmatter 禁止自动调用 | 1.0.95 的离线 ACP 需要显式挂载已登记的插件才能观察到手动入口。安装时提示默认会话的验证缺口 |
 | Grok Build | `/技能名`，原生 frontmatter 禁止自动调用 | 1.0.77 的 User 已验证显式正文和普通模型候选。Project 安装提示作用域的验证缺口 |
-| Antigravity CLI | User 插件保留原生 `disable-model-invocation` 布尔字段 | 1.3.4 的六宿主都验证了公开安装、更新、实际副本以及布尔字段解析。安装时提示登录后会话的调用行为仍待验证 |
+| Antigravity | Skill 保留原生 `disable-model-invocation`。CLI 的 User 和 Project 包均以插件名作为技能前缀 | 1.3.4 具备上述 User 管理证据。macOS arm64 的 1.5.13 登录 CLI 以 `/skills` 确认 User/Project 发现和原生 `model_invocable`，显式调用加载正文仍未取证。App 单独使用和 CLI/App 共读的会话行为分别保留未知 |
 | Cursor CLI | `/技能名`，客户端将 `disableModelInvocation` 传给服务 | `2026.11.05-86047df` 在 Linux x64 和 macOS arm64 的 User、Project 均核对了菜单、显式正文和发送的策略。服务端模型与桌面 App 尚未实测 |
 | generic | 通用文件以 `metadata` 保留作者的调用意图 | Skill 全部交付。安装提示说明该目录没有绑定实施调用限制的客户端 |
+
+Antigravity CLI 的 macOS arm64 Project 会话对照确认，声明 `user-invocable: false` 的 Skill 仍出现在 `/skills`。匹配该资格的 Project CLI 对 `skill.visibility=hidden` 给出已知不支持的提示。其他产品及范围按各自证据判断。[原生会话证据](../../../scripts/qualification/evidence/native-antigravity-cli-skills-1.5.13-darwin-arm64.json)
 
 Codex 子代理安装使用普通 Skill 的 CLI 接口门槛及 Linux、macOS、Windows 的 x64/arm64 范围。User 和 Project 支持独立上下文、宿主默认提示词组合、角色 TOML 和 AW 安装态配置读取。角色文件和角色名采用 `aw-<source>-<plugin>-<role>`，随包生成的调度 Skill 引用这个实际名称。子代理开关和会话实际使用由 Codex 决定。
 
@@ -105,31 +120,47 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 完整新包发布后按审核计划卸载重装；project .grok/plugins 独占目录；启用、范围授权与实际来源分别观测 |
 | generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
-所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
+表格定义固定适配方式。AW 检查实际入口、scope 和组件映射后发布可交付的内容，并记录具体缺口。各版本、宿主和产品面的会话资格另按实际证据记录。
 
-Claude 的安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。
+Claude 的角色写入包内默认的 `agents/` 目录，由宿主自动发现。安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。[Claude 清单参考](https://code.claude.com/docs/en/plugins-reference#component-path-forms)
 
 Antigravity CLI `1.3.4` 的 User 清单将 `source` 表示为 `antigravity` 类型，`path` 指向实际配置根下的 `plugins/<packageId>` 副本。该类型不证明 AW 归属。AW 核对精确路径、无 symlink 路径链、副本自己的完整 source/plugin/platform/scope/physical owner、物理身份及旧包完整摘要；仅 AW 来源目录的 owner 不足以授权原生更新或移除。foreign、共享、弱 owner、额外或改写的本地数据均保留。来源目录丢失时，精确原生副本证据仍可用于移除，不建立安装 ledger。普通 ensure 比较实际副本与本次冻结包的摘要，即使来源目录已是当前内容，也会为旧副本安排直接 `plugin install <packageRoot>` 刷新；版本变化与同版本正文变化共用该路径。执行前重验实际归属，执行后及最终 grouped postcheck 均核对实际副本字节；原生命令退出 0 或版本相同不能代替内容证据。
 
+Antigravity Project 使用 `.agents/plugins/<pluginName>/`，因此两个范围的技能都以 `<pluginName>:<skillName>` 调用。AW 仍按完整 Catalog 来源、插件身份和实际目录判断归属。同名目录有其他来源或本地修改时保留现场。同步旧版带来源前缀的项目包时，AW 核对旧包归属与完整内容，确认短目录已就绪后才可以清理旧目录。独立项目 B 和 User 位置单独观察和维护。Project 不调用会写入 User 的 `agy plugin install`。User 只识别到 App 时使用公开用户目录，有可用 CLI 且 App 共用同一用户根时，由 CLI 管理同一副本。CLI 和 App 在 Project 共读同一路径时只发布一次，分别保留各自的资格。
+
+另行验收项目发现时，在已登录的 CLI 中用 `agy -p /skills --output-format json` 核对成功、零模型轮次的会话清单。分别检查 A、独立项目 B、更新和移除后的完整原生名称，保留 User 同名 Skill 及独立工作区 Skill 作对照。项目目录包不以 `plugin list --json` 为发现证据。日常预览、安装、状态与更新使用目录和本地交付证据，无需启动登录会话。
+
 每个配对原生动作后，AW 只在配置完全等于固定版本预期变换时窄恢复此前的全局、全部项目与其他插件字段，并更新本次快照；失败时也只接受未改变或已知变换，遇到 stale 不覆盖外部修改。重装后再核对实际原生副本与本次冻结投影的完整摘要，原生退出 0、版本或登记存在均不能替代字节检查。失败保留 AW 源包和已核验的激活规则，以 partial/unknown 及 `nativeInstallContentPostcheckFailed` 等诊断给出恢复；不回滚包、不删除未知数据、不新建恢复 ledger，也不为其他项目新增信任。用户须先保留或处理本地数据、修复弱 owner 或安装现场，再在同一工作区显式运行许可恢复命令。
 
-Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`。项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，后续路径须为与本次 AW marketplace 精确一致的绝对路径。`plugin list --json` 可能显示尚未发布的本地 marketplace 候选。若该条目报告 `source: live`、`enabled: false`，`installedFrom` 精确匹配已确认的 marketplace，包路径确实缺席，且适用的用户、项目共享和项目本地配置都没有该插件条目，则登记判为缺席。禁用条目若已有包或配置中有显式记录，保留其登记和激活事实。来源缺失或相关配置不可读时保持未知，来源不符时保护外来内容。Windows 上，同一只读快照的 marketplace list 若因超时退出且已确认进程清理，可再运行一次同样的清单。每次执行的期限均为 5 秒。同一快照中的插件共享最终结果，持续失败时归属保持未知，已知的外来或共享归属继续保留。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
+
+Codex 的固定 5 秒 scoped plugin list 探测在 Windows 上遇到已确认清理的超时时，可以在同一工作目录、同一入口和 marketplace 再执行一次，每次期限均为 5 秒。设置了 `AW_NATIVE_CLI_TIMEOUT_MS` 时只执行原有的单次探测。同一观察会话中的同范围消费者共享最终结果。取消、清理未确认或持续失败沿用现有诊断，缺少成功清单的范围保持未知。
 
 Codex Instructions 不写顶层 developer_instructions 或共享 AGENTS；角色本身的 prompt 仍属于 Agent。直接注入覆盖受支持的 Startup/Fork，接受子代理压缩后不再注入的限制。Hook 禁用、trust 或管理策略受限时保持未满足，不回退其他载体。Claude 主会话和子代理分别核验，不能用一条事件推定另一条。
 
 Cursor 的受管 `workspaceOpen` Hook 必须位于对应范围的 `hooks.json`。包与精确 Hook 都到位才满足目录交付。入口缺失或位于其他范围显示待同步。读取失败保留未知。读取 workspace_roots 与现有 AW 需求、偏好和精确 owned 包证据，返回当前工作区有效绝对 pluginPaths，不建立另一启用表。用户/项目分别限定 scope；无工作区窗口、Cloud 不在路径承诺内，Remote/WSL 单独取证。不会切换到 local 插件目录或单次 --plugin-dir 作为普通安装。
 
-Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
+Pi 在 User 和 Project 都按 `aw.pi.agents.v1` 交付可保真的角色。在包中写入带插件身份的 `agents/<role>.md`，并用 `package.json` 的 `pi.subagents.agents` 声明目录。AW 检查名称冲突，跳过无法保留必要限制的角色。用户选择执行扩展，AW 不安装扩展或修改信任。
+
+inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置证据。识别 `pi-subagents` 和 `@tintinweb/pi-subagents` 以改善提示。完成发现但未找到可用扩展，或已确认所有相关候选停用、受信任限制或拒绝包访问时，角色仍正常交付并附提示。配置不可读、可能有未知自定义消费者或候选状态无法判定时，执行保持未知。多个候选及未核验版本不影响角色写入。已知缺少必要的执行限制仍按交付能力处理。Pi 注册所需状态若无法安全写入或核验，按原生包实际结果报告。
 
 Pi 的原生登记来自经结构校验的 list 的可见包、scope 和实际路径；普通包以精确登记和内容作为安装依据。清单未报告的 activation 保持 unknown。公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者 subagents.json 仅提供配置补充和 Agent 消费者能力证据。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。派生的 kind 和 feature 结论进入渲染能力视图。原始配置摘要保留在锁内 stale 检查。
 
-Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释；npm、Git 与无法解析的来源保持独立，不能仅凭名称认领 AW 包。
+Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释。已知扩展版本无法读取实际来源写法时，按包访问缺口提示，保留 Pi 的原生登记。npm、Git 与无法解析的来源保持独立，仅凭名称不能认领 AW 包。
 
-Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
+在 macOS arm64 的 Pi `1.5.0`，User 和 Project 已登记包的角色可由 `@tintinweb/pi-subagents` `0.22.0` 和 `0.26.1` 发现。对照中的 `pi-subagents` `0.87.0` 和 `0.89.1` 需要 `./` 前缀才能读到同一角色。证据覆盖角色发现，完整会话和执行仍未知。[Pi 原生包与角色发现证据](../../../scripts/qualification/evidence/native-pi-package-agents-2026-11-20.json)
 
-Grok 的 list 只证明可解析的登记；inspect 版本须有效且与本次入口一致，不要求等于历史实测版本。匹配精确来源的 inspect.enabled 是原生报告的启用状态，不能提升为加载。配置 enabled/disabled 集合仅补充展示，不覆盖原生结果；有效组件来源及兼容来源重叠可独立查看。Project 目录就绪需要精确作用域的有效启用。宿主拒绝授权时显示该范围的安全诊断。inspect.projectTrusted 是目录/运行时信任，不能授权首次安装新来源；首次 User 安装保留 AW 源包并提示用户用精确原生命令显式授予 `--trust`，随后再 sync，AW `--yes` 不授信。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，在当前范围的 `projectTrusted` 已确认且登记精确同源、独占时，执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
+Copilot/Grok 按[角色正文组合合同](../../reference/plugin-runtime.md#35-合并命令闭包与冻结)投影 Instructions。Grok User 和 Project 都将同范围的包与规则补足一起准备，专属角色正文通过包内角色文件核验。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
+
+Grok Project 处理同批的后续目标时，重新核对本批在该项目新增或更新的包及独立规则。更新已有包需要确认更新前后的同一原生来源、独占归属和已发布的新包内容。当显式安装的项目包遮住同名个人包时，还要核对个人包的登记、AW 源和原生副本。包内 Hook 必须指向该包实际交付的 Hook 文件，AW 核对个人和项目两份安装清单后才能接受生效路径的变化。独立规则须匹配已确认写入的路径、原生规则记录，以及含 AW 归属头的完整字节。切换静态 Skill 依赖时，后续目标核对旧 Project 副本的精确删除回执，并匹配刚显现的同源 User 原生副本及其完整包字节。只有本次已确认操作能够解释的变化可以继续。配置、项目信任、其他来源、外来文件及其他原生组件顺序的变化仍会使计划失效。
+
+Grok 的 `list` 提供登记信息。`inspect` 的版本须有效且与本次入口一致，匹配精确来源的 `enabled` 表示原生报告的启用状态。加载状态另行取证。配置中的 enabled/disabled 集合用于补充展示。Project 目录就绪需要该项目的有效启用。首次 User 安装保留 AW 源包，用户按回执在 Grok 中明确同意这一来源后再运行 `sync`。
+
+刷新已登记的 User 包时，AW 在个人工作目录 `$AW_HOME/runtime/user` 核对 Grok 的两份证据。该目录在 `trusted_folders.toml` 中必须有明确同意的记录，且在同一目录运行 `grok inspect --json` 必须返回 `projectRoot: null` 和 `projectTrusted: true`。Grok 1.0.77 在没有启用 Hook 时，即使用户已拒绝该目录，也可能返回 `projectTrusted: true`。回执给出需要授权的准确目录。用户拒绝、记录缺失或无法确认时，AW 保留现有登记及原生副本。授权核实且登记精确同源、独占时，AW 才在该目录执行 `uninstall --confirm --keep-data` 和 `install --trust`，保留插件持久数据，并核对实际副本的完整摘要。最终移除使用默认卸载。刷新中途失败且登记缺失时，AW 保留新源包，回执给出恢复该来源的宿主安装参数。每次重试都重新核验现场。
+
+User 批量同步会再次核对本次已确认刷新的登记、AW 源包和 Grok 实际副本。两种范围都允许升级包新增或移除自己的组件。已有组件的顺序与批次开始时核对，新组件的位置与写入后的原生回执核对。升级一个包后，内容未变的其他包可以返回无需改动，外来的顺序变化仍会中止后续写入。
 
 ## 3. 适配器职责与执行证据
 
@@ -145,7 +176,11 @@ Codex 的平台安装从 adapter 的冻结 product binding 构造管理入口，
 
 所有原生来源先准备完整新包、校验并冻结，再按路由执行。单平台或物理分组失败不回滚其他成功；共享配置只修改自身 entry，foreign/shared/unknown 继续保护。preApply 每逻辑 target 每命令最多一次，授权后与 preflight 通过后运行，失败不清旧输出。
 
-macOS 和 Linux 的原生命令以进程组收尾。主进程正常退出且返回 0、对原组的首次 TERM 得到 `ESRCH`、成功回调交齐 stdout 和 stderr 时，可以提前结束原有的 100 毫秒宽限。随后仍发送 KILL，以信号 0 复核进程组，并完成适用的后代检查。组仍存在、输出未到齐或命令被取消时沿用相应的清理时限。
+macOS 和 Linux 上，每条原生命令启动时成为独立进程组的组长，组内后代随该组一并收尾。主进程正常退出且返回 0、对原组的首次 TERM 得到 `ESRCH`、成功回调交齐 stdout 和 stderr 时，可以提前结束原有的 100 毫秒宽限。通常随后发送 KILL，以信号 0 复核进程组，再完成适用的后代检查。
+
+macOS 上，原生程序成功退出时，向正在消失的进程组发送 TERM 或 KILL 有时会返回 `EPERM`。对于已启用后代观察的命令，AW 先完成原有的后代清理和检查。只有检查通过、标准输出和错误输出均完整且收尾期间没有取消，才用信号 0 复核同一组号。系统返回 `ESRCH` 时确认清理完成。原组消失后停止向该组号发送终止信号。该组仍存在、复核被拒或后代检查失败时，回执保留清理故障。
+
+Linux 容器中，已退出的进程可能仍等 PID 1 回收。若 TERM 和 KILL 均已送达，且完整可见的 `/proc` 确认组内只剩单线程僵尸进程，则清理完成。活体、可见性不足、输出未到齐或命令取消均沿用相应的清理时限。
 
 真实资格分别固定版本、OS、产品面、scope 和格式，验证安装、列出、激活、更新、移除、新会话加载、冲突与所声称组件。确定性 fake 只验证编排和失败边界。现有资格脚本及证据范围见[测试指南](../testing.md)，不能把相邻版本、help、静态源码或文件写入当完整资格。
 
@@ -200,6 +235,7 @@ macOS 和 Linux 的原生命令以进程组收尾。主进程正常退出且返�
 - **后代收敛与 Job 审计**：
   - 当父进程退出、超时中断、主动取消或 root 正常退出后，Windows 内核自动清理并终止 Job 内所有后代进程。
   - 停止后必须通过 Job accounting 确认 Job 内进程计数已归零。
+  - 取消插件 renderer 或 preApply 时，Windows 可能先报告辅助进程已经退出，随后 Node 才收到 `close`。AW 设置 4.5 秒的关闭计时器。若先收到正常清理或本次强制终止的关闭通知，AW 确认中断。若计时器先触发、停止出错，或关闭时得到含义不明的 `250`、`251`，AW 报告清理未确认。
 - **环境与模块路径继承**：插件后端完整继承原环境、工作目录和 stdio，包括 PowerShell 模块路径（`PSModulePath`）的有值和缺失状态。
 - **Native CLI 工作目录**：普通 Windows 短路径保留调用方写法，避免改变客户端项目信任键。解析后达到 260 个 UTF-16 code unit 的路径保留既有 namespace 转换；调用方显式的 namespace 不被删除。这不证明所有客户端的长项目或 UNC 信任语义已通过资格。
 

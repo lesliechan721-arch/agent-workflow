@@ -14,6 +14,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
@@ -25,6 +26,7 @@ import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/util
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import type { CommandResult } from '../../src/output/public-result.js';
+import { readRecoveryStatus } from '../../src/recovery/status.js';
 
 // The real adapter publishes and inspects the package. The Pi command boundary
 // reports registration only; it does not report activation, trust or loading.
@@ -297,6 +299,87 @@ describe('public plugin lifecycle', () => {
         expect.objectContaining({ target: scripts[0] === 'pi' ? 'claude' : 'pi', execution: 'not-run' }),
       ]) });
     } finally { script.mockRestore(); }
+  });
+
+  // Test Value Gate: public status must use the recovered scoped value and keep fatal read failures visible to recovery.
+  it('recovers a Windows Codex scoped timeout in public status', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const source = path.join(cwd, 'codex-status-source');
+    await createNativeDependencyCatalog(source, [{ name: 'demo' }]);
+    const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env: isolation.env });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const env = { ...isolation.env, AW_NATIVE_CLI_TIMEOUT_MS: undefined };
+    const location = { cwd, env, cliVersion: '1.0.0', scope: 'project' as const, context: 'project' as const, yes: true };
+    await setTargets({ ...location, scope: 'user' }, ['codex']);
+    const installed = await runPublicLifecycle('install', ['team/demo'], location, runtime);
+    expect(installed.status).toBe('success');
+    const [nativeId] = runtime.installed;
+    expect(nativeId).toBeTypeOf('string');
+    await applyCodexConfigTransactionFile(path.join(env.CODEX_HOME!, 'config.toml'), {
+      upsertPluginActivations: { [nativeId!]: true },
+    });
+    await applyCodexConfigTransactionFile(path.join(cwd, '.codex', 'config.toml'), {
+      upsertPluginActivations: { [nativeId!]: false },
+    });
+
+    const host = vi.spyOn(os, 'platform').mockReturnValue('win32');
+    const reads: Array<{ cwd?: string; args: string[]; timeoutMs?: number }> = [];
+    const neutralActivations: boolean[] = [];
+    const nativeCliRunner: NativeCliRunner = async (request) => {
+      const args = request.args.slice(-5);
+      if (args[0] !== 'plugin' || args[1] !== 'list' || args[2] !== '--marketplace') return runtime.nativeCliRunner(request);
+      const firstProjectRead = request.cwd === cwd && !reads.some((read) => read.cwd === cwd);
+      reads.push({ cwd: request.cwd, args, timeoutMs: request.timeoutMs });
+      if (firstProjectRead) throw new NativeCliError({ invocation: request, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+      const result = await runtime.nativeCliRunner(request);
+      if (request.cwd !== cwd) {
+        const list = JSON.parse(result.stdout) as { installed: Array<{ enabled: boolean }> };
+        neutralActivations.push(...list.installed.map(({ enabled }) => enabled));
+      }
+      return result;
+    };
+    try {
+      const result = await runCliEntry(['plugin', 'status', 'team/demo', '--context', 'project', '--json'], { ...location, nativeCliRunner });
+      const parsed = result.parseJsonStdout<{ data: { inventory?: Array<{ targetResults: Array<{ scope: string;
+        deploymentObservations: Array<{ after: { registration: string; consumers: Array<{ activation: string }> } }> }> }> } }>();
+      const after = parsed.data.inventory?.[0]?.targetResults.find(({ scope }) => scope === 'project')?.deploymentObservations[0]?.after;
+      expect(after?.registration).toBe('present');
+      expect(after?.consumers.map(({ activation }) => activation)).toEqual(['disabled']);
+      const project = reads.filter((read) => read.cwd === cwd);
+      const neutral = reads.filter((read) => read.cwd !== cwd);
+      expect(project).toHaveLength(2);
+      expect(project[0]?.timeoutMs).toBe(5_000);
+      expect(project[1]).toEqual(project[0]);
+      expect(neutral).toHaveLength(1);
+      expect(neutral[0]?.args).toEqual(project[0]?.args);
+      expect(neutralActivations).toEqual([true]);
+
+      for (const fatal of ['abort', 'cleanup'] as const) {
+        const stop = new AbortController();
+        let attempts = 0;
+        const reason = await readRecoveryStatus({ ...location, targets: ['codex'], signal: stop.signal,
+          nativeCliRunner: async (request) => {
+            if (request.cwd !== cwd || !request.args.includes('--marketplace')) return runtime.nativeCliRunner(request);
+            attempts += 1;
+            if (fatal === 'abort') stop.abort();
+            throw new NativeCliError({ invocation: request, exitCode: 124, stdout: '', stderr: '', reason: 'timeout',
+              cleanupError: fatal === 'cleanup' ? new Error('cleanup unconfirmed') : undefined });
+          },
+        }).then(() => 'observed', (error: unknown) => {
+          if (error instanceof NativeCliError && error.cleanupError) return 'cleanup';
+          return error instanceof Error && error.name === 'AbortError' ? 'abort' : 'other';
+        });
+        expect(reason).toBe(fatal);
+        expect(attempts).toBe(1);
+      }
+    } finally {
+      host.mockRestore();
+    }
   });
 
   it('retains every producer result when removing Active and retired plugins together', async () => {

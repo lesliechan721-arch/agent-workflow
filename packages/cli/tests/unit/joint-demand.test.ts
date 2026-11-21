@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'fs-extra';
 import path from 'node:path';
-import { deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot } from '../../src/recovery/joint-demand.js';
+import { deriveJointDemand, deriveSharedReferenceView, projectSkillCandidates, type JointDemandSnapshot } from '../../src/recovery/joint-demand.js';
 import { aggregateConvergence, readRecoveryStatus, type RecoveryStatus } from '../../src/recovery/status.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createEmptyPreferences, parsePreferences, type AgentId } from '../../src/intent/deployment-preferences.js';
@@ -109,6 +109,21 @@ describe('joint requirements', () => {
     );
     expect(plan.placements.find((item) => item.pluginId === 'local/a' && item.scope === 'project')!.contributions)
       .toEqual([{ root: 'local/a', scope: 'project', path: ['local/a'] }]);
+  });
+  it('considers only same-source static Skill dependencies for inherited native placements', () => {
+    const targets = ['antigravity', 'cursor', 'opencode', 'pi', 'grok'] as const;
+    const input = snapshot(['a'], ['b'], [...targets]);
+    for (const plugin of input.user.plugins) plugin.manifest.platforms = [...targets];
+    const dependency = input.user.plugins.find((item) => item.pluginId === 'local/d')!;
+    dependency.manifest.scripts = { node: { build: { runner: 'node', path: './build.mjs' } }, tests: { node: ['./test.mjs'] } };
+    const candidates = () => projectSkillCandidates(deriveJointDemand(input)).map((item) => [item.pluginId, item.target]);
+    expect(candidates()).toEqual(targets.map((target) => ['local/d', target]));
+    dependency.manifest.extensions = { permissions: [{ name: 'scope-permission' }] };
+    expect(candidates()).toEqual([]);
+    delete dependency.manifest.extensions;
+    input.project!.plugins = structuredClone(input.user.plugins);
+    for (const plugin of input.project!.plugins) plugin.sourceIdentity = 'path:other';
+    expect(candidates()).toEqual([]);
   });
   // Test Value Gate: every concrete Agent remains a native requirement, including dynamic-only or intentionally empty plugins.
   it('routes all concrete Agents to native and preserves their provider protection', () => {

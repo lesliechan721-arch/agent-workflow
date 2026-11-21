@@ -549,6 +549,10 @@
             "profile"
           ]
         },
+        "deliveryFeatures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/featureRequirement" }
+        },
         "kinds": {
           "type": "object",
           "additionalProperties": false,

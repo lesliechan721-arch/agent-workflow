@@ -145,6 +145,7 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     nativeQualification: 'unverified; interface observations do not qualify Native support' };
   let processFailed = false;
   async function command(id, args, cwd = context.project) {
+    const skillInventory = platform === 'antigravity' && args[0] === '-p';
     const agentObservation = options.antigravityAgentObservation === true && platform === 'antigravity'
       && report.commands[0]?.versionMatched === true && args.length === 1 && args[0] === 'agents';
     const record = { id, args, cwd, executable: launcher.executable, prefix: launcher.prefix,
@@ -178,9 +179,13 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
       if (error?.publicAwProcessNames) record.processNames = error.publicAwProcessNames;
       if (error?.result) Object.assign(record, commandEvidence(error.result));
     }
-    const evidence = redactProbe(record, context.root);
+    // Session inventories can contain account data or unrelated Skill paths.
+    // The caller still receives the reply in memory to extract known fixtures.
+    const evidence = redactProbe(skillInventory
+      ? { id, args, status: record.status, exitCode: record.exitCode, reason: record.reason,
+        timedOut: record.timedOut, processManagement: record.processManagement } : record, context.root);
     report.commands.push(evidence);
-    if (record.status === 'failed') report.status = 'failed';
+    if (record.status === 'failed') report.status = skillInventory && !processFailed ? 'unverified' : 'failed';
     return record;
   }
   const commands = [['version', ['--version']], ['help', ['--help']], ['plugin-help', ['plugin', '--help']]];
@@ -206,10 +211,15 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     report.management = await probeAntigravityLocalManagement({ ...context, executable: launcher.executable }, command, renderPackage);
     report.scope = {
       status: report.management.scopes.every(scope => scope.scopeEvidence === 'observed') ? 'observed' : 'unverified',
-      reason: 'Candidate management ran; raw read-only Skill output must be interpreted before it can establish effective Project scope.',
+      reason: 'User registration uses plugin inventory. Project scope uses exact fixtures in the successful zero-model-turn Skill inventory.',
       scopes: report.management.scopes.map(({ scope, scopeEvidence }) => ({ scope, status: scopeEvidence })),
     };
-    if (report.management.status !== 'observed') { report.status = 'failed'; report.reason = 'initial-management-or-scope-unverified'; }
+    if (report.management.status !== 'observed') {
+      const projectOnly = report.management.scopes.some(scope => scope.scope === 'project' && scope.status === 'unverified')
+        && !report.management.scopes.some(scope => scope.scope === 'user' && scope.status !== 'observed');
+      report.status = projectOnly && !processFailed ? 'unverified' : 'failed';
+      report.reason = 'initial-management-or-scope-unverified';
+    }
   }
   report.authentication.failurePossible = report.commands.some(command => command.authenticationFailurePossible);
   report.processContract = processFailed ? 'failed' : report.commands.some(entry => entry.observation)
@@ -293,8 +303,9 @@ export async function runInterfaceProbes(options) {
         if (platform === 'antigravity') {
           const projectScope = client.management?.scopes.find(scope => scope.scope === 'project');
           client.projectQualification = {
-            status: 'blocked',
-            reason: projectScope?.reason ?? 'No verified effective Project plugin or Skill scope query result.',
+            status: projectScope?.status === 'observed' ? 'observed' : 'unverified',
+            ...(projectScope?.status === 'observed' ? {}
+              : { reason: projectScope?.reason ?? 'No verified Project Skill inventory was returned.' }),
             inventoryScope: projectScope?.scopeEvidence ?? 'unverified',
             executedInThisRun: projectScope !== undefined, productionProfilePromoted: false,
             previousProcessFailure: 'https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43466772539' };

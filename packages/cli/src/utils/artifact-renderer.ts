@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   normalizeStaticPluginComponents,
+  partitionPluginComponents,
   assertPlatformRenderContext,
   selectPluginConfigProfile,
   type ComponentKind,
@@ -242,7 +243,8 @@ export interface PreparedPlatformComponents {
 export async function preparePlatformComponents(options: {
   plugin: PluginMeta; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
   capabilities: PlatformCapabilitiesV2; config: ResolvedArtifactRenderConfig; cwd: string;
-  staticExpected?: ExpectedComponentSet; staticResourceRoot?: string; previousComponents?: PlatformRenderContextV2['previousComponents'];
+  staticResourceRoot?: string; previousComponents?: PlatformRenderContextV2['previousComponents'];
+  hasInstructionAgentRecipients?: boolean;
   changedConfigKeys?: string[]; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
   signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
 }): Promise<PreparedPlatformComponents> {
@@ -254,9 +256,9 @@ export async function preparePlatformComponents(options: {
   try {
     const capabilities = toPlatformCapabilitiesView(options.capabilities);
     const resources = await resolvePlatformComponentResources(options.plugin);
-    const sets: ExpectedComponentSet[] = [options.staticExpected ?? await normalizeStaticPluginComponents({
+    const sets: ExpectedComponentSet[] = [await normalizeStaticPluginComponents({
       pluginRoot: options.plugin.rootDir, staticResourceRoot: options.staticResourceRoot, manifest: options.plugin.manifest, platform: options.platform,
-      capabilities, allowedOutputKinds: options.kinds,
+      capabilities, allowedOutputKinds: options.kinds, deferPartition: true,
     })];
     const contexts: PlatformRenderContextV2[] = [];
     for (const { allowedOutputKinds, config } of resolvePlatformComponentBatches({ ...options, manifest: options.plugin.manifest })) {
@@ -282,16 +284,35 @@ export async function preparePlatformComponents(options: {
       sets.push({ components: plan.components, omitted: plan.omitted, unmet: plan.unmet,
         sources: Object.fromEntries([...plan.components, ...plan.omitted, ...plan.unmet].map((entry) => [entry.id, 'dynamic' as const])) });
     }
-    const expected = mergeExpectedComponentSets(sets);
-    assertNoDuplicateHookHandlers(expected.components, options.platform);
-    const closure = await verifyPlatformComponentResources({ plugin: options.plugin, expected, resources,
+    const declared = mergeExpectedComponentSets(sets);
+    assertNoDuplicateHookHandlers(declared.components, options.platform);
+    const closure = await verifyPlatformComponentResources({ plugin: options.plugin, expected: declared, resources,
       capabilities, sensitiveValues, staticResourceRoot: options.staticResourceRoot });
     // Only the exact static receipt, already matched to the verified manifest above, is metadata rather than plugin text.
-    const scannedComponents = expected.components.map((component) => component.kind === 'skill' && expected.sources[component.id] === 'static'
+    const scannedComponents = declared.components.map((component) => component.kind === 'skill' && declared.sources[component.id] === 'static'
       ? { ...component, content: { files: Object.fromEntries(Object.entries(component.content.files).filter(([file]) => file !== 'aw-plugin-requirements.json')) } }
       : component);
-    assertNoSensitiveConfigValues({ ...expected, components: scannedComponents }, sensitiveValues,
+    assertNoSensitiveConfigValues({ ...declared, components: scannedComponents }, sensitiveValues,
       'componentSensitiveConfigExposed: Components contain sensitive config.');
+    const skillTexts = new Map(closure.files.filter(({ path }) => path === 'SKILL.md')
+      .map(({ componentId, bytes }) => [componentId, bytes.toString('utf8')]));
+    const partition = partitionPluginComponents(declared.components, capabilities, declared.sources, skillTexts, options.hasInstructionAgentRecipients);
+    const delivered = new Set(partition.components.map(({ id }) => id));
+    const rendererGaps = declared.unmet.map((gap) => {
+      if (!gap.componentId || delivered.has(gap.componentId)) return gap;
+      // A renderer can split Instruction audiences before AW finds that its remaining body also cannot be delivered.
+      const { componentId: _, ...unlinked } = gap;
+      return unlinked;
+    });
+    const expected = mergeExpectedComponentSets([{ ...declared, components: [], unmet: rendererGaps }, partition]);
+    // Verify every declared file first. Publish command resources only for their remaining owners.
+    closure.files = closure.files.filter(({ componentId }) => delivered.has(componentId));
+    closure.commandResources = closure.commandResources.filter(({ componentId }) => delivered.has(componentId));
+    closure.bundleFiles = closure.bundleFiles.flatMap((file) => {
+      if (!file.componentIds) return [file];
+      const componentIds = file.componentIds.filter((id) => delivered.has(id));
+      return componentIds.length ? [{ ...file, componentIds }] : [];
+    });
     const runtimeConfigSnapshots = createArtifactRuntimeConfigSnapshots({
       sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
       logicalIdentity: options.plugin.catalogLogicalIdentity, manifest: options.plugin.manifest,

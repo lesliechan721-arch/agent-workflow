@@ -316,7 +316,8 @@ function normalizeProfile(value: unknown): AwSourceBindingProfile {
 function normalizePreparation(value: unknown): ComponentPreparationBinding[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error(missingPreparationMessage)
   return value.map((raw): ComponentPreparationBinding => {
-    if (!strictRecord(raw, ['plugin', 'platform', 'renderScope', 'profileId', 'capabilitiesDigest', 'expectedDigest', 'resourceDigest', 'renderInputDigest', 'outputs', 'components', 'omitted', 'unmet'])) {
+    const declaredGapIds = raw && typeof raw === 'object' && 'declaredGapIds' in raw ? raw.declaredGapIds : undefined
+    if (!strictRecord(raw, [...(declaredGapIds === undefined ? [] : ['declaredGapIds']), 'plugin', 'platform', 'renderScope', 'profileId', 'capabilitiesDigest', 'expectedDigest', 'resourceDigest', 'renderInputDigest', 'outputs', 'components', 'omitted', 'unmet'])) {
       throw new Error('Source binding preparation fields are invalid.')
     }
     const row = raw as Record<string, unknown>
@@ -337,6 +338,8 @@ function normalizePreparation(value: unknown): ComponentPreparationBinding[] {
       const item = entry as Record<string, unknown>
       if (!strictRecord(item, ['id', 'kind', 'reason']) || !['not-offered', 'config-disabled'].includes(item.reason as string)) throw new Error('Source binding omission is invalid.')
     }
+    if (declaredGapIds !== undefined && (!Array.isArray(declaredGapIds)
+      || declaredGapIds.some((id) => !(row.unmet as Array<{ id: string }>).some((entry) => entry.id === id)))) throw new Error('Source binding gap identities are invalid.')
     for (const entry of row.unmet) {
       const item = entry as Record<string, unknown>
       if (!strictRecord(item, ['id', 'kind', 'requiredFeatures', 'reasonCode', ...(item.name === undefined ? [] : ['name']), ...(item.componentId === undefined ? [] : ['componentId'])])

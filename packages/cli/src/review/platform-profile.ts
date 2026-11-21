@@ -1,6 +1,6 @@
 import type { PlatformCapabilitiesV2, PlatformTarget, Scope } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { getQualifiedPlatformProfile, getQualifiedFeaturesForScope, getQualifiedKindsForScope, toPlatformCapabilitiesView } from '../platforms/capabilities.js';
+import { getQualifiedPlatformProfile, getPlatformDeliveryFeatures, getQualifiedFeaturesForScope, getQualifiedKindsForScope, toPlatformCapabilitiesView } from '../platforms/capabilities.js';
 
 /** An explicit author profile describes an interface; it is never local discovery evidence. */
 export function getAuthoringPlatformCapabilities(platform: PlatformTarget, scope: Scope,
@@ -19,6 +19,7 @@ export function getAuthoringPlatformCapabilities(platform: PlatformTarget, scope
     platform,
     scope,
     basis: 'profile',
+    deliveryFeatures: getPlatformDeliveryFeatures(platform),
     kinds: getQualifiedKindsForScope(profile, activationScope),
     features,
   });

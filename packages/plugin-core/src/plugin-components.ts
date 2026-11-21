@@ -54,6 +54,8 @@ export interface PlatformComponentPlanV3 { version: 3; components: PluginCompone
 export interface ExpectedComponentSet {
   components: PluginComponent[]; omitted: ComponentOmission[]; unmet: ComponentUnmet[];
   sources: Record<string, 'static' | 'dynamic'>;
+  /** IDs for which the author actually supplied a body, including skipped definitions. */
+  declaredComponentIds?: string[];
 }
 export interface ComponentGap extends ComponentUnmet { productIds: string[] }
 export interface ResolvedPermissionDefinition {
@@ -66,6 +68,8 @@ export interface PlatformCapabilitiesV2 {
   schemaVersion: 2; platform: PlatformId; scope: Scope; basis: 'local' | 'profile';
   kinds: Record<ComponentKind, CapabilityFact & { delivery: Array<'native-package' | 'native-extension' | 'managed-host-resource' | 'generic-files'> }>;
   features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
+  /** Standard writer mappings. Runtime support remains in kinds.status and features. */
+  deliveryFeatures?: FeatureRequirement[];
 }
 export interface PlatformRenderContextV2 {
   schemaVersion: 2; surface: 'agent-plugin'; platform: PlatformId; scope: Scope;
@@ -86,7 +90,7 @@ export interface AgentCommandContextV1 {
 }
 export const CAPABILITY_REASON_CODES = [
   'client-missing', 'version-unsupported', 'interface-unsupported', 'scope-unsupported',
-  'capability-unverified', 'consumer-missing', 'consumer-disabled', 'policy-blocked',
+  'capability-unverified', 'delivery-unavailable', 'consumer-missing', 'consumer-disabled', 'policy-blocked',
 ] as const;
 export const COMPONENT_DEPENDENCY_REASON_CODES = ['dependency-missing', 'dependency-unmet', 'config-missing', 'config-invalid'] as const;
 
@@ -262,7 +266,7 @@ export function getComponentFeatureRequirements(component: PluginComponent, opti
             require('skill.tools', [field === 'disallowed-tools' ? 'denylist' : Array.isArray(tools) && tools.length === 0 ? 'none' : 'allowlist']);
           }
         }
-        for (const [field, feature] of [['model', 'skill.model'], ['agent', 'skill.agent'], ['hooks', 'skill.hooks'], ['paths', 'skill.paths'], ['when_to_use', 'skill.invocation.hint'], ['arguments', 'skill.arguments']] as const) {
+        for (const [field, feature] of [['model', 'skill.model'], ['agent', 'skill.agent'], ['hooks', 'skill.hooks'], ['paths', 'skill.paths'], ['when_to_use', 'skill.invocation.hint'], ['arguments', 'skill.arguments'], ['argument-hint', 'skill.arguments']] as const) {
           if (Object.hasOwn(metadata, field)) require(feature);
         }
         if (Object.hasOwn(metadata, 'context')) require('skill.execution', ['isolated-context']);
@@ -347,13 +351,11 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
     identities.add(entry.id);
   }
   for (const component of value.components) {
-    assertPluginComponent(component, options);
+    assertPluginComponent(component, { ...options, phase: 'source' });
     const name = `${component.kind}:${component.name}`;
     if (names.has(name)) throw new Error(`Invalid component plan: duplicate component name ${component.name}.`);
     names.add(name);
-    if (options.platformCapabilities.kinds[component.kind].status !== 'supported') throw new Error(`Invalid component plan: unsupported component kind ${component.kind}.`);
-    const unmet = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { deliveryOnly: true }), options.platformCapabilities);
-    if (unmet.length) throw new Error(`Invalid component plan: unsupported required features ${JSON.stringify(unmet)}.`);
+    getComponentFeatureRequirements(component);
     if (component.kind === 'instruction') {
       const max = options.platformCapabilities.features['instruction.coverage']?.maxBytes;
       if (max !== undefined && Buffer.byteLength(component.content.content, 'utf8') > max) throw new Error('Invalid instruction: content exceeds capability maxBytes.');
@@ -382,43 +384,108 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
     }
   }
 }
+/** Check a component's own representation against the writer, and foreign runtime prerequisites against the host. */
+export function getMissingDeliveryRequirements(component: PluginComponent, capabilities: PlatformCapabilitiesV2, skillText?: string,
+  hasInstructionAgentRecipients = false): FeatureRequirement[] {
+  const requirements = getComponentFeatureRequirements(component, { deliveryOnly: true, skillText });
+  if (!capabilities.deliveryFeatures) return getUnmetFeatureRequirements(requirements, capabilities);
+  if (!capabilities.kinds[component.kind].delivery.length) return [{ feature: `component.kind.${component.kind}` }];
+  const missing: FeatureRequirement[] = [];
+  for (const requirement of requirements) {
+    if (requirement.feature === `component.kind.${component.kind}`) continue;
+    if (!requirement.feature.startsWith(`${component.kind}.`)) {
+      missing.push(...getUnmetFeatureRequirements([requirement], capabilities));
+      continue;
+    }
+    const mapping = capabilities.deliveryFeatures.find(({ feature }) => feature === requirement.feature);
+    if (component.kind === 'agent' && requirement.feature === 'agent.model' && capabilities.platform === 'antigravity'
+      && component.content.model && !['inherit', 'flash_lite', 'flash', 'pro'].includes(component.content.model)) {
+      missing.push(requirement);
+      continue;
+    }
+    if (!mapping) missing.push(requirement);
+    else if (requirement.values) {
+      let values = mapping.values ?? [];
+      if (component.kind === 'instruction' && requirement.feature === 'instruction.coverage') {
+        if (capabilities.platform === 'codex') {
+          // The shared Codex package cannot identify all roles from independent project-scoped TOML files. Selecting one group must not inject text into the other.
+          if (!['plugin-agents', 'other-agents'].every((audience) => requirement.values!.includes(audience))) {
+            values = values.filter((audience) => audience === 'main');
+          }
+        } else if (capabilities.platform === 'copilot' || capabilities.platform === 'grok') {
+          // These writers can reach plugin agents only by adding to the same-scope role files.
+          if (!hasInstructionAgentRecipients) values = values.filter((audience) => audience !== 'plugin-agents');
+        } else if (capabilities.platform !== 'claude' && !component.content.coverage.includes('main')) {
+          // Other rule and extension entries reach the main session whenever enabled.
+          values = [];
+        }
+      }
+      const absent = requirement.values.filter((value) => !values.includes(value));
+      if (absent.length) missing.push({ feature: requirement.feature, values: absent });
+    }
+  }
+  return missing;
+}
 function reasonForMissing(component: PluginComponent, requirements: FeatureRequirement[], capabilities: PlatformCapabilitiesV2): string {
+  if (requirements.some(({ feature }) => getPlatformCapabilityFact(feature, capabilities).reasonCodes.includes('interface-unsupported'))) {
+    return 'interface-unsupported';
+  }
+  if (capabilities.deliveryFeatures && requirements.some(({ feature }) =>
+    feature.startsWith(`${component.kind}.`) || feature === `component.kind.${component.kind}`)) {
+    return capabilities.platform === 'generic' ? 'interface-unsupported' : 'delivery-unavailable';
+  }
   return requirements.flatMap((requirement) => getPlatformCapabilityFact(requirement.feature, capabilities).reasonCodes)[0]
     ?? capabilities.kinds[component.kind].reasonCodes[0] ?? 'interface-unsupported';
 }
-/** Keeps only the explicitly separable coverage subset. Other semantics remain mandatory. */
-export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2): ExpectedComponentSet {
+/** A renderer may supply a complete declaration even when a host cannot express all of it. */
+export function partitionPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2,
+  sources: 'static' | 'dynamic' | ExpectedComponentSet['sources'], skillTexts?: ReadonlyMap<string, string>,
+  hasInstructionAgentRecipients?: boolean): ExpectedComponentSet {
   assertPlatformCapabilities(capabilities);
-  const result: ExpectedComponentSet = { components: [], omitted: [], unmet: [], sources: {} };
+  const result: ExpectedComponentSet = { components: [], omitted: [], unmet: [], sources: Object.create(null), declaredComponentIds: components.map(({ id }) => id) };
   const identities = new Set<string>();
   const names = new Set<string>();
   assertNoDuplicateHookHandlers(components, capabilities.platform);
+  hasInstructionAgentRecipients ??= ['copilot', 'grok'].includes(capabilities.platform) && components.some((component) =>
+    component.kind === 'agent' && getMissingDeliveryRequirements(component, capabilities).length === 0);
   for (const original of components) {
     assertPluginComponent(original, { platform: capabilities.platform, phase: 'source' });
-    if (identities.has(original.id) || names.has(`${original.kind}:${original.name}`)) throw new Error('Invalid static components: duplicate identity or name.');
+    if (identities.has(original.id) || names.has(`${original.kind}:${original.name}`)) throw new Error('Invalid components: duplicate identity or name.');
     identities.add(original.id); names.add(`${original.kind}:${original.name}`);
-    result.sources[original.id] = 'static';
+    const source = typeof sources === 'string' ? sources : sources[original.id]!;
+    result.sources[original.id] = source;
     const component = structuredClone(original);
-    const missing = getUnmetFeatureRequirements(getComponentFeatureRequirements(component, { deliveryOnly: true }), capabilities);
-    const kindSupported = capabilities.kinds[component.kind].status === 'supported';
-    if (kindSupported && missing.length === 0) { result.components.push(component); continue; }
-    if (kindSupported && component.kind === 'instruction' && missing.length === 1 && missing[0]?.feature === 'instruction.coverage') {
+    const missing = getMissingDeliveryRequirements(component, capabilities, skillTexts?.get(component.id), hasInstructionAgentRecipients);
+    if (!missing.length) { result.components.push(component); continue; }
+    let partial = false;
+    if (component.kind === 'instruction' && missing.length === 1 && missing[0]?.feature === 'instruction.coverage') {
       const absent = missing[0].values ?? component.content.coverage;
       const coverage = component.content.coverage.filter((audience) => !absent.includes(audience));
       if (coverage.length) {
         component.content.coverage = coverage;
         component.requires = component.requires?.filter((requirement) => requirement.feature !== 'instruction.coverage');
-        result.components.push(component);
-        const id = `${component.id}:coverage-gap`;
-        if (identities.has(id) || components.some((entry) => entry.id === id)) throw new Error('Invalid static component: coverage gap ID conflict.');
-        identities.add(id); result.sources[id] = 'static';
-        result.unmet.push({ id, kind: component.kind, name: component.name, componentId: component.id, requiredFeatures: missing, reasonCode: reasonForMissing(component, missing, capabilities) });
-        continue;
+        partial = true;
       }
     }
-    result.unmet.push({ id: component.id, kind: component.kind, name: component.name, requiredFeatures: missing.length ? missing : getComponentFeatureRequirements(component, { deliveryOnly: true }), reasonCode: reasonForMissing(component, missing, capabilities) });
+    if (component.kind === 'skill' && capabilities.platform === 'generic'
+      && missing.every(({ feature }) => !feature.startsWith('skill.') && feature !== 'component.kind.skill')) {
+      component.requires = component.requires?.filter(({ feature }) => !missing.some((entry) => entry.feature === feature));
+      partial = true;
+    }
+    const id = partial ? `${component.id}:${component.kind === 'instruction' ? 'coverage' : 'runtime'}-gap` : component.id;
+    if (partial) {
+      if (components.some((entry) => entry.id === id)) throw new Error('Invalid component: gap ID conflict.');
+      result.sources[id] = source;
+      result.components.push(component);
+    }
+    result.unmet.push({ id, kind: component.kind, name: component.name, ...(partial ? { componentId: component.id } : {}),
+      requiredFeatures: missing, reasonCode: reasonForMissing(component, missing, capabilities) });
   }
   return result;
+}
+export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2,
+  hasInstructionAgentRecipients?: boolean): ExpectedComponentSet {
+  return partitionPluginComponents(components, capabilities, 'static', undefined, hasInstructionAgentRecipients);
 }
 async function staticSkillFiles(root: string, directory: string): Promise<Record<string, ResourceFile>> {
   const files: Record<string, ResourceFile> = {};
@@ -451,7 +518,8 @@ export function resolveInvocationPolicy(manifest: NormalizedPluginManifest, plat
 }
 export async function normalizeStaticPluginComponents(options: {
   pluginRoot: string; staticResourceRoot?: string; manifest: NormalizedPluginManifest; platform: PlatformId;
-  capabilities: PlatformCapabilitiesV2; allowedOutputKinds?: readonly ComponentKind[];
+  capabilities: PlatformCapabilitiesV2; allowedOutputKinds?: readonly ComponentKind[]; deferPartition?: boolean;
+  hasInstructionAgentRecipients?: boolean;
 }): Promise<ExpectedComponentSet> {
   const { manifest, platform, pluginRoot } = options;
   const staticRoot = options.staticResourceRoot ?? pluginRoot;
@@ -493,7 +561,7 @@ export async function normalizeStaticPluginComponents(options: {
     if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid static MCP servers.');
     for (const [name, content] of Object.entries(servers)) {
       const component = { id: `mcp:${name}`, name, kind: 'mcp', content };
-      assertPluginComponent(component, { platform }); components.push(component);
+      assertPluginComponent(component, { platform, phase: 'source' }); components.push(component);
     }
   }
   for (const kind of ['agent', 'instruction', 'hook'] as const) {
@@ -513,17 +581,19 @@ export async function normalizeStaticPluginComponents(options: {
         const { name, ...body } = content as { name: string };
         component = { id, kind, name, content: body };
       }
-      assertPluginComponent(component, { platform }); components.push(component);
+      assertPluginComponent(component, { platform, phase: 'source' }); components.push(component);
     }
   }
   if (allowed('hook')) {
     for (const hook of manifest.extensions?.nativeHooks?.[platform] ?? []) {
       const { id, requires, ...content } = hook;
       const component: PluginComponent = { id: `native-hook:${platform}:${id}`, name: id, kind: 'hook', ...(requires ? { requires } : {}), content: { dialect: 'native', ...content } };
-      assertPluginComponent(component, { platform }); components.push(component);
+      assertPluginComponent(component, { platform, phase: 'source' }); components.push(component);
     }
   }
-  const result = partitionStaticPluginComponents(components, options.capabilities);
+  const result: ExpectedComponentSet = options.deferPartition
+    ? { components, omitted: [], unmet: [], sources: Object.fromEntries(components.map(({ id }) => [id, 'static' as const])) }
+    : partitionStaticPluginComponents(components, options.capabilities, options.hasInstructionAgentRecipients);
   for (const entry of omitted) {
     if (result.sources[entry.id]) throw new Error('Invalid static components: duplicate omitted identity.');
     result.sources[entry.id] = 'static';

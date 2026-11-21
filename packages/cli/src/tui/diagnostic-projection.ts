@@ -1,4 +1,6 @@
 import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
+import { componentGapDescription, componentGapOutcome, deliveryNoticeMessage, hasComponentDeliveryNotice,
+  isDeliveryNoticeCode, isInstallationAdvisory, safeComponentIdentity, type ComponentDelivery } from '../output/component-delivery.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 import type { PlatformTarget, Scope } from '../types.js';
@@ -7,7 +9,7 @@ import { readSafeOperationError, type SafeOperationErrorMetadata } from '../util
 import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import type { OperationKind } from './controller.js';
-import type { OperationEffectFacts, SafeOperationDiagnostic } from './operation-history.js';
+import type { OperationEffectFacts, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
 
 type Target = { pluginId?: string; platform: PlatformTarget; scope: Scope };
 
@@ -16,20 +18,62 @@ export function projectSkillInvocationHistory(
   recordId: string,
   stage: 'execute' | 'apply',
 ): SafeOperationDiagnostic[] {
-  return skillInvocationNotices(diagnostics).flatMap(({ pluginId, platform, scope, skill, reasonCode, controls }, index) => {
+  return skillInvocationNotices(diagnostics).flatMap(({ pluginId, platform, scope, skill, reasonCode, controls, message }, index) => {
     try { parsePluginId(pluginId); }
     catch { return []; }
     return [{
       id: `${recordId}:skill-invocation:${index}`,
       code: SKILL_INVOCATION_NOTICE,
       stage,
-      safeMessage: 'This location cannot guarantee all declared invocation controls for the installed Skill.',
+      safeMessage: platform === 'antigravity' ? message : 'This location cannot guarantee all declared invocation controls for the installed Skill.',
       target: { pluginId, platform, scope },
       causes: [],
       detailLines: [`skill.${skill} · ${reasonCode}`, ...controls.map((control) =>
         `${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product ? ` · product=${control.product}` : ''}`)],
     }];
   });
+}
+
+function safePosition(pluginId: string | undefined, platform: string | undefined, scope: Scope | undefined): Target | undefined {
+  if (!pluginId || !isPlatformTarget(platform) || (scope !== 'user' && scope !== 'project')) return undefined;
+  try { parsePluginId(pluginId); } catch { return undefined; }
+  return { pluginId, platform, scope };
+}
+
+export function projectDeliveryNoticeHistory(diagnostics: readonly RecoveryDiagnostic[], recordId: string,
+  stage: 'execute' | 'apply'): SafeOperationDiagnostic[] {
+  return diagnostics.flatMap(({ code, subject, detail }, index) => {
+    if (!isDeliveryNoticeCode(code)) return [];
+    const target = safePosition(subject?.pluginId, subject?.target, subject?.scope);
+    if (!target) return [];
+    const reason = detail?.reasonCode ? safeDiagnosticCode(detail.reasonCode, 'unknown') : undefined;
+    return [{ id: `${recordId}:delivery-notice:${index}`, code, stage,
+      safeMessage: deliveryNoticeMessage(code, detail, subject?.field), target, causes: [], detailLines: reason ? [reason] : [] }];
+  });
+}
+
+export function projectComponentDeliveryHistory(delivery: ComponentDelivery, notices: readonly SafeOperationDiagnostic[],
+  idPrefix: string, stage: 'execute' | 'apply', succeeded: boolean): {
+    facts?: OperationHistoryTarget['componentDelivery']; diagnostics: SafeOperationDiagnostic[];
+  } {
+  const { satisfaction, installedComponentCount, installedComponentIds, componentGaps } = delivery;
+  const notApplicable = succeeded && satisfaction === 'not-applicable';
+  const withNotices = succeeded && (hasComponentDeliveryNotice(delivery) || notices.some(({ code }) => isInstallationAdvisory(code)));
+  const diagnostics = (componentGaps ?? []).flatMap((gap, index) => {
+    const target = safePosition(gap.providerPluginId, gap.agent, gap.renderScope);
+    if (!target) return [];
+    const labels = { skipped: 'Skipped component', limited: 'Partially supported component', unmet: 'Unmet component' };
+    const outcome = componentGapOutcome(gap, installedComponentIds);
+    return [{ id: `${idPrefix}:component-gap:${index}`, code: safeDiagnosticCode(gap.reasonCode, 'componentDeliveryGap'),
+      stage, safeMessage: labels[outcome], target, causes: [], detailLines: [componentGapDescription(gap)] }];
+  });
+  const facts = !notApplicable && !withNotices && installedComponentCount === undefined && !installedComponentIds ? undefined : {
+    ...(notApplicable ? { notApplicable: true as const } : {}),
+    ...(withNotices && !notApplicable ? { withNotices: true as const } : {}),
+    ...(installedComponentCount === undefined ? {} : { installedComponentCount }),
+    ...(installedComponentIds ? { installedComponentIds: installedComponentIds.map(safeComponentIdentity) } : {}),
+  };
+  return { facts, diagnostics };
 }
 
 const FIXED_STAGE_MESSAGES: Record<string, string> = {

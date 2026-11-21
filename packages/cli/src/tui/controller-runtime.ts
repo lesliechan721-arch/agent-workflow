@@ -363,7 +363,7 @@ function scopedCurrentStatus(status: RecoveryStatus, snapshot: JointDemandSnapsh
   }));
   const targets = inventory?.flatMap((root) => root.targetResults) ?? [];
   const counts = { blocked: targets.filter((target) => target.blockers.length > 0).length,
-    pending: targets.filter((target) => ['absent', 'drifted'].includes(target.content ?? '')).length,
+    pending: targets.filter((target) => target.satisfaction !== 'not-applicable' && ['absent', 'drifted'].includes(target.content ?? '')).length,
     unconfirmed: targets.filter((target) => target.content === 'unknown').length,
     ready: targets.filter((target) => target.content === 'satisfied').length };
   return { ...status, scope, intent: { state: demand.intent.state,

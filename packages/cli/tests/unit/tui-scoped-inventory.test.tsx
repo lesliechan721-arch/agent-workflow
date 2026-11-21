@@ -87,6 +87,23 @@ async function readScopedPages(
 afterEach(cleanup);
 
 describe('scoped inventory in Ink', () => {
+  it('offers sync on the declared Project root when a usable personal dependency has an old Project copy', () => {
+    const pluginId = 'official/demo';
+    const provider = 'official/dependency';
+    const duplicate = { code: 'projectSkillDuplicatePending', pluginId: provider, message: 'Sync the Project plugin.' };
+    const target = { pluginId, agent: 'opencode' as const, scope: 'project' as const,
+      delivery: { kind: 'native' as const, platform: 'opencode' as const },
+      execution: 'not-run' as const, observation: 'verified' as const, content: 'satisfied' as const,
+      requiredBy: [pluginId], blockers: [], reasons: [duplicate] };
+    const view = buildScopedInventory({ status: status.payload, pluginSummaries: status.pluginSummaries,
+      recovery: { ...recovery('project'), selection: { agents: ['opencode'], preferences: 'valid' },
+        inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [target] }],
+        extraObserved: [{ ...target, pluginId: provider }] } });
+    expect(view.declaredRoots[0]).toMatchObject({ pluginId, state: 'pending', targets: [{ reasonCodes: [duplicate.code] }] });
+    expect(view.extraInstalledRoots.find((item) => item.pluginId === provider)).toMatchObject({ state: 'pending' });
+    expect(view.syncTargets).toEqual([{ pluginId, agent: 'opencode', scope: 'project' }]);
+  });
+
   // Test Value Gate: a verified generic Skills target must show the same health in inventory and detail cards.
   it.each([
     { observation: 'verified', content: 'satisfied', state: 'ready', label: '可用', actual: true },

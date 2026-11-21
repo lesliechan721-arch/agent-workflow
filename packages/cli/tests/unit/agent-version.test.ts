@@ -177,6 +177,19 @@ describe('agent-version', () => {
     expect(second).not.toBe(first);
   });
 
+  it('rereads a downgraded Claude and a repaired retry using the same runner', async () => {
+    let version = '2.1.317';
+    const runner = async () => ({ exitCode: 0, stdout: `${version} (Claude Code)`, stderr: '' });
+    const options = { cwd: '/repo', env: { PATH: '/bin' }, runner };
+    await expect(probeAgentVersion('claude', options)).resolves.toMatchObject({ status: 'supported' });
+    version = '2.1.100';
+    await expect(probeAgentVersion('claude', { ...options, cache: false }))
+      .resolves.toMatchObject({ status: 'tooOld', detectedVersion: '2.1.100' });
+    version = '2.1.318';
+    await expect(probeAgentVersion('claude', { ...options, cache: false }))
+      .resolves.toMatchObject({ status: 'supported', detectedVersion: '2.1.318' });
+  });
+
   it.each(['0.145.0', '0.154.999'])('rejects Codex %s below the 0.155.0 minimum', async (version) => {
     await expect(
       probeAgentVersion('codex', {

@@ -3,7 +3,10 @@ import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../comm
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
+import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
+import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, isDeliveryNoticeCode, isInstallationAdvisory,
+  safeComponentIdentity, type ComponentDelivery, type PermissionAction } from './component-delivery.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
 
@@ -15,12 +18,30 @@ const targetContentLabels: Record<PublicTargetResult['content'], string> = {
   unknown: 'Unconfirmed',
 };
 
+function componentGapText(gap: ComponentUnmet, installedIds?: readonly string[], position?: string): string {
+  const labels = { skipped: 'Skipped component', limited: 'Partially supported component', unmet: 'Unmet component' };
+  const status = componentGapOutcome(gap, installedIds);
+  const details = [safeComponentIdentity(gap.reasonCode), ...componentGapFeatures(gap)].join('; ');
+  return `${labels[status]}${position ? ` (${position}):` : ''} ${safeComponentIdentity(gap.componentId ?? gap.id)}: ${details}`;
+}
+
+function componentDeliveryLines(delivery: ComponentDelivery): string[] {
+  const { installedComponentCount, installedComponentIds, componentGaps } = delivery;
+  return [
+    ...(installedComponentCount !== undefined ? [`  Installed components: ${installedComponentCount}`] : []),
+    ...(installedComponentIds?.length ? [`  Installed: ${installedComponentIds.map(safeComponentIdentity).join(', ')}`] : []),
+    ...(componentGaps ?? []).map((gap) =>
+      `  ${componentGapText(gap, installedComponentIds, `${gap.providerPluginId} / ${gap.agent} / ${gap.renderScope}`)}`),
+  ];
+}
+
 export interface Diagnostic {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
-  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[] };
+  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[];
+    skippedPermissionActions?: PermissionAction[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }
@@ -96,14 +117,20 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   else if (configFields && typeof configFields === 'object') for (const [key, field] of Object.entries(configFields as Record<string, { type?: string; title?: string; sensitive?: boolean; required?: boolean }>)) lines.push(`${key}: ${field.type ?? 'value'}${field.required ? ' (required)' : ''}${field.sensitive ? ' (sensitive)' : ''}${field.title ? ` — ${field.title}` : ''}`);
   const apply = data.apply as {
     state?: string; reason?: string;
-    targetResults?: Pick<ConfigApplyTargetResult, 'target' | 'state' | 'partialDelivery' | 'errorCode'>[];
+    targetResults?: Array<Pick<ConfigApplyTargetResult, 'target' | 'state' | 'partialDelivery' | 'errorCode'> & ComponentDelivery>;
     commandResults?: Array<Pick<CommandProducerResult, 'producer' | 'state'> & { blockerCodes?: string[] }>;
   } | undefined;
   if (apply) {
     lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`);
-    for (const { target, state, partialDelivery, errorCode } of apply.targetResults ?? []) {
+    for (const entry of apply.targetResults ?? []) {
+      const { target, state, partialDelivery, errorCode, satisfaction } = entry;
       const position = `${target.pluginId ?? target.pluginName} ${target.platform}/${target.scope}`;
-      lines.push(`${position}: ${state}${partialDelivery ? ' (some outputs verified)' : ''}${errorCode ? ` [${errorCode}]` : ''}`);
+      const advisory = result.diagnostics.some(({ code, subject, severity }) => severity === 'warning' && isInstallationAdvisory(code)
+        && subject?.pluginId === (target.pluginId ?? target.pluginName) && subject.target === target.platform && subject.scope === target.scope);
+      const label = state === 'completed' && satisfaction === 'not-applicable' ? 'No applicable components'
+        : state === 'completed' && (hasComponentDeliveryNotice(entry) || advisory) ? 'Installed with notices' : state;
+      lines.push(`${position}: ${label}${partialDelivery ? ' (some outputs verified)' : ''}${errorCode ? ` [${errorCode}]` : ''}`);
+      lines.push(...componentDeliveryLines(entry));
     }
     for (const { producer, state, blockerCodes } of apply.commandResults ?? []) {
       const position = [producer.platform, producer.scope].filter(Boolean).join('/');
@@ -130,10 +157,10 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   const changes = data.changes;
   if (changes && !Array.isArray(changes) && typeof changes === 'object') for (const [key, value] of Object.entries(changes)) if (value !== 'none') lines.push(`${key}: ${String(value)}`);
-  for (const key of ['items', 'sources', 'entries', 'commands', 'packages', 'targetResults', 'checks', 'inventory', 'skills']) {
+  for (const key of ['items', 'sources', 'entries', 'commands', 'packages', 'targetResults', 'checks', 'inventory', 'extraObserved', 'skills']) {
     const entries = data[key];
     if (!Array.isArray(entries)) continue;
-    if (entries.length === 0) lines.push(`${key}: none`);
+    if (entries.length === 0 && key !== 'extraObserved') lines.push(`${key}: none`);
     const rows = key === 'inventory'
       ? entries.flatMap((entry) => entry.targetResults?.length ? entry.targetResults : [entry])
       : entries;
@@ -144,7 +171,13 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       const disabled = key === 'inventory' && targetEntry.content === 'drifted' && result.diagnostics.some(({ code, subject }) =>
         code === 'nativeActivationDisabled' && subject?.pluginId === targetEntry.pluginId
         && subject.target === targetEntry.target && subject.scope === targetEntry.scope);
-      const content = key === 'inventory' || key === 'targetResults' ? targetContentLabels[targetEntry.content] : undefined;
+      const isTarget = key === 'inventory' || key === 'targetResults' || key === 'extraObserved';
+      const advisory = result.diagnostics.some(({ code, subject, severity }) => severity === 'warning' && isInstallationAdvisory(code)
+        && subject?.pluginId === targetEntry.pluginId && subject.target === targetEntry.target && subject.scope === targetEntry.scope);
+      const deliveryFailed = targetEntry.execution === 'failed' || targetEntry.execution === 'partial' || Boolean(targetEntry.blockerCodes?.length);
+      const content = !isTarget ? undefined : !deliveryFailed && targetEntry.satisfaction === 'not-applicable' ? 'No applicable components'
+        : !deliveryFailed && targetEntry.content === 'satisfied' && (hasComponentDeliveryNotice(targetEntry) || advisory) ? 'Installed with notices'
+          : targetContentLabels[targetEntry.content];
       const operation = key === 'inventory' ? undefined : entry.execution ?? entry.availability ?? entry.status ?? entry.state;
       lines.push([
         entry.pluginId ?? entry.id ?? entry.sourceId ?? entry.storeKey ?? entry.name ?? entry.skill,
@@ -159,7 +192,7 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
         lines.push(`  ${excluded.product?.product ?? 'product'}: version ${excluded.product?.version ?? 'unknown'}; not-run; ${excluded.reasonCode}`);
         lines.push(...excluded.recoveryActions.map((action) => `    Recovery: ${action}`));
       }
-      for (const gap of targetEntry.componentGaps ?? []) lines.push(`  Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+      lines.push(...componentDeliveryLines(targetEntry));
       if (!targetEntry.deploymentReceipts?.length) for (const deployment of targetEntry.deploymentObservations ?? []) {
         for (const product of deployment.products) {
           const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
@@ -177,7 +210,8 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       if (!targetEntry.deploymentReceipts?.length) for (const plan of targetEntry.deploymentPlans ?? []) {
         for (const product of plan.products) lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; ${product.availability}`);
         for (const component of plan.expected.components) lines.push(`    Planned component ${component.id}: ${component.kind}`);
-        for (const gap of plan.expected.unmet) lines.push(`    Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+        const plannedIds = plan.expected.components.map(({ id }) => id);
+        for (const gap of plan.expected.unmet) lines.push(`    ${componentGapText(gap, plannedIds)}`);
         for (const effect of plan.effects) lines.push(`  Planned effect ${effect.kind}: ${effect.componentIds.join(', ')}${effect.destructive ? '; destructive' : ''}`);
         if (plan.sharedReferences !== 'none' || plan.products.length > 1) lines.push(`  Shared impact: ${plan.sharedReferences}; ${plan.products.length} product faces`);
       }
@@ -186,9 +220,11 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
           const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
           lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
           for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
-          for (const gap of deployment.unmet.filter((item) => !item.productIds.length || item.productIds.includes(product.id))) lines.push(`    Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+          for (const gap of deployment.unmet.filter((item) => !item.productIds.length || item.productIds.includes(product.id))) {
+            lines.push(`    ${componentGapText(gap, targetEntry.installedComponentIds)}`);
+          }
         }
-        if (!deployment.products.length) for (const gap of deployment.unmet) lines.push(`  Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+        if (!deployment.products.length) for (const gap of deployment.unmet) lines.push(`  ${componentGapText(gap, targetEntry.installedComponentIds)}`);
         for (const effect of deployment.effects) lines.push(`  Effect ${effect.id}: ${effect.status}; mutation=${effect.mutation}`);
         lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}; reload=${deployment.reload}`);
         if (deployment.after.scopeRegistration) lines.push(`  Native registration in requested scope: ${deployment.after.scopeRegistration}`);
@@ -200,6 +236,9 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       }
       if (verbose && entry.blockerCodes && Array.isArray(entry.blockerCodes)) lines.push(`  Blockers: ${entry.blockerCodes.join(', ')}`);
     }
+  }
+  for (const entry of (data.remainingTargets ?? []) as Array<Pick<PublicTargetResult, 'pluginId' | 'target' | 'scope'>>) {
+    lines.push(`Remaining: ${entry.pluginId} / ${entry.target} / ${entry.scope}`);
   }
   if (data.preview === true || data.dryRun === true) lines.push('Preview only. No content was deleted.');
   const confirmation = data.confirmation as Confirmation | null | undefined;
@@ -216,13 +255,14 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
   for (const diagnostic of result.diagnostics) {
     const { detail } = diagnostic;
-    if (!detail) continue;
-    if (diagnostic.code === SKILL_INVOCATION_NOTICE) {
+    if (diagnostic.code === SKILL_INVOCATION_NOTICE || isDeliveryNoticeCode(diagnostic.code)) {
       const position = [diagnostic.subject?.pluginId, diagnostic.subject?.target, diagnostic.subject?.scope].filter(Boolean).join(' / ');
-      lines.push(`Warning · ${position} · ${diagnostic.message}`);
-      if (verbose) lines.push(`  Reason: ${detail.reasonCode}`);
+      lines.push(`${diagnostic.severity === 'error' ? 'Error' : 'Warning'} · ${position} · ${diagnostic.message}`);
+      if (verbose && detail) lines.push(`  Reason: ${detail.reasonCode}`);
+      if (detail?.path) lines.push(`  Location: ${detail.path}`);
       continue;
     }
+    if (!detail) continue;
     lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
     if (detail.path) lines.push(`  Location: ${detail.path}`);
     if (detail.configKey) lines.push(`  Config key: ${detail.configKey}`);

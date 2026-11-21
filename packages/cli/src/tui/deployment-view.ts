@@ -1,7 +1,10 @@
 import type { FrozenDeploymentPlan, DeploymentExclusion } from '../platforms/contracts.js';
-import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploymentExclusion, PublicComponentGap } from '../commands/public-lifecycle-result.js';
+import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploymentExclusion } from '../commands/public-lifecycle-result.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
+import type { Diagnostic } from '../output/public-result.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
+import { componentGapDescription, componentGapOutcome, isDeliveryNoticeCode, INVOCATION_POLICY_NOT_APPLIED, PI_AGENT_CONSUMER_NOTICE, safeComponentIdentity,
+  safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { agentLabel, scopeLabel } from './glossary.js';
 
 const stateLabels: Record<string, string> = { present: '存在', absent: '缺失', unknown: '未知', 'not-applicable': '不适用',
@@ -15,12 +18,33 @@ const reloadLabels: Record<string, string> = { none: '无需重载', 'new-sessio
   'host-restart': '需要重启客户端', unknown: '重载条件未知' };
 
 export function componentGapText(gap: ComponentUnmet): string {
-  return `${gap.componentId ?? gap.id} · ${gap.kind} · ${gap.reasonCode}${gap.requiredFeatures.length
-    ? ` · ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `: ${requirement.values.join(', ')}` : ''}`).join('；')}` : ''}`;
+  return componentGapDescription(gap, ': ');
 }
 
-export function componentGapLines(gaps: readonly PublicComponentGap[]): string[] {
-  return gaps.map((gap) => `  ! ${gap.providerPluginId} · ${scopeLabel(gap.renderScope)} · 缺失 ${componentGapText(gap)}`);
+const gapLabels = { skipped: '已跳过', limited: '部分生效', unmet: '未完成' };
+
+export function componentDeliveryLines(delivery: ComponentDelivery): string[] {
+  return [
+    ...(delivery.installedComponentCount === undefined ? [] : [`  已安装 ${delivery.installedComponentCount} 项`]),
+    ...(delivery.installedComponentIds?.length ? [`  已安装组件 ${delivery.installedComponentIds.map(safeComponentIdentity).join('、')}`] : []),
+    ...(delivery.componentGaps ?? []).map((gap) => `  ! ${gap.providerPluginId} · ${agentLabel(gap.agent)} · ${scopeLabel(gap.renderScope)} · ${gapLabels[componentGapOutcome(gap, delivery.installedComponentIds)]} ${componentGapText(gap)}`),
+  ];
+}
+
+export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], field?: string): string {
+  if (code === INVOCATION_POLICY_NOT_APPLIED) {
+    const actions = safeSkippedPermissionActions(detail?.skippedPermissionActions);
+    const position = field ? ` ${safeComponentIdentity(field)}` : '';
+    return actions.length ? `已跳过调用权限${position}中的动作（${actions.join(', ')}）。` : `已跳过部分调用权限${position}。`;
+  }
+  if (code !== PI_AGENT_CONSUMER_NOTICE) return '旧输出仍保留，可能仍在生效。请先检查该位置再重试。';
+  const reason = detail?.reasonCode;
+  if (reason === 'piAgentConsumerDisabled') return 'Pi 角色已安装。请启用兼容的角色扩展并重载 Pi。';
+  if (reason === 'piAgentPackageAccessDenied') return 'Pi 角色已安装。请检查角色扩展能否访问此包并重载 Pi。';
+  if (reason === 'piAgentPackageSourceUnsupported') return 'Pi 角色已安装。检测到的 pi-subagents 版本无法读取此包来源。请启用兼容的扩展，例如 @tintinweb/pi-subagents，然后重载 Pi。';
+  if (reason === 'piProjectTrustRequired') return 'Pi 角色已安装。请在 Pi 中检查此项目的信任设置。';
+  const finding = reason === 'piAgentConsumerMissing' ? '未检测到兼容的角色扩展。' : '当前包尚无已确认可用的角色执行扩展。';
+  return `Pi 角色已安装。${finding}可启用 pi-subagents 或 @tintinweb/pi-subagents，然后重载 Pi。`;
 }
 
 export function deploymentExclusionLines(exclusions: readonly (DeploymentExclusion | PublicDeploymentExclusion)[]): string[] {
@@ -66,7 +90,10 @@ export function deploymentPlanLines(plans: readonly FrozenDeploymentPlan[], tech
       ...plan.binding.consumers.map((product) => `  → ${product.product === 'app' ? 'App' : product.product === 'cli' ? 'CLI' : '通用输出'} · ${product.version ?? '版本未取得'} · ${stateLabel(product.availability)}`),
       ...(plan.binding.consumers.length > 1 ? ['  CLI / App 共用此物理包；物理动作只执行一次。'] : []),
       ...plan.expected.components.map((component) => `    组件 ${component.id} · ${component.kind}`),
-      ...plan.expected.unmet.map((gap) => `    ! 缺失 ${componentGapText(gap)}`),
+      ...plan.expected.unmet.map((gap) => {
+        const labels = { skipped: '将跳过', limited: '将部分交付', unmet: '缺少必要条件' };
+        return `    ! ${labels[componentGapOutcome(gap, plan.expected.components.map(({ id }) => id))]} ${componentGapText(gap)}`;
+      }),
       ...plan.expected.omitted.map((component) => `    ${component.id} · ${component.reason === 'config-disabled' ? '配置已关闭' : '本平台有意不提供'}`),
       ...plan.effects.flatMap((effect) => {
         const key = `${effect.physicalKey}\0${effect.id}`;
@@ -80,7 +107,8 @@ export function deploymentPlanLines(plans: readonly FrozenDeploymentPlan[], tech
   ]);
 }
 
-export function deploymentResultLines(receipts: readonly PublicDeploymentResult[], technical = false): string[] {
+export function deploymentResultLines(receipts: readonly PublicDeploymentResult[], technical = false, installedIds?: readonly string[]): string[] {
+  const gapLine = (gap: ComponentUnmet): string => `! ${gapLabels[componentGapOutcome(gap, installedIds)]} ${componentGapText(gap)}`;
   return receipts.flatMap((receipt) => [
     ...receipt.products.flatMap((product) => {
       const observation = receipt.after.consumers.find((consumer) => consumer.productId === product.id);
@@ -88,19 +116,19 @@ export function deploymentResultLines(receipts: readonly PublicDeploymentResult[
         `  → ${product.product === 'app' ? 'App' : product.product === 'cli' ? 'CLI' : '通用输出'} · ${product.version ?? '版本未取得'} · ${stateLabel(product.availability)}`,
         `    启用 ${observation ? stateLabel(observation.activation) : '未知'} · ${observation ? stateLabel(observation.load) : '加载未知'}`,
         ...receipt.after.components.map((component) => `    组件 ${component.id} · 物理内容${stateLabel(component.presence)}`),
-        ...receipt.unmet.filter((gap) => !gap.productIds.length || gap.productIds.includes(product.id)).map((gap) => `    ! 缺失 ${componentGapText(gap)}`),
+        ...receipt.unmet.filter((gap) => !gap.productIds.length || gap.productIds.includes(product.id)).map((gap) => `    ${gapLine(gap)}`),
         ...(technical && product.entry ? [`    安装入口 ${product.entry.kind === 'cli' ? product.entry.executable : product.entry.kind === 'directory' ? product.entry.configRoot : product.entry.root}`] : []),
       ];
     }),
-    ...(receipt.products.length ? [] : ['  产品面未能关联；加载状态保持未知。', ...receipt.unmet.map((gap) => `  ! 缺失 ${componentGapText(gap)}`)]),
+    ...(receipt.products.length ? [] : ['  产品面未能关联；加载状态保持未知。', ...receipt.unmet.map((gap) => `  ${gapLine(gap)}`)]),
     ...receipt.effects.map((effect) => `  动作 ${effect.id} · ${stateLabel(effect.status)} · ${stateLabel(effect.mutation)}`),
     `  包${stateLabel(receipt.after.package)} · 登记${stateLabel(receipt.after.registration)} · ${reloadLabels[receipt.reload] ?? receipt.reload}`,
     ...nativeSourceLines(receipt.after),
     ...configurationLines(receipt.after),
     ...new Set([...receipt.diagnostics, ...receipt.effects.flatMap((effect) => effect.diagnostics
       .filter((entry) => entry.subject?.field === 'nativeSource'))]
-      // The result shows these once per actual Skill and location, outside deployment details.
-      .filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
+      // The result shows advisories once per actual component or location.
+      .filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
       .map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`)),
   ]);
 }

@@ -31,10 +31,10 @@ describe('platform component contract', () => {
     assertPlan(plan([skill, hook, instruction, { id: 'transport', kind: 'mcp', name: 'transport', content: { type: 'http', url: 'https://example.test/mcp' } }, { id: 'role', kind: 'agent', name: 'reviewer', content: { description: 'Review files.', prompt: 'Read the change.', tools: [] } }]));
     assertPlan(plan([]));
   });
-  it('retains missing Hook feedback and rejects an actual component that cannot block', () => {
+  it('accepts the Hook declaration and retains its missing blocking feedback', () => {
     const profile = capabilities(); profile.features['hook.common.before_tool'] = { status: 'supported', reasonCodes: [], values: ['notify'] };
     expect(getUnmetFeatureRequirements(getComponentFeatureRequirements(hook), profile)).toEqual([{ feature: 'hook.common.before_tool', values: ['block'] }]);
-    expect(() => assertPlan(plan([hook]), profile)).toThrow(/unsupported required features/u);
+    assertPlan(plan([hook]), profile);
     const unmet = { id: 'guard', kind: 'hook', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['block'] }], reasonCode: 'interface-unsupported' };
     assertPlan({ ...plan([]), unmet: [unmet] }, profile);
     assertPlan({ ...plan([]), unmet: [{ ...unmet, requiredFeatures: [{ values: ['block'], feature: 'hook.common.before_tool' }] }] }, profile);
@@ -91,7 +91,7 @@ describe('platform component contract', () => {
       const result = partitionStaticPluginComponents([skill], profile);
       expect(result.components.length).toBe(status === 'supported' ? 1 : 0);
       expect(result.unmet).toEqual(status === 'supported' ? [] : [{ id: skill.id, kind: 'skill', name: skill.name, requiredFeatures: [{ feature: 'component.kind.skill' }], reasonCode: status === 'unverified' ? 'capability-unverified' : 'interface-unsupported' }]);
-      if (status !== 'supported') expect(() => assertPlan(plan([skill]), profile)).toThrow();
+      assertPlan(plan([skill]), profile);
     }
     const generic = capabilities(); generic.platform = 'generic'; generic.features = Object.fromEntries(Object.entries(generic.features).filter(([id]) => !id.startsWith('hook.'))); generic.kinds.agent = { status: 'unsupported', reasonCodes: ['interface-unsupported'], delivery: [] };
     expect(partitionStaticPluginComponents([{ id: 'role', name: 'role', kind: 'agent', content: { description: 'Role', prompt: 'Read.' } }], generic).unmet[0]?.requiredFeatures).toEqual([{ feature: 'component.kind.agent' }]);
@@ -108,7 +108,7 @@ describe('platform component contract', () => {
       { feature: 'skill.background', values: ['true'] }, { feature: 'skill.hooks' }, { feature: 'skill.paths' },
       { feature: 'skill.shell', values: ['bash'] }, { feature: 'skill.invocation.hint' }, { feature: 'skill.arguments' },
     ]));
-    expect(() => assertPlan(plan([restricted]), profile)).toThrow(/unsupported required features/u);
+    assertPlan(plan([restricted]), profile);
     expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual(requirements.filter((entry) => !entry.feature.startsWith('component.kind.')));
     assertPlan(plan([restricted]));
   });
@@ -124,7 +124,7 @@ describe('platform component contract', () => {
     assertPlan(plan([controlled]), profile);
     expect(partitionStaticPluginComponents([controlled], profile)).toMatchObject({ components: [controlled], unmet: [] });
     const restricted: PluginComponent = { ...controlled, requires: [...controlled.requires!, { feature: 'skill.tools', values: ['none'] }] };
-    expect(() => assertPlan(plan([restricted]), profile)).toThrow(/skill.tools/u);
+    assertPlan(plan([restricted]), profile);
     expect(partitionStaticPluginComponents([restricted], profile).unmet[0]?.requiredFeatures).toEqual([{ feature: 'skill.tools', values: ['none'] }]);
   });
   it.each([

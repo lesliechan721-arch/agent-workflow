@@ -116,6 +116,7 @@ export function mergeExpectedComponentSets(sets: readonly ExpectedComponentSet[]
   const ids = new Set<string>();
   const names = new Set<string>();
   for (const set of sets) {
+    if (set.declaredComponentIds?.length) (expected.declaredComponentIds ??= []).push(...set.declaredComponentIds);
     for (const entry of [...set.components, ...set.omitted, ...set.unmet]) {
       if (ids.has(entry.id)) throw new Error(`componentIdentityConflict: duplicate component ID "${entry.id}".`);
       ids.add(entry.id);
@@ -132,8 +133,9 @@ export function mergeExpectedComponentSets(sets: readonly ExpectedComponentSet[]
     expected.omitted.push(...set.omitted);
     expected.unmet.push(...set.unmet);
   }
+  if (expected.declaredComponentIds) expected.declaredComponentIds = [...new Set(expected.declaredComponentIds)];
   for (const gap of expected.unmet) {
-    if (gap.componentId && !expected.components.some((component) => component.id === gap.componentId && component.kind === 'instruction')) {
+    if (gap.componentId && !expected.components.some((component) => component.id === gap.componentId && (component.kind === 'instruction' || component.kind === 'skill'))) {
       throw new Error(`componentGapInvalid: "${gap.id}" references an unavailable component.`);
     }
   }

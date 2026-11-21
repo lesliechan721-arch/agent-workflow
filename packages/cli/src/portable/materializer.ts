@@ -5,8 +5,11 @@ import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
 import { isPlatformTarget, PLATFORM_TARGETS, resolveSupportedPlatforms, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { COMPONENT_KINDS, resolveInvocationPolicy } from '@lesliechan721/aw-plugin-core/manifest';
 import { createIsolatedSkillEnv, materializeProfilePluginComponents, prepareSkillPluginBundle, type ComponentPreparationBinding } from '../review/skill-materialization.js';
 
+import { selectPlatformInvocationPolicy } from '../generators/permissions.js';
+import type { Diagnostic } from '../output/public-result.js';
 import type {
   CatalogSourceResolution,
   PluginMeta,
@@ -65,6 +68,7 @@ export interface MaterializePortableSkillsOptions {
   signal?: AbortSignal;
   inputMode?: 'source' | 'bundle';
   selectedSkills?: readonly string[];
+  includeComponentGaps?: boolean;
 }
 
 export interface MaterializedPortableSkills {
@@ -86,6 +90,7 @@ export interface MaterializedPortableSkills {
 }
 
 export interface MaterializePortableSkillsFromCatalogOptions {
+  includeComponentGaps?: boolean;
   selector: string;
   platform: PlatformTarget;
   scope: Scope;
@@ -111,6 +116,7 @@ export interface PortableCatalogBindingInput {
   profile: AwSourceBindingProfile & { kind: 'portable' };
   /** Read-only configuration evidence; it is not part of the materialization identity. */
   providerConfigs?: ReadonlyArray<readonly [string, string]>;
+  policyNotices?: Diagnostic[];
 }
 
 export function assertPortablePlatform(platform: unknown): asserts platform is PlatformTarget {
@@ -210,6 +216,7 @@ async function materializePluginCandidates(options: {
   inputMode: 'source' | 'bundle';
   profileConfig?: PortablePluginProfileConfig;
   selectedSkills?: ReadonlySet<string>;
+  includeComponentGaps?: boolean;
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
   recordPreparation: (preparation: ComponentPreparationBinding[]) => void;
 }): Promise<CandidateTree[]> {
@@ -218,7 +225,7 @@ async function materializePluginCandidates(options: {
   const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-profile-skills-'));
   try {
     const materialized = await materializeProfilePluginComponents({
-      ...options, outputRoot: stagingRoot, kinds: ['skill'], portable: true, config: profileConfig.config,
+      ...options, outputRoot: stagingRoot, kinds: options.includeComponentGaps ? COMPONENT_KINDS : ['skill'], portable: true, config: profileConfig.config,
       selectedSkills: options.selectedSkills ? [...options.selectedSkills] : undefined,
     });
     options.recordPreparation(materialized.preparation.map((unit) => ({ ...unit, outputs: [] })));
@@ -312,6 +319,10 @@ export async function resolvePortableCatalogBindingInput(
         subject: { plugin: requestedPlugin.manifest.name },
         profile: inputs.profile,
         providerConfigs: inputs.providerConfigs,
+        ...(options.platform === 'generic' ? { policyNotices: plugins.flatMap((plugin) =>
+          selectPlatformInvocationPolicy(resolveInvocationPolicy(plugin.manifest, options.platform), {
+            pluginId: pluginId(plugin), target: options.platform, scope: options.scope,
+          }).diagnostics) } : {}),
       };
     },
   });
@@ -345,6 +356,7 @@ export async function materializePortableSkillsFromCatalog(
           outputRoot,
           signal: options.signal,
           inputMode: 'bundle',
+          includeComponentGaps: options.includeComponentGaps,
         });
         return {
           pluginId: materialized.pluginId,
@@ -440,6 +452,7 @@ export async function materializePortableSkills(
           env,
           signal: options.signal,
           inputMode: 'bundle',
+          includeComponentGaps: options.includeComponentGaps,
           profileConfig: profileConfigs.find((entry) => entry.plugin.manifest.name === plugin.manifest.name)!.config,
           ...(selectedSkills ? { selectedSkills } : {}),
           recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),

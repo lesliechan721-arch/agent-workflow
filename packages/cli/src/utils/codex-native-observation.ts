@@ -1,14 +1,24 @@
+import os from 'node:os';
+
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
 import {
   buildCodexPluginListJsonInvocation,
+  bindNativeCliRunnerSignal,
+  getDefaultNativeCliRunner,
+  NATIVE_CLI_TIMEOUT_ENV,
   NativeCliError,
   parseCodexPluginListJson,
   runNativeCli,
   SYSTEM_CODEX_MANAGER,
   type CodexManager,
   type CodexPluginListEntry,
+  type NativeCliInvocation,
+  type NativeCliResult,
   type NativeCliRunner,
 } from './native-cli.js';
+import { readEnvironmentValue } from './state-paths.js';
+
+const CODEX_PLUGIN_LIST_PROBE_TIMEOUT_MS = 5_000;
 
 export type CodexNativePluginObservation =
   | { state: 'observed'; value: 'installed'; entry: CodexPluginListEntry }
@@ -92,14 +102,44 @@ function indexCodexEntries(entries: readonly CodexPluginListEntry[]): CodexObser
   return { entries: indexed };
 }
 
+interface CodexObservationProbe {
+  platform?: NodeJS.Platform;
+  signal?: AbortSignal;
+}
+
+async function runCodexPluginListProbe(invocation: NativeCliInvocation, runner: NativeCliRunner,
+  probe: CodexObservationProbe): Promise<NativeCliResult> {
+  const request = { ...invocation, timeoutMs: CODEX_PLUGIN_LIST_PROBE_TIMEOUT_MS };
+  const read = () => runNativeCli(request, runner);
+  let result: NativeCliResult;
+  try {
+    result = await read();
+  } catch (error) {
+    // A cleaned-up Windows cold read can be repeated within the same scope.
+    if ((probe.platform ?? os.platform()) !== 'win32'
+      || !(error instanceof NativeCliError) || error.reason !== 'timeout'
+      || error.name === 'AbortError' || error.cleanupError
+      || readEnvironmentValue(invocation.env ?? process.env, NATIVE_CLI_TIMEOUT_ENV, 'win32') !== undefined) throw error;
+    result = await read();
+  }
+  if (Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > 1024 * 1024) {
+    throw new Error('nativeObservationOutputLimit');
+  }
+  return result;
+}
+
 export async function createCodexNativeObservationSession(options: {
   exactCwd: string;
   env: NodeJS.ProcessEnv;
   runner?: NativeCliRunner;
   manager?: CodexManager;
+  probe?: CodexObservationProbe;
 }): Promise<CodexNativeObservationSession> {
   const neutral = await createSafeNeutralCwd(options.env);
   const neutralCwd = neutral.executionCwd;
+  const runner = options.probe
+    ? bindNativeCliRunnerSignal(options.runner ?? getDefaultNativeCliRunner(), options.probe.signal)
+    : options.runner;
   let manager: CodexManager | undefined = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
   const pendingReads = new Set<Promise<unknown>>();
@@ -112,7 +152,7 @@ export async function createCodexNativeObservationSession(options: {
     let result = snapshots.get(key);
     if (!result) {
       result = (async () => {
-        if (!options.runner || !manager) return { unobserved: true };
+        if (!runner || !manager) return { unobserved: true };
         try {
           const invocation = buildCodexPluginListJsonInvocation(
             manager,
@@ -120,7 +160,9 @@ export async function createCodexNativeObservationSession(options: {
             scope === 'exact' ? options.exactCwd : neutralCwd,
             options.env,
           );
-          const nativeResult = await runNativeCli(invocation, options.runner);
+          const nativeResult = options.probe
+            ? await runCodexPluginListProbe(invocation, runner, options.probe)
+            : await runNativeCli(invocation, runner);
           if (nativeResult.exitCode !== 0) return { failure: 'unavailable' };
           return indexCodexEntries(parseCodexPluginListJson(nativeResult.stdout));
         } catch (error) {

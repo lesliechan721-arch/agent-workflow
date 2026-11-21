@@ -28,9 +28,15 @@ describe('Portable scope capability through Catalog recovery', () => {
           content: { files: { 'SKILL.md': { text: `---\nname: ${name}\ndescription: Test skill\n---\nUse ${name}.\n` },
             'README.md': { text: `Use ${name}.\n` } } } }],
         omitted: [], unmet: [] };
-        await fs.outputFile(path.join(sourceRoot, 'plugins', name, 'render.mjs'),
-          `import fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(renderMarker)}, ${JSON.stringify(name + '\n')});\n`
-          + `console.log(${JSON.stringify(JSON.stringify(plan))});\n`);
+        await fs.outputFile(path.join(sourceRoot, 'plugins', name, 'render.mjs'), [
+          "import fs from 'node:fs';",
+          "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+          "const batch = context.allowedOutputKinds.includes('skill') ? 'skill' : 'non-skill';",
+          `fs.appendFileSync(${JSON.stringify(renderMarker)}, context.plugin.name + ':' + batch + '\\n');`,
+          `const plan = ${JSON.stringify(plan)};`,
+          'plan.components = plan.components.filter(({ kind }) => context.allowedOutputKinds.includes(kind));',
+          'console.log(JSON.stringify(plan));',
+        ].join('\n'));
       }
       await createDependencyCatalogSnapshotFixture(sourceRoot, names.map((name) => ({
         name,
@@ -72,7 +78,8 @@ describe('Portable scope capability through Catalog recovery', () => {
         if (error.code === 'ENOENT') return '';
         throw error;
       });
-      expect(rendered).toBe(unsupported === 'dependency' ? 'root\n' : '');
+      expect(rendered.split('\n').filter(Boolean).sort()).toEqual(unsupported === 'dependency'
+        ? ['root:non-skill', 'root:skill'] : []);
       const status = await readRecoveryStatus(options);
 
       expect(status).toMatchObject({ allSatisfied: true, errors: [] });

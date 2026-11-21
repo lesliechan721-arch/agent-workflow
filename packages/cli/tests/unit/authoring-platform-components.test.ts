@@ -17,7 +17,7 @@ import { createAwSourceBindingWorkspaceValidationContext, readAwSourceBinding, v
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
 
-async function fixture(): Promise<{ root: string; pluginRoot: string; env: NodeJS.ProcessEnv }> {
+async function fixture({ needsRuntimeConfig = false } = {}): Promise<{ root: string; pluginRoot: string; env: NodeJS.ProcessEnv }> {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-profile-v4-')));
   roots.push(root);
   await initializeCatalogWorkspace({ workspaceRoot: root });
@@ -35,10 +35,17 @@ async function fixture(): Promise<{ root: string; pluginRoot: string; env: NodeJ
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 if (context.surface !== 'agent-plugin' || context.platformCapabilities.basis !== 'profile') process.exit(31);
+const configProtocol = 'aw.installed-runtime-config.v2';
+const missing = [];
+if (${needsRuntimeConfig} && !context.platformCapabilities.features['skill.runtime-config']?.values?.includes(configProtocol)) {
+  missing.push({feature:'skill.runtime-config',values:[configProtocol]});
+} else if (context.platformCapabilities.kinds.skill.status !== 'supported') {
+  missing.push({feature:'component.kind.skill'});
+}
 if (!context.allowedOutputKinds.includes('skill')) {
   console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));
-} else if (context.platformCapabilities.kinds.skill.status !== 'supported') {
-  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'computed',kind:'skill',name:'computed-name',requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'capability-unverified'}]}));
+} else if (missing.length) {
+  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'computed',kind:'skill',name:'computed-name',requiredFeatures:missing,reasonCode:'capability-unverified'}]}));
 } else {
   console.log(JSON.stringify({version:3,components:[{id:'computed',kind:'skill',name:'computed-name',content:{files:{
     'SKILL.md':{text:'---\\nname: computed-name\\ndescription: A computed author Skill.\\n---\\nRead references/reference.md.\\n'},
@@ -94,12 +101,12 @@ describe('v4 author profile consumers', () => {
   });
 
   it('keeps native profile capability gaps without requiring or inventing a client', async () => {
-    const { root, pluginRoot, env } = await fixture();
+    const { root, pluginRoot, env } = await fixture({ needsRuntimeConfig: true });
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    // Antigravity's native Skill qualification covers User scope on every host.
+    // A native Skill can be qualified while its installed configuration protocol is unavailable.
     manifest.platforms = ['generic', 'codex', 'antigravity'];
-    manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
+    manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.installed-runtime-config.v2'] } };
     manifest.managedCommands = { sets: [{ set: 'tools',
       producer: { kind: 'artifact', platform: 'antigravity', artifactId: 'computed' }, mode: 'static',
       entries: [{ key: 'run', variant: 'default', runner: 'node', entry: 'scripts/run.mjs' }],
@@ -116,7 +123,8 @@ describe('v4 author profile consumers', () => {
     expect(result.exitCode).toBe(0);
     expect(result.receipt.skills).toEqual([]);
     expect(result.receipt.preparation?.flatMap((unit) => unit.unmet)).toContainEqual(expect.objectContaining({
-      id: 'computed', reasonCode: 'capability-unverified', requiredFeatures: [{ feature: 'component.kind.skill' }],
+      id: 'computed', reasonCode: 'capability-unverified',
+      requiredFeatures: [{ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }],
     }));
     expect(result.receipt.preparation?.every((unit) => unit.outputs.length === 0)).toBe(true);
     expect(await fs.pathExists(path.join(out, 'native'))).toBe(false);

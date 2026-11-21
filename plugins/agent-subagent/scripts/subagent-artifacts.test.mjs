@@ -15,7 +15,7 @@ function context(values = {}, platform = 'codex', scope = 'user', allowedOutputK
     plugin: { pluginId: 'fixture/agent-subagent' },
     changedConfigKeys: [], previousComponents: [],
     resources: [{ kind: 'bundle', name: './skills/spawn-subagent', root: path.join(root, 'skills/spawn-subagent'), digest: 'test-resource' }],
-    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile',
+    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile', deliveryFeatures: [],
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
@@ -188,9 +188,9 @@ test('Codex delivered resources retain their module and document closure', async
   }
 });
 
-// Test Value Gate: complete batches do not depend on changed keys; unavailable consumers
-// and command closures stay unmet without a fabricated executor or model mapping.
-test('honors batch permissions, full sets and explicit dependency gaps', async () => {
+// Test Value Gate: the scheduling Skill respects runtime prerequisites and role
+// declarations remain available for projection when those prerequisites are absent.
+test('returns complete role declarations independently of scheduling', async () => {
   const input = context({}, 'codex', 'user', ['skill']);
   input.changedConfigKeys = ['subagentRetentionHours'];
   assert.deepEqual((await renderArtifactPlan(input)).components.map((item) => item.id), ['spawn-subagent-skill']);
@@ -198,22 +198,36 @@ test('honors batch permissions, full sets and explicit dependency gaps', async (
   Object.defineProperty(roles, 'config', { get() { throw new Error('role read config'); } });
   assert.deepEqual((await renderArtifactPlan(roles)).components.map((item) => item.id), ['subagent-role']);
   for (const platform of ['antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
-    const plan = await renderArtifactPlan(context({}, platform));
+    const target = context({}, platform);
+    target.platformCapabilities.kinds.agent.status = 'unverified';
+    target.platformCapabilities.features['agent.execution'] = { status: 'unverified', reasonCodes: ['capability-unverified'] };
+    const plan = await renderArtifactPlan(target);
     assert.deepEqual(plan.components.map((item) => item.id), ['subagent-role']);
-    assert.deepEqual(plan.unmet, [{ id: 'spawn-subagent-skill', kind: 'skill', name: 'spawn-subagent',
-      requiredFeatures: [], reasonCode: 'dependency-unmet' }]);
+    assert.deepEqual(plan.omitted, [{ id: 'spawn-subagent-skill', kind: 'skill', reason: 'not-offered' }]);
+    assert.deepEqual(plan.unmet, []);
     assert.doesNotMatch(JSON.stringify(plan.components), /registerTool|spawn_agent|gpt-/);
   }
   const pi = context({}, 'pi', 'user', ['agent']);
-  pi.platformCapabilities.kinds.agent = { status: 'unsupported', reasonCodes: ['consumer-missing'], delivery: ['native-package'] };
-  pi.platformCapabilities.features['agent.execution'] = { status: 'unsupported', reasonCodes: ['consumer-missing'], values: [] };
-  assert.deepEqual(await renderArtifactPlan(pi), { version: 3, components: [], omitted: [], unmet: [{
-    id: 'subagent-role', kind: 'agent', name: 'subagent', reasonCode: 'consumer-missing',
-    requiredFeatures: [{ feature: 'component.kind.agent' }, { feature: 'agent.execution', values: ['isolated-context'] }],
-  }] });
-  const noRuntime = context({}, 'claude', 'user', ['skill']);
+  const piWithConsumer = await renderArtifactPlan(pi);
+  const consumerMissing = { status: 'unsupported', reasonCodes: ['consumer-missing'] };
+  pi.platformCapabilities.kinds.agent = { ...consumerMissing, delivery: ['native-extension'] };
+  for (const feature of ['agent.execution', 'agent.prompt-mode', 'agent.declaration-protocol']) {
+    pi.platformCapabilities.features[feature] = consumerMissing;
+  }
+  const piWithoutConsumer = await renderArtifactPlan(pi);
+  assert.deepEqual(piWithoutConsumer, piWithConsumer);
+  const [piRole] = piWithoutConsumer.components;
+  assert.equal(piRole.content.prompt, await readFile(path.join(root, 'skills/spawn-subagent/assets/task-instructions.md'), 'utf8'));
+  assert.deepEqual(piRole.requires.at(-1), { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] });
+  delete pi.platformCapabilities.deliveryFeatures;
+  const legacy = await renderArtifactPlan(pi);
+  assert.equal(legacy.components.length, 0);
+  assert.equal(legacy.unmet[0].reasonCode, 'consumer-missing');
+  const noRuntime = context({}, 'claude');
   noRuntime.platformCapabilities.features['skill.runtime-config'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
-  assert.deepEqual((await renderArtifactPlan(noRuntime)).unmet[0].requiredFeatures,
+  const claude = await renderArtifactPlan(noRuntime);
+  assert.deepEqual(claude.components.map((item) => item.id), ['subagent-role']);
+  assert.deepEqual(claude.unmet[0].requiredFeatures,
     [{ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }]);
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'other' }));
   await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));

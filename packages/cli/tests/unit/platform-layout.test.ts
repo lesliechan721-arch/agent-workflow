@@ -147,7 +147,72 @@ it('keeps Antigravity ordinary Skills limited to six CLI hosts at User scope', a
   expect(getQualifiedPlatformProfile('antigravity', { platform: 'freebsd', arch: 'x64' }).kinds.skill.status).toBe('unverified');
   expect(getQualifiedPlatformProfile('antigravity', { platform: 'linux', arch: 'ia32' }).kinds.skill.status).toBe('unverified');
   expect(getAuthoringPlatformCapabilities('antigravity', 'user').kinds.skill.status).toBe(['linux', 'darwin', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch) ? 'supported' : 'unverified');
-  expect(getAuthoringPlatformCapabilities('antigravity', 'project').kinds.skill.status).toBe('unverified');
+  expect(getAuthoringPlatformCapabilities('antigravity', 'project').kinds.skill.status)
+    .toBe(process.platform === 'darwin' && process.arch === 'arm64' ? 'supported' : 'unverified');
+});
+
+// Test Value Gate: a second reader of the same directory must not add a
+// write, inherit CLI invocation evidence or alias a sibling project's bytes.
+it('keeps Antigravity scope paths separate while co-readers share each placement', async () => {
+  const { root, ctx, request } = await fixture('antigravity');
+  const configRoot = path.join(await fs.realpath(root), '.gemini', 'config');
+  const cli = { ...request.discovery.installations[0]!, version: '1.5.13', entry: { kind: 'cli' as const,
+    executable: path.join(root, 'agy'), configRoot } };
+  const app = { ...request.discovery.installations[1]!, entry: { kind: 'directory' as const, configRoot } };
+  request.discovery.installations = [app, cli];
+  const physical = async (resolution: Awaited<ReturnType<typeof resolveDeployments>>) => {
+    expect(resolution.bindings).toHaveLength(1);
+    return getDeploymentLayout(ctx, resolution.bindings[0]!);
+  };
+  const a = path.join(await fs.realpath(root), 'project-a');
+  const b = path.join(await fs.realpath(root), 'project-b');
+  await fs.ensureDir(a);
+  await fs.ensureDir(b);
+  const scopeA = { kind: 'project' as const, projectRoot: a };
+  const scopeB = { kind: 'project' as const, projectRoot: b };
+  const user = await resolveDeployments(ctx, request);
+  const project = await resolveDeployments(ctx, { ...request, scope: scopeA });
+  const secondProject = await resolveDeployments(ctx, { ...request, scope: scopeB });
+  expect(user.bindings[0]?.route).toBe('antigravity-cli');
+  expect(user.bindings[0]?.consumers).toHaveLength(2);
+  expect(project.bindings[0]?.route).toBe('antigravity-directory');
+  expect(project.bindings[0]?.consumers).toHaveLength(2);
+  expect((await physical(project)).packageRoot).toBe(path.join(a, '.agents', 'plugins', 'example'));
+  expect((await physical(secondProject)).packageRoot).toBe(path.join(b, '.agents', 'plugins', 'example'));
+  expect(new Set([user, project, secondProject].map((resolved) => resolved.bindings[0]?.physicalKey)).size).toBe(3);
+
+  const profile = getQualifiedPlatformProfile('antigravity', { platform: 'darwin', arch: 'arm64' });
+  const binding = project.bindings[0]!;
+  const renderUnit = project.renderUnits[0]!;
+  const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent',
+    registration: 'not-applicable', ownership: 'absent', consumers: [], components: [], nativeIdentity: null, diagnostics: [],
+    prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } };
+  const input = { binding, renderUnit, observation, profile };
+  const shared = getPlatformCapabilities(input);
+  expectManualSkillFeatures(shared.features, false);
+  const onlyCli = getPlatformCapabilities({ ...input, renderUnit: { ...renderUnit, consumers: [cli] } });
+  expect(onlyCli.kinds.skill.status).toBe('supported');
+  expect(onlyCli.features['skill.visibility']).toMatchObject({ status: 'supported', values: ['visible'] });
+  expect(onlyCli.features['skill.invocation.model']).toMatchObject({ status: 'supported', values: ['false', 'true'] });
+  expect(onlyCli.features['skill.invocation.manual']?.status).toBe('unverified');
+  for (const reader of [app, { ...cli, version: '1.3.4' }, { ...cli, version: '1.5.12' }]) {
+    const capabilities = getPlatformCapabilities({ ...input, renderUnit: { ...renderUnit, consumers: [reader] } });
+    expect(capabilities.kinds.skill.status).toBe('unverified');
+    expectManualSkillFeatures(capabilities.features, false);
+  }
+
+  const appOnly = { ...request, discovery: { ...request.discovery, installations: [app] } };
+  expect((await physical(await resolveDeployments(ctx, appOnly))).packageRoot)
+    .toBe(path.join(configRoot, 'plugins', 'aw-test-example'));
+  expect((await physical(await resolveDeployments(ctx, { ...appOnly, scope: scopeA }))).packageRoot)
+    .toBe((await physical(project)).packageRoot);
+
+  await fs.ensureDir(path.join(b, '.agents'));
+  await fs.symlink(path.join(b, '.agents'), path.join(a, '.agents'), 'junction');
+  const conflicting = await resolveDeployments(ctx, { ...request, scope: scopeA });
+  expect(conflicting.bindings).toEqual([]);
+  expect(conflicting.exclusions).toEqual([expect.objectContaining({ reasonCode: 'deploymentLayoutUnconfirmed' }),
+    expect.objectContaining({ reasonCode: 'deploymentLayoutUnconfirmed' })]);
 });
 it('separates Cursor scope packages without changing physical identity on upgrades', async () => {
   const { root, ctx, request } = await fixture('cursor');

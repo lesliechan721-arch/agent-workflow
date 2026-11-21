@@ -13,7 +13,10 @@ import type { CommandManagementResult } from '../commands/managed-commands.js';
 import type { PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import type { PortableMaterializeReceipt } from '../portable/commands.js';
 import { recoveryRootDisposition, type RecoveryReceipt } from '../recovery/receipt.js';
-import { projectTarget, recoverySyncAction } from '../commands/public-lifecycle-result.js';
+import { inventoryRecoveryActions, projectDeploymentNotices, projectTarget, recoverySyncAction } from '../commands/public-lifecycle-result.js';
+import { isDeliveryNoticeCode, PREVIOUS_DEPLOYMENT_RETAINED, projectComponentDelivery } from './component-delivery.js';
+import { projectSkillInvocationDiagnostics } from './skill-invocation-notices.js';
+import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
 
 type RecordValue = Record<string, unknown>;
@@ -110,14 +113,16 @@ function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): Recor
     if (entry.errorCode) {
       diagnostics.push(diagnostic({ code: entry.errorCode, message: entry.message }, 'error', subject));
     }
-    return { ...pick(entry, ['action', 'state', 'relation', 'requiredBy', 'errorCode']), ...(entry.partialDelivery === true ? { partialDelivery: true } : {}),
+    return { ...pick(entry, ['action', 'state', 'relation', 'requiredBy', 'errorCode']), ...projectComponentDelivery(entry),
+      ...(entry.partialDelivery === true ? { partialDelivery: true } : {}),
       ...(entry.message ? { message: message(entry.message, entry.errorCode ?? 'configApplyFailed') } : {}), target: pick(entry.target, ['pluginName', 'pluginId', 'platform', 'scope']),
       ...(entry.errorCode ? { blockerCodes: [entry.errorCode] } : {}) };
   });
   if ('error' in value && value.error) { data.error = issue(record(value.error)); diagnostics.push(diagnostic(value.error)); }
   if ('errors' in value && value.errors) { data.errors = value.errors.map((entry) => issue(record(entry))); diagnostics.push(...value.errors.map((entry) => diagnostic(entry))); }
   if (value.commandResults) data.commandResults = commandResults(value.commandResults, diagnostics);
-  diagnostics.push(...(value.diagnostics ?? []));
+  const applyDiagnostics = value.diagnostics ?? [];
+  diagnostics.push(...applyDiagnostics.filter(({ code }) => code !== SKILL_INVOCATION_NOTICE), ...projectSkillInvocationDiagnostics(applyDiagnostics));
   return data;
 }
 
@@ -270,9 +275,11 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
       if (r.selection) data.selection = { targets: record(r.selection).agents, ...pick(record(r.selection), ['origin', 'preferences']) };
       if (r.intent) data.requirements = pick(record(r.intent), ['state', 'digest', 'roots']);
       if (recovery.targetResults) data.targetResults = recovery.targetResults.map((entry) => {
-        diagnostics.push(...entry.blockers.map((error) => diagnostic(error, 'error', { pluginId: entry.pluginId, target: entry.agent, scope: entry.scope })));
+        diagnostics.push(...entry.blockers.filter(({ code }) => !isDeliveryNoticeCode(code))
+          .map((error) => diagnostic(error, 'error', { pluginId: entry.pluginId, target: entry.agent, scope: entry.scope })));
         return projectTarget(entry);
       });
+      if (recovery.targetResults) diagnostics.push(...projectDeploymentNotices(recovery.targetResults));
       if (recovery.remainingTargets) data.remainingTargets = recovery.remainingTargets.map((entry) => ({ pluginId: entry.pluginId, target: entry.agent, scope: entry.scope }));
       if (recovery.requestedTargets) data.requestedTargets = recovery.requestedTargets.map((entry) => ({ pluginId: entry.pluginId, target: entry.agent, scope: entry.scope, delivery: entry.delivery }));
       if (recovery.coverage) data.coverage = { scopes: recovery.coverage.scopes, currentProject: recovery.coverage.scopes.includes('project'), otherProjects: 'unobserved' };
@@ -531,7 +538,8 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
           packageActions.set(JSON.stringify(argv), { kind: 'command', argv, reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
         }
       }
-      result.nextActions.push(...packageActions.values(), ...configDeploymentRetryActions(r.apply as ConfigApplyResult | undefined));
+      result.nextActions.push(...inventoryRecoveryActions(diagnostics.filter(({ code }) => code === PREVIOUS_DEPLOYMENT_RETAINED)),
+        ...packageActions.values(), ...configDeploymentRetryActions(r.apply as ConfigApplyResult | undefined));
     }
     if (command === 'source.status' || command === 'source.sync') for (const entry of diagnostics) if (entry.subject?.sourceId) result.nextActions.push({ kind: 'command', argv: ['aw', 'source', 'status', entry.subject.sourceId], reason: 'Inspect the selected source before retrying a source change.', requiresConfirmation: false });
     if (!result.nextActions.length) result.nextActions.push({ kind: 'manual', message: status === 'partial' ? 'Review completed and incomplete results before retrying the operation.' : 'Resolve the reported diagnostics before retrying the operation.' });

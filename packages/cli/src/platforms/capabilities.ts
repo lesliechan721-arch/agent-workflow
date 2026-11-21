@@ -1,4 +1,4 @@
-import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV2, type PlatformId, type Scope } from '@lesliechan721/aw-plugin-core/manifest';
+import { COMPONENT_KINDS, getPlatformFeatureRegistry, getPlatformHookHandlerRegistry, type FeatureRequirement, type PlatformCapabilitiesV2, type PlatformId, type Scope } from '@lesliechan721/aw-plugin-core/manifest';
 import { compareStrictSemVer } from '../utils/manifest.js';
 import type { CapabilityInput, QualifiedPlatformProfile } from './contracts.js';
 import { platformVersionSupported } from './discovery.js';
@@ -16,6 +16,8 @@ const CODEX_CLI_FEATURES = {
 };
 
 const MANUAL_SKILL_EVIDENCE = 'scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json';
+const ANTIGRAVITY_CLI_SKILL_EVIDENCE = 'scripts/qualification/evidence/native-antigravity-cli-skills-1.5.13-darwin-arm64.json';
+const ANTIGRAVITY_CLI_SKILL_VERSION = '1.5.13';
 const CODEX_INVOCATION_CONTRACT = 'https://developers.openai.com/codex/skills';
 const SKILL_HOSTS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
 const CURSOR_SKILL_HOSTS = ['linux-x64', 'darwin-arm64'];
@@ -32,7 +34,6 @@ const SKILL_CLI_PROFILES: Partial<Record<PlatformId, SkillCliProfile>> = {
     invocation: { hosts: { user: SKILL_HOSTS, project: SKILL_HOSTS }, model: ['false', 'true'], minimumVersion: PROFILE_BASELINES.codex } },
   claude: { version: '2.1.317', evidence: 'scripts/qualification/evidence/native-claude-skills-2026-11-12.json',
     invocation: { hosts: { user: SKILL_HOSTS, project: LOCAL_INVOCATION_HOSTS }, model: ['false'] } },
-  // Antigravity parses the policy. Its authenticated session menu and automatic candidates are unverified.
   antigravity: { version: '1.3.4', evidence: 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json' },
   cursor: { version: '2026.11.05-86047df', evidence: MANUAL_SKILL_EVIDENCE,
     invocation: { hosts: { user: CURSOR_SKILL_HOSTS, project: CURSOR_SKILL_HOSTS }, model: ['false'] } },
@@ -53,7 +54,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     const supplement = platform === 'codex' && kind === 'agent' || platform === 'grok' && kind === 'instruction';
     return [kind, { status: supported ? 'supported' : generic ? 'unsupported' : 'unverified',
       reasonCodes: supported ? [] : [generic ? 'interface-unsupported' : 'capability-unverified'],
-      delivery: generic ? supported ? ['generic-files'] : [] : [supplement ? 'managed-host-resource'
+      delivery: generic ? supported ? ['generic-files'] : [] : platform === 'opencode' && kind === 'agent' ? [] : [supplement ? 'managed-host-resource'
         : platform === 'pi' || platform === 'opencode' ? 'native-extension' : 'native-package'] }];
   })) as PlatformCapabilitiesV2['kinds'];
   const features: PlatformCapabilitiesV2['features'] = Object.fromEntries(Object.entries(getPlatformFeatureRegistry()).filter(([, definition]) => !definition.derivedFromKind).map(([id, definition]) => [id, {
@@ -109,7 +110,31 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
           { feature: 'skill.invocation.model', values: invocation.model }] };
     }
   }
+  if (platform === 'antigravity' && hostId === 'darwin-arm64') {
+    profile.id += `:session-cli-${ANTIGRAVITY_CLI_SKILL_VERSION}`;
+    const features = [{ feature: 'skill.visibility', values: ['visible'] },
+      { feature: 'skill.invocation.model', values: ['false', 'true'] }];
+    profile.skillInvocation = { reference: ANTIGRAVITY_CLI_SKILL_EVIDENCE, minimumVersion: ANTIGRAVITY_CLI_SKILL_VERSION,
+      scopes: ['user', 'project'], features,
+      unsupported: { scopes: ['project'], features: [{ feature: 'skill.visibility', values: ['hidden'] }] } };
+    profile.qualificationEvidence?.push({ reference: ANTIGRAVITY_CLI_SKILL_EVIDENCE, product: 'cli', version: ANTIGRAVITY_CLI_SKILL_VERSION,
+      platform: hostPlatform, arch: hostArch, scopes: ['user', 'project'], kinds: ['skill'], features: features.map(({ feature }) => feature),
+      limitations: ['authenticated-skill-inventory-and-native-automatic-candidate-flag', 'explicit-invocation-unverified', 'app-unverified', 'co-reading-unverified'] });
+  }
   return profile;
+}
+
+function invocationReaderMatches(profile: QualifiedPlatformProfile, reader: CapabilityInput['renderUnit']['consumers'][number], minimumVersion: string): boolean {
+  return reader.product === 'cli' && reader.entry?.kind === 'cli' && reader.version !== null
+    && platformVersionSupported(profile.platform, reader.version)
+    && (profile.platform === 'cursor' ? reader.version >= minimumVersion : compareStrictSemVer(reader.version, minimumVersion) >= 0);
+}
+
+export function getAntigravityUnsupportedSkillControls(profile: QualifiedPlatformProfile, scope: Scope,
+  reader: CapabilityInput['renderUnit']['consumers'][number]): readonly FeatureRequirement[] {
+  const invocation = profile.skillInvocation;
+  return profile.platform === 'antigravity' && invocation?.unsupported?.scopes.includes(scope)
+    && invocationReaderMatches(profile, reader, invocation.minimumVersion) ? invocation.unsupported.features : [];
 }
 /** Apply recorded scope limits to both local and authoring capability views. */
 export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, scope: Scope): PlatformCapabilitiesV2['kinds'] {
@@ -131,14 +156,55 @@ export function getQualifiedFeaturesForScope(profile: QualifiedPlatformProfile, 
   if (!invocation?.scopes.includes(scope)) return features;
   if (consumers) {
     const readers = consumers.filter((consumer) => consumer.availability === 'available');
-    if (!readers.length || !readers.every((reader) => reader.product === 'cli' && reader.entry?.kind === 'cli'
-      && reader.version && platformVersionSupported(profile.platform, reader.version)
-      && (profile.platform === 'cursor' ? reader.version >= invocation.minimumVersion
-        : compareStrictSemVer(reader.version, invocation.minimumVersion) >= 0))) return features;
+    if (!readers.length || !readers.every((reader) => invocationReaderMatches(profile, reader, invocation.minimumVersion))) return features;
   }
   for (const { feature, values } of invocation.features) {
     features[feature] = { status: 'supported', reasonCodes: [], ...(values ? { values: [...values] } : {}) };
   }
+  return features;
+}
+const DELIVERY_HOOK_HANDLERS = getPlatformHookHandlerRegistry();
+
+/** Fields the standard writer can preserve, independently of historical host sessions. */
+export function getPlatformDeliveryFeatures(platform: PlatformId): FeatureRequirement[] {
+  if (platform === 'generic') return [];
+  const features: FeatureRequirement[] = [];
+  const add = (feature: string, values?: string[]): void => { features.push({ feature, ...(values ? { values } : {}) }); };
+  if (platform !== 'opencode') {
+    add('agent.execution', ['isolated-context']);
+    add('agent.prompt-mode', platform === 'claude' ? ['host-default', 'replace'] : ['host-default']);
+    if (platform !== 'grok') add('agent.model');
+    if (platform === 'claude') add('agent.tools', ['allowlist']);
+    if (platform === 'copilot') add('agent.tools', ['none', 'allowlist']);
+    if (platform === 'pi') add('agent.declaration-protocol', ['aw.pi.agents.v1']);
+  }
+  if (platform === 'claude') {
+    for (const feature of ['skill.model', 'skill.agent', 'skill.hooks', 'skill.paths', 'skill.invocation.hint', 'skill.arguments']) add(feature);
+    add('skill.execution', ['isolated-context']);
+    add('skill.shell', ['bash', 'powershell']);
+    add('skill.background', ['true', 'false']);
+    add('skill.effort', [...getPlatformFeatureRegistry()['skill.effort']!.values!]);
+  }
+  if (platform === 'codex') add('skill.runtime-config', ['aw.installed-runtime-config.v2']);
+  add('mcp.transport', ['stdio', 'http', ...(['claude', 'copilot', 'cursor', 'grok'].includes(platform) ? ['sse'] : [])]);
+  const coverage = ['main'];
+  if (['codex', 'claude', 'copilot', 'grok', 'antigravity'].includes(platform)) coverage.push('plugin-agents');
+  if (['codex', 'claude'].includes(platform)) coverage.push('other-agents');
+  add('instruction.coverage', coverage);
+  if (platform === 'cursor' || platform === 'antigravity') add('instruction.paths');
+  const handlers = DELIVERY_HOOK_HANDLERS[platform];
+  const matchers: string[] = [];
+  for (const dialect of ['common', 'native'] as const) {
+    for (const [event, handler] of Object.entries(handlers[dialect])) {
+      if (!handler.nativeEvent) continue;
+      const key = `${dialect}.${event}`;
+      // A command can observe an event without a response protocol. Active feedback requires its exact wire contract.
+      const feedback = handler.protocol ? Object.keys(handler.protocol.responses) : ['notify'];
+      add(`hook.${key}`, feedback);
+      if (handler.matcherAllowed === true) matchers.push(key);
+    }
+  }
+  if (matchers.length) add('hook.matcher', matchers);
   return features;
 }
 /** The renderer and persistent input evidence consume the same capability facts. */
@@ -153,7 +219,9 @@ export function toPlatformCapabilitiesView(input: PlatformCapabilitiesV2): Platf
     return [id, { status, reasonCodes: sorted(reasonCodes),
       ...(values === undefined ? {} : { values: sorted(values) }), ...(maxBytes === undefined ? {} : { maxBytes }) }];
   }));
-  return { schemaVersion: 2, platform: input.platform, scope: input.scope, basis: input.basis, kinds, features };
+  return { schemaVersion: 2, platform: input.platform, scope: input.scope, basis: input.basis, kinds, features,
+    ...(input.deliveryFeatures ? { deliveryFeatures: input.deliveryFeatures.map(({ feature, values }) => ({ feature,
+      ...(values ? { values: sorted(values) } : {}) })).sort((left, right) => left.feature.localeCompare(right.feature, 'en')) } : {}) };
 }
 
 export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabilitiesV2 {
@@ -169,6 +237,12 @@ export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabil
       && qualified.some((entry) => entry.product === consumer.product) && platformVersionSupported(binding.platform, consumer.version))) {
       kinds[kind] = { ...kinds[kind], status: 'unverified', reasonCodes: ['capability-unverified'] };
     }
+  }
+  const invocation = profile.skillInvocation;
+  if (binding.platform === 'antigravity' && binding.scope.kind === 'project'
+    && (!invocation || !consumers.some((consumer) => consumer.availability === 'available'
+      && invocationReaderMatches(profile, consumer, invocation.minimumVersion)))) {
+    kinds.skill = { ...kinds.skill, status: 'unverified', reasonCodes: ['capability-unverified'] };
   }
   if (binding.platform === 'codex' && (profile.kinds.skill.status === 'supported' || kinds.agent.status === 'supported')) {
     const qualifiedCli = consumers.some((consumer) => consumer.product === 'cli' && consumer.entry?.kind === 'cli'
@@ -206,7 +280,7 @@ export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabil
     if (prerequisite.observation === 'unknown') reason = 'capability-unverified';
     else if (candidates.length === 0) { reason = 'consumer-missing'; status = 'unsupported'; }
     else if (candidates.every((candidate) => candidate.enabled === 'no')) { reason = 'consumer-disabled'; status = 'unsupported'; }
-    else if (candidates.some((candidate) => candidate.trust === 'blocked' || candidate.trust === 'required' || candidate.packageAccess === 'denied')) { reason = 'policy-blocked'; status = 'unsupported'; }
+    else if (candidates.every((candidate) => candidate.enabled === 'no' || candidate.trust === 'blocked' || candidate.trust === 'required' || candidate.packageAccess === 'denied')) { reason = 'policy-blocked'; status = 'unsupported'; }
     else if (candidates.length !== 1) reason = 'capability-unverified';
     else {
       const candidate = candidates[0]!;
@@ -229,5 +303,6 @@ export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabil
   }
   return toPlatformCapabilitiesView({
     schemaVersion: 2, platform: binding.platform, scope: renderUnit.renderScope.kind, basis: 'local', kinds, features,
+    deliveryFeatures: getPlatformDeliveryFeatures(binding.platform),
   });
 }

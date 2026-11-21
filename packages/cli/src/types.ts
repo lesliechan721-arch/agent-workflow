@@ -17,6 +17,7 @@ import type {
   TrackedHookGroupIdentity,
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic } from './output/public-result.js';
+import type { ComponentDelivery } from './output/component-delivery.js';
 
 export type ArtifactSurface =
   | { kind: 'platform'; name: PlatformTarget }
@@ -349,7 +350,7 @@ export interface ConfigApplyTargetIdentity {
   scope: Scope;
 }
 
-export interface ConfigApplyTargetResult {
+export interface ConfigApplyTargetResult extends ComponentDelivery {
   target: ConfigApplyTargetIdentity;
   action: string;
   state: ConfigApplyTargetState;

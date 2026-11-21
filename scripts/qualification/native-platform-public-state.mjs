@@ -6,6 +6,42 @@ import { readPublicOpenCodeState, capturePublicOpenCodeRemoval, readPublicOpenCo
 
 export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1}`;
 
+// The qualifier owns this temporary Grok home. Only its named fixture
+// directories receive a decision, in the format read by the pinned client.
+export async function writeGrokFixtureFolderDecisions(env, entries) {
+  assert.equal(clients.grok.version, '1.0.77');
+  const now = Math.floor(Date.now() / 1000);
+  const tables = entries.map(([folder, trusted]) =>
+    `[folders.${JSON.stringify(folder)}]\ntrusted = ${trusted}\ndecided_at = ${now}\n`);
+  await fs.writeFile(path.join(env.GROK_HOME, 'trusted_folders.toml'), tables.join('\n'));
+}
+
+export async function runGrokCommand(env, cwd, args) {
+  const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+  const { bin, package: packageName } = clients.grok;
+  let command = bin;
+  if (process.platform === 'win32') {
+    const { resolveWindowsNpmCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
+    const launcher = await resolveWindowsNpmCommand({ command: bin, binName: bin, packageName, cwd, env });
+    command = launcher.command;
+    args = [...launcher.argsPrefix, ...args];
+  }
+  const result = await runNativeCli({ command, args, cwd, env, timeoutMs: 60_000 });
+  assert.equal(result.exitCode, 0, result.stderr);
+  return result.stdout;
+}
+
+export function grokUserRegistration(rows, env, name, awPackage) {
+  const matches = rows.filter(row => row.name === name);
+  assert.equal(matches.length, 1);
+  const [row] = matches;
+  assert.equal(row.status, 'installed');
+  assert.equal(path.relative(awPackage, row.source), '');
+  assert.match(row.repo_key, /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u);
+  assert.equal(path.relative(path.join(env.GROK_HOME, 'installed-plugins', row.repo_key), row.path), '');
+  return { key: row.repo_key, path: row.path, source: row.source };
+}
+
 const directoryRegistration = ctx => ctx.platform === 'opencode' || ctx.platform === 'grok' && ctx.scope === 'project';
 
 export function expectedOpenCodeObservation(result, ctx, pluginId) {
@@ -138,9 +174,9 @@ async function rpcSkills(ctx, cwd) {
   return array(result.commands.commands).filter(item => item.name === `skill:${ctx.skillName}`);
 }
 
-export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false }) {
+export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false, version = publicFixtureVersion(revision) }) {
   assert.equal(typeof active, 'boolean');
-  if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version: publicFixtureVersion(revision) });
+  if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version });
   let matches;
   if (ctx.platform === 'pi') {
     const skills = await rpcSkills(ctx, cwd);
@@ -158,7 +194,7 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
     assert.equal(typeof skill.sourceInfo.baseDir, 'string', 'native-management-state-unverified');
     const manifest = await isolatedFile(ctx, path.join(skill.sourceInfo.baseDir, 'package.json'));
     const metadata = JSON.parse(manifest.content.toString('utf8'));
-    assert.equal(metadata.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
+    assert.equal(metadata.version, version, 'native-management-version-mismatch');
     const packageRoot = path.dirname(manifest.path);
     const row = single(inventory.entries.filter(row => path.relative(row.path, packageRoot) === ''), 'pi-native-registration-unverified');
     assert.equal(row.scope, ctx.scope);
@@ -218,7 +254,7 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
   const item = single(matches);
   assert.equal(typeof item.enabled, 'boolean', 'native-management-state-unverified');
   assert.equal(item.enabled, active, 'native-management-scope-mismatch');
-  assert.equal(item.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
+  assert.equal(item.version, version, 'native-management-version-mismatch');
   return { level: 'native-management-state', active, present: true, version: item.version,
     ...(item.scope ? { scope: item.scope } : {}) };
 }
@@ -352,4 +388,58 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
   assert.deepEqual(actual.content, ctx.publicConsumedSkill ?? await fs.readFile(ctx.publicSkillFile), 'dynamic-consumer-content-mismatch');
   return { level: 'dynamic-consumer-content', revision, path: actual.path,
     sha256: sha256(actual.content), bytes: actual.content.length };
+}
+
+// Physical outputs of the public single-component and shipped Catalog qualifications.
+export function nativePath(ctx, spec, kind, packageRoot, name) {
+  const { platform, scope, project, env } = ctx;
+  const resource = 'aw-' + spec.id.replace('/', '-');
+  if (platform === 'generic') return path.join(scope === 'project' ? project : env.HOME, '.agents/skills', name, 'SKILL.md');
+  if (kind === 'agent' && platform === 'codex') return path.join(scope === 'project' ? path.join(project, '.codex') : env.CODEX_HOME,
+    'agents', resource + '-' + name + '.toml');
+  if (kind === 'instruction' && platform === 'grok') return path.join(scope === 'project' ? path.join(project, '.grok') : env.GROK_HOME,
+    'rules', resource + '-' + name + '.md');
+  assert(packageRoot, 'Missing native package path for ' + spec.id + '/' + kind);
+  let file;
+  if (kind === 'skill') file = 'skills/' + name + '/SKILL.md';
+  else if (kind === 'agent') file = platform === 'copilot' ? 'com.github.copilot/agents/' + name + '.agent.md'
+    : 'agents/' + (platform === 'pi' ? resource + '-' : '') + name + '.md';
+  else if (['opencode', 'pi'].includes(platform)) file = 'index.mjs';
+  else if (kind === 'hook') file = platform === 'antigravity' ? 'hooks.json' : platform === 'copilot' ? 'com.github.copilot/hooks/hooks.json' : 'hooks/hooks.json';
+  else if (kind === 'mcp') file = platform === 'antigravity' ? 'mcp_config.json' : ['copilot', 'cursor'].includes(platform) ? 'mcp.json' : '.mcp.json';
+  else if (['claude', 'codex'].includes(platform)) file = 'scripts/aw-instructions.mjs';
+  else if (platform === 'antigravity') file = 'rules/AGENTS.md';
+  else if (platform === 'copilot') file = 'com.github.copilot/rules/' + name + '.md';
+  else if (platform === 'cursor') file = 'rules/' + name + '.mdc';
+  assert(file, 'No independent path for ' + platform + '/' + kind);
+  return path.join(packageRoot, file);
+}
+
+export async function readInstalled(ctx, file, marker) {
+  const real = await fs.realpath(file);
+  const relative = path.relative(ctx.root, real);
+  assert(relative && !path.isAbsolute(relative) && !relative.startsWith('..'), 'Expected an isolated installation path');
+  const bytes = await fs.readFile(real);
+  assert(bytes.toString('utf8').includes(marker), 'Missing authored content in ' + relative);
+  return { path: relative.split(path.sep).join('/'), sha256: sha256(bytes) };
+}
+
+export function targetOf(result, ctx, id, allowBlockers = false) {
+  const targets = result.data.targetResults ?? result.data.inventory.flatMap(item => item.targetResults);
+  const rows = targets.filter(item => item.pluginId === id && item.scope === ctx.scope && item.target === ctx.platform);
+  assert.equal(rows.length, 1, id + ': missing or duplicate target');
+  if (!allowBlockers) assert.deepEqual(rows[0].blockerCodes, []);
+  return rows[0];
+}
+
+export function nativePackage(target, id = target.pluginId) {
+  const after = (target.deploymentObservations ?? target.deploymentReceipts ?? []).map(record => record.after)
+    .find(state => state?.package === 'present' && state.ownership === 'aw' && state.nativeIdentity?.packageId === id.split('/')[1]);
+  return after?.nativeIdentity?.sourceLocation;
+}
+
+export function checkSettled(result) {
+  assert.equal(result.data.inSync, true);
+  assert.equal(result.data.allSatisfied, true);
+  assert.equal(result.data.counts.pending, 0);
 }

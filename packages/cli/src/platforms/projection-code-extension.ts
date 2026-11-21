@@ -87,9 +87,11 @@ function projectOpenCode(input: ProjectionInput, files: ProjectionFiles, compone
       .find((requirement) => requirement.feature === 'skill.invocation.model');
     const definition = { id: name, name, description: frontmatter.description, content: skill.slice(match[0].length),
       ...(model ? { autoinvoke: model.values?.includes('true') === true } : {}) };
+    // OpenCode 2.0.0 reads location. Newer V2 runtimes read path. Each decoder ignores the other key.
     lines.push(`  registrations.push(await ctx.skill.transform((editor) => {`,
       `    if (editor.get(${JSON.stringify(name)})) throw new Error('Native skill name conflict');`,
-      `    editor.add({ ...${JSON.stringify(definition)}, location: fileURLToPath(new URL(${JSON.stringify(`./skills/${name}/SKILL.md`)}, import.meta.url)) });`, '  }));');
+      `    const skillPath = fileURLToPath(new URL(${JSON.stringify(`./skills/${name}/SKILL.md`)}, import.meta.url));`,
+      `    editor.add({ ...${JSON.stringify(definition)}, path: skillPath, location: skillPath });`, '  }));');
   }
   for (const [name, server] of Object.entries(servers)) {
     const typed = server as Extract<PluginComponent, { kind: 'mcp' }>['content'];

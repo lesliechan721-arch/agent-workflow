@@ -1,5 +1,5 @@
 import type { Scope, CommandProducerResult } from '../types.js';
-import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors,
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors, userSkillProviderRepairs,
   type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryRetryDisposition, type RecoveryTarget } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../out
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
+import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, isDeliveryNoticeCode, isSkippedPermissionReason, projectComponentDelivery, projectComponentGap,
+  PREVIOUS_DEPLOYMENT_RETAINED, safeComponentIdentity, safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
@@ -37,9 +39,7 @@ export type PublicDeploymentExclusion = Omit<DeploymentExclusion, 'scope' | 'pro
   scope: Scope;
   product: Pick<ProductInstallation, 'id' | 'product' | 'version' | 'availability' | 'reasonCodes'> | null;
 };
-export type PublicComponentGap = ComponentUnmet & { providerPluginId: string; agent: 'generic'; renderScope: Scope };
-
-export interface PublicTargetResult {
+export interface PublicTargetResult extends ComponentDelivery {
   pluginId: string;
   target: string;
   scope: Scope;
@@ -52,12 +52,10 @@ export interface PublicTargetResult {
   relation?: RecoveryTarget['relation'];
   requirementScope?: Scope;
   providerScope?: Scope;
-  satisfaction?: RecoveryTarget['satisfaction'];
   deploymentReceipts?: PublicDeploymentResult[];
   deploymentPlans?: PublicDeploymentPlan[];
   deploymentObservations?: PublicDeploymentObservation[];
   deploymentExclusions?: PublicDeploymentExclusion[];
-  componentGaps?: PublicComponentGap[];
 }
 
 export interface LifecycleData {
@@ -100,6 +98,9 @@ const messages: Record<string, string> = {
   nativePackageContentDrift: 'The native client copy is out of date.',
   nativePackageContentUnconfirmed: 'The native client copy could not be verified.',
   platformInputDrift: 'The plugin inputs changed and its deployment needs to be synced.',
+  userSkillProviderNotReady: 'Sync the declared User plugin to repair its Skill dependency, then retry the Project plugin.',
+  projectSkillProviderConflict: 'Check the existing Project package, permissions and activation before reusing the User Skill dependency.',
+  providerSwitchVerificationFailed: 'The replacement could not be verified. The previous copy was retained.',
   platformContentDrift: 'The deployed plugin content changed and needs to be synced.',
   platformExpectationUnconfirmed: 'The package projection could not be verified.',
   platformPreparationPartial: 'The package has only a partial projection.',
@@ -128,11 +129,45 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const publicMessage = sourceMessage && !/[\u3400-\u9fff]/u.test(sourceMessage)
     && !/(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])/u.test(sourceMessage)
     ? safePublicMessage(sourceMessage, code) : undefined;
-  const detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
-  const combinedSubject = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
+  let detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
+  const combinedSubject: NonNullable<Diagnostic['subject']> = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
-  return { code, severity, message: messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
+  if (isDeliveryNoticeCode(code) && code !== PREVIOUS_DEPLOYMENT_RETAINED) {
+    if (detail) {
+      const actions = code === INVOCATION_POLICY_NOT_APPLIED && typeof value !== 'string'
+        ? safeSkippedPermissionActions(value.detail?.skippedPermissionActions) : [];
+      detail = code === INVOCATION_POLICY_NOT_APPLIED && !isSkippedPermissionReason(detail.reasonCode) ? undefined
+        : { reasonCode: detail.reasonCode, ...(actions.length ? { skippedPermissionActions: actions } : {}) };
+    }
+    if (combinedSubject.field && safeComponentIdentity(combinedSubject.field) !== combinedSubject.field) delete combinedSubject.field;
+  }
+  return { code, severity, message: isDeliveryNoticeCode(code) ? deliveryNoticeMessage(code, detail, combinedSubject.field)
+    : messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
+}
+
+export function projectDeploymentNotices(targets: readonly RecoveryTarget[]): Diagnostic[] {
+  const diagnostics = [...skillInvocationDiagnostics(targets)];
+  for (const target of targets) {
+    const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
+    const deployment = (target.deploymentReceipts ?? []).flatMap(({ diagnostics, effects }) =>
+      [...diagnostics, ...effects.flatMap((effect) => effect.diagnostics)]);
+    for (const blocker of target.blockers) {
+      if (isDeliveryNoticeCode(blocker.code)) diagnostics.push(publicDiagnostic(blocker, blocker.subject ?? subject));
+    }
+    for (const notice of deployment) {
+      if (isDeliveryNoticeCode(notice.code)) diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, notice.severity));
+    }
+    for (const notice of target.reasons ?? []) {
+      if (isDeliveryNoticeCode(notice.code) && !deployment.some((entry) => entry.code === notice.code
+        && JSON.stringify(entry.subject ?? subject) === JSON.stringify(notice.subject ?? subject)
+        && entry.detail?.reasonCode === notice.detail?.reasonCode
+        && JSON.stringify(entry.detail?.skippedPermissionActions) === JSON.stringify(notice.detail?.skippedPermissionActions))) {
+        diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, 'warning'));
+      }
+    }
+  }
+  return [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()];
 }
 
 type DeploymentRecoveryContext = { receipt: RecoveryReceipt; target: RecoveryTarget };
@@ -168,9 +203,17 @@ function nativeSourceRecovery(diagnostic: Diagnostic, diagnostics: readonly Diag
   const workspace = location('workspace')?.path;
   const configRoot = location('nativeConfigRoot')?.path;
   const source = detail.path;
-  const nativeStep = `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}, ${source
+  const clientContext = `With the same Grok client and configuration root${configRoot ? ` ${JSON.stringify(configRoot)}` : ''}${workspace ? ` in workspace ${JSON.stringify(workspace)}` : ''}`;
+  let nativeStep: string;
+  if (detail.reasonCode === 'grokNativeRefreshWorkspaceTrust') {
+    nativeStep = workspace
+      ? `${clientContext}, keep the existing registered copy. If you approve this exact folder, grant folder trust in Grok. For Grok 1.0.77, review [folders.${JSON.stringify(workspace)}] in trusted_folders.toml, set trusted = true and decided_at to the current Unix timestamp in seconds, and preserve the other entries. From this workspace run grok inspect --json and verify projectRoot is null and projectTrusted is true. AW checks both your saved folder decision and the runtime result.`
+      : 'Keep the existing registered copy. Check $AW_HOME/runtime/user and its ancestors for links or project configuration. Restore a safe User workspace, then review the same target again for its exact Grok folder trust step.';
+  } else {
+    nativeStep = `${clientContext}, ${source
       ? `check the current registration. If it is absent and you approve this source, run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}. This grants Grok trust for the source. Keep any existing foreign or unverified registration and inspect it in Grok before retrying.`
       : 'identify the exact retained AW source and check its registration in a fresh Review before making changes.'}`;
+  }
   const retries = roots.map((root) => root.kind === 'exact-project' ? exactProjectRetry(root)
     : `Then run ${retryCommand(root).join(' ')}.`);
   const message = [nativeStep, 'Continue after verifying the native registration.',
@@ -203,7 +246,11 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
     else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
     }
-    else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
+    else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
+      message = `${identity}: Check ${detail.path ? `the previous output at ${JSON.stringify(detail.path)}` : 'the previous output'} in the affected scope before preparing the retry.`;
+    } else if (detail.path && ['antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict'].includes(diagnostic.code)) {
+      message = `${identity}: Back up and inspect ${JSON.stringify(detail.path)}. If this copy should no longer load in the project, move that directory or link outside .agents/plugins. Run status again for the same project and plugin.`;
+    } else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
       message = `${identity}: Automatic cleanup cannot prove exclusive ownership (${detail.reasonCode}). Back up ${detail.path
         ? `the detected item ${JSON.stringify(detail.path)}` : 'the affected host output identified by the inventory scan'} and the related host configuration. ${detail.configKey
         ? `Check ${JSON.stringify(detail.configKey)} and remove that reference only if it still points to this exact item and you confirm it is no longer needed.`
@@ -221,14 +268,8 @@ export function projectTarget(value: RecoveryTarget, receipt?: RecoveryReceipt):
     ...(value.relation ? { relation: value.relation } : {}),
     ...(value.requirementScope ? { requirementScope: value.requirementScope } : {}),
     ...(value.providerScope ? { providerScope: value.providerScope } : {}),
-    ...(value.satisfaction ? { satisfaction: value.satisfaction } : {}),
+    ...projectComponentDelivery(value),
     ...(value.deploymentExclusions ? { deploymentExclusions: value.deploymentExclusions.map(projectDeploymentExclusion) } : {}),
-    ...(value.componentGaps ? { componentGaps: value.componentGaps.map((gap) => ({
-      id: gap.id, kind: gap.kind, providerPluginId: gap.providerPluginId, agent: gap.agent, renderScope: gap.renderScope,
-      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-      reasonCode: gap.reasonCode, requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
-    })) } : {}),
     ...(value.deploymentPlans ? { deploymentPlans: value.deploymentPlans.map(projectDeploymentPlan) } : {}),
     ...(value.deploymentObservations ? { deploymentObservations: value.deploymentObservations.map(projectDeploymentObservation) } : {}),
     ...(value.deploymentReceipts ? { deploymentReceipts: value.deploymentReceipts.map((entry) => projectDeploymentReceipt(entry, receipt ? { receipt, target: value } : undefined)) } : {}) };
@@ -249,10 +290,7 @@ export function projectDeploymentPlan(value: FrozenDeploymentPlan): PublicDeploy
       entry: product.entry ? { ...product.entry } : null })),
     expected: { components: value.expected.components.map((component) => ({ id: component.id, kind: component.kind, name: component.name })),
       omitted: value.expected.omitted.map((component) => ({ id: component.id, kind: component.kind, reason: component.reason })),
-      unmet: value.expected.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
-        ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-        requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-          ...(requirement.values ? { values: [...requirement.values] } : {}) })), reasonCode: gap.reasonCode })) },
+      unmet: value.expected.unmet.map(projectComponentGap) },
     effects: value.effects.map((effect) => ({ id: effect.id, kind: effect.kind, physicalKey: effect.physicalKey,
       ...(effect.activationKey ? { activationKey: effect.activationKey } : {}), componentIds: [...effect.componentIds], destination: effect.destination, destructive: effect.destructive })),
     sharedReferences: value.evidence.sharedReferences };
@@ -301,14 +339,10 @@ export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['depl
   return {
     ...projectDeploymentObservation(value),
     effects: value.effects.map((effect) => ({ id: effect.id, status: effect.status, mutation: effect.mutation,
-      diagnostics: effect.diagnostics.map(project) })),
-    unmet: value.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
-      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
-      requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
-        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
-      reasonCode: gap.reasonCode, productIds: [...gap.productIds] })),
+      diagnostics: effect.diagnostics.filter(({ code }) => code !== SKILL_INVOCATION_NOTICE).map(project) })),
+    unmet: value.unmet.map((gap) => ({ ...projectComponentGap(gap), productIds: [...gap.productIds] })),
     reload: value.reload,
-    diagnostics: value.diagnostics.map(project),
+    diagnostics: value.diagnostics.filter(({ code }) => code !== SKILL_INVOCATION_NOTICE).map(project),
   };
 }
 
@@ -384,9 +418,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const excludedProviders = new Map<string, NextAction>();
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-    diagnostics.push(...target.blockers.map((entry) => publicDiagnostic(entry, subject)));
-    diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE)
-      .map((entry) => publicDiagnostic(entry, subject, 'warning')));
+    diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) =>
+      publicDiagnostic(entry, entry.code === 'userSkillProviderNotReady' ? entry.subject ?? subject : subject)));
+    diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
+      .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
       excludedProviders.set(`${blocker.pluginId}\0${target.agent}`, { kind: 'command',
         argv: ['aw', 'target', 'include', blocker.pluginId, '--target', target.agent],
@@ -394,13 +429,14 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         requiresConfirmation: true });
     }
   }
-  diagnostics.push(...skillInvocationDiagnostics(receipt.targetResults));
+  diagnostics.push(...projectDeploymentNotices(receipt.targetResults));
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
   const changed = Object.values(data.changes).some((value) => value !== 'none');
   const completedOutput = receipt.targetResults.some((target) => ['applied', 'partial'].includes(target.execution)
     || (receipt.command === 'sync' || receipt.command === 'install') && target.execution === 'no-op'
-    && target.observation === 'verified' && !target.blockers.length && target.satisfaction !== 'excluded' && target.satisfaction !== 'unsupported');
+    && target.observation === 'verified' && !target.blockers.length && target.satisfaction !== 'excluded' && target.satisfaction !== 'unsupported'
+    && target.satisfaction !== 'not-applicable');
   const status = receipt.ok ? 'success' : changed || completedOutput ? 'partial' : 'blocked';
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
@@ -420,14 +456,21 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
       result.nextActions.push({ kind: 'manual',
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
-    } else if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
-    else {
+    } else if (command === 'plugin.remove') {
+      result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
+      for (const target of receipt.targetResults) {
+        if (target.scope !== 'user' || !target.blockers.some(({ code }) => code === 'providerSwitchVerificationFailed')) continue;
+        result.nextActions.push({ kind: 'manual', message: `Restore the Project dependency and verify it with aw plugin status --context project. If the User copy is no longer needed, review aw plugin remove ${target.pluginId} --only outputs --scope user --target ${target.agent}.` });
+      }
+    } else {
+      const prerequisites = new Map<string, RecoveryRetryDisposition>();
       const retries = new Map<string, { root: RecoveryRetryDisposition; nativeManual: boolean }>();
       let checkRoot = false;
       for (const target of receipt.targetResults) {
         if (!receipt.remainingTargets.some((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent && entry.scope === target.scope)) continue;
         const local = result.diagnostics.filter((entry) => matchesRecoveryPosition(entry.subject, target));
         if (local.some((entry) => entry.code === 'stateInventoryFailed' && entry.detail)) continue;
+        for (const root of userSkillProviderRepairs(target)) prerequisites.set(JSON.stringify([root.pluginId, root.agent, root.scope]), root);
         const nativeManual = target.agent === 'grok' && local.some((entry) => entry.code === 'grokNativeInstallRecovery');
         const roots = recoveryRetryDispositions(receipt, [target]);
         if (!roots.length) checkRoot = true;
@@ -440,6 +483,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       if (checkRoot) result.nextActions.push({ kind: 'command',
         argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false });
+      for (const [key, root] of prerequisites) {
+        result.nextActions.push(recoverySyncAction(root, messages.userSkillProviderNotReady));
+        retries.delete(key);
+      }
       for (const { root, nativeManual } of retries.values()) {
         if (root.kind === 'exact-project' && inventory.exactProjects.has(JSON.stringify([root.pluginId, root.agent]))) continue;
         result.nextActions.push(recoverySyncAction(root, nativeManual ? 'Complete the host recovery and verify its effects before reviewing this retry.'

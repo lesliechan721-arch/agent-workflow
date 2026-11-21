@@ -3502,8 +3502,8 @@ describe('authoring tools', () => {
     expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);
   });
 
-  // Test Value Gate: shared native commands must stay user-scoped while project
-  // consumers can resolve them and retain their separate AW-owned command scope.
+  // Test Value Gate: validation must retain capability gaps for undeliverable Skills
+  // and avoid starting their command renderer or registering commands.
   it('retains shared Claude user-scope command capability gaps without registering unavailable producers', async () => {
     const root=await fs.mkdtemp(path.join(os.tmpdir(),'aw-author-claude-shared-'));
     tempDirs.push(root);
@@ -3517,31 +3517,44 @@ describe('authoring tools', () => {
         {set:'project-tools',producer:{kind:'package',packageKey:'project-tools'},mode:'static',entries:[{key:'run',runner:'node',entry:'run.mjs'}]},
       ]},extensions:{permissions:[{name:'shared-native',allow:[{command:{set:'native',key:'run',variant:'default'}}]}]},
     }),{
-      'skills/native-helper/SKILL.md':'---\nname: native-helper\ndescription: Shared native commands.\nmodel: controlled-unverified-model\n---\n{{aw.command:native/run}}\n',
+      // Claude's writer has no mapping for a Skill's tool denylist.
+      'skills/native-helper/SKILL.md':'---\nname: native-helper\ndescription: Shared native commands.\ndisallowed-tools: [Bash]\n---\n{{aw.command:native/run}}\n',
       'skills/native-helper/scripts/run.mjs':'console.log("native");\n',
       'project-tools/run.mjs':'console.log("project");\n',
       'scripts/render.mjs':[
         "import fs from 'node:fs';",
         "const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-        `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({surface:c.surface,scope:c.scope})+'\\n');`,
+        'const producers = c.producers?.map(({set, componentId}) => ({set, componentId}));',
+        'const request = {surface: c.surface, scope: c.scope, platform: c.platform, requestedArtifactIds: c.requestedArtifactIds, producers};',
+        `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(request) + '\\n');`,
         'if(c.surface!=="agent-plugin" || c.scope!=="user") throw new Error("unavailable shared commands must not run");',
-        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:c.allowedOutputKinds.includes("skill")?[{id:"scoped-skill",kind:"skill",name:"scoped-helper",requiredFeatures:[{feature:"skill.model"}],reasonCode:"capability-unverified"}]:[]}));',
+        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:c.allowedOutputKinds.includes("skill")?[{id:"scoped-skill",kind:"skill",name:"scoped-helper",requiredFeatures:[{feature:"skill.tools",values:["denylist"]}],reasonCode:"capability-unverified"}]:[]}));',
       ].join('\n'),
     });
-    const result=await runValidatePlugin(fixture.pluginDir).catch((cause:unknown)=>{
-      const failure=cause as {stdout?:string;stderr?:string};
+    const result = await runValidatePlugin(fixture.pluginDir, ['--json']).catch((cause: unknown) => {
+      const failure = cause as { stdout?: string; stderr?: string };
       throw new Error(`Controlled Claude author fixture failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
     });
-    expect(result.stdout).toContain('[PASS]');
-    expect(result.stdout).toContain('component unmet (claude/user)');
-    const calls=(await fs.readFile(trace,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    const expected = {
+      ok: true,
+      errors: [],
+      warnings: expect.arrayContaining([
+        'component unmet (claude/user): skill:native-helper [delivery-unavailable] [{"feature":"skill.tools","values":["denylist"]}]',
+        'component unmet (claude/user): scoped-skill [capability-unverified] [{"feature":"skill.tools","values":["denylist"]}]',
+      ]),
+    };
+    expect(JSON.parse(result.stdout)).toMatchObject(expected);
+
+    // The command preparation test covers rejection when a delivered Skill
+    // references a project-only package from a shared User render unit.
+    await fs.appendFile(path.join(fixture.pluginDir, 'skills/native-helper/SKILL.md'), '{{aw.command:project-tools/run}}\n');
+    const withProjectReference = await runValidatePlugin(fixture.pluginDir, ['--json']);
+    expect(JSON.parse(withProjectReference.stdout)).toMatchObject(expected);
+
+    const calls = (await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every(call=>call.surface==='agent-plugin' && call.scope==='user')).toBe(true);
-    // The shared-user rejection of project packages with available producers is exercised
-    // through the actual command preparation boundary in skill-materialization.test.ts.
-    // A fixed profile with no usable producer must retain that capability gap here.
-    await fs.appendFile(path.join(fixture.pluginDir,'skills/native-helper/SKILL.md'),'{{aw.command:project-tools/run}}\n');
-    await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({stdout:expect.stringContaining('component unmet (claude/user)')});
+    expect(calls.filter(({ surface, scope, platform }) => surface !== 'agent-plugin' || scope !== 'user' || platform !== 'claude')).toEqual([]);
+    expect(await fs.pathExists(path.join(process.env.AW_HOME!, 'commands'))).toBe(false);
   });
 
 

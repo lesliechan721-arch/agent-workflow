@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
+import { parseAntigravitySkillInventory, probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
 import { probeClientInterfaces } from './native-platform-interface-probes.mjs';
 import { prepareEnvironment, renderPackage } from './native-platform-runtime.mjs';
 
@@ -15,15 +15,41 @@ async function fixture(t) {
   return { root, project, neutral, env: await prepareEnvironment(root) };
 }
 const result = stdout => ({ status: 'observed', stdout, exitCode: 0 });
+
+// Test Value Gate: only the authentic zero-turn reply shape and exact approved
+// fixture rows are evidence. Even parse failures may not echo the private reply.
+test('validates and redacts the session response', () => {
+  const selected = { name: 'aw-fixture:manual', model_invocable: false, path: '/private/location' };
+  const other = { name: 'unrelated-skill', model_invocable: true };
+  const make = (skills, overrides) => result(JSON.stringify({ status: 'SUCCESS', num_turns: 0,
+    command: { name: 'skills', data: { skills } }, ...overrides }));
+  const names = [selected.name];
+  const safe = parseAntigravitySkillInventory(make([selected, other]), names);
+  assert.deepEqual(safe, { status: 'SUCCESS', num_turns: 0, skills: [{ name: selected.name, model_invocable: false }] });
+  for (const override of [{ status: 'ERROR' }, { num_turns: 1 }, { usage: { input_tokens: 10 } }]) {
+    assert.throws(() => parseAntigravitySkillInventory(make([selected], override), names), /^Error: skill-inventory-unconfirmed$/u);
+  }
+  assert.throws(() => parseAntigravitySkillInventory(make([selected, selected]), names), /^Error: skill-inventory-ambiguous$/u);
+  assert.throws(() => parseAntigravitySkillInventory(result('unparseable private payload'), names), /^Error: skill-inventory-invalid-json$/u);
+  const project = path.resolve(os.tmpdir(), 'isolated');
+  assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project), /^Error: skill-inventory-location-mismatch$/u);
+  const inProject = { ...selected, path: path.join(project, '.agents', 'plugins', 'aw-fixture', 'skills', 'manual', 'SKILL.md') };
+  assert.deepEqual(parseAntigravitySkillInventory(make([inProject]), names, project), { ...safe, verifiedProjectLocations: 1 });
+  const personal = path.resolve('home', 'plugins', 'aw-fixture');
+  const inherited = { ...selected, path: path.join(personal, 'skills', 'manual', 'SKILL.md') };
+  assert.equal(parseAntigravitySkillInventory(make([inherited]), names, project, personal).verifiedProjectLocations, 0);
+  assert.throws(() => parseAntigravitySkillInventory(make([selected]), names, project, personal), /location-mismatch/u);
+});
 async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false, dropOwner = false, neutralEnabled = true, retainOnUninstall = false } = {}) {
   let installed = false, installs = 0;
   const cache = path.join(ctx.env.HOME, '.gemini/config/plugins/aw-local-management-user');
-  const projectDirectory = path.join(ctx.project, '.agents/plugins/aw-qualification-aw-local-management-project');
+  const projectDirectory = path.join(ctx.project, '.agents/plugins/aw-local-management-project');
   const command = async (id, args, cwd) => {
     if (args[1] === 'validate') {
       const manifest = JSON.parse(await fs.readFile(path.join(args[2], '.antigravity-plugin/plugin.json'), 'utf8'));
       assert(['1.0.1', '1.0.2'].includes(manifest.version));
-      assert((await fs.stat(path.join(args[2], 'skills/management-check/SKILL.md'))).isFile());
+      const [name] = await fs.readdir(path.join(args[2], 'skills'));
+      assert((await fs.stat(path.join(args[2], 'skills', name, 'SKILL.md'))).isFile());
     }
     if (id.startsWith('user-install-')) {
       installs++;
@@ -38,14 +64,23 @@ async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false,
     const present = await fs.stat(projectDirectory).then(() => true, () => false);
     if (args[0] === '-p') {
       assert.deepEqual(args, ['-p', '/skills', '--output-format', 'json']);
-      return result(JSON.stringify({ skills: cwd === ctx.project && present ? [{ name: 'management-check' }] : [] }));
+      const skills = [{ name: 'unrelated-private-skill', description: 'private-path', model_invocable: true }];
+      if (cwd === ctx.project) {
+        skills.push({ name: 'aw-local-management-direct', model_invocable: true,
+          path: path.join(ctx.project, '.agents', 'skills', 'aw-local-management-direct', 'SKILL.md') });
+        if (present && projectVisible) {
+          const [name] = await fs.readdir(path.join(projectDirectory, 'skills'));
+          skills.push({ name: `${path.basename(projectDirectory)}:${name}`, model_invocable: true,
+            path: path.join(projectDirectory, 'skills', name, 'SKILL.md') });
+        }
+      }
+      return result(JSON.stringify({ status: 'SUCCESS', num_turns: 0, command: { name: 'skills', data: { skills } } }));
     }
     const rows = [];
     if (installed) {
       const manifest = JSON.parse(await fs.readFile(path.join(cache, '.antigravity-plugin/plugin.json'), 'utf8'));
       rows.push({ name: 'aw-local-management-user', enabled: cwd === ctx.neutral ? neutralEnabled : true, version: manifest.version, source: 'antigravity', path: cache });
     }
-    if (projectVisible && cwd === ctx.project && present) rows.push({ name: 'aw-local-management-project', enabled: true });
     return result(JSON.stringify(rows));
   };
   return { command, cache, projectDirectory };
@@ -58,6 +93,9 @@ test('checks version and same-version consumer bytes through fresh scope queries
   const observed = await probeAntigravityLocalManagement(ctx, fake.command, renderPackage);
   assert.equal(observed.status, 'observed', JSON.stringify(observed));
   assert(observed.scopes.every(scope => scope.scopeEvidence === 'observed' && scope.removed));
+  assert.deepEqual(observed.scopes[1].targetRows, []);
+  assert.deepEqual(observed.scopes[1].neutralRows, []);
+  assert(!JSON.stringify(observed).includes('unrelated-private-skill'));
   assert.deepEqual(observed.scopes[0].revisions.map(row => row.version), ['1.0.1', '1.0.2', '1.0.2']);
   assert(observed.scopes[0].revisions.every(row => row.consumers.every(consumer => consumer.matches)));
   assert.equal(observed.dynamicConsumerBytes, 'observed-at-native-inventory-path');
@@ -65,8 +103,8 @@ test('checks version and same-version consumer bytes through fresh scope queries
   await assert.rejects(fs.stat(fake.projectDirectory), { code: 'ENOENT' });
 });
 
-// Test Value Gate: the six-host User observation cannot reach the still blocked
-// Project or agents branches, and omitted options preserve the existing suite.
+// Test Value Gate: the credential-free User observation must stay independent
+// from authenticated Project session discovery.
 test('runs only User management when scopes explicitly selects User', async t => {
   const ctx = await fixture(t); const fake = await nativeFixture(ctx); const calls = [];
   const observed = await probeAntigravityLocalManagement(ctx, async (...args) => {
@@ -106,15 +144,15 @@ test('stops immediately when the native process contract fails', async t => {
   assert.equal(observed.scopes.length, 1);
 });
 
-// Test Value Gate: neither successful publication nor raw Skill output can
-// silently turn an unconfirmed effective plugin scope into a qualified scope.
+// Test Value Gate: the installed bundle and a healthy slash command response
+// cannot confirm scope when the package's exact entry is absent.
 test('keeps a missing effective Project entry unverified', async t => {
   const ctx = await fixture(t); const fake = await nativeFixture(ctx, { projectVisible: false });
   const observed = await probeAntigravityLocalManagement(ctx, fake.command, renderPackage);
   assert.equal(observed.scopes[0].status, 'observed');
   assert.equal(observed.scopes[1].scopeEvidence, 'unverified');
   assert(observed.scopes[1].skillInventory, JSON.stringify(observed));
-  assert.match(observed.scopes[1].skillInventory.target, /management-check/u);
+  assert.deepEqual(observed.scopes[1].skillInventory.target.skills, [{ name: 'aw-local-management-direct', model_invocable: true }]);
   assert.equal(observed.scopes[1].removed, true); assert.equal(observed.status, 'unverified');
 });
 

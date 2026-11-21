@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { assertPublicTarget, readPiPublicInventory, readPublicNativeState, readPublicRemovedNativeScope } from './native-platform-public-state.mjs';
+import { assertPublicTarget, readPiPublicInventory, readPublicNativeState, readPublicRemovedNativeScope, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { fixedClientVersion, sha256 } from './native-platform-runtime.mjs';
 
 async function codexList(ctx, cwd, { entry, name = ctx.pluginName } = {}) {
@@ -258,7 +258,11 @@ async function qualifyGrokForeignReplacement(ctx, pluginId) {
   };
   const initial = await inventory();
   assert.equal(path.relative(initial.source, originalSource), '');
-  const initialAuthorization = JSON.parse((await ctx.command(['inspect', '--json'], ctx.neutral)).stdout);
+  const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
+  await writeGrokFixtureFolderDecisions(ctx.env, [[workspace, true]]);
+  const initialAuthorization = JSON.parse((await ctx.command(['inspect', '--json'], workspace)).stdout);
+  assert.equal(path.relative(workspace, initialAuthorization.cwd), '');
+  assert.equal(initialAuthorization.projectRoot, null);
   assert.equal(initialAuthorization.projectTrusted, true, 'The User refresh fixture must have actual Grok authorization.');
   await fs.mkdir(clone);
   for (const directory of ['.grok-plugin', 'skills']) {
@@ -325,19 +329,27 @@ export async function qualifyPiAgentPermission(ctx) {
   await ctx.check('pi-agent-without-native-consumer', async () => {
     const native = await readPiPublicInventory(ctx, ctx.project);
     assert(!native.entries.some(item => item.source.includes('pi-subagents')));
-    await ctx.aw(['plugin', 'install', id, '--scope', 'project', '--only', 'requirements', '--yes']);
+    const installation = await ctx.aw(['plugin', 'install', id, '--scope', 'project', '--target', 'pi', '--yes']);
     try {
-      const result = await ctx.aw(['plugin', 'status', id, '--context', 'project'], ctx.project,
-        { expectedExitCode: 3, expectedStatus: 'blocked' });
-      const entry = result.data.inventory.find(item => item.pluginId === id);
-      assert.equal(entry.targetResults.length, 1);
-      const target = entry.targetResults[0];
-      assert.equal(target.target, 'pi');
-      assert.equal(target.scope, 'project');
-      assert.equal(target.content, 'unknown');
-      assert(target.blockerCodes.includes('consumer-missing'), 'Pi must report the missing native Agent permission path.');
-      assert.equal(result.data.counts.ready, 0);
-      return { native, target, diagnostics: result.diagnostics };
-    } finally { await ctx.aw(['plugin', 'remove', id, '--scope', 'project', '--only', 'requirements', '--yes']); }
+      const notices = installation.diagnostics.filter(item => item.code === 'piAgentConsumerUnavailable'
+        && item.subject?.pluginId === id && item.subject.target === 'pi' && item.subject.scope === 'project');
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0].severity, 'warning');
+      assert.equal(notices[0].detail.reasonCode, 'piAgentConsumerMissing');
+      const result = await ctx.aw(['plugin', 'status', '--context', 'project']);
+      const item = result.data.inventory.find(entry => entry.pluginId === id);
+      const target = item.targetResults.find(target => target.target === 'pi' && target.scope === 'project');
+      assert.equal(target.satisfaction, 'installed');
+      assert.deepEqual(target.blockerCodes, []);
+      const after = target.deploymentObservations.find(observation => observation.after.ownership === 'aw').after;
+      const directory = after.nativeIdentity.sourceLocation;
+      const relative = path.relative(path.join(ctx.project, '.pi', 'aw-packages'), directory);
+      assert.equal(relative, 'aw-qualification-' + ctx.pluginName + '-agent');
+      const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
+      assert.deepEqual(manifest.pi.subagents.agents, ['./agents']);
+      const role = await fs.readFile(path.join(directory, 'agents', relative + '-qualification.md'), 'utf8');
+      assert(role.includes('Return only a local fixture marker.'));
+      return { native, roleInstalled: true, target, missingConsumerNotice: notices[0], diagnostics: result.diagnostics };
+    } finally { await ctx.aw(['plugin', 'remove', id, '--scope', 'project', '--yes']); }
   });
 }

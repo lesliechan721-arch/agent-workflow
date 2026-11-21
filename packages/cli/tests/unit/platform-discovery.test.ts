@@ -2,16 +2,16 @@ import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
-import { discoverPlatforms, discoverPlatform, resolvePlatformConfigRoot, type ReadContext } from '../../src/platforms/discovery.js';
+import { discoverPlatforms, discoverPlatform, resolvePlatformConfigRoot, selectNativeProduct, type ReadContext } from '../../src/platforms/discovery.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../../src/constants.js';
 import { targetsList, targetsSet } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
-import { NativeCliError } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(): Promise<ReadContext> {
@@ -30,6 +30,30 @@ async function fixture(): Promise<ReadContext> {
 async function executable(ctx: ReadContext, name: string): Promise<void> {
   const file = path.join(ctx.env!.PATH!, name);
   await fs.writeFile(file, 'controlled probe boundary'); await fs.chmod(file, 0o755);
+}
+
+async function windowsCopilotFixture() {
+  const ctx = await fixture();
+  ctx.platform = 'win32';
+  ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', COPILOT_HOME: path.join(ctx.cwd, 'copilot-home') };
+  const packageRoot = path.join(ctx.env.PATH!, 'node_modules', '@github', 'copilot');
+  const entry = path.join(packageRoot, 'npm-loader.js');
+  await fs.outputFile(entry, 'controlled probe boundary');
+  await fs.outputJson(path.join(packageRoot, 'package.json'), { name: '@github/copilot', bin: { copilot: 'npm-loader.js' } });
+  await fs.outputFile(path.join(ctx.env.PATH!, 'copilot.cmd'), renderNpmCmdShim('node_modules\\@github\\copilot\\npm-loader.js'));
+  return { ctx, entry: await fs.realpath(entry) };
+}
+
+const copilotVersionOutput = 'GitHub Copilot CLI 1.0.95.\r\n';
+type VersionProbe = Pick<NativeCliInvocation, 'command' | 'args' | 'timeoutMs'>;
+
+function timedVersion(invocation: NativeCliInvocation, elapsedMs: number, stdout: string) {
+  const timeoutMs = invocation.timeoutMs!;
+  vi.advanceTimersByTime(Math.min(elapsedMs, timeoutMs));
+  if (elapsedMs > timeoutMs) {
+    throw new NativeCliError({ invocation, exitCode: 124, stdout, stderr: '', reason: 'timeout' });
+  }
+  return { exitCode: 0, stdout, stderr: '' };
 }
 
 async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
@@ -62,6 +86,63 @@ async function piLaunchersFixture(windows: boolean) {
 }
 
 describe('read-only target discovery and production selection', () => {
+  // Peers can share a successful version plus help identity for one image.
+  // A failed identity, another working directory or a replaced image needs a new read.
+  it('shares only confirmed placement capabilities of the same executable', async () => {
+    const ctx = await fixture();
+    const entry = path.join(ctx.env!.PATH!, 'pi');
+    const writeImage = (value: string) => fs.outputFile(entry, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+      Buffer.from(value)]), { mode: 0o755 });
+    await writeImage('first');
+    ctx.placementProbeGroup = { scope: 'user', probes: new Map() };
+    let version = '1.5.0';
+    let help = 'unrelated program';
+    const calls: string[] = [];
+    ctx.runner = async ({ args }) => {
+      calls.push(args[0]!);
+      return { exitCode: 0, stdout: args[0] === '--version' ? version : help, stderr: '' };
+    };
+    expect((await discoverPlatform('pi', ctx)).availability).toBe('unknown');
+    help = 'pi coding agent';
+    expect((await discoverPlatform('pi', ctx)).availability).toBe('available');
+    expect((await discoverPlatform('pi', ctx)).installations[0]?.version).toBe('1.5.0');
+    expect(calls).toEqual(['--version', '--help', '--version', '--help']);
+    version = '1.6.0';
+    expect((await discoverPlatform('pi', { ...ctx, cwd: path.join(ctx.cwd, 'project') })).installations[0]?.version).toBe(version);
+    await writeImage('replacement');
+    expect((await discoverPlatform('pi', ctx)).installations[0]?.version).toBe(version);
+    expect(calls).toHaveLength(8);
+  });
+
+  // The independent phase must start while an earlier read is still pending.
+  // Its replacement evidence remains usable after the older process completes.
+  it('keeps a delayed placement version out of the next independent decision', async () => {
+    const ctx = await fixture();
+    const entry = path.join(ctx.env!.PATH!, 'claude');
+    await fs.outputFile(entry, Buffer.from([0x7f, 0x45, 0x4c, 0x46]), { mode: 0o755 });
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let calls = 0;
+    ctx.runner = async () => {
+      if (++calls === 1) {
+        started.resolve();
+        await finish.promise;
+        return { exitCode: 0, stdout: '2.1.317 (Claude Code)', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '2.1.318 (Claude Code)', stderr: '' };
+    };
+    const old = discoverPlatform('claude', { ...ctx, placementProbeGroup: { scope: 'user', probes: new Map() } });
+    try {
+      await started.promise;
+      const current: ReadContext = { ...ctx, placementProbeGroup: { scope: 'user', probes: new Map() } };
+      expect((await discoverPlatform('claude', current)).installations[0]?.version).toBe('2.1.318');
+      finish.resolve();
+      expect((await old).installations[0]?.version).toBe('2.1.317');
+      expect((await discoverPlatform('claude', current)).installations[0]?.version).toBe('2.1.318');
+      expect(calls).toBe(2);
+    } finally { finish.resolve(); await old; }
+  });
+
   // Test Value Gate: scope reads reuse one identity probe per safe entry while
   // changed namespaces, candidates and new operations obtain fresh evidence.
   it('reuses discovery across scope cwd changes with the same resolved client inputs', async () => {
@@ -173,6 +254,44 @@ describe('read-only target discovery and production selection', () => {
     expect(versions).toBe(1);
   });
 
+  // Test Value Gate: a Windows arm64 Codex discovery can spend only one retry, keeping independent candidates separate.
+  it.each(['timeout', 'explicit timeout', 'x64', 'cancelled', 'cleanup unconfirmed'] as const)('bounds independent Codex version probes after %s', async (scenario) => {
+    const ctx = await fixture();
+    const first = path.join(ctx.cwd, 'first', 'codex.EXE');
+    const second = path.join(ctx.cwd, 'second', 'codex.EXE');
+    await fs.outputFile(first, 'first controlled entry');
+    await fs.outputFile(second, 'second controlled entry');
+    const env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', CODEX_HOME: 'C:\\Users\\qualification\\.codex',
+      PATH: [path.dirname(first), path.dirname(second)].join(';'), PATHEXT: '.EXE', SystemRoot: path.join(ctx.cwd, 'system'),
+      AW_NATIVE_CLI_TIMEOUT_MS: scenario === 'explicit timeout' ? '1000' : undefined };
+    const attempts: Array<{ entry: string; timeoutMs?: number }> = [];
+    const abort = new AbortController();
+    const discovered = await discoverPlatform('codex', { ...ctx, platform: 'win32', arch: scenario === 'x64' ? 'x64' : 'arm64', env, signal: abort.signal,
+      runner: async (invocation) => {
+        if (invocation.args[0] !== '--version') return { exitCode: 0, stdout: '[]', stderr: '' };
+        const entry = path.basename(path.dirname(invocation.command));
+        attempts.push({ entry, timeoutMs: invocation.timeoutMs });
+        if (entry === 'first' && attempts.length === 2) return { exitCode: 0, stdout: 'codex-cli 0.167.0', stderr: '' };
+        if (scenario === 'cancelled') abort.abort();
+        throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout',
+          cleanupError: scenario === 'cleanup unconfirmed' ? new Error('process cleanup unconfirmed') : undefined });
+      },
+    }).then(({ installations }) => ({ products: installations.map(({ availability, version }) => ({ availability, version })) }),
+      (error: unknown) => ({ error: error instanceof NativeCliError && error.cleanupError ? 'cleanup unconfirmed'
+        : error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'unexpected' }));
+    const unknown = { availability: 'unknown', version: null };
+    if (scenario === 'timeout') {
+      expect(attempts).toEqual(['first', 'first', 'second'].map((entry) => ({ entry, timeoutMs: 5_000 })));
+      expect(discovered).toEqual({ products: [{ availability: 'available', version: '0.167.0' }, unknown] });
+    } else if (scenario === 'explicit timeout' || scenario === 'x64') {
+      expect(attempts).toEqual(['first', 'second'].map((entry) => ({ entry, timeoutMs: 5_000 })));
+      expect(discovered).toEqual({ products: [unknown, unknown] });
+    } else {
+      expect(attempts).toEqual([{ entry: 'first', timeoutMs: 5_000 }]);
+      expect(discovered).toEqual({ error: scenario });
+    }
+  });
+
   // Test Value Gate: a same-name executable is not sufficient product identity.
   it('does not accept an unrelated same-name executable with a plausible version', async () => {
     const ctx = await fixture(); await executable(ctx, 'copilot');
@@ -199,6 +318,288 @@ describe('read-only target discovery and production selection', () => {
     const found = await discoverPlatform('copilot', { ...ctx,
       runner: async () => ({ exitCode: 0, stdout: 'GitHub Copilot CLI 1.0.95', stderr: '' }) });
     expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
+  });
+
+  // Test Value Gate: cold target selection can finish a single slow version
+  // probe, and consumers sharing the read reuse its result.
+  it('shares one continuous Windows Copilot version probe with target selection', async () => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { ctx, entry } = await windowsCopilotFixture();
+    ctx.discoveryCache = new Map();
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      return timedVersion(invocation, 7_000, copilotVersionOutput);
+    };
+    const [selected, found] = await Promise.all([
+      targetsSet({ ...ctx, discovery: ctx, targets: ['copilot'] }),
+      discoverPlatform('copilot', ctx),
+    ]);
+    expect(publicExitCode(projectReceipt('target.set', selected))).toBe(0);
+    expect(selected.policy?.targets).toEqual(['copilot']);
+    expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
+    expect(calls).toEqual([{ command: process.execPath, args: [entry, '--version'], timeoutMs: 10_000 }]);
+  });
+
+  // Test Value Gate: the Windows x64 public selection must survive one cleaned-up timeout on its first version probe.
+  it.each(['recovers', 'keeps timing out'] as const)('rechecks the first Windows x64 Copilot entry when it %s', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { ctx, entry } = await windowsCopilotFixture();
+    ctx.arch = 'x64';
+    ctx.env!.AW_NATIVE_CLI_TIMEOUT_MS = undefined;
+    ctx.discoveryCache = new Map();
+    const later = path.join(ctx.cwd, 'later-bin', 'copilot.exe');
+    await fs.outputFile(later, 'controlled probe boundary');
+    const laterEntry = await fs.realpath(later);
+    ctx.env!.PATH = [ctx.env!.PATH, path.dirname(later)].join(';');
+    const calls: Array<VersionProbe & { cwd?: string }> = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, cwd, timeoutMs } = invocation;
+      calls.push({ command, args, cwd, timeoutMs });
+      if (command === laterEntry || calls.length === 1 || scenario === 'keeps timing out') {
+        return timedVersion(invocation, 10_001, '');
+      }
+      return timedVersion(invocation, 244, copilotVersionOutput);
+    };
+    const [selection, discovery] = await Promise.all([
+      targetsSet({ ...ctx, discovery: ctx, targets: ['copilot'] }),
+      discoverPlatform('copilot', ctx),
+    ]);
+    const recovered = scenario === 'recovers';
+    expect(publicExitCode(projectReceipt('target.set', selection))).toBe(recovered ? 0 : 3);
+    expect(selection.policy?.targets ?? []).toEqual(recovered ? ['copilot'] : []);
+    expect(discovery.installations.map(({ availability, version }) => ({ availability, version }))).toEqual([
+      recovered ? { availability: 'available', version: '1.0.95' } : { availability: 'unknown', version: null },
+      { availability: 'unknown', version: null },
+    ]);
+    expect(calls).toEqual([
+      ...[10_000, 5_000].map((timeoutMs) => ({ command: process.execPath, args: [entry, '--version'], cwd: ctx.cwd, timeoutMs })),
+      { command: laterEntry, args: ['--version'], cwd: ctx.cwd, timeoutMs: 5_000 },
+    ]);
+  });
+
+  // Test Value Gate: a fast entry leaves the extra time available to a later
+  // entry, and slow entries cannot exceed the shared version budget.
+  it.each([
+    { name: 'fast before slow', delays: [1_000, 7_000], deadlines: [10_000, 10_000], available: [true, true] },
+    { name: 'slow before fast', delays: [7_000, 1_000], deadlines: [10_000, 8_000], available: [true, true] },
+    { name: 'both deadlines expire', delays: [10_001, 5_001], deadlines: [10_000, 5_000], available: [false, false] },
+    { name: 'runner reports its deadline', firstFailure: 'timeout' as const, delays: [0, 4_000], deadlines: [10_000, 5_000], available: [false, true] },
+    { name: 'first entry exits 124', firstFailure: 'exit' as const, delays: [0, 7_000], deadlines: [10_000, 10_000], available: [false, true] },
+  ])('probes Windows Copilot in PATH order with $name', async ({ delays, deadlines, available, firstFailure }) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { ctx, entry } = await windowsCopilotFixture();
+    ctx.arch = 'arm64';
+    const first = await fs.realpath(path.join(ctx.env!.PATH!, 'copilot.cmd'));
+    const second = path.join(ctx.cwd, 'second-bin', 'copilot.exe');
+    await fs.outputFile(second, 'controlled probe boundary');
+    ctx.env = { ...ctx.env, PATH: [ctx.env!.PATH, path.dirname(second)].join(';') };
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      if (calls.length === 1 && firstFailure) {
+        throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: firstFailure });
+      }
+      const elapsedMs = invocation.command === process.execPath ? delays[0]! : delays[1]!;
+      return timedVersion(invocation, elapsedMs, copilotVersionOutput);
+    };
+    const found = await discoverPlatform('copilot', ctx);
+    expect(found.installations).toMatchObject(available.map(confirmed => confirmed
+      ? { availability: 'available', version: '1.0.95', reasonCodes: [] }
+      : { availability: 'unknown', version: null, reasonCodes: ['clientProbeFailed'] }));
+    if (available.includes(true)) {
+      expect(selectNativeProduct(found.installations)?.entry).toMatchObject({ kind: 'cli', executable: available[0] ? first : await fs.realpath(second) });
+    }
+    expect(calls).toEqual([
+      { command: process.execPath, args: [entry, '--version'], timeoutMs: deadlines[0] },
+      { command: await fs.realpath(second), args: ['--version'], timeoutMs: deadlines[1] },
+    ]);
+  });
+
+  // Test Value Gate: an exit or an unsafe interruption must keep its original
+  // result and run at most one process for the entry.
+  it.each(['exit 124', 'explicit timeout', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const)(
+    'runs one Windows Copilot version probe on %s', async (failure) => {
+      const { ctx } = await windowsCopilotFixture();
+      ctx.arch = 'x64';
+      ctx.env!.AW_NATIVE_CLI_TIMEOUT_MS = failure === 'explicit timeout' ? '1000' : undefined;
+      const abort = new AbortController();
+      const cleanupError = failure === 'cleanup' ? new Error('cleanup unconfirmed') : undefined;
+      ctx.signal = abort.signal;
+      let calls = 0;
+      ctx.runner = async (invocation) => {
+        calls += 1;
+        if (failure === 'cancelled' || cleanupError) abort.abort();
+        const error = new NativeCliError({ invocation, exitCode: failure === 'aborted' ? 1 : 124, stdout: '', stderr: '',
+          reason: failure === 'exit 124' ? 'exit' : failure === 'aborted' ? 'aborted' : 'timeout', cleanupError });
+        if (failure === 'AbortError') error.name = failure;
+        throw error;
+      };
+      const found = discoverPlatform('copilot', ctx);
+      if (failure === 'exit 124' || failure === 'explicit timeout') {
+        expect((await found).installations[0]).toMatchObject({ availability: 'unknown', reasonCodes: ['clientProbeFailed'] });
+      } else if (cleanupError) await expect(found).rejects.toMatchObject({ cleanupError });
+      else if (failure === 'aborted') await expect(found).rejects.toMatchObject({ reason: 'aborted' });
+      else await expect(found).rejects.toMatchObject({ name: 'AbortError' });
+      expect(calls).toBe(1);
+    },
+  );
+
+  // Test Value Gate: a slow probe still needs a supported version and a
+  // confirmed Copilot identity.
+  it.each([
+    { output: 'GitHub Copilot CLI 1.0.94', availability: 'unsupported', reason: 'clientVersionUnsupported', version: '1.0.94', help: [] },
+    { output: '1.0.95 unrelated tool', availability: 'unknown', reason: 'clientIdentityUnconfirmed', version: null, help: ['--help'] },
+  ])('keeps the Windows Copilot gate for $reason after a slow startup', async ({ output, availability, reason, version, help }) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { ctx } = await windowsCopilotFixture();
+    const calls: string[] = [];
+    ctx.runner = async (invocation) => {
+      const arg = invocation.args.at(-1)!;
+      calls.push(arg);
+      if (arg === '--version') return timedVersion(invocation, 7_000, output);
+      return { exitCode: 0, stderr: '', stdout: 'Unrelated tool' };
+    };
+    const found = await discoverPlatform('copilot', ctx);
+    expect(found.installations[0]).toMatchObject({ version, availability, reasonCodes: [reason] });
+    expect(calls).toEqual(['--version', ...help]);
+  });
+
+  // Test Value Gate: help retains its ordinary deadline when version uses the reserve.
+  it('keeps the ordinary Windows Copilot help deadline', async () => {
+    const { ctx } = await windowsCopilotFixture();
+    const calls: NativeCliInvocation[] = [];
+    ctx.runner = async (invocation) => {
+      calls.push(invocation);
+      if (invocation.args.at(-1) === '--version') return { exitCode: 0, stdout: '1.0.95', stderr: '' };
+      throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+    };
+    expect((await discoverPlatform('copilot', ctx)).installations[0]).toMatchObject({
+      availability: 'unknown', reasonCodes: ['clientProbeFailed'],
+    });
+    expect(calls.map(({ args, timeoutMs }) => [args.at(-1), timeoutMs])).toEqual([
+      ['--version', 10_000], ['--help', DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS],
+    ]);
+  });
+
+  // Test Value Gate: a slow native version must still prove identity before
+  // the public target command can save a new selection.
+  it.each([
+    { name: 'slow Windows ARM64', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'fast Windows ARM64', host: 'win32', arch: 'arm64', delay: 1_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'Windows ARM64 deadline', host: 'win32', arch: 'arm64', delay: 10_001, deadline: 10_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Windows ARM64 unrelated entry', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Unrelated tool', version: '1.3.4', exit: 3, availability: 'unknown' },
+    { name: 'Windows ARM64 older version', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.3', exit: 3, availability: 'unsupported' },
+    { name: 'slow Windows x64', host: 'win32', arch: 'x64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'fast Windows x64', host: 'win32', arch: 'x64', delay: 179, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'Windows x64 deadline', host: 'win32', arch: 'x64', delay: 10_001, deadline: 10_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Windows x64 deadline with an explicit native timeout setting', host: 'win32', arch: 'x64', delay: 10_001,
+      deadline: 10_000, nativeTimeout: '1000', exit: 3, availability: 'unknown' },
+    { name: 'Windows ia32 deadline', host: 'win32', arch: 'ia32', delay: 7_000, deadline: 5_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Linux ARM64 deadline', host: 'linux', arch: 'arm64', delay: 7_000, deadline: 5_000,
+      exit: 3, availability: 'unknown' },
+  ] as const)('enforces Antigravity target selection for $name', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = scenario.host;
+    ctx.arch = scenario.arch;
+    ctx.linuxDesktopDirectories = [];
+    ctx.windowsApplicationsDirectories = [];
+    const name = scenario.host === 'win32' ? 'agy.exe' : 'agy';
+    await executable(ctx, name);
+    const bin = ctx.env!.PATH!;
+    const entry = await fs.realpath(path.join(bin, name));
+    ctx.env = scenario.host === 'win32' ? { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification' }
+      : { ...ctx.env, HOME: '/qualification', PATH: path.relative(ctx.cwd, bin) };
+    ctx.env.AW_NATIVE_CLI_TIMEOUT_MS = 'nativeTimeout' in scenario ? scenario.nativeTimeout : undefined;
+    const version = 'version' in scenario ? scenario.version : '1.3.4';
+    const help = 'help' in scenario ? scenario.help : '';
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      if (invocation.command !== entry) return { exitCode: 0, stdout: '[]', stderr: '' };
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      if (invocation.args[0] === '--version') {
+        return timedVersion(invocation, scenario.delay, `${version}\n`);
+      }
+      return { exitCode: 0, stdout: help, stderr: '' };
+    };
+    const selected = await targetsSet({ ...ctx, discovery: ctx, targets: ['antigravity'] });
+    const publicResult = projectReceipt('target.set', selected);
+    expect(publicExitCode(publicResult)).toBe(scenario.exit);
+    expect(publicResult).toMatchObject({ data: { availability: expect.arrayContaining([expect.objectContaining({
+      id: 'antigravity', selected: scenario.exit === 0, installations: [expect.objectContaining({
+        availability: scenario.availability, version: scenario.availability === 'unknown' ? null : version,
+      })],
+    })]) } });
+    expect((await observePreferences({ ...ctx, scope: 'user' })).state).toBe(scenario.exit === 0 ? 'valid' : 'absent');
+    expect(calls).toEqual([
+      { command: entry, args: ['--version'], timeoutMs: scenario.deadline },
+      ...(help ? [{ command: entry, args: ['--help'], timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }] : []),
+    ]);
+  });
+
+  // Test Value Gate: multiple Antigravity entries share one reserve and a slow
+  // entry can only use the time left by earlier entries.
+  it.each(['arm64', 'x64'] as const)('shares the Windows %s Antigravity version budget across PATH entries', async (arch) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = 'win32';
+    ctx.arch = arch;
+    const delays = new Map([['fast', 1_000], ['slow', 7_000], ['over-budget', 8_001]]);
+    const entries = await Promise.all([...delays.keys()].map(async (name) => {
+      const entry = path.join(ctx.cwd, name, 'agy.exe');
+      await fs.outputFile(entry, 'controlled probe boundary');
+      return fs.realpath(entry);
+    }));
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', PATH: entries.map((entry) => path.dirname(entry)).join(';') };
+    const calls: VersionProbe[] = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, timeoutMs } = invocation;
+      calls.push({ command, args, timeoutMs });
+      return timedVersion(invocation, delays.get(path.basename(path.dirname(command)))!, 'Antigravity CLI 1.3.4');
+    };
+    const found = await discoverPlatform('antigravity', ctx);
+    expect(found.installations).toMatchObject([
+      { availability: 'available', version: '1.3.4' },
+      { availability: 'available', version: '1.3.4' },
+      { availability: 'unknown', reasonCodes: ['clientProbeFailed'] },
+    ]);
+    expect(calls).toEqual([
+      { command: entries[0], args: ['--version'], timeoutMs: 10_000 },
+      { command: entries[1], args: ['--version'], timeoutMs: 10_000 },
+      { command: entries[2], args: ['--version'], timeoutMs: 8_000 },
+    ]);
+  });
+
+  it.runIf(process.platform !== 'win32')('does not repeat a Copilot version timeout on another OS', async () => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    let calls = 0;
+    ctx.runner = async (invocation) => {
+      calls += 1;
+      throw new NativeCliError({ invocation, exitCode: 124, stdout: '', stderr: '', reason: 'timeout' });
+    };
+    expect((await discoverPlatform('copilot', ctx)).installations[0]).toMatchObject({
+      availability: 'unknown', reasonCodes: ['clientProbeFailed'],
+    });
+    expect(calls).toBe(1);
   });
 
   it.each([
@@ -466,6 +867,58 @@ describe('read-only target discovery and production selection', () => {
     }
     expect(await pending).toMatchObject({ name: 'NativeCliError', cleanupError });
     expect(calls).toEqual([first, second]);
+  });
+
+  // Test Value Gate: a slow Grok version must still prove its management interface
+  // before target selection can save the user's preference.
+  it.each([
+    { name: 'slow start', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json', availability: 'available' },
+    { name: 'version timeout', arch: 'x64', versionMs: 10_001, helpCount: 0, listHelp: '--json', availability: 'unknown' },
+    { name: 'JSONL and JSON output options only', arch: 'x64', versionMs: 7_000, helpCount: 2,
+      listHelp: '--jsonl --json-output', availability: 'unsupported' },
+    { name: 'documented JSON flag without an option', arch: 'x64', versionMs: 7_000, helpCount: 2,
+      listHelp: 'Options:\n  --verbose  Earlier versions required --json', availability: 'unsupported' },
+    { name: 'management flags without commands', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json',
+      managerHelp: '--install --uninstall --enable --disable', availability: 'unsupported' },
+    { name: 'failed management help', arch: 'x64', versionMs: 7_000, helpCount: 1, listHelp: '--json',
+      failedHelp: 'manager', availability: 'unknown' },
+    { name: 'list help timeout', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json',
+      failedHelp: 'list', availability: 'unknown' },
+    { name: 'Windows ARM64 with a slow version', arch: 'arm64', versionMs: 7_000, helpCount: 0, listHelp: '--json', availability: 'unknown' },
+  ] as const)('bounds Windows Grok discovery and target selection for $name', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = 'win32';
+    ctx.arch = scenario.arch;
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GROK_HOME: path.join(ctx.cwd, 'grok-home') };
+    await executable(ctx, 'grok.exe');
+    const probes: Array<{ args: string[]; timeoutMs?: number }> = [];
+    ctx.runner = async (invocation) => {
+      if (path.basename(invocation.command) !== 'grok.exe') return { exitCode: 0, stdout: '[]', stderr: '' };
+      probes.push({ args: invocation.args, timeoutMs: invocation.timeoutMs });
+      if (invocation.args[0] === '--version') return timedVersion(invocation, scenario.versionMs, 'grok 1.0.77');
+      const isList = invocation.args.includes('list');
+      if ('failedHelp' in scenario) {
+        if (!isList && scenario.failedHelp === 'manager') return { exitCode: 1, stdout: '', stderr: '' };
+        if (isList && scenario.failedHelp === 'list') return timedVersion(invocation, 5_001, '');
+      }
+      const managerHelp = 'managerHelp' in scenario ? scenario.managerHelp : 'Commands:\n  install    Install a plugin\n  uninstall  Remove a plugin\n  enable     Enable a plugin\n  disable    Disable a plugin';
+      return { exitCode: 0, stderr: '', stdout: isList ? scenario.listHelp : managerHelp };
+    };
+    const selection = projectReceipt('target.set', await targetsSet({ ...ctx, discovery: ctx, targets: ['grok'] }));
+    const selected = scenario.availability === 'available';
+    expect(publicExitCode(selection)).toBe(selected ? 0 : 3);
+    const reasonCodes = { unknown: ['clientProbeFailed'], unsupported: ['clientInstallInterfaceUnsupported'], available: [] };
+    expect(selection).toMatchObject({ data: { availability: expect.arrayContaining([expect.objectContaining({ id: 'grok',
+      selected, installations: [expect.objectContaining({ availability: scenario.availability, reasonCodes: reasonCodes[scenario.availability] })],
+    })]) } });
+    expect((await observePreferences({ ...ctx, scope: 'user' })).state).toBe(selected ? 'valid' : 'absent');
+    expect(probes).toEqual([
+      { args: ['--version'], timeoutMs: scenario.arch === 'x64' ? 10_000 : 5_000 },
+      ...[{ args: ['plugin', '--help'], timeoutMs: 5_000 }, { args: ['plugin', 'list', '--help'], timeoutMs: 5_000 }]
+        .slice(0, scenario.helpCount),
+    ]);
   });
 
   // Test Value Gate: Windows Grok must resolve its official npm shim while a

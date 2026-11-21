@@ -1,0 +1,128 @@
+name: Plugin install performance qualification
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  frozen-catalog:
+    if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'plugin-install-performance' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: c4f82300e5805501210d9ccec450a85ad1b21062
+          path: frozen-catalog-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: frozen-catalog-source/pnpm-lock.yaml
+      - name: Rebuild and verify the historical Catalog
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/catalog-build" "$RUNNER_TEMP/catalog-share"
+          test "$(git -C frozen-catalog-source rev-parse HEAD)" = c4f82300e5805501210d9ccec450a85ad1b21062
+          test "$(git -C frozen-catalog-source rev-parse 'HEAD^{tree}')" = 8bf2da902945ccdf9024d143bd36bb4536df04a9
+          git -C frozen-catalog-source archive HEAD | tar -xf - -C "$RUNNER_TEMP/catalog-build"
+          pnpm --dir "$RUNNER_TEMP/catalog-build" install --frozen-lockfile
+          pnpm --dir "$RUNNER_TEMP/catalog-build" build
+          node scripts/qualification/plugin-install-latency-catalog.mjs "$RUNNER_TEMP/catalog-build" "$RUNNER_TEMP/catalog"
+          tar -czf "$RUNNER_TEMP/catalog-share/catalog.tgz" -C "$RUNNER_TEMP/catalog" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plugin-install-performance-catalog
+          path: ${{ runner.temp }}/catalog-share/catalog.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  native-windows-job:
+    if: github.event_name == 'workflow_dispatch' || (github.event.label.name == 'plugin-install-performance' && github.event.pull_request.head.repo.full_name == github.repository)
+    uses: ./.github/workflows/windows-job.yml
+    with:
+      source-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  measure-linux:
+    needs: frozen-catalog
+    runs-on: ubuntu-24.04
+    env:
+      PERFORMANCE_RUNNER: ubuntu-24.04
+    timeout-minutes: 90
+    steps: &measurement-steps
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/download-artifact@v8
+        with:
+          name: plugin-install-performance-catalog
+          path: ${{ runner.temp }}/catalog-input
+      - uses: actions/download-artifact@v8
+        if: runner.os == 'Windows'
+        with:
+          name: windows-job-qualified
+          path: ${{ runner.temp }}/windows-job-qualified
+      - name: Restore the verified Catalog transport
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir catalog
+          tar -xzf catalog-input/catalog.tgz -C catalog
+      - name: Verify Windows timeout and process-tree setup
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node --input-type=module - <<'JS'
+          import path from 'node:path';
+          import { readCandidate } from './native-tools/windows-job/candidate.mjs';
+          import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
+          import { prepareWindowsJobSourceTestEnvironment } from './native-tools/windows-job/test-environment.mjs';
+          const root = path.join(process.env.RUNNER_TEMP, 'windows-job-qualified');
+          await assertWindowsJobCandidateEvidence(await readCandidate(root));
+          await prepareWindowsJobSourceTestEnvironment({ root });
+          JS
+          pnpm test:qualification:native-platforms:harness
+      - name: Preflight real clients and measure paired 4-read / 2-write installs
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node scripts/qualification/plugin-install-latency-cloud.mjs "$RUNNER_TEMP/catalog" "$RUNNER_TEMP/aw-install-public"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: plugin-install-performance-${{ env.PERFORMANCE_RUNNER }}
+          path: ${{ runner.temp }}/aw-install-public/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  measure-windows:
+    needs: [frozen-catalog, native-windows-job]
+    runs-on: windows-2025
+    env:
+      PERFORMANCE_RUNNER: windows-2025
+    timeout-minutes: 90
+    steps: *measurement-steps

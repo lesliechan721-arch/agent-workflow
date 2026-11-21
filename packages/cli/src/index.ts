@@ -13,6 +13,7 @@ import path from 'node:path';
 import { defaultPluginProcessRunner } from './utils/plugin-scripts.js';
 import type { PublicCommandInterruption } from './commands/public-interruption.js';
 import { fileURLToPath } from 'node:url';
+import { withNativeCliInterruption } from './utils/native-cli-interruption.js';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
@@ -3118,13 +3119,15 @@ export async function main(
   return runCli(argv, options);
 }
 
-const currentEntryPath = fileURLToPath(import.meta.url);
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-
-if (invokedPath === currentEntryPath) {
-  void main().then((exitCode) => {
+export function runExecutableCli(): void {
+  void withNativeCliInterruption(() => main()).then((exitCode) => {
     if (exitCode !== 0) {
       process.exitCode = exitCode;
     }
   });
 }
+
+const currentEntryPath = fileURLToPath(import.meta.url);
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+
+if (invokedPath === currentEntryPath) runExecutableCli();

@@ -681,6 +681,20 @@ describe('pack smoke', () => {
       '    macApplicationsDirectories: [],',
       "    queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),",
       '  });',
+      // Public commands pass their own native runner to App discovery, ahead of its fallback.
+      '  const systemRoot = process.env.SystemRoot;',
+      "  if (process.platform === 'win32' && systemRoot && path.isAbsolute(systemRoot)) {",
+      `    const { getDefaultNativeCliRunner, retainNativeCliRunnerBackend, setNativeCliRunnerOverrideForTests } = await import(${JSON.stringify(new URL('./native-cli.js', installedDiscoveryImport).href)});`,
+      '    const run = getDefaultNativeCliRunner();',
+      "    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');",
+      '    setNativeCliRunnerOverrideForTests(retainNativeCliRunnerBackend(async (invocation) => {',
+      "      if (path.relative(powershell, invocation.command) === '' && invocation.args.at(-2) === '-EncodedCommand') {",
+      "        const script = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');",
+      "        if (script.includes(\"Get-AppxPackage -Name 'OpenAI.Codex'\")) return { exitCode: 0, stdout: '[]', stderr: '' };",
+      '      }',
+      '      return run(invocation);',
+      '    }, run));',
+      '  }',
       '}',
     ].join('\n'));
     const discoveryPreludeImport = pathToFileURL(discoveryPrelude).href;
@@ -1023,7 +1037,7 @@ describe('pack smoke', () => {
     let nativePackageRoot: string | undefined;
     let nativePackageFiles: string[] | undefined;
     if (codexSkillQualified) {
-      expect(installedNativeEntry).toHaveLength(1);
+      expect(installedNativeEntry, projectInstallBeforeTrust.diagnostic).toHaveLength(1);
       const [id, nativePlugin] = installedNativeEntry[0]!;
       nativePluginId = id;
       nativePackageRoot = nativePlugin.path;

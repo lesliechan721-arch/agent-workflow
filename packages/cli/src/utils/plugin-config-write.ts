@@ -9,6 +9,8 @@ import type {
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
 import { nativeDeploymentHasVerifiedComponentWrite } from '../commands/rebuild-platform-integration.js';
+import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
+import { projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
 import { selectPluginConfigProfile, NATIVE_PLATFORM_TARGETS, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { readScopedRecoveryStatus } from '../recovery/status.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
@@ -136,7 +138,7 @@ interface ConfigRuntimeReplayReceipt {
   otherProjectsMayRequireSync: false;
 }
 
-interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'state'> {
+interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'state'>, ComponentDelivery {
   state: ConfigApplyTargetResult['state'];
   partialDelivery?: ConfigApplyTargetResult['partialDelivery'];
 }
@@ -173,6 +175,7 @@ function publicConfigApplyTargetResult(
     },
     action: result.action,
     state: result.state,
+    ...projectComponentDelivery(result),
     ...(result.partialDelivery ? { partialDelivery: true } : {}),
     ...(result.message ? { message: result.message } : {}),
     ...(result.errorCode ? { errorCode: result.errorCode } : {}),
@@ -1408,7 +1411,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       const errors: ConfigApplyError[] = [...discoveryErrors, ...receipt.blockers, ...receipt.errors].map((error) => ({
         stage: 'stage' in error ? error.stage as ConfigApplyError['stage'] : 'apply', code: error.code, message: error.message,
       }));
-      const diagnostics = skillInvocationDiagnostics(receipt.targetResults);
+      const diagnostics = projectDeploymentNotices(receipt.targetResults);
       const apply: ConfigApplyResult = {
         state: ok ? 'succeeded' : 'partial',
         targetResults: [...receipt.targetResults.filter((target) => target.satisfaction !== 'unsupported' && target.satisfaction !== 'excluded').map((target): ConfigApplyTargetResult => ({
@@ -1417,6 +1420,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
           action: 'refresh',
           state: target.execution === 'applied' || target.execution === 'no-op' ? 'completed'
             : target.execution === 'not-run' ? 'skipped' : 'failed',
+          ...projectComponentDelivery(target),
           ...(target.relation === 'root' ? { relation: 'requested' } : target.relation === 'dependency' ? { relation: 'dependency' } : {}),
           ...(target.requiredBy.length ? { requiredBy: target.requiredBy } : {}),
           ...(configApplyHasPartialDelivery(target) ? { partialDelivery: true } : {}),

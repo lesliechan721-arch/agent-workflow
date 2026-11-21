@@ -17,6 +17,8 @@ import {
   type ProducerIdentity,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
+import { selectPlatformInvocationPolicy } from '../generators/permissions.js';
+import { isDeliveryCapabilityGap } from './component-gap.js';
 import type { RenderUnit } from '../platforms/contracts.js';
 import type { PlatformTarget, PluginMeta } from '../types.js';
 import { artifactValueDigest } from './artifact-plan.js';
@@ -37,6 +39,7 @@ import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
 
 export interface FinalizedPlatformComponents {
   prepared: PreparedPlatformComponents;
+  invocationPolicy: ReturnType<typeof selectPlatformInvocationPolicy>;
   commandCandidates: ManagedCommandCandidate[];
   producerResolutions: ManagedCommandSkillProducerResolution[];
   commandResolver?: (reference: ManagedCommandReference) => string;
@@ -60,7 +63,7 @@ export async function finalizePlatformSkillProducers(options: {
   packagePreparationCache?: Map<string, Promise<Awaited<ReturnType<typeof prepareManagedCommandPackage>>>>;
 }): Promise<FinalizedPlatformComponents> {
   if (!options.renderUnit.kinds.includes('skill')) {
-    return { prepared: options.prepared, commandCandidates: [], producerResolutions: [], skills: [], cleanup: async () => {} };
+    return { prepared: options.prepared, invocationPolicy: { policy: { platform: options.platform, permissions: [] }, diagnostics: [] }, commandCandidates: [], producerResolutions: [], skills: [], cleanup: async () => {} };
   }
   const skills: FinalizedPlatformComponents['skills'] = [];
   const cleanupPackages: Array<() => Promise<void>> = [];
@@ -124,8 +127,23 @@ export async function finalizePlatformSkillProducers(options: {
     if (references.length && options.platform === 'generic') {
       throw new Error('commandReferenceInvalid: Generic Skills cannot bind native managed commands.');
     }
-    const permissions = resolveInvocationPolicy(options.plugin.manifest, options.platform).permissions;
-    const permissionReferences = permissions.flatMap((permission) => [
+    const skippedSets = new Map<string, string>();
+    for (const resolution of producerResolutions) {
+      const reason = resolution.state === 'omitted' ? resolution.reason
+        : resolution.state === 'unmet' && options.prepared.expected.unmet.some((gap) => gap.id === resolution.componentId && isDeliveryCapabilityGap(gap))
+          ? resolution.reasonCode : undefined;
+      if (reason) for (const set of resolution.sets) skippedSets.set(set.set, reason);
+    }
+    const invocationPolicy = selectPlatformInvocationPolicy(resolveInvocationPolicy(options.plugin.manifest, options.platform), {
+      pluginId: options.plugin.pluginId, target: options.platform, scope: options.renderUnit.renderScope.kind,
+    }, (reference) => {
+      const set = options.plugin.manifest.managedCommands?.sets.find((entry) => entry.set === reference.set);
+      if (!set || set.mode === 'static' && !set.entries.some((entry) => entry.key === reference.key && entry.variant === reference.variant)) {
+        throw new Error(`commandReferenceInvalid: permission command ${reference.set}/${reference.key}/${reference.variant} is not declared.`);
+      }
+      return skippedSets.get(reference.set);
+    });
+    const permissionReferences = invocationPolicy.policy.permissions.flatMap((permission) => [
       ...(permission.allow ?? []), ...(permission.ask ?? []), ...(permission.deny ?? []),
       ...(permission.sandbox?.excludedCommands ?? []),
     ]).flatMap((entry) => typeof entry === 'string' ? [] : [entry.command]);
@@ -253,7 +271,7 @@ export async function finalizePlatformSkillProducers(options: {
         renderInputDigest: artifactValueDigest({ components: options.prepared.evidence.renderInputDigest, commands, unavailableProducers }),
       },
     };
-    return { prepared, skills: retainedSkills, commandCandidates, producerResolutions, ...(commandResolver ? { commandResolver } : {}), cleanup: async () => { await Promise.all(cleanupPackages.map((cleanup) => cleanup())); } };
+    return { prepared, invocationPolicy, skills: retainedSkills, commandCandidates, producerResolutions, ...(commandResolver ? { commandResolver } : {}), cleanup: async () => { await Promise.all(cleanupPackages.map((cleanup) => cleanup())); } };
   } catch (error) {
     await Promise.all(cleanupPackages.map((cleanup) => cleanup()));
     throw error;

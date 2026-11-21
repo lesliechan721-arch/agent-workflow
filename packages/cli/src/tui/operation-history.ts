@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 
 import type { OperationKind } from './controller.js';
 import type { PlatformTarget, Scope } from '../types.js';
+import { safeComponentIdentity } from '../output/component-delivery.js';
 import {
   safeDiagnosticCode,
   sanitizeDiagnosticDetailText,
@@ -68,6 +69,7 @@ export interface OperationHistoryTarget {
   scope: Scope;
   state: 'completed' | 'kept' | 'failed' | 'skipped';
   partialDelivery?: true;
+  componentDelivery?: { notApplicable?: true; withNotices?: true; installedComponentCount?: number; installedComponentIds?: string[] };
   errorCode?: string;
   diagnosticIds: string[];
   effects?: OperationEffectFacts;
@@ -162,11 +164,16 @@ function reportContent(record: OperationHistoryRecord): string {
     `Effects: ${JSON.stringify(summary.effects)}`,
   ];
   for (const target of record.targets) {
+    const delivery = target.componentDelivery;
     lines.push(
       '',
       `Target: ${target.pluginId ?? 'unknown'} ${target.platform}/${target.scope}`,
       `Target state: ${target.state}`,
       ...(target.partialDelivery ? ['Delivery: some outputs verified'] : []),
+      ...(delivery?.notApplicable ? ['Delivery: No applicable components']
+        : delivery?.withNotices ? ['Delivery: Installed with notices'] : []),
+      ...(delivery?.installedComponentCount === undefined ? [] : [`Installed components: ${delivery.installedComponentCount}`]),
+      ...(delivery?.installedComponentIds?.length ? [`Installed: ${delivery.installedComponentIds.join(', ')}`] : []),
       ...(target.errorCode ? [`Target code: ${target.errorCode}`] : []),
       ...(target.effects ? [`Target effects: ${JSON.stringify(target.effects)}`] : []),
     );
@@ -200,7 +207,23 @@ export class OperationHistoryStore {
         message: sanitizeDiagnosticText(record.summary.message, [], sensitiveValues),
       },
       diagnostics: boundDiagnostics(record.diagnostics, sensitiveValues),
-      targets: structuredClone(record.targets),
+      targets: record.targets.map((target) => {
+        const { componentDelivery } = target;
+        return {
+          ...(target.pluginId ? { pluginId: sanitizeDiagnosticText(target.pluginId, [], sensitiveValues) } : {}),
+          platform: target.platform, scope: target.scope, state: target.state,
+          ...(target.partialDelivery ? { partialDelivery: true as const } : {}),
+          ...(target.errorCode ? { errorCode: safeDiagnosticCode(target.errorCode, 'operationFailed') } : {}),
+          diagnosticIds: [...target.diagnosticIds], ...(target.effects ? { effects: structuredClone(target.effects) } : {}),
+          ...(componentDelivery ? { componentDelivery: {
+            ...(componentDelivery.notApplicable ? { notApplicable: true as const } : {}),
+            ...(componentDelivery.withNotices ? { withNotices: true as const } : {}),
+            ...(componentDelivery.installedComponentCount === undefined ? {} : { installedComponentCount: componentDelivery.installedComponentCount }),
+            ...(componentDelivery.installedComponentIds ? { installedComponentIds: componentDelivery.installedComponentIds.map((id) =>
+              sanitizeDiagnosticDetailText(safeComponentIdentity(id), [], sensitiveValues)) } : {}),
+          } } : {}),
+        };
+      }),
     };
     const index = this.#records.findIndex((entry) => entry.summary.recordId === bounded.summary.recordId);
     if (index >= 0) {

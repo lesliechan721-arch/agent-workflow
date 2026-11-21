@@ -79,7 +79,9 @@ import {
 import type { PluginContentOverview } from './plugin-content.js';
 import { buildPluginDetailSubject, type PluginDetailSubject } from './plugin-detail.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
-import { projectExecutionDiagnostics, projectSkillInvocationHistory, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
+import { projectComponentDeliveryHistory, projectDeliveryNoticeHistory, projectExecutionDiagnostics, projectSkillInvocationHistory,
+  projectThrownOperationDiagnostic } from './diagnostic-projection.js';
+import { projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
 import {
   OperationHistoryStore,
   type OperationDiagnosticDetail,
@@ -744,7 +746,7 @@ export interface OperationResultSummary {
   configScope?: Scope;
   configPlatform?: PlatformTarget;
   configContext?: Scope;
-  configTargets?: Array<{
+  configTargets?: Array<ComponentDelivery & {
     pluginId?: string;
     platform: PlatformTarget;
     scope: Scope;
@@ -2006,10 +2008,18 @@ export class TuiController {
         projected.sensitiveValues ?? [],
       ));
     }
-    const diagnostics = [...projected.diagnostics,
+    const deliveryNotices = projectDeliveryNoticeHistory(summary?.configDiagnostics ?? [], recordId, 'apply');
+    const configDelivery = (summary?.configTargets ?? []).map((target, index) => {
+      const notices = deliveryNotices.filter(({ target: notice }) => notice?.platform === target.platform
+        && notice.scope === target.scope && notice.pluginId === target.pluginId);
+      const delivery = projectComponentDeliveryHistory(target, notices, `${recordId}:${index}`, 'apply',
+        target.state === 'completed' || target.state === 'kept');
+      return { target, ...delivery };
+    });
+    const diagnostics = [...projected.diagnostics, ...deliveryNotices, ...configDelivery.flatMap(({ diagnostics }) => diagnostics),
       ...projectSkillInvocationHistory(summary?.configDiagnostics ?? [], recordId, 'apply')];
     const diagnosticIds = diagnostics.map((diagnostic) => diagnostic.id);
-    const targets = summary ? summary.targets ?? summary.configTargets ?? [] : projected.targets ?? [];
+    const targets = summary ? summary.configTargets ?? summary.targets ?? [] : projected.targets ?? [];
     Object.assign(result, { operationRecordId: recordId, diagnosticIds, effects: projected.effects });
     if (summary) {
       summary.diagnosticIds = diagnosticIds;
@@ -2042,7 +2052,11 @@ export class TuiController {
         effects: projected.effects,
       },
       diagnostics,
-      targets: targets.map((target) => ({ ...target, diagnosticIds: target.diagnosticIds ?? [] })),
+      targets: targets.map((target) => {
+        const delivery = configDelivery.find((entry) => entry.target === target);
+        return { ...target, diagnosticIds: target.diagnosticIds ?? [],
+          ...(delivery?.facts ? { componentDelivery: delivery.facts } : {}) };
+      }),
     }, { sensitiveValues: projected.sensitiveValues });
     this.#operationDiagnostics.delete(result.operationId);
     this.#lastRecordedResultId = recordId;
@@ -5798,6 +5812,7 @@ function configApplyTargets(apply: ConfigApplyResult | undefined): NonNullable<O
         : entry.state === 'failed' ? 'failed'
           : entry.action === 'keep' ? 'kept' : 'completed',
       ...(entry.partialDelivery ? { partialDelivery: true as const } : {}),
+      ...projectComponentDelivery(entry),
       ...(typeof entry.errorCode === 'string'
         ? { errorCode: safeDiagnosticCode(entry.errorCode, 'configApplyFailed') }
         : {}),

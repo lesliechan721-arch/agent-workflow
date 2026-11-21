@@ -107,6 +107,10 @@ test('projects same-snapshot names to the original identity schema and preserves
   assert.deepEqual(calls, [{ command: 'ps', args: ['-A', '-o', `${columns[2]},ucomm=`] }]);
   assert.deepEqual(diagnostic.snapshot(failure(202)), [{ pid: 202, startTime: start, source: 'identity-ps-ucomm', processName: 'git' }]);
   assert.deepEqual(diagnostic.snapshot(failure(101, 'known-process-marker-missing')), [{ pid: 101, startTime: start, source: 'identity-ps-ucomm', processName: 'ps' }]);
+  assert.deepEqual(diagnostic.snapshot([...failure(303), ...failure(202, 'live-descendants-before-completion')]),
+    [{ pid: 202, startTime: start, source: 'identity-ps-ucomm', processName: 'git' }]);
+  assert.deepEqual(diagnostic.snapshot([{ ...failure(202, 'live-descendants-before-completion')[0],
+    processes: [{ pid: 202, startTime: 'reused' }] }]), []);
   assert.deepEqual(diagnostic.snapshot(failure(303)), []);
   assert.deepEqual(diagnostic.snapshot([{ ...failure(202)[0], processes: [{ pid: 202, startTime: 'reused' }] }]), []);
   assert.deepEqual(diagnostic.snapshot([]), []);
