@@ -1,109 +1,23 @@
-name: Native platform qualification (no authentication)
+name: Windows x64 Grok target selection comparison
 
 on:
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
-    inputs:
-      client:
-        description: Fixed-version client to verify
-        type: choice
-        default: all
-        options: [all, codex, pi, claude, copilot, grok, opencode, antigravity-user-public]
-      component_matrix:
-        description: Also qualify component files, gaps and shipped roles for the selected public AW clients
-        type: boolean
-        default: false
-      interfaces_only:
-        description: Observe only fixed Cursor and Antigravity interfaces on Ubuntu x64
-        type: boolean
-        default: false
-      hosts:
-        description: Host matrix to verify
-        type: choice
-        default: all
-        options: [all, windows-x64-and-macos-x64, windows-x64-and-arm64]
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  native-windows-job:
-    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-components' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
-    uses: ./.github/workflows/windows-job.yml
-    with:
-      source-ref: ${{ github.sha }}
-
-  candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-components' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-interfaces' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
-    runs-on: ubuntu-24.04
+  compare:
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - name: Check shipped Catalog capability combinations for all nine targets in both scopes
-        run: node scripts/qualification/shipped-catalog-user.mjs "${{ runner.temp }}/shipped-catalog-user.json"
-      - run: pnpm test:qualification:native-platforms:harness
-      - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs
-      - name: Verify the Antigravity User qualification harness
-        if: inputs.client == 'antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
-        run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
-      - name: Bind the candidate to this source and exact bundle bytes
-        shell: bash
-        run: |
-          node scripts/qualification/native-platforms.mjs --write-candidate "$RUNNER_TEMP/candidate.json" --source-sha "$GITHUB_SHA"
-          tar -czf "$RUNNER_TEMP/native-candidate.tgz" packages/cli/dist packages/cli/plugins-dist packages/plugin-core/dist packages/plugin-core/schemas packages/agent-skill-eval/dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-qualification-candidate
-          path: |
-            ${{ runner.temp }}/candidate.json
-            ${{ runner.temp }}/shipped-catalog-user.json
-            ${{ runner.temp }}/native-candidate.tgz
-          if-no-files-found: error
-          retention-days: 14
-
-  qualify:
-    name: qualify (${{ matrix.runner }}${{ contains(matrix.clients, ',') && format(', {0}', matrix.clients) || '' }})
-    needs: [candidate, native-windows-job]
-    # A missing Windows helper must not suppress the Linux/macOS observations.
-    if: ${{ !cancelled() && needs.candidate.result == 'success' && !inputs.interfaces_only && github.event.label.name != 'native-qualification-interfaces' }}
-    timeout-minutes: ${{ (inputs.component_matrix || github.event.label.name == 'native-qualification-components') && 180 || 60 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(inputs.hosts == 'windows-x64-and-macos-x64' && '["windows-2025","macos-15-intel"]' || github.event.label.name == 'native-qualification-antigravity-user-remaining' && '["macos-15","windows-2025","windows-11-arm"]' || (inputs.hosts == 'windows-x64-and-arm64' || github.event.label.name == 'native-qualification-antigravity-user-windows') && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
-        clients: >-
-          ${{ fromJSON(
-            ((inputs.client == 'all' && inputs.component_matrix) || github.event.label.name == 'native-qualification-components')
-              && '["codex,pi,claude","copilot,grok,opencode"]' ||
-            (inputs.client == 'antigravity-user-public' || startsWith(github.event.label.name, 'native-qualification-antigravity-user'))
-              && '["antigravity-user"]' ||
-            github.event.label.name == 'native-qualification-copilot' && '["copilot"]' ||
-            format('[{0}]', toJSON(inputs.client || 'all'))
-          ) }}
-    runs-on: ${{ matrix.runner }}
-    env:
-      QUALIFICATION_CLIENT: ${{ matrix.clients }}
-      RUN_HOST_CHECKS: ${{ (matrix.clients == 'all' || matrix.clients == 'codex,pi,claude') && '1' || '0' }}
-      ANTIGRAVITY_PUBLIC_AW: ${{ (inputs.client == 'antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-public') && '1' || '0' }}
-      AW_QUALIFICATION_PUBLIC_COMPONENTS: ${{ (inputs.component_matrix || github.event.label.name == 'native-qualification-components') && '1' || '0' }}
-      AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
-      AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
-    steps:
       - uses: actions/checkout@v6
         with:
+          ref: 4a78395e6b2e1fd48c66eace2cbe13b8d01fca9d
+          path: baseline
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -111,162 +25,42 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+          architecture: x64
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
+      - id: native-tool
+        shell: bash
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
+      - uses: actions/setup-go@v6
         with:
-          name: native-qualification-candidate
-          path: ${{ runner.temp }}/native-candidate
-      - name: Restore the same candidate without rebuilding
-        shell: bash
-        run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
-      - uses: actions/download-artifact@v8
-        if: runner.os == 'Windows'
-        with:
-          name: windows-job-qualified
-          path: .native/windows-job-candidate
-      - name: Restore the frozen first-party Catalog for the Pi comparison
-        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', matrix.clients), ',pi,')
-        uses: actions/checkout@v6
-        with:
-          ref: 2d866d18bc396dcbc57647b491a9878ef8fc52ee
-          path: .qualification-frozen-revision
-          persist-credentials: false
-      - name: Extract the published Catalog without checkout line-ending conversion
-        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', matrix.clients), ',pi,')
+          go-version: ${{ steps.native-tool.outputs.go }}
+          cache: false
+      - name: Build the candidate with its standard Windows Job helper
         shell: bash
         run: |
-          mkdir .qualification-frozen
-          git -C .qualification-frozen-revision -c core.autocrlf=false -c core.eol=lf archive --format=tar HEAD | tar -xf - -C .qualification-frozen
-          node --input-type=module - <<'JS'
-          import assert from 'node:assert/strict';
-          import { createHash } from 'node:crypto';
-          import { readFileSync } from 'node:fs';
-          const manifest = readFileSync('.qualification-frozen/catalog-manifest.json');
-          assert.equal(createHash('sha256').update(manifest).digest('hex'), '95b7be92ed40dc2068227c29459963bcb0170446e10646bc650d08a45c9e6b1f');
-          JS
-      - name: Prepare the qualified Windows helper in its normal optional package
-        if: runner.os == 'Windows'
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ]
+          pnpm install --frozen-lockfile
+          pnpm native:windows-job:prepare
+          node --input-type=module -e 'import { prepareWindowsJobSourceTestEnvironment as prepare } from "./native-tools/windows-job/test-environment.mjs"; await prepare();'
+          pnpm build
+      - name: Build the exact baseline with its standard Windows Job helper
+        working-directory: baseline
         shell: bash
         run: |
-          node --input-type=module - <<'JS'
-          import { readCandidate } from './native-tools/windows-job/candidate.mjs';
-          import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
-          import { prepareWindowsJobSourceTestEnvironment } from './native-tools/windows-job/test-environment.mjs';
-          const root = '.native/windows-job-candidate';
-          await assertWindowsJobCandidateEvidence(await readCandidate(root));
-          await prepareWindowsJobSourceTestEnvironment({ root });
-          JS
-      - name: Verify Windows process setup and timeout handling
-        if: runner.os == 'Windows'
-        run: pnpm test:qualification:native-platforms:harness
-      - name: Prepare the browser-use plugin's real preApply prerequisite
-        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1'
-        shell: bash
+          [ "$(git rev-parse HEAD)" = "4a78395e6b2e1fd48c66eace2cbe13b8d01fca9d" ]
+          pnpm install --frozen-lockfile
+          pnpm native:windows-job:prepare
+          node --input-type=module -e 'import { prepareWindowsJobSourceTestEnvironment as prepare } from "./native-tools/windows-job/test-environment.mjs"; await prepare();'
+          pnpm build
+      - name: Compare the public target command using the fixed real Grok client
+        shell: pwsh
         run: |
-          npm install --prefix "$RUNNER_TEMP/native-browser-tool" --ignore-scripts --no-audit --no-fund agent-browser@0.38.1
-          node scripts/qualification/native-platform-public-browser.mjs "$RUNNER_TEMP/native-browser-tool" "$RUNNER_TEMP/native-browser-bin"
-      - name: Verify real clients and public AW status in credential-free temporary environments
-        if: env.QUALIFICATION_CLIENT != 'antigravity-user'
-        shell: bash
-        run: |
-          args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json")
-          if [[ "$RUN_HOST_CHECKS" == '1' && ( "$RUNNER_OS" == 'Linux' || "$RUNNER_OS" == 'Windows' ) ]]; then
-            args+=(--mixed-native-aw)
-          fi
-          node scripts/qualification/native-platforms.mjs "${args[@]}"
-      - name: Verify the Antigravity User harness on this host
-        if: env.QUALIFICATION_CLIENT == 'antigravity-user'
-        run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-management.test.mjs scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
-      - name: Verify fixed Antigravity User management and explicitly requested public AW status
-        if: env.QUALIFICATION_CLIENT == 'antigravity-user'
-        shell: bash
-        run: |
-          args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-results/report.json")
-          if [[ "$ANTIGRAVITY_PUBLIC_AW" == '1' ]]; then args+=(--public-aw); fi
-          node scripts/qualification/native-platform-antigravity-user.mjs "${args[@]}"
-      - name: Verify generic delivery, empty results and foreign content in both scopes
-        if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && env.RUN_HOST_CHECKS == '1' }}
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-results"
-          node scripts/qualification/native-platform-public-components.mjs --target generic --report "$RUNNER_TEMP/native-results/generic-components.json"
-      - name: Verify all shipped plugins through the generic writer in both scopes
-        if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.RUN_HOST_CHECKS == '1' }}
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-results"
-          node scripts/qualification/native-platform-public-components.mjs --target generic --suite candidate --report "$RUNNER_TEMP/native-results/generic-shipped.json"
-          node scripts/qualification/native-platform-public-components.mjs --target generic --scope project --suite project-inheritance --report "$RUNNER_TEMP/native-results/generic-project-inheritance.json"
-      - name: Verify the public Cursor component matrix with its pinned Linux x64 distribution
-        if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && matrix.runner == 'ubuntu-24.04' && env.RUN_HOST_CHECKS == '1' }}
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-results"
-          node scripts/qualification/native-platform-public-cursor.mjs "$RUNNER_TEMP/native-results/cursor-components.json"
-      - name: Observe fixed Cursor and Antigravity interfaces without credentials
-        if: ${{ !cancelled() && matrix.runner == 'ubuntu-24.04' && env.RUN_HOST_CHECKS == '1' }}
-        continue-on-error: true
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-interface-probes"
-          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
-          node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
-      - name: Summarize observed scope results
-        if: always()
-        shell: bash
-        run: node scripts/qualification/native-platform-summary.mjs "$RUNNER_TEMP/native-results/report.json"
-      - uses: actions/upload-artifact@v4
+          $report = Join-Path $env:RUNNER_TEMP 'grok-windows-target.json'
+          node scripts/qualification/grok-windows-target.mjs baseline $report
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: native-qualification-${{ matrix.runner }}${{ matrix.clients == 'copilot,grok,opencode' && '-copilot-grok-opencode' || '' }}
-          path: ${{ runner.temp }}/native-results/*.json
+          name: grok-windows-target-facts
+          path: ${{ runner.temp }}/grok-windows-target.json
           if-no-files-found: error
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() && matrix.runner == 'ubuntu-24.04' && env.RUN_HOST_CHECKS == '1' }}
-        continue-on-error: true
-        with:
-          name: native-interface-probes-ubuntu-24.04
-          path: ${{ runner.temp }}/native-interface-probes/
-          if-no-files-found: error
-          retention-days: 14
-
-  interface-probes:
-    needs: candidate
-    if: ${{ !cancelled() && needs.candidate.result == 'success' && (inputs.interfaces_only || github.event.label.name == 'native-qualification-interfaces') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-qualification-candidate
-          path: ${{ runner.temp }}/native-candidate
-      - name: Restore the same candidate without rebuilding
-        shell: bash
-        run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
-      - name: Observe only fixed interfaces in credential-free temporary environments
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/native-interface-probes"
-          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
-          node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: native-interface-probes-ubuntu-24.04
-          path: ${{ runner.temp }}/native-interface-probes/
-          if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
