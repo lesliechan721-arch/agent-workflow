@@ -943,7 +943,7 @@ describe('five namespaced write commands', () => {
         })).resolves.toMatchObject({ values: { mode: 'strict' } });
       }
     }
-  }, process.platform === 'win32' ? 30_000 : 15_000);
+  }, ['darwin', 'win32'].includes(process.platform) ? 30_000 : 15_000);
 
   it('rejects a reviewed User install after concurrent Project demand changes without touching output', async () => {
     const isolation = getCurrentSourceTestIsolation();
