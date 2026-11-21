@@ -297,6 +297,7 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const host = ctx.platform ?? process.platform;
   const hasVersionReserve = host === 'win32' && (platform === 'copilot'
     || (platform === 'antigravity' && (ctx.arch ?? process.arch) === 'arm64'));
+  const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && (ctx.arch ?? process.arch) === 'x64';
   const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
   let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
@@ -312,8 +313,11 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
         try {
           versionOutput = await probe(ctx, invocation.command, invocation.args, versionTimeoutMs + extraVersionBudgetMs);
         } catch (error) {
-          if (error instanceof NativeCliError && error.reason === 'timeout') extraVersionBudgetMs = 0;
-          throw error;
+          if (!(error instanceof NativeCliError) || error.reason !== 'timeout') throw error;
+          extraVersionBudgetMs = 0;
+          if (!canRetryFirstVersion || executable !== candidates.paths[0] || error.name === 'AbortError' || error.cleanupError
+            || readEnvironmentValue(ctx.env ?? process.env, NATIVE_CLI_TIMEOUT_ENV, 'win32') !== undefined) throw error;
+          versionOutput = await probe(ctx, invocation.command, invocation.args, versionTimeoutMs);
         } finally {
           if (startedAt !== undefined) {
             const extraElapsedMs = Math.max(0, Math.ceil(performance.now() - startedAt) - versionTimeoutMs);

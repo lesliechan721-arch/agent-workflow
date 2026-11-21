@@ -343,6 +343,44 @@ describe('read-only target discovery and production selection', () => {
     expect(calls).toEqual([{ command: process.execPath, args: [entry, '--version'], timeoutMs: 10_000 }]);
   });
 
+  // Test Value Gate: the Windows x64 public selection must survive one cleaned-up timeout on its first version probe.
+  it.each(['recovers', 'keeps timing out'] as const)('rechecks the first Windows x64 Copilot entry when it %s', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { ctx, entry } = await windowsCopilotFixture();
+    ctx.arch = 'x64';
+    ctx.env!.AW_NATIVE_CLI_TIMEOUT_MS = undefined;
+    ctx.discoveryCache = new Map();
+    const later = path.join(ctx.cwd, 'later-bin', 'copilot.exe');
+    await fs.outputFile(later, 'controlled probe boundary');
+    const laterEntry = await fs.realpath(later);
+    ctx.env!.PATH = [ctx.env!.PATH, path.dirname(later)].join(';');
+    const calls: Array<VersionProbe & { cwd?: string }> = [];
+    ctx.runner = async (invocation) => {
+      const { command, args, cwd, timeoutMs } = invocation;
+      calls.push({ command, args, cwd, timeoutMs });
+      if (command === laterEntry || calls.length === 1 || scenario === 'keeps timing out') {
+        return timedVersion(invocation, 10_001, '');
+      }
+      return timedVersion(invocation, 244, copilotVersionOutput);
+    };
+    const [selection, discovery] = await Promise.all([
+      targetsSet({ ...ctx, discovery: ctx, targets: ['copilot'] }),
+      discoverPlatform('copilot', ctx),
+    ]);
+    const recovered = scenario === 'recovers';
+    expect(publicExitCode(projectReceipt('target.set', selection))).toBe(recovered ? 0 : 3);
+    expect(selection.policy?.targets ?? []).toEqual(recovered ? ['copilot'] : []);
+    expect(discovery.installations.map(({ availability, version }) => ({ availability, version }))).toEqual([
+      recovered ? { availability: 'available', version: '1.0.95' } : { availability: 'unknown', version: null },
+      { availability: 'unknown', version: null },
+    ]);
+    expect(calls).toEqual([
+      ...[10_000, 5_000].map((timeoutMs) => ({ command: process.execPath, args: [entry, '--version'], cwd: ctx.cwd, timeoutMs })),
+      { command: laterEntry, args: ['--version'], cwd: ctx.cwd, timeoutMs: 5_000 },
+    ]);
+  });
+
   // Test Value Gate: a fast entry leaves the extra time available to a later
   // entry, and slow entries cannot exceed the shared version budget.
   it.each([
@@ -355,6 +393,7 @@ describe('read-only target discovery and production selection', () => {
     vi.useFakeTimers({ toFake: ['performance'] });
     onTestFinished(() => { vi.useRealTimers(); });
     const { ctx, entry } = await windowsCopilotFixture();
+    ctx.arch = 'arm64';
     const first = await fs.realpath(path.join(ctx.env!.PATH!, 'copilot.cmd'));
     const second = path.join(ctx.cwd, 'second-bin', 'copilot.exe');
     await fs.outputFile(second, 'controlled probe boundary');
@@ -384,9 +423,11 @@ describe('read-only target discovery and production selection', () => {
 
   // Test Value Gate: an exit or an unsafe interruption must keep its original
   // result and run at most one process for the entry.
-  it.each(['exit 124', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const)(
+  it.each(['exit 124', 'explicit timeout', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const)(
     'runs one Windows Copilot version probe on %s', async (failure) => {
       const { ctx } = await windowsCopilotFixture();
+      ctx.arch = 'x64';
+      ctx.env!.AW_NATIVE_CLI_TIMEOUT_MS = failure === 'explicit timeout' ? '1000' : undefined;
       const abort = new AbortController();
       const cleanupError = failure === 'cleanup' ? new Error('cleanup unconfirmed') : undefined;
       ctx.signal = abort.signal;
@@ -400,7 +441,7 @@ describe('read-only target discovery and production selection', () => {
         throw error;
       };
       const found = discoverPlatform('copilot', ctx);
-      if (failure === 'exit 124') {
+      if (failure === 'exit 124' || failure === 'explicit timeout') {
         expect((await found).installations[0]).toMatchObject({ availability: 'unknown', reasonCodes: ['clientProbeFailed'] });
       } else if (cleanupError) await expect(found).rejects.toMatchObject({ cleanupError });
       else if (failure === 'aborted') await expect(found).rejects.toMatchObject({ reason: 'aborted' });
