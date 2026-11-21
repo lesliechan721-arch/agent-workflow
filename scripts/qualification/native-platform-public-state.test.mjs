@@ -344,19 +344,21 @@ test('keeps Windows Codex Project matrix traces attached to the right installs',
 
 // A blocked target preference is just one AW command. Its evidence must
 // distinguish missing samples from a started native check without other targets.
-test('retains Windows Grok target selection evidence without arbitrary discovery data', async () => {
+test('retains Grok target selection evidence with or without a Windows command trace', async () => {
   const sentinel = 'private_grok_discovery_payload';
   const sample = { category: 'grok-version', elapsedMs: 5010, threw: true, exitCode: 124, timedOut: true, reason: 'timeout' };
-  for (const traced of [true, false]) {
+  for (const traceState of ['captured', 'not-created', 'disabled']) {
+    const traced = traceState === 'captured';
+    const traceEnabled = traceState !== 'disabled';
     const calls = [];
     const report = await runComponentQualification({ platform: 'grok', scope: 'user', suite: 'matrix',
-      clientPath: process.env.PATH, traceEntry: process.execPath }, {
+      clientPath: process.env.PATH, ...(traceEnabled ? { traceEntry: process.execPath } : {}) }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args, { env }) {
         const command = args.slice(0, 2).join('.');
         calls.push(command);
         assert.equal(command, 'target.set');
-        assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, 'grok-component-discovery');
+        assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, traceEnabled ? 'grok-component-discovery' : undefined);
         if (traced) await fs.writeFile(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, [
           { phase: 'finish', ...sample, stdout: sentinel, env: sentinel, cleanupKind: 'identity-lookup' },
           { phase: 'finish', ...sample, category: 'claude-plugin-list', stderr: sentinel },
@@ -378,7 +380,8 @@ test('retains Windows Grok target selection evidence without arbitrary discovery
     assert.deepEqual(failure.awReceipt, { status: 'blocked', targetAvailability: { target: 'grok', availability: 'unknown',
       ...(traced ? { installations: [{ availability: 'unknown', reasonCodes: ['clientProbeFailed'] }] }
         : { installations: [], diagnosticCodes: ['clientEntryUnresolved'] }) } });
-    assert.deepEqual(failure.nativeCommandTrace, traced ? { state: 'captured', records: [sample] } : { state: 'not-created', records: [] });
+    const expectedTrace = traceEnabled ? { state: traceState, records: traced ? [sample] : [] } : undefined;
+    assert.deepEqual(failure.nativeCommandTrace, expectedTrace);
     assert(!JSON.stringify(report).includes(sentinel));
   }
 });
@@ -392,7 +395,7 @@ test('scopes removal failure evidence to the requested target and retains comman
     { ...target, scope: 'project', blockerCodes: ['processCleanupUnconfirmed'] }];
   const value = { schemaVersion: 2, command: 'plugin.remove', status: 'failed', diagnostics, data: { targetResults: rows } };
   const request = { command: 'plugin.remove', scope: 'project', pluginIds: [pluginId] };
-  const removal = componentReceiptEvidence(value, request, 'claude', 'claude-component-remove').awReceipt;
+  const removal = componentReceiptEvidence(value, request, 'claude').awReceipt;
   assert.deepEqual(removal, { status: 'failed', diagnostics, targets: [rows[1]] });
   const status = componentReceiptEvidence({ ...value, command: 'plugin.status' },
     { command: 'plugin.status', context: 'project', pluginIds: [pluginId] }, 'claude').awReceipt;

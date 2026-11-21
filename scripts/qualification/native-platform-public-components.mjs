@@ -117,7 +117,7 @@ function grokTargetAvailability(value) {
     })), ...(diagnosticCodes.length ? { diagnosticCodes } : {}) };
 }
 
-export function componentReceiptEvidence(value, command, platform, traceMode) {
+export function componentReceiptEvidence(value, command, platform) {
   if (!value) return {};
   const requestedScope = ['plugin.install', 'plugin.remove'].includes(command.command) ? command.scope : undefined;
   const targets = rows(value.data?.targetResults, 64).filter(target => command.pluginIds?.includes(target?.pluginId)
@@ -128,7 +128,7 @@ export function componentReceiptEvidence(value, command, platform, traceMode) {
       ...(['not-run', 'no-op', 'applied', 'partial', 'failed'].includes(target.execution) ? { execution: target.execution } : {}),
       blockerCodes: rows(target.blockerCodes, 16).filter(code => receiptCodes.has(code)), ...receiptDiagnostics(diagnostics) };
   });
-  const targetAvailability = traceMode === 'grok-component-discovery' ? grokTargetAvailability(value) : undefined;
+  const targetAvailability = platform === 'grok' && command.command === 'target.set' ? grokTargetAvailability(value) : undefined;
   return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics), ...(targets.length ? { targets } : {}),
     ...(targetAvailability ? { targetAvailability } : {}) } };
 }
@@ -766,7 +766,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       let stage = 'execute';
       const recordFailure = (stage, kind, error, receipt) => {
         failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
-          ...componentReceiptEvidence(receipt, command, platform, traceMode) };
+          ...componentReceiptEvidence(receipt, command, platform) };
         const failures = report.commandFailures ??= [];
         if (failures.length < 16) failures.push(failure);
         else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
