@@ -501,7 +501,15 @@ describe('read-only target discovery and production selection', () => {
       help: 'Unrelated tool', version: '1.3.4', exit: 3, availability: 'unknown' },
     { name: 'Windows ARM64 older version', host: 'win32', arch: 'arm64', delay: 7_000, deadline: 10_000,
       help: 'Antigravity CLI', version: '1.3.3', exit: 3, availability: 'unsupported' },
-    { name: 'Windows x64 deadline', host: 'win32', arch: 'x64', delay: 7_000, deadline: 5_000,
+    { name: 'slow Windows x64', host: 'win32', arch: 'x64', delay: 7_000, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'fast Windows x64', host: 'win32', arch: 'x64', delay: 179, deadline: 10_000,
+      help: 'Antigravity CLI', version: '1.3.4', exit: 0, availability: 'available' },
+    { name: 'Windows x64 deadline', host: 'win32', arch: 'x64', delay: 10_001, deadline: 10_000,
+      exit: 3, availability: 'unknown' },
+    { name: 'Windows x64 deadline with an explicit native timeout setting', host: 'win32', arch: 'x64', delay: 10_001,
+      deadline: 10_000, nativeTimeout: '1000', exit: 3, availability: 'unknown' },
+    { name: 'Windows ia32 deadline', host: 'win32', arch: 'ia32', delay: 7_000, deadline: 5_000,
       exit: 3, availability: 'unknown' },
     { name: 'Linux ARM64 deadline', host: 'linux', arch: 'arm64', delay: 7_000, deadline: 5_000,
       exit: 3, availability: 'unknown' },
@@ -519,6 +527,7 @@ describe('read-only target discovery and production selection', () => {
     const entry = await fs.realpath(path.join(bin, name));
     ctx.env = scenario.host === 'win32' ? { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification' }
       : { ...ctx.env, HOME: '/qualification', PATH: path.relative(ctx.cwd, bin) };
+    ctx.env.AW_NATIVE_CLI_TIMEOUT_MS = 'nativeTimeout' in scenario ? scenario.nativeTimeout : undefined;
     const version = 'version' in scenario ? scenario.version : '1.3.4';
     const help = 'help' in scenario ? scenario.help : '';
     const calls: VersionProbe[] = [];
@@ -548,12 +557,12 @@ describe('read-only target discovery and production selection', () => {
 
   // Test Value Gate: multiple Antigravity entries share one reserve and a slow
   // entry can only use the time left by earlier entries.
-  it('shares the Windows ARM64 Antigravity version budget across PATH entries', async () => {
+  it.each(['arm64', 'x64'] as const)('shares the Windows %s Antigravity version budget across PATH entries', async (arch) => {
     vi.useFakeTimers({ toFake: ['performance'] });
     onTestFinished(() => { vi.useRealTimers(); });
     const ctx = await fixture();
     ctx.platform = 'win32';
-    ctx.arch = 'arm64';
+    ctx.arch = arch;
     const delays = new Map([['fast', 1_000], ['slow', 7_000], ['over-budget', 8_001]]);
     const entries = await Promise.all([...delays.keys()].map(async (name) => {
       const entry = path.join(ctx.cwd, name, 'agy.exe');

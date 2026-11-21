@@ -295,9 +295,10 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   // Slow Windows launches can use one reserve shared across PATH entries.
   // Fast entries leave the reserve available to later candidates.
   const host = ctx.platform ?? process.platform;
+  const arch = ctx.arch ?? process.arch;
   const hasVersionReserve = host === 'win32' && (platform === 'copilot'
-    || (platform === 'antigravity' && (ctx.arch ?? process.arch) === 'arm64'));
-  const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && (ctx.arch ?? process.arch) === 'x64';
+    || (platform === 'antigravity' && (arch === 'x64' || arch === 'arm64')));
+  const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && arch === 'x64';
   const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
   let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
