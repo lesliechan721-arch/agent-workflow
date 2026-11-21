@@ -288,6 +288,18 @@ async function isPinnedPiEntry(ctx: ReadContext, invocation: NativeCliInvocation
   return false;
 }
 
+function grokManagementInterfaceConfirmed(help: string, listHelp: string): boolean {
+  // Grok's formatted help lists commands and flags on their own rows. A
+  // reference to --json in an option description does not declare that flag.
+  const commandNames = /^Commands:[ \t]*\r?$/mu.test(help)
+    ? Array.from(help.matchAll(/^[ \t]+([a-z][\w-]*)(?=[ \t]|\r?$)/gmu), (match) => match[1])
+    : help.split(/[\s,[\]|]+/u);
+  const hasJson = /^Options:[ \t]*\r?$/mu.test(listHelp)
+    ? /^[ \t]+(?:-\w,[ \t]+)?--json(?=[ \t]|\r?$)/mu.test(listHelp)
+    : listHelp.split(/[\s,[\]|]+/u).includes('--json');
+  return hasJson && ['install', 'uninstall', 'enable', 'disable'].every((name) => commandNames.includes(name));
+}
+
 async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext): Promise<DiscoveryResult> {
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
@@ -297,7 +309,8 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const host = ctx.platform ?? process.platform;
   const arch = ctx.arch ?? process.arch;
   const hasVersionReserve = host === 'win32' && (platform === 'copilot'
-    || (platform === 'antigravity' && (arch === 'x64' || arch === 'arm64')));
+    || (platform === 'antigravity' && (arch === 'x64' || arch === 'arm64'))
+    || (platform === 'grok' && arch === 'x64'));
   const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && arch === 'x64';
   const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
   let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
@@ -340,6 +353,16 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
       const version = ctx.placementProbeGroup
         ? await placementVersion(ctx, platform, product, invocation.command, invocation.args, readVersion) : await readVersion();
       product.version = version;
+      if (platform === 'grok') {
+        // Grok has an interface gate instead of an invented numeric minimum.
+        const baseArgs = invocation.args.slice(0, -1);
+        const help = await probe(ctx, invocation.command, [...baseArgs, 'plugin', '--help']);
+        const list = await probe(ctx, invocation.command, [...baseArgs, 'plugin', 'list', '--help']);
+        if (!grokManagementInterfaceConfirmed(help, list)) {
+          product.availability = 'unsupported'; product.reasonCodes = ['clientInstallInterfaceUnsupported'];
+          return { product };
+        }
+      }
       if (!version) {
         product.reasonCodes = ['clientVersionUnknown'];
         if (platform === 'grok') product.availability = 'available';
@@ -348,16 +371,6 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
         const compatible = platformVersionSupported(platform, version);
         product.availability = compatible ? 'available' : 'unsupported';
         product.reasonCodes = compatible ? [] : ['clientVersionUnsupported'];
-      }
-      if (platform === 'grok' && product.availability === 'available') {
-        // Grok has an interface gate instead of an invented numeric minimum.
-        const baseArgs = invocation.args.slice(0, -1);
-        const help = await probe(ctx, invocation.command, [...baseArgs, 'plugin', '--help']);
-        const list = await probe(ctx, invocation.command, [...baseArgs, 'plugin', 'list', '--help']);
-        if (!['install', 'uninstall', 'enable', 'disable'].every((name) => new RegExp(`\\b${name}\\b`, 'u').test(help))
-          || !list.includes('--json')) {
-          product.availability = 'unsupported'; product.reasonCodes = ['clientInstallInterfaceUnsupported'];
-        }
       }
     } catch (error) {
       rethrowFatalError(error);

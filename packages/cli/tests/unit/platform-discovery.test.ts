@@ -869,6 +869,58 @@ describe('read-only target discovery and production selection', () => {
     expect(calls).toEqual([first, second]);
   });
 
+  // Test Value Gate: a slow Grok version must still prove its management interface
+  // before target selection can save the user's preference.
+  it.each([
+    { name: 'slow start', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json', availability: 'available' },
+    { name: 'version timeout', arch: 'x64', versionMs: 10_001, helpCount: 0, listHelp: '--json', availability: 'unknown' },
+    { name: 'JSONL and JSON output options only', arch: 'x64', versionMs: 7_000, helpCount: 2,
+      listHelp: '--jsonl --json-output', availability: 'unsupported' },
+    { name: 'documented JSON flag without an option', arch: 'x64', versionMs: 7_000, helpCount: 2,
+      listHelp: 'Options:\n  --verbose  Earlier versions required --json', availability: 'unsupported' },
+    { name: 'management flags without commands', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json',
+      managerHelp: '--install --uninstall --enable --disable', availability: 'unsupported' },
+    { name: 'failed management help', arch: 'x64', versionMs: 7_000, helpCount: 1, listHelp: '--json',
+      failedHelp: 'manager', availability: 'unknown' },
+    { name: 'list help timeout', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json',
+      failedHelp: 'list', availability: 'unknown' },
+    { name: 'Windows ARM64 with a slow version', arch: 'arm64', versionMs: 7_000, helpCount: 0, listHelp: '--json', availability: 'unknown' },
+  ] as const)('bounds Windows Grok discovery and target selection for $name', async (scenario) => {
+    vi.useFakeTimers({ toFake: ['performance'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const ctx = await fixture();
+    ctx.platform = 'win32';
+    ctx.arch = scenario.arch;
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GROK_HOME: path.join(ctx.cwd, 'grok-home') };
+    await executable(ctx, 'grok.exe');
+    const probes: Array<{ args: string[]; timeoutMs?: number }> = [];
+    ctx.runner = async (invocation) => {
+      if (path.basename(invocation.command) !== 'grok.exe') return { exitCode: 0, stdout: '[]', stderr: '' };
+      probes.push({ args: invocation.args, timeoutMs: invocation.timeoutMs });
+      if (invocation.args[0] === '--version') return timedVersion(invocation, scenario.versionMs, 'grok 1.0.77');
+      const isList = invocation.args.includes('list');
+      if ('failedHelp' in scenario) {
+        if (!isList && scenario.failedHelp === 'manager') return { exitCode: 1, stdout: '', stderr: '' };
+        if (isList && scenario.failedHelp === 'list') return timedVersion(invocation, 5_001, '');
+      }
+      const managerHelp = 'managerHelp' in scenario ? scenario.managerHelp : 'Commands:\n  install    Install a plugin\n  uninstall  Remove a plugin\n  enable     Enable a plugin\n  disable    Disable a plugin';
+      return { exitCode: 0, stderr: '', stdout: isList ? scenario.listHelp : managerHelp };
+    };
+    const selection = projectReceipt('target.set', await targetsSet({ ...ctx, discovery: ctx, targets: ['grok'] }));
+    const selected = scenario.availability === 'available';
+    expect(publicExitCode(selection)).toBe(selected ? 0 : 3);
+    const reasonCodes = { unknown: ['clientProbeFailed'], unsupported: ['clientInstallInterfaceUnsupported'], available: [] };
+    expect(selection).toMatchObject({ data: { availability: expect.arrayContaining([expect.objectContaining({ id: 'grok',
+      selected, installations: [expect.objectContaining({ availability: scenario.availability, reasonCodes: reasonCodes[scenario.availability] })],
+    })]) } });
+    expect((await observePreferences({ ...ctx, scope: 'user' })).state).toBe(selected ? 'valid' : 'absent');
+    expect(probes).toEqual([
+      { args: ['--version'], timeoutMs: scenario.arch === 'x64' ? 10_000 : 5_000 },
+      ...[{ args: ['plugin', '--help'], timeoutMs: 5_000 }, { args: ['plugin', 'list', '--help'], timeoutMs: 5_000 }]
+        .slice(0, scenario.helpCount),
+    ]);
+  });
+
   // Test Value Gate: Windows Grok must resolve its official npm shim while a
   // same-name shim from another package must not be executed.
   it('identifies Grok through its validated Windows npm launcher', async () => {
