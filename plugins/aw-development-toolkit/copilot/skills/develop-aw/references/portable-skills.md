@@ -23,7 +23,7 @@ aw dev skill export <plugin-or-source-selector> --platform <platform> --scope <s
   --skill <skill-name> --out <new-directory> --json
 ```
 
-按实际选择提供参数，全部导出时省略 `--skill`。CLI 验证完整依赖闭包和候选；`--skill` 只过滤最终选择。platform 必填并绑定固定能力及配置 profile；Generic 也有固定 generic profile，不随后来读取它的 Agent 改变。配置仅取 defaults 与显式非敏感覆盖，不读取本机安装配置；scope 不产生项目值层。profile 中 unverified 能力仍形成具体 unmet。
+按实际选择提供参数，全部导出时省略 `--skill`。CLI 验证完整依赖闭包和候选，`--skill` 只过滤最终选择。platform 必填并绑定固定能力及配置 profile。Generic 的 profile 固定，后来读取它的 Agent 有自己的运行能力。配置仅取 defaults 与显式非敏感覆盖，scope 不产生项目值层。按 平台投影（references/platform-projection.md）核对实际生成的 Skill 和缺少的运行前提。
 
 物化可能运行必要 build、runtime imports 和 renderer；静态限制下只分析 source 与声明。优先使用新隔离目录；已有目录按公开 ownership/替换规则处理，不补造 marker 或覆盖 foreign 内容。materialize 不安装到 Agent 环境，也不建立 Portable installed state，真实安装须属于用户任务。
 

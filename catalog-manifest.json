@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.77",
+  "catalogVersion": "0.1.0-beta.78",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "59b50f6b3b1e7f37aebe389e17f1cca4101810e5"
+    "sourceHead": "028d8a8718e95341ace9eee24cedb99422e41654"
   },
   "entries": [
     {
@@ -125,7 +125,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -150,9 +150,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:f7ba6bbd4f0324d8ef838fddc015259830ead59b17005a02ec2ca8d5d0b6c176",
-      "manifestDigest": "sha256:5726f6c486fcb11b479f31b285ae81e57e4f194c7326eb939465c676fb16e63c",
-      "contentDigest": "sha256:229fa7f340cc9b4b363ad61d923179956dd4134919990ebd07a47be967be1c73"
+      "artifactDigest": "sha256:700571a429529efac9152ff8090fcbdbd0b0d0701a784489e280b8533ca4d0f3",
+      "manifestDigest": "sha256:f97cffac4294b4b6152214892ac986ba9460b028904041e56c5e4b2784efb325",
+      "contentDigest": "sha256:1f91ce705ca66b22230f54e04572a822808e931ad92ac271c08c126f4ebcac91"
     },
     {
       "name": "aw-development-toolkit",
@@ -175,7 +175,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.19",
+      "version": "0.1.0-beta.20",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -200,9 +200,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4dfcc75cf998db57417c0f89f5fe858a03ed0d01f0cbde0258883c8dff097986",
-      "manifestDigest": "sha256:63db86d486b962b6d817150372ff4d37edbf14562cf1ba90c96b516fa6a9236b",
-      "contentDigest": "sha256:854677620d7ed7626a6882e4184ce8696615f47bf0e72b2d708a99a4a22c9a0d"
+      "artifactDigest": "sha256:8d4538de27f2264f66ecccb5ce29e8964f78a6ba3e33f55081cc9093dca53d86",
+      "manifestDigest": "sha256:f3fc6e6ac6db1f2a0bc7acb3805612c7d3e21095d14f2a71752a2de2204a918b",
+      "contentDigest": "sha256:76bb0265f0247140d27fb074fd2ac64c361fe06e31af5f92a992f6e9a08aad2a"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -312,7 +312,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.31",
+      "version": "0.2.0-beta.32",
       "dependencies": [
         "agent-subagent"
       ],
@@ -334,9 +334,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:c43d25dcf7ee3244fa5a6f05f8ceeca5ddbb119f15c04c4555084f7ac483c8db",
-      "manifestDigest": "sha256:da0b9226aa0301613bccd01602c744f62adda9d1b8591db12a55d0b8d260b03b",
-      "contentDigest": "sha256:7e6d4d47afdd10a86fb909f73e2a36ef37b2bcb06f1283fd26ceffb025a54e9b"
+      "artifactDigest": "sha256:92d57aa87361fdb85be8b61409db82b6a8349292e887959ddb0ac6c97ff18f2e",
+      "manifestDigest": "sha256:f4c2704923ac20b3e054f037f23b135de82ad8951aefc244778a9e15b1767578",
+      "contentDigest": "sha256:6d347d3e5a80adcab40b87d419d97e5ed7d99f682e27c6866056b3b109909c84"
     },
     {
       "name": "decision-kit",
@@ -486,7 +486,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.6",
+      "version": "0.1.0-beta.7",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -497,9 +497,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:e18ce01ab4c0e86b6a7e83c495295f9d28b1368dba9d360e594c59311ae4006e",
-      "manifestDigest": "sha256:b163a1d0dd0bba4c27df8c91f796dd67ea5cda9ffce137c59fa53a590e4b384c",
-      "contentDigest": "sha256:230672e2ebab3aec800cc09d19cd65db0291bd01143a0b866553b449a461e5f3"
+      "artifactDigest": "sha256:3b7f4a7ced2044ec760768d94f99cc79fe79b55d47e9feeef78335bdb10e882d",
+      "manifestDigest": "sha256:d1684dbc37833fa0bf1bcd25c501213bb7416cce76e3f3bc07f654d39fd53cf6",
+      "contentDigest": "sha256:5b4514f3bbd0205a6c6ced9968ca4b3b6b640f13205551e2e8db526cd571a8e0"
     },
     {
       "name": "human-content",

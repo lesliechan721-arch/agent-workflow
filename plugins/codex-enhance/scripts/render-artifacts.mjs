@@ -177,10 +177,6 @@ function capabilityGap(context, kind, requirements) {
   return { requiredFeatures: missing, reasonCode: reasonFact?.reasonCodes?.[0] ?? 'capability-unverified' };
 }
 
-function addGap(plan, id, kind, name, gap) {
-  plan.unmet.push({ id, kind, name, ...gap });
-}
-
 export async function readArtifactRenderContext() {
   if (!process.env.AW_PLUGIN_CONTEXT) throw new Error('AW_PLUGIN_CONTEXT is required.');
   return JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
@@ -197,11 +193,14 @@ export async function renderArtifactPlan(context) {
       // The scheduling method uses Codex model/effort profiles and the matching
       // spawn-subagent command closure. Role declarations have no such dependency.
       if (context.platform !== 'codex') {
-        addGap(plan, id, 'skill', key, { requiredFeatures: [], reasonCode: 'dependency-unmet' });
+        plan.omitted.push({ id, kind: 'skill', reason: 'not-offered' });
         continue;
       }
       const gap = capabilityGap(context, 'skill', execution);
-      if (gap) { addGap(plan, id, 'skill', key, gap); continue; }
+      if (gap) {
+        plan.unmet.push({ id, kind: 'skill', name: key, ...gap });
+        continue;
+      }
       const config = resolveConfigValues(context, SKILL_CONFIG_KEYS[key]);
       const sourceRoot = readSkillSourceRoot(context, key);
       const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
@@ -216,12 +215,16 @@ export async function renderArtifactPlan(context) {
     }
   }
   if (context.allowedOutputKinds.includes('agent')) {
+    // AW evaluates delivery from the role declaration. Runtime qualification
+    // and Pi extension discovery do not decide whether we supply the prompt.
     const requirements = context.platform === 'pi'
       ? [...execution, { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }] : execution;
+    // Earlier v2 clients reject the whole plan when given a role they cannot project.
+    const legacyGap = context.platformCapabilities.deliveryFeatures === undefined
+      && capabilityGap(context, 'agent', requirements);
     for (const [id, role] of Object.entries(ROLES)) {
-      const gap = capabilityGap(context, 'agent', requirements);
-      if (gap) { addGap(plan, id, 'agent', role.key, gap); continue; }
-      plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));
+      if (legacyGap) plan.unmet.push({ id, kind: 'agent', name: role.key, ...legacyGap });
+      else plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));
     }
   }
   return plan;

@@ -18,9 +18,9 @@
 
 PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。具体 Agent 使用原生包或原生扩展；generic 仅输出通用 Skills。平台允许范围来自 Manifest platforms，省略或空数组允许全部，未知和重复 ID 拒绝。声明允许不代表真实运行；依赖仍须覆盖消费者平台。
 
-静态与动态资源归一化为 Skills、MCP、Agents、Hooks、Instructions。同一正文只维护一份，平台负责包装和已核验字段映射。命令、模型、工具限制与权限均需实际等价；Pi Agents 只声明角色，由用户已有兼容消费者执行，不生成执行工具。
+静态与动态资源归一化为 Skills、MCP、Agents、Hooks、Instructions。作者按平台选择原始内容、替代行为或有意省略的项。AW 标准映射保留声明中的事件、模型、工具和权限要求，缺少安全映射时跳过该入口并报告原因。独立的适用项继续交付。Pi 的兼容角色可先写入，执行由用户选择的扩展负责。
 
-平台能力同时包含 kinds 和 features 的 supported/unsupported/unverified、交付方式、具体取值与原因。类别不足用派生 component.kind.<kind> 表达；它不增加默认调用行为。宿主能接收普通 Skill 时，返回完整 Skill 和作者声明的调用字段。手动调用、自动调用与可见性取值用于原生投影和安装后提示，不能单独作为省略 Skill 的理由。其他必要能力不足时仍报告具体 feature/values。generic 交付文件，实际调用行为取决于读取它们的客户端。
+用 `kinds[*].status` 和 `features` 判断宿主运行资格，用 `kinds[*].delivery` 和可选的 `deliveryFeatures` 判断 AW 能保留的声明。旧能力输入省略 `deliveryFeatures` 时沿用运行资格判断交付。类别运行前提用派生的 `component.kind.<kind>` 表达。返回完整 Skill 和作者声明的调用字段，调用及可见性资格缺口随实际交付报告。其他必要能力不足时保留具体 feature/values。需要适配通用环境时，为 `generic` 提供适用的 Skill 正文。
 
 实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
 
@@ -38,4 +38,4 @@ requires.aw.capabilities 描述 AW 的运行接口，不能与 Agent 组件能�
 
 ## 验证最终结果
 
-核对真实 final 的组件集合、正文、调用 metadata、权限、资源和命令闭包；同时核对 omitted、unmet 与部分覆盖。renderer 成功有意空、全部 unmet 与失败的撤销行为不同。按 来源与运行包（references/source-materialization.md）固定 source/profile/config 与字节证据，不从源码声明猜最终动态集合。
+核对真实 final 的组件集合、正文、调用 metadata、权限、资源和命令闭包。逐项看实际交付、部分覆盖、能力跳过和真正未满足的依赖。仅有能力缺口可以完成零项交付。涉及旧输出时按 动态组件 Renderer（references/aw-artifact-renderer.md）判断。按 来源与运行包（references/source-materialization.md）固定 source/profile/config 与字节证据。

@@ -28,6 +28,8 @@ producer 拥有资源及更新/删除生命周期；set 是一次完整替换的
 
 Claude 的 allow 与沙箱例外独立；需要例外时声明 `agentOverrides.claude.sandbox.excludedCommands`，另要求 `aw.claude.sandbox-exclusions.v1`。按实际需要限定命令 ID 与子命令前缀，不扩大到整个 aw 或其它 ID。生成规则正确不证明宿主实际放行。
 
+遇到 `invocationPolicyNotApplied`，查看作用域和 `detail.skippedPermissionActions` 中列出的动作。AW 继续安装该入口能施加的规则。对于已跳过的动作，宿主使用自身策略。需要这些动作才能安全执行的流程由作者适配或省略，最终产物继续核对精确引用和命令闭包。
+
 ## 维护与核对
 
 命令随 producer 安装、刷新和清理，不在 preApply 注册。平台卸载保留独立包；显式 package sync 刷新，package remove 删除并使全部引用失效。sync 使用本地 Active bundle，不隐式同步来源。移除集合入口后，相关平台通过普通 sync 更新消费者。
