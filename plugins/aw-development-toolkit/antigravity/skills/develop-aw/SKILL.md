@@ -10,7 +10,7 @@ metadata:
 
 # Develop AW
 
-确定 AW 对象、权威源码和本次所需产物，完成相应操作。Skill 创作采用 `author-agent-skill`，Agent 内容采用 `agent-content`。当前任务已采用评审、简化或 Eval 方法时，本技能提供 AW 事实与工具操作；质量判断、候选接受和实验策略由相应方法负责。
+确定 AW 对象、权威源码和本次所需产物，完成相应操作。Skill 创建、重构与只读评审采用 `agent-skill`，Agent 内容采用 `agent-content`。当前任务已采用 Eval 审核或其它通用质量方法时，本技能提供 AW 事实与工具操作；质量判断、候选接受和实验策略由相应方法负责。
 
 ## 确定目标与证据
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.76",
+  "catalogVersion": "0.1.0-beta.77",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,16 +20,16 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "d137be5fc51bf6af621be19d7d58c0368a3615db"
+    "sourceHead": "59b50f6b3b1e7f37aebe389e17f1cca4101810e5"
   },
   "entries": [
     {
       "name": "agent-content-toolkit",
       "source": "./plugins/agent-content-toolkit",
-      "description": "创建、修改或评价给 Agent 读取的内容；统一事实依据、指针、信息层级、最小控制、完成条件、输出需要与剪枝方法。",
+      "description": "编写、重构或只读评价给 Agent 读取的内容；强化具象机制、反抽象压缩、去免责剪枝、读取指针、信息层级与多跳控制。",
       "interface": {
         "displayName": "Agent Content Toolkit",
-        "shortDescription": "设计和评价最小、可达、可执行的 Agent-facing 内容",
+        "shortDescription": "编写、重构和评价高杠杆、低冗余的 Agent-facing 内容",
         "capabilities": [
           "Skills"
         ]
@@ -44,7 +44,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.11",
+      "version": "0.1.0-beta.12",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -55,17 +55,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3591717aeef9f2915774cab578e887580a86ca3ddaa3873a6b5e65f7e7bb2810",
-      "manifestDigest": "sha256:1cf5506b7e317753bf9a9e1d4aae589285d319f9331d6d1ce66f1aa2246ea8ac",
-      "contentDigest": "sha256:63c9655531e8f85ddefc8fd5abc9922652cd786864b88fceb98b1c8b434b94b2"
+      "artifactDigest": "sha256:66295384adf565b4c689bccb2ff6347c91dbe4d639fb56d18418cc7cf8204a78",
+      "manifestDigest": "sha256:f750cccdb1eb78722b17dc799afb6e986f4080298f1b40299045826cf42ff2ad",
+      "contentDigest": "sha256:9bdb814aa41149c25e154f6e2add484e5609657e8e8d77652c7157ec2e7db042"
     },
     {
       "name": "agent-skill-toolkit",
       "source": "./plugins/agent-skill-toolkit",
-      "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
+      "description": "创建、修改、重构和只读评审 Agent Skill 与多 Skill 组合架构，并独立审核 Skill Eval。",
       "interface": {
         "displayName": "Agent Skill Toolkit",
-        "shortDescription": "创建 Skill、手动评审与简化，并独立审核 Eval",
+        "shortDescription": "创建、重构、评审 Agent Skill 及独立审核 Eval",
         "capabilities": [
           "Skills"
         ]
@@ -80,7 +80,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.17",
+      "version": "0.1.0-beta.18",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -94,9 +94,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:ff2518e991a515fa4194a3df0501cca5486265bcd0bc879c2e0619ced34e7423",
-      "manifestDigest": "sha256:704e87eff246a65ba484e42d7b304d559143c8954bd0211e465a19331e949535",
-      "contentDigest": "sha256:efbe10619053da5a0a715890888a8d382d54bc508ab4472e0eb907b5ad0dbfaf"
+      "artifactDigest": "sha256:b65402e78c5cbb49919e3d0d907d16f6fd4422ed4dd1d613a8a531087318ff2f",
+      "manifestDigest": "sha256:07bf2948ca7884339e9f1160b9c49f2d9b82a6a421258c9ee1c3c53c4815e7b8",
+      "contentDigest": "sha256:027f0e2c4124925c8eb54065065bffea68e75c6ad899fb360db79e75752ca629"
     },
     {
       "name": "agent-subagent",
@@ -175,7 +175,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.18",
+      "version": "0.1.0-beta.19",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -200,9 +200,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:aa6b11886aed1eef00356c588e7fc59f09742581fc95c9d0d901e7ac670cd61c",
-      "manifestDigest": "sha256:ae11c07538899cde214c66974ae1465489c820d74709754fbbd82b6c4fa8549a",
-      "contentDigest": "sha256:207ac1a296fc5eabc70b91253355011e26b26c8ab2fc875e4a417dba4a51ef26"
+      "artifactDigest": "sha256:4dfcc75cf998db57417c0f89f5fe858a03ed0d01f0cbde0258883c8dff097986",
+      "manifestDigest": "sha256:63db86d486b962b6d817150372ff4d37edbf14562cf1ba90c96b516fa6a9236b",
+      "contentDigest": "sha256:854677620d7ed7626a6882e4184ce8696615f47bf0e72b2d708a99a4a22c9a0d"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -225,7 +225,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.12",
+      "version": "0.1.0-beta.13",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -240,9 +240,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:f776a87dac12b0e07f8be3a2eb66a149dd298b7d37a31bed2766d7a80f4c649f",
-      "manifestDigest": "sha256:de4f58a905b89c0e954087379a26c8c9df41a6ed6f108bbf82a796aad930f615",
-      "contentDigest": "sha256:20221ef925309932fa1401f14b30f00539666312993fc2f93ced2c0be33cb8dd"
+      "artifactDigest": "sha256:b81ceb88f4fc98add8a6327e484571031c3e81bcf5d753ffbb736f7b2150f731",
+      "manifestDigest": "sha256:c3cc80feda3e71bebe61231c435999d633d51b14fc238f4bf960bcb6d80e7dce",
+      "contentDigest": "sha256:f1dd712a321daed7d8b7f1943afc6165444b9fc9e116d8b2a77a34f093d47df0"
     },
     {
       "name": "browser-use",

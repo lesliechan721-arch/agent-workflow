@@ -8,7 +8,7 @@
 
 先从当前 capability receipt 确认所需组件和字段，再维护 source manifest 与对应文件。Plugin version 按项目发版约定维护；Catalog version 独立通过公开命令管理。安装依赖由 manifest `dependencies` 声明，构建共享不自动建立安装依赖。
 
-插件内 Skill 使用 `author-agent-skill`，提供目标、源目录、构建与注入约束、允许路径和验收条件。Agent 内容使用 `agent-content`；已有有效上下文直接复用。AW manifest 注册、构建和平台验证仍由本任务完成。
+插件内 Skill 使用 `agent-skill`，提供目标、源目录、构建与注入约束、允许路径和验收条件。Agent 内容使用 `agent-content`；已有有效上下文直接复用。AW manifest 注册、构建和平台验证仍由本任务完成。
 
 ## 按受影响机制修改
 
