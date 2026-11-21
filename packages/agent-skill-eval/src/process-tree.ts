@@ -84,12 +84,16 @@ interface PosixProcessSnapshot {
   queries?: ProcessQueryDiagnostic[];
 }
 
-function confirmationDeadline(snapshot: PosixProcessSnapshot, platform: NodeJS.Platform, deadline = Infinity): number {
-  return Math.min(
-    (snapshot.markerScanStartedAt ?? Date.now()) + posixInspectionTimeout(platform),
-    Date.now() + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
-    deadline,
-  );
+function posixSnapshotDeadline(
+  snapshot: PosixProcessSnapshot,
+  platform: NodeJS.Platform,
+  deadline = Infinity,
+): number {
+  return Math.min((snapshot.markerScanStartedAt ?? Date.now()) + posixInspectionTimeout(platform), deadline);
+}
+
+function confirmationDeadline(snapshotDeadline: number, queryTimeoutMs = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS): number {
+  return Math.min(snapshotDeadline, Date.now() + queryTimeoutMs);
 }
 
 interface PsMarkerScan {
@@ -699,6 +703,7 @@ async function confirmDarwinMarkers(
   if (identity.output === null) return failed(identity.failure);
   if (Date.now() >= deadline) return failed(commandFailure('deadline-exceeded'));
   const confirmed = parsePosixProcessTable(identity.output);
+  if (Date.now() >= deadline) return failed(commandFailure('deadline-exceeded'));
   if (!confirmed.has(process.pid)) {
     return failed(commandFailure('callback-error', { code: 'DARWIN_IDENTITY_RESULT_INVALID' }));
   }
@@ -837,7 +842,7 @@ export async function acquireProcessTreeInspectionLease(
     if (platform === 'darwin' && snapshot.table.has(sentinel.pid) && !snapshot.markerPids.has(sentinel.pid)) {
       await confirmDarwinMarkers(snapshot, [sentinel.pid], markerEnvironmentVariable, marker,
         dependencies.execFile ?? defaultExecFile,
-        confirmationDeadline(snapshot, platform));
+        confirmationDeadline(posixSnapshotDeadline(snapshot, platform)));
       if (!snapshot.markerLookupSucceeded) throw posixMarkerLookupFailure(snapshot, 'inspection-preflight');
     }
     const entry = snapshot.table.get(sentinel.pid);
@@ -1172,7 +1177,9 @@ async function acceptPosixSnapshot(
   // This disposition applies only to this observation's confirmed null candidates.
   // Keep their marker rows and known identities for later, independent cleanup.
   const confirmedAbsentPids = new Set<number>();
-  const markerConfirmationDeadline = confirmationDeadline(snapshot, state.platform, deadline);
+  const darwin = state.platform === 'darwin';
+  const snapshotDeadline = posixSnapshotDeadline(snapshot, state.platform, deadline);
+  const markerConfirmationDeadline = confirmationDeadline(snapshotDeadline, posixCommandTimeout(state.platform));
   const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
     const recordCleanup = stage !== 'observation' && usesLinuxProcfs(state);
     if (state.failure && !recordCleanup) return;
@@ -1180,11 +1187,20 @@ async function acceptPosixSnapshot(
     latchObservationFailure(state, error, diagnostic);
     if (recordCleanup) state.diagnostics[1] = diagnostic;
   };
+  const failMarkerLookup = (failure: ProcessCommandFailure): false => {
+    snapshot.markerLookupSucceeded = false;
+    snapshot.markerLookupFailure = failure;
+    fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
+    return false;
+  };
   const enforceProcessMarker = state.dependencies.enforceProcessMarker === true ||
     state.dependencies.enforceCooperativeProcessGroup === true;
   if (!snapshot.markerLookupSucceeded && state.marker !== undefined) {
     fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
     return false;
+  }
+  if (darwin && state.marker !== undefined && Date.now() >= snapshotDeadline) {
+    return failMarkerLookup(commandFailure('deadline-exceeded'));
   }
   if (state.dependencies.enforceCooperativeProcessGroup === true) {
     const expectedPgid = state.rootPgidMode === 'owned' ? state.rootPgid
@@ -1275,15 +1291,15 @@ async function acceptPosixSnapshot(
       ? await readObservationMarkerOutput(state, remaining)
       : { output: null, failure: commandFailure('deadline-exceeded') };
     if (confirmation.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(confirmation.query);
-    if (confirmation.output === null) {
-      snapshot.markerLookupSucceeded = false;
-      snapshot.markerLookupFailure = confirmation.failure;
-      fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
-      return false;
+    if (confirmation.output === null || (darwin && Date.now() >= markerConfirmationDeadline)) {
+      return failMarkerLookup(confirmation.failure ?? commandFailure('deadline-exceeded'));
     }
     const confirmed = parsePosixMarkerScan(confirmation.output);
     const confirmedMarkers = parseMarkerProcessIds(confirmed, state.markerEnvironmentVariable, state.marker);
     const confirmedUnreadable = unreadableMarkerPids(confirmed, state.platform, confirmedMarkers);
+    if (darwin && Date.now() >= markerConfirmationDeadline) {
+      return failMarkerLookup(commandFailure('deadline-exceeded'));
+    }
     retainGroupDepartures(confirmed.table);
     if (strictProcfs) {
       // A recheck is tied to the original lifetime. Keep positive rows visible
@@ -1373,7 +1389,7 @@ async function acceptPosixSnapshot(
       }
     }
   }
-  if (state.platform === 'darwin' && state.marker !== undefined) {
+  if (darwin && state.marker !== undefined) {
     const relevant = new Set([...snapshot.table].filter(([pid, entry]) =>
       isRelevantPosixProcess(state, pid, entry, snapshot.table)).map(([pid]) => pid));
     // Include newly visible descendants before their first marker can establish
@@ -1391,7 +1407,7 @@ async function acceptPosixSnapshot(
     if (suspects.length > 0) {
       const confirmed = await confirmDarwinMarkers(snapshot, suspects, state.markerEnvironmentVariable, state.marker,
         state.dependencies.execFile ?? defaultExecFile,
-        markerConfirmationDeadline);
+        confirmationDeadline(snapshotDeadline));
       if (!confirmed) {
         fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
         return false;

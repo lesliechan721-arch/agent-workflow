@@ -459,58 +459,153 @@ describe('shared provider process behavior', () => {
     }
   })
 
-  // Hosted macOS can spend most of the scan budget before an exiting row
-  // needs confirmation. Slow success must survive; stalled inspection must fail.
-  it.each(['slow-scan', 'slow-confirmation', 'scan-timeout', 'confirmation-timeout'] as const)(
-    'bounds Darwin inspection with separate scan and confirmation time: %s', async (mode) => {
-      vi.useFakeTimers()
-      const marker = 'darwin-budget-marker'
-      let markerScans = 0
-      let cleanup = false
-      const signals = vi.fn()
-      const dependencies = {
-        platform: 'darwin' as const,
-        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
-        enforceProcessMarker: true,
-        execFile(_command: string, args: string[], _options: { timeout: number },
-          callback: (error: Error | null, stdout: string) => void): void {
-          if (!args.includes('eww')) { callback(null, '100 1 100 S root-start'); return }
-          if (cleanup) { callback(null, ''); return }
-          markerScans += 1
-          if (mode === 'scan-timeout' || mode === 'confirmation-timeout' && markerScans === 2) return
-          const unreadable = mode !== 'slow-scan' && markerScans === 1
-          const output = unreadable ? '100 1 100 R root-start (node)' : ''
-          const delay = markerScans === 1 ? mode === 'slow-scan' ? 2500 : 4800 : 1000
-          setTimeout(() => callback(null, output), delay)
-        },
-        kill: signals,
-      }
-      const observation = observeProcessTree(100, marker, dependencies)
-      const startedAt = Date.now()
-      let failureAt: number | undefined
-      const onFailure = vi.fn(() => { failureAt = Date.now(); observation.dispose() })
-      observation.onFailure(onFailure)
-      try {
-        await vi.advanceTimersByTimeAsync(7000)
-        if (mode.endsWith('timeout')) {
-          expect(onFailure).toHaveBeenCalledTimes(1)
-          expect(observation.diagnostics[0]?.reason).toBe('marker-lookup-failed')
-          expect(failureAt! - startedAt).toBe(mode === 'scan-timeout' ? 5000 : 6800)
-        } else {
-          expect(onFailure).not.toHaveBeenCalled()
-          observation.dispose()
-          cleanup = true
-          await expect(terminateProcessTree(100, () => undefined, dependencies, {
-            observation, requireConfirmedCleanup: true,
-          })).resolves.toBeUndefined()
+  // A full recheck may be as slow as the first scan. Short identity confirmation
+  // still shares its own budget within the original observation deadline.
+  it.each([
+    { mode: 'ordinary', firstMs: 20, settleMs: 20, markerScans: 1 },
+    { mode: 'slow initial scan', firstMs: 2_500, settleMs: 2_500, markerScans: 1 },
+    { mode: 'slow full recheck', firstMs: 1_016, recheckMs: 2_400, settleMs: 3_416, markerScans: 2 },
+    { mode: 'slow full recheck needs exact evidence', firstMs: 1_016, recheckMs: 2_400,
+      exactMs: 1_250, settleMs: 4_666, markerScans: 2 },
+    { mode: 'initial scan cap', firstMs: 5_100, settleMs: 5_000, markerScans: 1, fails: true },
+    { mode: 'full recheck cap', firstMs: 1_016, recheckMs: 5_100, settleMs: 6_016, markerScans: 2, fails: true },
+    { mode: 'observation deadline during recheck', firstMs: 4_800, recheckMs: 2_300,
+      settleMs: 7_000, markerScans: 2, fails: true },
+    { mode: 'exact evidence cap', firstMs: 1_016, recheckMs: 2_400, exactMs: 2_100,
+      settleMs: 5_416, markerScans: 2, fails: true },
+    { mode: 'identity recheck shares exact evidence cap', firstMs: 1_016, recheckMs: 2_400, exactMs: 1_250,
+      identityMs: 800, settleMs: 5_416, markerScans: 2, fails: true },
+    { mode: 'observation deadline during exact evidence', firstMs: 4_800, recheckMs: 1_800,
+      exactMs: 450, settleMs: 7_000, markerScans: 2, fails: true },
+    { mode: 'late initial table parsing', firstMs: 4_900, settleMs: 4_900, markerScans: 1,
+      fails: true, lateParse: 'initial', parseEndsMs: 7_001, queryDeadlineMs: 5_000 },
+    { mode: 'late full recheck parsing', firstMs: 1_016, recheckMs: 4_900, settleMs: 5_916, markerScans: 2,
+      fails: true, lateParse: 'full', parseEndsMs: 7_001, queryDeadlineMs: 6_016 },
+    { mode: 'late identity parsing', firstMs: 1_016, recheckMs: 2_400, exactMs: 1_250, settleMs: 4_666,
+      markerScans: 2, fails: true, lateParse: 'identity', parseEndsMs: 5_417, queryDeadlineMs: 5_416 },
+  ])('bounds Darwin inspection: $mode', async ({
+    firstMs, recheckMs, exactMs, identityMs, settleMs, markerScans, fails, lateParse, parseEndsMs, queryDeadlineMs,
+  }) => {
+    vi.useFakeTimers()
+    const marker = 'darwin-budget-marker'
+    const unreadable = '100 1 100 R root-start (node)'
+    const foreign = '200 1 200 S foreign-start (other)'
+    const marked = '100 1 100 S root-start node ' + PROVIDER_PROCESS_MARKER_ENV + '=' + marker + '\n' + foreign
+    const identity = '100 1 100 S root-start\n' + process.pid + ' 1 0 S observer-start'
+    const exactIdentity = identity + '\n'
+    let cleanup = false
+    let psReads = 0
+    let exactReads = 0
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'darwin' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceProcessMarker: true,
+      execFile(command: string, args: string[], _options: { timeout: number },
+        callback: (error: Error | null, stdout: string) => void): void {
+        if (command === '/usr/bin/osascript') {
+          exactReads += 1
+          const output = JSON.stringify([{ pid: 100, marker: true, errno: 0 }])
+          setTimeout(() => callback(null, output), exactMs)
+          return
         }
-        expect(signals).not.toHaveBeenCalled()
-      } finally {
+        if (!args.includes('eww')) {
+          const output = exactReads > 0 ? exactIdentity : identity
+          if (exactReads > 0 && identityMs !== undefined) setTimeout(() => callback(null, output), identityMs)
+          else callback(null, output)
+          return
+        }
+        if (cleanup) { callback(null, foreign); return }
+        psReads += 1
+        if (psReads === 1) {
+          const output = recheckMs === undefined ? marked : unreadable + '\n' + foreign
+          setTimeout(() => callback(null, output), firstMs)
+        } else {
+          setTimeout(() => callback(null, exactMs === undefined ? foreign : unreadable + '\n' + foreign), recheckMs)
+        }
+      },
+      kill: signals,
+    }
+    const startedAt = Date.now()
+    const lateTable = lateParse === 'initial' ? marked : lateParse === 'full' ? foreign : exactIdentity
+    const split = String.prototype.split
+    const parseClock = parseEndsMs === undefined ? undefined : vi.spyOn(String.prototype, 'split')
+      .mockImplementation(function (this: string, ...args: Parameters<typeof split>): string[] {
+        const rows: string[] = Reflect.apply(split, this, args)
+        // Model time spent parsing this fixture's table after its callback returned.
+        if (this === lateTable) vi.setSystemTime(startedAt + parseEndsMs)
+        return rows
+      })
+    const observation = observeProcessTree(100, marker, dependencies)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(settleMs - 1)
+      expect(onFailure).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(psReads).toBe(markerScans)
+      expect(exactReads).toBe(exactMs === undefined ? 0 : 1)
+      if (fails) {
+        expect(onFailure).toHaveBeenCalledOnce()
+        expect(observation.diagnostics[0]).toMatchObject({
+          reason: 'marker-lookup-failed', lookupFailure: { reason: 'deadline-exceeded' },
+          queries: expect.arrayContaining([expect.objectContaining({
+            deadline: startedAt + (queryDeadlineMs ?? settleMs), completion: lateParse ? 'callback' : 'deadline',
+          })]),
+        })
+      } else {
+        expect(onFailure).not.toHaveBeenCalled()
         observation.dispose()
-        vi.useRealTimers()
+        cleanup = true
+        await expect(terminateProcessTree(100, () => undefined, dependencies, {
+          observation, requireConfirmedCleanup: true,
+        })).resolves.toBeUndefined()
       }
-    },
-  )
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      observation.dispose()
+      parseClock?.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('retains the explicit Darwin termination deadline during a full marker recheck', async () => {
+    vi.useFakeTimers()
+    let closing = false
+    let cleanupScans = 0
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'darwin' as const,
+      execFile(_command: string, args: string[], _options: { timeout: number },
+        callback: (error: Error | null, stdout: string) => void): void {
+        if (!closing || !args.includes('eww')) { callback(null, ''); return }
+        cleanupScans += 1
+        const output = cleanupScans === 1 ? '100 1 100 R root-start (node)' : ''
+        setTimeout(() => callback(null, output), 1_100)
+      },
+      kill: signals,
+    }
+    const observation = observeProcessTree(100, 'darwin-cleanup-marker', dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      const deadline = Date.now() + 2_000
+      closing = true
+      const outcome = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true,
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(await outcome).toBeInstanceOf(Error)
+      expect(cleanupScans).toBe(2)
+      expect(observation.diagnostics[0]).toMatchObject({
+        stage: 'termination-start', lookupFailure: { reason: 'deadline-exceeded' },
+        queries: expect.arrayContaining([expect.objectContaining({ deadline, completion: 'deadline' })]),
+      })
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
 
   it('retries a transient POSIX marker lookup inside the original deadline', async () => {
     let marker = ''
