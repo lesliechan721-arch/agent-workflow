@@ -1,31 +1,20 @@
 # 规则权威索引
 
-这是维护者导航，不是运行时全量必读规则。正文仅在 owner 文件编辑；规则迁移不能仅在旧位置删除而无新归属。Author 与 Reviewer 采用相同原则，但权限、工作流和独立证据仍分开。
+维护者导航，不是运行时必读清单。正文只在唯一 owner 文件编辑；创作、重构与只读评审共用同一质量标准，不再拆出重复评审或简化副本。
 
-| ID | 权威正文 owner（相对插件根；跨插件注明） | 使用方 |
+| ID | 权威正文 owner（相对插件根；跨插件注明） | 职责 |
 | --- | --- | --- |
-| CONTENT.FACT / LOAD / POINTER / CONTROL / OUTPUT / VALIDATION | agent-content-toolkit/skills/agent-content/SKILL.md | 共同内容方法内联；通用内容、Skill 作者与审稿 |
-| CONTENT.REFERENCE | agent-content-toolkit/skills/agent-content/references/reference-design.md | 创建与评价参考材料 |
-| SKILL.INVOCATION | references/skill-invocation.md | Author、Reviewer；构建时投影 |
-| SKILL.COMPOSITION | references/skill-composition.md | Author、Reviewer、Simplifier；构建时投影 |
-| SKILL.DESIGN | skills/author-agent-skill/references/design-and-validation.md | 作者方法，不作独立裁决 |
-| REVIEW.METHOD / EVIDENCE / SCORE | skills/review-agent-skill/references/review-standard.md、evidence-and-severity.md、review-dimensions.md | 只读问题判断、证据与评分 |
-| EVAL.DESIGN | skills/author-agent-skill/references/eval-design.md | 通用 case 写作，不拥有 runner 方言 |
-| EVAL.AUDIT | skills/audit-agent-skill-evals/references/eval-audit-standard.md | 用例资格、对照与结果解释 |
-| EVAL.ADMISSION | skills/audit-agent-skill-evals/references/formal-admission.md | 实际运行器要求的正式独立准入 |
-| SIMPLIFY.ACCEPT | skills/simplify-agent-skill/references/ablation-acceptance.md | 有限预算下的对照接受 |
-| ARCH.WORKFLOW | skills/review-agent-skill/references/architecture-review.md | 有界任务路径、交接与失败恢复 |
-| ARCH.PORTFOLIO | skills/review-agent-skill/references/public-surface-review.md | 公开入口、依赖及用户选择成本 |
+| CONTENT.CORE | `agent-content-toolkit/skills/agent-content/SKILL.md` | 指针、两种负担、跳数、反抽象机制、剪枝与去免责 |
+| CONTENT.REFACTOR | `agent-content-toolkit/skills/agent-content/references/refactoring-methods.md` | 内容层 4 类重构手法与语义保真核对 |
+| SKILL.ENTRY | `skills/agent-skill/SKILL.md` | 创建、修改、重构与只读评审统一入口及包工具调用 |
+| SKILL.DESIGN | `skills/agent-skill/references/design-and-validation.md` | Failure-Mode First、行为抓手、机制保真、证据分层与停止静态打磨 |
+| SKILL.FORMAT | `skills/agent-skill/references/skill-format.md` | 标准目录、frontmatter 与双平台调用开关 |
+| SKILL.INVOCATION | `skills/agent-skill/references/skill-invocation.md`、`trigger-development.md` | 调用边界、防大网/两跳索引反模式与触发实验 |
+| SKILL.COMPOSITION | `skills/agent-skill/references/skill-composition.md` | 单体/多 Skill 工作流、公开面与插件边界、Skill 层重构手法 |
+| SKILL.SCRIPT | `skills/agent-skill/references/script-authoring.md` | 随包脚本接口、正文接入与运行自检 |
+| SKILL.ABLATION | `skills/agent-skill/references/ablation-acceptance.md` | 基线 vs 候选受控重构与消融验收 |
+| EVAL.DESIGN | `skills/agent-skill/references/eval-design.md` | 通用 Eval 用例、fixture 与断言设计 |
+| EVAL.AUDIT | `skills/audit-agent-skill-evals/SKILL.md`、`references/eval-audit-standard.md` | 独立 Eval 源审核、公平对照与结果归因 |
+| EVAL.ADMISSION | `skills/audit-agent-skill-evals/references/formal-admission.md` | 运行器正式准入（preflight） |
 
-共享格式、调用和组合规则只维护一处，按 manifest 以相同文件名投影到实际消费者：`skill-format.md`、`skill-invocation.md`、`skill-composition.md`。Author 不另设别名；本地作者方法不要求 Reviewer 激活 Author。运行器格式由当前运行器提供。
-
-## 新增共享资源
-
-| 权威正文 | 使用方 | 用途 |
-| --- | --- | --- |
-| references/skill-format.md | Author、Skill Review、Simplifier | 普通包与作者检查基线 |
-| skills/author-agent-skill/references/trigger-development.md | Author | 发现、调用、description 与执行问题分层；重复观察、训练/验证与候选选择 |
-
-统一格式以标准字段为主，只收录常用调用差异。共享资料按问题读取，投影不意味着每次全部加载。
-
-工具调用片段共置在拥有对应脚本的 Skill 主文件中。完整接口由工具 help 和实现合同维护。正式 Eval 准入方法由 `skills/audit-agent-skill-evals/references/formal-admission.md` 条件提供。
+`agent-skill` 的所有参考与打包工具均共置在本 Skill 内，不再跨 Skill 复制投影。`audit-agent-skill-evals` 保持独立，用于隔离 Eval 审核与作者职责。

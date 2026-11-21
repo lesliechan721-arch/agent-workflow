@@ -9,7 +9,7 @@ metadata:
 
 # Run AW Skill Evals
 
-把本次选择落实为有效 Spec，在独立审核与执行授权成立后运行，并交付可核验的结果。用例设计采用 `author-agent-skill`，Oracle 与结果的语义判断采用 `audit-agent-skill-evals`；本技能负责 AW 格式、输入绑定、执行条件和工具操作。
+把本次选择落实为有效 Spec，在独立审核与执行授权成立后运行，并交付可核验的结果。用例设计采用 `agent-skill`，Oracle 与结果的语义判断采用 `audit-agent-skill-evals`；本技能负责 AW 格式、输入绑定、执行条件和工具操作。
 
 ## 确定本次结果
 

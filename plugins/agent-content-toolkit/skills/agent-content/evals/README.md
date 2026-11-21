@@ -2,13 +2,13 @@
 
 本目录是完整源测试资产，使用当前项目 Selected Cases v1 / Manifest v1。它们是测试适配，不是通用运行期依赖。独立源码审核可在没有 AW CLI 时进行；真实 parser、独立 Oracle 审核和模型运行是不同证据。
 
-共 27 个 case。各 suite 按所选任务和独立 Audit 执行。实际源格式检查以本次设计 evidence 为准，全部模型状态为 NOT_RUN。
+共 30 个 case。各 suite 按所选任务和独立 Audit 执行。实际源格式检查以本次设计 evidence 为准，全部模型状态为 NOT_RUN。
 
 | Suite | 用例文件 | 数量 | Profile | 模型状态 |
 | --- | --- | ---: | --- | --- |
 | `trigger` | [trigger-cases.json](trigger-cases.json) | 8 | project-default | NOT_RUN |
-| `behavior` | [behavior-cases.json](behavior-cases.json) | 9 | project-default | NOT_RUN |
-| `source-fidelity` | [source-fidelity-cases.json](source-fidelity-cases.json) | 4 | project-default | NOT_RUN |
+| `behavior` | [behavior-cases.json](behavior-cases.json) | 11 | project-default | NOT_RUN |
+| `source-fidelity` | [source-fidelity-cases.json](source-fidelity-cases.json) | 5 | project-default | NOT_RUN |
 | `redesign-behavior` | [redesign-behavior-cases.json](redesign-behavior-cases.json) | 6 | content-only | NOT_RUN |
 
 ## 测什么与不测什么

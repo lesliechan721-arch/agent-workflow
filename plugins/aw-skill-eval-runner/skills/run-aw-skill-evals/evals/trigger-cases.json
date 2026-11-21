@@ -5,8 +5,7 @@
     "unitUnderTest": "run-aw-skill-evals",
     "participants": [
       "audit-agent-skill-evals",
-      "author-agent-skill",
-      "review-agent-skill"
+      "agent-skill"
     ],
     "policy": {
       "optimization": "precision-first",

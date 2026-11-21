@@ -305,12 +305,12 @@ test('checker help needs no target; parameter/root failures exit 2', async () =>
   }
 });
 
-test('independent build delivers four runnable script copies and three complete notices', async t => {
+test('independent build delivers two runnable script copies and one complete notice', async t => {
   const parent = await fixture(t);
   const output = path.join(parent, 'export');
   await buildTools(output);
   const scripts = GENERATED_FILES.filter(([, relative]) => relative.endsWith('.mjs'));
-  assert.equal(scripts.length, 4);
+  assert.equal(scripts.length, 2);
   const alias = path.join(parent, 'export-alias');
   await symlink(output, alias);
   for (const [name, relative] of scripts) {
@@ -321,18 +321,18 @@ test('independent build delivers four runnable script copies and three complete 
     assert.equal(throughAlias.code, 0);
     assert.equal(throughAlias.stdout, result.stdout);
   }
-  const author = path.join(output, 'skills/author-agent-skill/scripts');
+  const author = path.join(output, 'skills/agent-skill/scripts');
   const target = path.join(parent, 'sample-skill');
   assert.equal((await jsonRun(path.join(author, 'init-skill.mjs'), target, '--description', 'Read.')).code, 0);
   assert.equal((await jsonRun(path.join(author, 'check-skill.mjs'), target)).code, 0);
-  const aliasCheck = await jsonRun(path.join(alias, 'skills/author-agent-skill/scripts/check-skill.mjs'), target);
+  const aliasCheck = await jsonRun(path.join(alias, 'skills/agent-skill/scripts/check-skill.mjs'), target);
   assert.equal(aliasCheck.code, 0);
   assert.equal(aliasCheck.report.ok, true);
   const targetAlias = path.join(parent, 'input-alias');
   await symlink(target, targetAlias);
   assert.equal((await jsonRun(path.join(author, 'check-skill.mjs'), targetAlias)).code, 2);
   const notices = GENERATED_FILES.filter(([, relative]) => relative.endsWith('.txt'));
-  assert.equal(notices.length, 3);
+  assert.equal(notices.length, 1);
   for (const [name, relative] of notices) {
     const notice = await readFile(path.join(output, 'skills', name, relative), 'utf8');
     // Static contract exception: bundled libraries must retain their license notices; behavior test is not suitable because these legal notices are consumed as distributed text.

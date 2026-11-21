@@ -33,8 +33,8 @@
 ## 维护入口与工具归属
 
 通过公开 `aw` CLI 安装相应插件后，各插件工具分别由拥有它们的插件维护，具体插件方法规则指向实际既有 owner，不把所有 Skill 复制到维护者入口：
-- `agent-content-toolkit`：提供 `agent-content`，负责 Agent-facing 内容（AGENTS.md、CLAUDE.md、角色说明与 reference）的编写与只读评审。
-- `agent-skill-toolkit`：提供 Author、合并的 Reviewer、Simplifier 与 Eval Auditor，依赖 `agent-content-toolkit`。Author 负责创建、修改及当前范围的自检与修复；`review-agent-skill` 与 `simplify-agent-skill` 均由用户显式启动。
+- `agent-content-toolkit`：提供 `agent-content`，负责 Agent-facing 内容（AGENTS.md、CLAUDE.md、角色说明与 reference）的编写、重构与只读评价。
+- `agent-skill-toolkit`：提供 `agent-skill` 与 `audit-agent-skill-evals`，依赖 `agent-content-toolkit`。`agent-skill` 统一负责单 Skill 与多 Skill 组合的创建、修改、重构、只读评审及相称自检；`audit-agent-skill-evals` 独立负责 Eval 用例审核、结果归因与正式准入。
 - `aw-development-toolkit`：提供 `develop-aw`（负责 AW 插件与 Skill 的分析、创建、修改、评审、简化、验证、物化与平台产物）和仅用户显式调用的 `publish-aw-catalog`（Catalog 发布编排）。它只编排已安装 `aw` CLI 的公开作者命令，不替代通用任务判断。
 - `aw-skill-eval-runner`：提供默认模型 Eval 执行器真值与 `aw-skill-eval run`，插件不得复制 schema、digest、validator 或 runner 实现。
 

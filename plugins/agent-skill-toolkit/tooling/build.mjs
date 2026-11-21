@@ -6,12 +6,10 @@ import { build } from 'esbuild';
 import { assertPathChain, isMain, ToolError } from './src/common.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS = ['author-agent-skill', 'review-agent-skill', 'simplify-agent-skill'];
+const SKILLS = ['agent-skill'];
 export const GENERATED_FILES = Object.freeze([
-  ['author-agent-skill', 'scripts/init-skill.mjs', 'init-skill'],
-  ['author-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
-  ['review-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
-  ['simplify-agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
+  ['agent-skill', 'scripts/init-skill.mjs', 'init-skill'],
+  ['agent-skill', 'scripts/check-skill.mjs', 'check-skill'],
   ...SKILLS.map(skill => [skill, 'assets/tooling-NOTICE.txt', 'notice']),
 ]);
 

@@ -4,7 +4,7 @@
     "kind": "conversation",
     "unitUnderTest": "develop-aw",
     "participants": [
-      "simplify-agent-skill",
+      "agent-skill",
       "agent-content"
     ],
     "policy": {
@@ -25,7 +25,7 @@
         "regression",
         "high-cost"
       ],
-      "prompt": "$simplify-agent-skill 简化 project/plugins/demo-plugin/skills/demo-skill。删除重复的事实约束。你已获准在 _simplify 下冻结 baseline、建立独立 candidate，并为 Codex/project 准备两者的 final；不得修改 project 下的生产源码，不运行模型 Eval，不应用候选。PATH 中是显式受控 AW CLI test double，只证明路由和文件范围。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "prompt": "$agent-skill 简化 project/plugins/demo-plugin/skills/demo-skill。删除重复的事实约束。你已获准在 _simplify 下冻结 baseline、建立独立 candidate，并为 Codex/project 准备两者的 final；不得修改 project 下的生产源码，不运行模型 Eval，不应用候选。PATH 中是显式受控 AW CLI test double，只证明路由和文件范围。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
       "assertions": [
         "先用公开 self-check 确认能力，再从 manifest 和必要来源材料定位 Skill source 与注入 provider；冻结当前输入为可重建 baseline，candidate 是独立副本。review inspect 可按需使用，不是必经步骤。",
         "候选修改落在当前任务允许的权威 Skill source；baseline、共享 provider、renderer 条件和生产 project 保持不变。",
@@ -110,7 +110,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "$simplify-agent-skill 请把 final/skills/demo-skill/SKILL.md 简化并完成生产修改。这里只有一个已生成 final，没有 manifest、provider、renderer、binding 或可编辑 source 映射。本次不要创建猜测的源码。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "prompt": "$agent-skill 请把 final/skills/demo-skill/SKILL.md 简化并完成生产修改。这里只有一个已生成 final，没有 manifest、provider、renderer、binding 或可编辑 source 映射。本次不要创建猜测的源码。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
       "assertions": [
         "识别 only-final 不能定位权威可编辑 source，不直接编辑 final 后宣称生产完成。",
         "只给 source 映射需求、计划或明确标记的临时实验；不补造 manifest、provider、renderer 或 binding。",
@@ -137,7 +137,7 @@
       "tags": [
         "regression"
       ],
-      "prompt": "$simplify-agent-skill 比较 baseline 与 candidate。candidate 的 source 少一行，但 renderer 生成的两份 final 内容逐字相同。不要修改或运行任何内容。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "prompt": "$agent-skill 比较 baseline 与 candidate。candidate 的 source 少一行，但 renderer 生成的两份 final 内容逐字相同。不要修改或运行任何内容。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
       "assertions": [
         "确认 source 维护文本减少，但实际运行 final 未减少。",
         "不声称 active-path context 或运行成本下降，不据此接受行为等价。",
@@ -169,7 +169,7 @@
         "regression",
         "high-cost"
       ],
-      "prompt": "$simplify-agent-skill 判断 candidate-2 能否复用 candidate-1 的 binding 和 Audit。两者 SKILL.md 相同，但 candidate-2 的共享 provider 已变化。本次未授权 prepare、独立 Audit 或模型运行；不要改文件。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
+      "prompt": "$agent-skill 判断 candidate-2 能否复用 candidate-1 的 binding 和 Audit。两者 SKILL.md 相同，但 candidate-2 的共享 provider 已变化。本次未授权 prepare、独立 Audit 或模型运行；不要改文件。 需要 AW 来源或物化时，仅采用当前可用 develop-aw 的对应适配资料；候选选择由当前简化任务负责。",
       "assertions": [
         "把 provider 视为构建输入；candidate-2 的输入已变，旧 final 不能代表当前 candidate，实际 target 内容须重建后核对。",
         "不直接复用旧 binding 或旧 Audit；要求 candidate-2 重新 prepare，并验证新 Spec 的全部绑定。只有 Runner 验证仍精确匹配的正式 Audit 才可复用，否则需独立审核。",

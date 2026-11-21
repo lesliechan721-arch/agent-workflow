@@ -2,7 +2,7 @@
   "schemaVersion": 4,
   "name": "agent-skill-toolkit",
   "version": "0.1.0",
-  "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
+  "description": "创建、修改、重构和只读评审 Agent Skill 与多 Skill 组合架构，并独立审核 Skill Eval。",
   "platforms": [
     "codex",
     "claude",
@@ -28,82 +28,24 @@
   },
   "interface": {
     "displayName": "Agent Skill Toolkit",
-    "shortDescription": "创建 Skill、手动评审与简化，并独立审核 Eval",
+    "shortDescription": "创建、重构、评审 Agent Skill 及独立审核 Eval",
     "capabilities": [
       "Skills"
     ]
   },
   "buildConfig": {
     "cacheable": true,
-    "skillRuntimeFiles": [
-      {
-        "skill": "author-agent-skill",
-        "target": "references/skill-invocation.md",
-        "source": "./references/skill-invocation.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/skill-invocation.md",
-        "source": "./references/skill-invocation.md"
-      },
-      {
-        "skill": "author-agent-skill",
-        "target": "references/skill-composition.md",
-        "source": "./references/skill-composition.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/skill-composition.md",
-        "source": "./references/skill-composition.md"
-      },
-      {
-        "skill": "simplify-agent-skill",
-        "target": "references/skill-composition.md",
-        "source": "./references/skill-composition.md"
-      },
-      {
-        "skill": "author-agent-skill",
-        "target": "references/skill-format.md",
-        "source": "./references/skill-format.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/skill-format.md",
-        "source": "./references/skill-format.md"
-      },
-      {
-        "skill": "simplify-agent-skill",
-        "target": "references/skill-format.md",
-        "source": "./references/skill-format.md"
-      }
-    ],
     "generatedSkillRuntimeFiles": [
       {
-        "skill": "author-agent-skill",
+        "skill": "agent-skill",
         "target": "scripts/init-skill.mjs"
       },
       {
-        "skill": "author-agent-skill",
+        "skill": "agent-skill",
         "target": "scripts/check-skill.mjs"
       },
       {
-        "skill": "review-agent-skill",
-        "target": "scripts/check-skill.mjs"
-      },
-      {
-        "skill": "simplify-agent-skill",
-        "target": "scripts/check-skill.mjs"
-      },
-      {
-        "skill": "author-agent-skill",
-        "target": "assets/tooling-NOTICE.txt"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "assets/tooling-NOTICE.txt"
-      },
-      {
-        "skill": "simplify-agent-skill",
+        "skill": "agent-skill",
         "target": "assets/tooling-NOTICE.txt"
       }
     ]

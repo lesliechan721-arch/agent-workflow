@@ -6,6 +6,6 @@
 
 使用 Selected Cases v1 / Manifest v1，正式格式由公开 parser 核验。`review-fixtures`、`simplify-fixtures` 与 `fixtures/deny-cli-bin` 是显式测试替身，不证明生产 renderer、canonical binding、用户真实安装或模型收益。它们拒绝未知操作，不作为实际发布证据。
 
-用户专用能力需采用客户端实际支持的显式选择路径；prompt 中写出 `$review-agent-skill` 或 `$simplify-agent-skill` 本身不证明宏已注入。缺少真实调用观测时报告范围限制，不把它记为模型理解或手动边界通过。
+用户显式调用需采用客户端实际支持的注入路径；prompt 中写出 `$agent-skill` 本身不证明能力已按预期加载。缺少真实调用观测时报告范围限制，不把它记为模型理解或边界通过。
 
 当前状态为 NOT_RUN。运行前独立审核 Oracle、fixture 可达性及实际目标绑定，并取得模型预算与执行授权。suite/profile 选择由 [manifest.json](manifest.json) 定义；Audit 与 Result 按实际目标和输入重新核验。物化和工作区观测边界见 [物化案例说明](review-materialization-README.md)。
