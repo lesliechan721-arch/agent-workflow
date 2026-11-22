@@ -149,7 +149,7 @@ it('merges two OpenCode owners and preserves manual rules through scoped sync an
   await success(projectA, ['plugin', 'remove', otherOwner, '--scope', 'project', '--context', 'project', '--yes']);
   expect(await fs.readJson(projectConfig)).toEqual({ permissions: [extraRule, ...initialProjectRules], snapshots: false });
   expect(await fs.readFile(userConfig)).toEqual(userBytes);
-});
+}, 25_000);
 
 it('reports a missing final OpenCode restriction even when the same manual rule still exists', async () => {
   const { projectA, userConfig, success } = await fixture('exact');

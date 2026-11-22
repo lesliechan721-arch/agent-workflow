@@ -739,7 +739,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
     let componentTraceIndex = 0;
-    async function result(args, cwd = project, trustRetry) {
+    async function result(args, cwd = project, trustRetry, cliEntry = cli) {
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
       const command = componentCommand(args, dependencies);
@@ -772,7 +772,7 @@ export async function runComponentQualification({ platform, scope, clientPath, t
         else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
       };
       try {
-        response = await executeAw(publicAwNodeLauncher(cli, trace), [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 180000 });
+        response = await executeAw(publicAwNodeLauncher(cliEntry, trace), [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 180000 });
         // A Windows Job failure can return 250 even after AW has printed a receipt.
         // Only AW's public exit codes carry command results in this suite.
         assert(awCommandCompleted(response), 'Public AW process did not complete');

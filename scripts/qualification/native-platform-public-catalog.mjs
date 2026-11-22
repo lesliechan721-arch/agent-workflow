@@ -147,7 +147,28 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
   const roots = Object.keys(roleSkills);
   const ids = roots.map(plugin => catalogId + '/' + plugin);
   const request = ['plugin', 'install', ...ids, '--scope', ctx.scope, '--target', ctx.platform, '--yes'];
-  const installation = await ctx.result(request);
+  let baseline = ctx.result;
+  if (frozen) {
+    // The candidate rejects the retired command manifest before recording demand.
+    // Establish the historical state with a released CLI, then upgrade with the candidate.
+    const rejected = await ctx.result(request);
+    assert.equal(rejected.exitCode, 3);
+    assert.equal(rejected.value.status, 'blocked');
+    assert.deepEqual(rejected.value.data.requirements, { state: 'absent', roots: [] });
+    assert.deepEqual(rejected.value.data.targetResults, []);
+    const diagnostics = rejected.value.diagnostics.map(item => item.code);
+    assert(diagnostics.includes('sourceUnavailable'));
+    const root = process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT;
+    assert(root && path.isAbsolute(root), 'Provide the installed historical AW package directory.');
+    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    assert.equal(manifest.name, '@lesliechan721/aw');
+    assert.equal(manifest.version, '0.1.0-beta.85');
+    const entry = path.join(root, manifest.bin.aw);
+    baseline = args => ctx.result(args, ctx.project, undefined, entry);
+    report.catalog.baselineCli = manifest.version;
+    report.catalog.candidateInstall = { status: rejected.value.status, exitCode: rejected.exitCode, diagnostics };
+  }
+  const installation = await baseline(request);
   const expectsFrozenFailure = frozen && ctx.platform !== 'codex';
   report.install = { exitCode: installation.exitCode, ...(installation.failure && !expectsFrozenFailure ? installation.failure.awReceipt : {
     status: installation.value.status, targets: installation.value.data.targetResults?.map(target => ({ pluginId: target.pluginId,
@@ -155,7 +176,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
       plans: (target.deploymentPlans ?? []).map(plan => ({
         expected: plan.expected, actual: target.deploymentReceipts?.find(r => r.bindingId === plan.bindingId)?.after.components })) })),
   }) };
-  const observation = await ctx.result(['plugin', 'status', '--context', ctx.scope]);
+  const observation = await baseline(['plugin', 'status', '--context', ctx.scope]);
   if (!expectsFrozenFailure) {
     assert.equal(installation.exitCode, 0, 'Shipped role plugin installation failed.');
     assert.equal(observation.exitCode, 0, 'Shipped role plugin status failed.');

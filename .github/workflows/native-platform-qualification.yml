@@ -132,6 +132,10 @@ jobs:
           ref: 2d866d18bc396dcbc57647b491a9878ef8fc52ee
           path: .qualification-frozen-revision
           persist-credentials: false
+      - name: Install the historical AW CLI for the frozen Pi baseline
+        if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', matrix.clients), ',pi,')
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/frozen-aw" --ignore-scripts --no-audit --no-fund @lesliechan721/aw@0.1.0-beta.85
       - name: Extract the published Catalog without checkout line-ending conversion
         if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', matrix.clients), ',pi,')
         shell: bash
@@ -169,6 +173,8 @@ jobs:
       - name: Verify real clients and public AW status in credential-free temporary environments
         if: env.QUALIFICATION_CLIENT != 'antigravity-user'
         shell: bash
+        env:
+          AW_QUALIFICATION_FROZEN_CLI_ROOT: ${{ runner.temp }}/frozen-aw/node_modules/@lesliechan721/aw
         run: |
           args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json")
           if [[ "$RUN_HOST_CHECKS" == '1' && ( "$RUNNER_OS" == 'Linux' || "$RUNNER_OS" == 'Windows' ) ]]; then
