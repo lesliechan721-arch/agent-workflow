@@ -241,8 +241,12 @@ async function main() {
       await pause(500);
     } while (Date.now() < until);
     emit('cleanup.owned-trees', safe, safe ? 'ok' : 'treeStopUnconfirmed');
-    if (safe) { if (workspace) await fs.rm(workspace, { recursive: true, force: true }); await fs.rm(directory, { recursive: true, force: true }); }
     if (!safe) fail('treeStopUnconfirmed');
+    // The detached retention scan can briefly hold the workspace as its cwd
+    // after the owned execution trees have exited. Both removals must finish.
+    const cleanup = { recursive: true, force: true, maxRetries: 10, retryDelay: 250 };
+    if (workspace) await fs.rm(workspace, cleanup);
+    await fs.rm(directory, cleanup);
   }
   emit('qualification.complete', completed, completed ? 'ok' : 'qualificationFailed');
 }
