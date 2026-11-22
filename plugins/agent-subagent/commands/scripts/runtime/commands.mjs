@@ -6,7 +6,7 @@ import { fail, safeError, identifier } from './contracts.mjs';
 import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
 import { createRun, createExecution, publishRun, removeExecution, touchEntry, openRun, openRuns, observeRun, recordFiles, readRecord, saveGap, saveObservation,
-  workerAlive, expired, checkExpiry, removeScratch, terminal, delay } from './store.mjs';
+  workerAlive, confirmedTreeStopped, expired, checkExpiry, removeScratch, terminal, delay } from './store.mjs';
 import { executionConfiguration, prepareResume } from './runner.mjs';
 import { OUTPUT_LIMIT, communication, resume, initializationDiagnostics, needsInitialization, diagnostic, eventText,
   finalChunks, resultReport, measureReport, collectReport, exportHint, uncoveredGaps, textBlock } from './output.mjs';
@@ -386,7 +386,7 @@ export async function stopRun(context, request) {
     }
     context.table = undefined;
     let stopped = run.meta.localTreeStopped;
-    if (!await workerAlive(context, run.meta) || expired(run.meta, Date.now(), context)) {
+    if ((!await workerAlive(context, run.meta) || expired(run.meta, Date.now(), context)) && !await confirmedTreeStopped(context, run.meta)) {
       const root = expired(run.meta, Date.now(), context) ? run.meta.worker : run.meta.processes[0];
       if (root) {
         const cleanup = await stopOwnedTree(root.pid, [root, ...run.meta.processes], run.meta.token);

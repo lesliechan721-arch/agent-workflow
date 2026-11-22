@@ -296,6 +296,17 @@ export async function workerAlive(context, meta) {
   return (await getTable(context, [meta.worker])).some((row) => row.pid === meta.worker.pid && row.started === meta.worker.started);
 }
 
+export async function confirmedTreeStopped(context, meta) {
+  // The worker must have confirmed the tree stopped, and all recorded
+  // process identities must still be absent from the current process table.
+  if (!meta.localTreeStopped) return false;
+  const identities = [meta.worker, ...meta.processes];
+  const table = await getTable(context, identities);
+  return identities.every((identity) => Number.isSafeInteger(identity?.pid) && identity.pid > 0 &&
+    typeof identity.started === 'string' && identity.started.length > 0 &&
+    !table.some((row) => row.pid === identity.pid && row.started === identity.started));
+}
+
 async function fixLostTime(context, run) {
   if (run.meta.terminalAt !== null || await workerAlive(context, run.meta)) return false;
   // The worker can commit its clock while the parent observes its exit. Its
@@ -420,12 +431,7 @@ export async function removeExpired(context, run) {
     latest.meta.terminalAt !== run.meta.terminalAt || latest.meta.localTreeStopped !== run.meta.localTreeStopped ||
     JSON.stringify(latest.meta.worker) !== JSON.stringify(run.meta.worker) ||
     JSON.stringify(latest.meta.processes) !== JSON.stringify(run.meta.processes) || !expired(latest.meta, Date.now(), context)) return false;
-  const identities = [latest.meta.worker, ...latest.meta.processes];
-  const table = await getTable(context, identities);
-  if (identities.some((identity) => !Number.isSafeInteger(identity?.pid) || identity.pid <= 0 || typeof identity.started !== 'string' || !identity.started ||
-    table.some((row) => row.pid === identity.pid && row.started === identity.started))) return false;
-  // A recorded stopped tree is required: a missing root alone does not prove its descendants stopped.
-  if (!latest.meta.localTreeStopped) return false;
+  if (!await confirmedTreeStopped(context, latest.meta)) return false;
   await removeExecution(context, latest);
   return true;
 }

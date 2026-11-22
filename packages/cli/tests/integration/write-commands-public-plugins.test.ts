@@ -308,6 +308,9 @@ describe('five namespaced write commands', () => {
     const claudeRoot = path.join(cwd, 'claude-project');
     await fs.ensureDir(path.join(claudeRoot, '.git'));
     const claude = await createClaudeNativeTestRuntime(isolation);
+    const piBin = path.join(cwd, 'pi-controlled-bin');
+    await fs.outputFile(path.join(piBin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'controlled client entry', { mode: 0o755 });
+    env.PATH = [piBin, env.PATH].filter(Boolean).join(path.delimiter);
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
       if (['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())) {
         const piRoot = path.join(invocation.cwd!, '.pi');
