@@ -3,6 +3,7 @@ import type { InstallTaskProgress } from '../recovery/install-concurrency.js';
 import type { CommandEvent, CommandNotice, RebuildActionEvent } from './model.js';
 import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
 import { TARGET_DISPLAY_NAMES } from '../platforms/discovery.js';
+import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
 
 const ACTION_LABELS: Record<RebuildActionName, string> = {
   'preflight.inspect': '检查当前组件',
@@ -119,11 +120,12 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
       if (event.type === 'managed-command:producer' && event.source
         && typeof event.source.plugin === 'string'
         && SAFE_PLUGIN_NAME_PATTERN.test(event.source.plugin)
-        && (event.source.scope === 'project' || event.source.scope === 'user') && event.data) {
+        && event.source.scope === 'user' && event.data) {
         const data = event.data as Record<string, unknown>;
-        if (typeof data.packageKey !== 'string' || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(data.packageKey)
-          || !['start', 'success', 'failure'].includes(String(data.phase))) return;
-        const target = `${event.source.plugin} · 命令包 ${data.packageKey} · ${event.source.scope === 'user' ? '个人默认' : '当前项目'}`;
+        if (typeof data.selector !== 'string' || !['start', 'success', 'failure'].includes(String(data.phase))) return;
+        const sourceId = data.selector.split('/', 1)[0]!;
+        if (!CATALOG_SOURCE_ID_PATTERN.test(sourceId) || data.selector !== `${sourceId}/${event.source.plugin}`) return;
+        const target = `命令包 ${data.selector}`;
         const phase = data.phase === 'start' ? '刷新命令包'
           : data.phase === 'success' ? '命令包已完成' : '命令包失败';
         publish({ ...snapshot, current: { target, phase }, messages: [...snapshot.messages, `${target} · ${phase}`] });

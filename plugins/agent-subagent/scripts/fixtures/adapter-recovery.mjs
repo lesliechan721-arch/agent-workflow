@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { createChildChannel } from '../../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs';
-import { adapterMain, deferred, renderCommunicationInstructions } from '../../skills/spawn-subagent/scripts/adapters/common.mjs';
-import { executeCodex, negotiateCodex } from '../../skills/spawn-subagent/scripts/adapters/codex-v5.mjs';
-import { executeClaude, negotiateClaude } from '../../skills/spawn-subagent/scripts/adapters/claude-code-v5.mjs';
-import { executeOracle, negotiateOracle } from '../../skills/spawn-subagent/scripts/adapters/oracle-v5.mjs';
+import { createChildChannel } from '../../commands/scripts/runtime/adapter-channel.mjs';
+import { adapterMain, deferred, renderCommunicationInstructions } from '../../commands/scripts/adapters/common.mjs';
+import { executeCodex, negotiateCodex } from '../../commands/scripts/adapters/codex-v5.mjs';
+import { executeClaude, negotiateClaude } from '../../commands/scripts/adapters/claude-code-v5.mjs';
+import { executeOracle, negotiateOracle } from '../../commands/scripts/adapters/oracle-v5.mjs';
 
 // The adapter, negotiation, JSONL frames and session binding are real. Only the
 // external backend and the file transport are controlled. Native recovery tests

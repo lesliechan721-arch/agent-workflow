@@ -167,10 +167,11 @@ async function main() {
     await fs.cp(source, scripts, { recursive: true });
     const adapterFile = path.join(directory, 'fake-adapter.mjs');
     await fs.writeFile(adapterFile, qualificationAdapter);
-    const configuration = { installedIdentity: { source: 'fixture', plugin: 'fixture', platform: 'codex', scope: 'user' }, resourceRoot: installed,
-      effectiveValues: { subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
+    const configuration = { installedIdentity: { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginName: 'agent-subagent', pluginId: 'fixture/agent-subagent', platform: 'codex', pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64) }, resourceRoot: installed,
+      values: { subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
     await fs.writeFile(path.join(installed, 'effective.json'), JSON.stringify(configuration));
-    await fs.writeFile(path.join(scripts, 'aw-runtime-config.mjs'), "import fs from 'node:fs/promises';export async function readRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
+    await fs.mkdir(path.join(installed, '.aw'));
+    await fs.writeFile(path.join(installed, '.aw', 'command-runtime-config.mjs'), "import fs from 'node:fs/promises';export async function readCommandRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
     const environment = { ...Object.fromEntries(Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value])), HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
       AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory, TMPDIR: temporary, TMP: temporary, TEMP: temporary, FIXTURE_OBSERVED: observed, FIXTURE_INPUT: input, FIXTURE_FINISH: finish };
     command = (args, stdin) => new Promise((resolve, reject) => {
@@ -193,7 +194,7 @@ async function main() {
     const final = '跨卷最终答案。\r\n第二行。\n';
     const promptFile = path.join(directory, 'prompt.txt'), messageFile = path.join(directory, 'message.txt');
     await fs.writeFile(promptFile, prompt); await fs.writeFile(messageFile, message);
-    const started = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
+    const started = await command(['start', '--platform', 'codex', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
     requireTrue(!!started.handle);
     const handle = started.handle;
     await waitForCommunication(started, command);
@@ -222,7 +223,7 @@ async function main() {
     emit('cross-volume.result-export', true, 'ok', await checkQualificationExport(exported, outputFile, final));
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
-    const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
+    const active = await command(['start', '--platform', 'codex', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
     requireTrue(!!active.handle);
     await waitForCommunication(active, command);
     const stopped = await command(['stop', '--run', active.handle]);

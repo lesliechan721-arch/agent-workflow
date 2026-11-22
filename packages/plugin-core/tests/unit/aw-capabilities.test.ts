@@ -313,7 +313,7 @@ describe('AW capability contracts', () => {
       'aw source status',
       'aw cache status',
       'aw plugin config get official/demo',
-      'aw command run official/demo tool -- --json',
+      'aw command run official/demo -- tool --json',
       'aw plugin build demo',
       'aw catalog source sync',
       'aw review prepare demo',
@@ -323,7 +323,7 @@ describe('AW capability contracts', () => {
     const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
     expect(result.detected).toEqual([
       'aw.catalog-dev-source.v2', 'aw.catalog-source.v3', 'aw.cli-output.v2',
-      'aw.managed-commands.v1', 'aw.plugin-authoring.v2', 'aw.plugin-config.v2',
+      'aw.managed-commands.v2', 'aw.plugin-authoring.v2', 'aw.plugin-config.v2',
       'aw.plugin-recovery.v2', 'aw.skill-eval.v3',
     ])
     expect(result.observations.filter((entry) => entry.code === 'aw-command-unmapped')
@@ -335,8 +335,8 @@ describe('AW capability contracts', () => {
   // Test Value Gate: supported command routes require both execution and output capabilities; unknown routes must remain unmapped.
   it.each([
     ['aw command update example --from ./tool --json --yes', true],
-    ['aw command package sync example tools --scope user --json --yes', true],
-    ['aw command package remove example tools --scope user --json --yes', true],
+    ['aw command package sync official/example --json --yes', true],
+    ['aw command package remove official/example --json --yes', true],
     ['aw command sync example --json', false],
     ['aw command package update example --json', false],
   ] as const)('maps managed command capability support for %s', async (command, supported) => {
@@ -344,7 +344,7 @@ describe('AW capability contracts', () => {
     tempDirs.push(pluginRoot)
     await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), `\`\`\`sh\n${command}\n\`\`\`\n`)
     const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
-    expect(result.detected).toEqual(supported ? ['aw.cli-output.v2', 'aw.managed-commands.v1'] : [])
+    expect(result.detected).toEqual(supported ? ['aw.cli-output.v2', 'aw.managed-commands.v2'] : [])
     expect(result.observations.map((entry) => entry.code)).toEqual(supported
       ? ['aw-command-detected', 'aw-command-detected'] : ['aw-command-unmapped'])
   })

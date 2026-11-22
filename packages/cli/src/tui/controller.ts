@@ -52,7 +52,7 @@ import type {
   RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
 import { buildRebuildReceiptJson, requestedIntentAction } from '../output/command-receipt.js';
-import type { Diagnostic } from '../output/public-result.js';
+import type { Confirmation, Diagnostic } from '../output/public-result.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { buildOperationResultModel } from '../commands/operation-planner.js';
 import { buildOperationReviewProjection } from './operation-review-planner.js';
@@ -466,6 +466,8 @@ export interface ConfigOperationEvidence {
   applyEvidence?: unknown;
   applyChanges?: string[];
   commandReviewChanges?: OperationReviewChange[];
+  hostPermissionEffects?: Confirmation['effects'];
+  commandPackageEvidence?: readonly import('../utils/plugin-config-command-apply.js').ConfigCommandPackageEvidence[];
   applyWarnings?: string[];
   applyBlockers?: Array<{ code: string; message: string }>;
   commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
@@ -529,6 +531,7 @@ export interface OperationEvidence {
     configDigest: string;
     proposedConfigDigest: string;
     sourceIdentity?: string;
+    identityChanged?: boolean;
     inventoryDigest: string;
     impactDigest?: string;
     referenceCount: number;

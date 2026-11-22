@@ -385,13 +385,18 @@ function buildProfile(options: {
   const configKeys = new Map<string, Set<string>>()
   for (const plugin of options.plugins ?? [...new Set(options.skills.map((skill) => skill.plugin))]) {
     const keys = new Set(plugin.manifest.artifacts?.configKeys ?? [])
-    for (const set of plugin.manifest.managedCommands?.sets ?? []) {
-      if (set.mode === 'dynamic') for (const key of set.refreshKeys) keys.add(key)
+    const command = plugin.manifest.command
+    if (command && command.platforms.some((platform) => platform === options.platform)) {
+      const sharedKeys = new Set(configKeys.get(`${plugin.manifest.name}\0user`))
+      if (command.mode === 'dynamic') for (const key of command.refreshKeys) sharedKeys.add(key)
+      for (const key of command.runtimeConfig?.keys ?? []) sharedKeys.add(key)
+      if (sharedKeys.size) configKeys.set(`${plugin.manifest.name}\0user`, sharedKeys)
     }
     if (keys.size || Object.keys(options.config[plugin.manifest.name] ?? {}).length) {
       for (const key of Object.keys(options.config[plugin.manifest.name] ?? {})) keys.add(key)
       for (const scope of getProfileRenderScopes(options.platform, options.scope)) {
-        configKeys.set(`${plugin.manifest.name}\0${scope}`, new Set(keys))
+        const scopeKey = `${plugin.manifest.name}\0${scope}`
+        configKeys.set(scopeKey, new Set([...configKeys.get(scopeKey) ?? [], ...keys]))
       }
     }
   }

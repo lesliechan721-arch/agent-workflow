@@ -34,7 +34,7 @@ import {
   getPluginAuthoringCapabilities,
   getPluginAuthoringCapabilitySurface,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
-  getPluginCommandId,
+  getCommandPackageId,
   getManagedCommandArtifactTargets,
   validatePluginManifest,
   resolveSupportedPlatforms,
@@ -123,16 +123,15 @@ process.stdout.write(result.stdout);process.stderr.write(result.stderr);process.
     const manifest = validatePluginManifest('/plugin', {
       schemaVersion: 4, name: 'managed-tools', version: '1.0.0', description: 'Managed tools',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-      managedCommands: { packages: [{ key: 'tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' }], sets: [] },
+      command: { sourceDir: './tools', platforms: ['codex'], mode: 'static', routes: {} },
     });
-    expect(manifest.managedCommands?.packages[0]?.refreshKeys).toEqual([]);
+    expect(manifest.command).toMatchObject({ routes: { subcommands: [] } });
     expect(getManagedCommandArtifactTargets(manifest)).toEqual([]);
-    expect(getAwCapabilityRegistry()).toEqual(expect.arrayContaining(['aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1']));
+    expect(getAwCapabilityRegistry()).toEqual(expect.arrayContaining(['aw.managed-commands.v2', 'aw.claude.sandbox-exclusions.v1']));
     expect(getPluginAuthoringCapabilitySurface('managed-commands').surface).toBe('managed-commands');
-    expect(getPluginCommandId({ schemaVersion: 2, producer: {
+    expect(getCommandPackageId({
       sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example-plugin',
-      kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null,
-    }, set: 'tools', key: 'check', variant: 'default' })).toBe('cmdp_fef82b56d2543a37');
+    })).toMatch(/^pkg_[0-9a-f]{64}$/u);
   });
   it('ships the v4 schema, capability and shared branch resolver through public exports', () => {
     const config = { schemaVersion: 4, fields: { backend: { type: 'object', properties: {

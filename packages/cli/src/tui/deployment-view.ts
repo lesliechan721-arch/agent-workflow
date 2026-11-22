@@ -3,8 +3,9 @@ import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploym
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic } from '../output/public-result.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
-import { componentGapDescription, componentGapOutcome, isDeliveryNoticeCode, INVOCATION_POLICY_NOT_APPLIED, PI_AGENT_CONSUMER_NOTICE, safeComponentIdentity,
-  safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
+import { componentGapDescription, componentGapOutcome, GROK_ARGUMENT_BOUNDARIES_UNAVAILABLE, GROK_WRAPPER_TARGET_NOT_COVERED, HOST_PERMISSION_ADDITIONAL_IMPACT,
+  isDeliveryNoticeCode, INVOCATION_POLICY_NOT_APPLIED,
+  PI_AGENT_CONSUMER_NOTICE, safeComponentIdentity, safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { agentLabel, scopeLabel } from './glossary.js';
 
 const stateLabels: Record<string, string> = { present: '存在', absent: '缺失', unknown: '未知', 'not-applicable': '不适用',
@@ -31,11 +32,20 @@ export function componentDeliveryLines(delivery: ComponentDelivery): string[] {
   ];
 }
 
-export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], field?: string): string {
+export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], field?: string, message?: string): string {
+  if (code === HOST_PERMISSION_ADDITIONAL_IMPACT) return message ? `权限的额外影响 · ${message}` : '此权限也可能影响其他命令。';
   if (code === INVOCATION_POLICY_NOT_APPLIED) {
     const actions = safeSkippedPermissionActions(detail?.skippedPermissionActions);
     const position = field ? ` ${safeComponentIdentity(field)}` : '';
-    return actions.length ? `已跳过调用权限${position}中的动作（${actions.join(', ')}）。` : `已跳过部分调用权限${position}。`;
+    if (detail?.reasonCode === GROK_WRAPPER_TARGET_NOT_COVERED) {
+      return `部分施加调用权限${position}中的动作（${actions.join(', ')}）。附加参数若指定了内部命令，Grok 会单独审核该命令。`;
+    }
+    const message = actions.length ? `已跳过调用权限${position}中的动作（${actions.join(', ')}）。` : `已跳过部分调用权限${position}。`;
+    if (detail?.reasonCode === 'grok-project-trust-required') return `${message}在 Grok 中确认此项目的信任设置后重试。`;
+    if (detail?.reasonCode === 'grok-shell-pattern-unrepresentable') return `${message}前缀包含 Grok 无法用于 Shell 规则的字符。`;
+    if (detail?.reasonCode === 'grok-shell-prefix-normalized') return `${message}Grok 无法确定要放行的内部命令。`;
+    return detail?.reasonCode === GROK_ARGUMENT_BOUNDARIES_UNAVAILABLE
+      ? `${message}Grok Build 将命令参数拼成一段文本，无法区分参数内的空格和参数之间的空格。` : message;
   }
   if (code !== PI_AGENT_CONSUMER_NOTICE) return '旧输出仍保留，可能仍在生效。请先检查该位置再重试。';
   const reason = detail?.reasonCode;

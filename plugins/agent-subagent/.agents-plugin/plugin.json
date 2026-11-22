@@ -627,11 +627,20 @@
                   },
                   "commandId": {
                     "type": "string",
-                    "title": "托管命令 ID",
+                    "title": "托管命令名称或 ID",
                     "required": true,
                     "validation": {
-                      "pattern": "^(?:cmdp_[0-9a-f]{16}|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
-                      "maxLength": 41
+                      "pattern": "^(?:[a-z][a-z0-9-]{0,31}/[a-z0-9]+(?:-[a-z0-9]+)*|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+                      "maxLength": 256
+                    }
+                  },
+                  "subcommand": {
+                    "type": "string",
+                    "title": "子命令",
+                    "description": "插件命令的精确子命令。留空时使用插件的 fallback 或用户托管命令。",
+                    "validation": {
+                      "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$",
+                      "maxLength": 64
                     }
                   }
                 }
@@ -874,8 +883,7 @@
       "complexTaskProfile",
       "advancedTaskProfile",
       "taskCustomProfiles",
-      "subagentCommands",
-      "subagentRetentionHours"
+      "subagentCommands"
     ],
     "sourceDirs": [
       "./skills/spawn-subagent"
@@ -887,10 +895,9 @@
         "aw.plugin-config.v5",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
-        "aw.installed-runtime-config.v2",
-        "aw.managed-commands.v1",
+        "aw.managed-commands.v2",
         "aw.cli-output.v2",
-        "aw.native-tools.v2"
+        "aw.native-tools.v3"
       ]
     }
   },
@@ -905,79 +912,69 @@
     },
     "cacheable": true
   },
-  "managedCommands": {
-    "sets": [
-      {
-        "set": "guide",
-        "producer": {
-          "kind": "artifact",
-          "artifactId": "spawn-subagent-skill",
-          "platform": "codex"
+  "command": {
+    "sourceDir": "./commands",
+    "platforms": [
+      "codex",
+      "claude"
+    ],
+    "mode": "static",
+    "runtimeConfig": {
+      "keys": [
+        "subagentCommands",
+        "subagentRetentionHours"
+      ]
+    },
+    "routes": {
+      "subcommands": [
+        {
+          "name": "start",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "start"
+          ]
         },
-        "mode": "static",
-        "entries": [
-          {
-            "key": "subagent",
-            "variant": "default",
-            "runner": "node",
-            "entry": "scripts/subagent.mjs"
-          }
-        ]
-      },
-      {
-        "set": "guide-communication",
-        "producer": {
-          "kind": "artifact",
-          "artifactId": "spawn-subagent-skill",
-          "platform": "codex"
+        {
+          "name": "send",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "send"
+          ]
         },
-        "mode": "static",
-        "entries": [
-          {
-            "key": "message",
-            "variant": "default",
-            "runner": "node",
-            "entry": "scripts/message.mjs",
-            "cwd": "caller"
-          }
-        ]
-      },
-      {
-        "set": "guide-claude",
-        "producer": {
-          "kind": "artifact",
-          "artifactId": "spawn-subagent-claude-skill",
-          "platform": "claude"
+        {
+          "name": "wait",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "wait"
+          ]
         },
-        "mode": "static",
-        "entries": [
-          {
-            "key": "subagent",
-            "variant": "default",
-            "runner": "node",
-            "entry": "scripts/subagent.mjs"
-          }
-        ]
-      },
-      {
-        "set": "guide-communication-claude",
-        "producer": {
-          "kind": "artifact",
-          "artifactId": "spawn-subagent-claude-skill",
-          "platform": "claude"
+        {
+          "name": "result",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "result"
+          ]
         },
-        "mode": "static",
-        "entries": [
-          {
-            "key": "message",
-            "variant": "default",
-            "runner": "node",
-            "entry": "scripts/message.mjs",
-            "cwd": "caller"
-          }
-        ]
-      }
-    ]
+        {
+          "name": "stop",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "stop"
+          ]
+        },
+        {
+          "name": "message",
+          "runner": "node",
+          "entry": "scripts/message.mjs",
+          "cwd": "caller"
+        }
+      ]
+    }
   },
   "extensions": {
     "permissions": [
@@ -985,123 +982,65 @@
         "name": "subagent-commands",
         "allow": [
           {
-            "command": {
-              "set": "guide",
-              "key": "subagent",
-              "variant": "default"
-            },
             "argsPrefix": [
-              "start"
+              "start",
+              "--platform",
+              "codex"
             ]
           },
           {
-            "command": {
-              "set": "guide",
-              "key": "subagent",
-              "variant": "default"
-            },
             "argsPrefix": [
               "send"
             ]
           },
           {
-            "command": {
-              "set": "guide",
-              "key": "subagent",
-              "variant": "default"
-            },
             "argsPrefix": [
               "wait"
             ]
           },
           {
-            "command": {
-              "set": "guide",
-              "key": "subagent",
-              "variant": "default"
-            },
             "argsPrefix": [
               "result"
             ]
           },
           {
-            "command": {
-              "set": "guide",
-              "key": "subagent",
-              "variant": "default"
-            },
             "argsPrefix": [
               "stop"
             ]
           }
         ],
         "agentOverrides": {
-          "claude": null,
-          "antigravity": null,
-          "cursor": null,
-          "opencode": null,
-          "pi": null,
-          "copilot": null,
-          "grok": null,
-          "generic": null
-        }
-      },
-      {
-        "name": "subagent-claude-commands",
-        "allow": [
-          {
-            "command": {
-              "set": "guide-claude",
-              "key": "subagent",
-              "variant": "default"
-            },
-            "argsPrefix": [
-              "start"
+          "claude": {
+            "allow": [
+              {
+                "argsPrefix": [
+                  "start",
+                  "--platform",
+                  "claude"
+                ]
+              },
+              {
+                "argsPrefix": [
+                  "send"
+                ]
+              },
+              {
+                "argsPrefix": [
+                  "wait"
+                ]
+              },
+              {
+                "argsPrefix": [
+                  "result"
+                ]
+              },
+              {
+                "argsPrefix": [
+                  "stop"
+                ]
+              }
             ]
           },
-          {
-            "command": {
-              "set": "guide-claude",
-              "key": "subagent",
-              "variant": "default"
-            },
-            "argsPrefix": [
-              "send"
-            ]
-          },
-          {
-            "command": {
-              "set": "guide-claude",
-              "key": "subagent",
-              "variant": "default"
-            },
-            "argsPrefix": [
-              "wait"
-            ]
-          },
-          {
-            "command": {
-              "set": "guide-claude",
-              "key": "subagent",
-              "variant": "default"
-            },
-            "argsPrefix": [
-              "result"
-            ]
-          },
-          {
-            "command": {
-              "set": "guide-claude",
-              "key": "subagent",
-              "variant": "default"
-            },
-            "argsPrefix": [
-              "stop"
-            ]
-          }
-        ],
-        "agentOverrides": {
-          "codex": null,
           "antigravity": null,
           "cursor": null,
           "opencode": null,
@@ -1114,7 +1053,7 @@
     ]
   },
   "nativeTools": {
-    "reader": "./skills/spawn-subagent/scripts/runtime/native-tool-reader.mjs",
+    "reader": "./commands/scripts/runtime/native-tool-reader.mjs",
     "definitions": [
       {
         "key": "windows-job",
@@ -1123,21 +1062,7 @@
     ],
     "consumers": [
       {
-        "kind": "managed-command-set",
-        "key": "guide",
-        "tools": [
-          {
-            "key": "windows-job",
-            "platforms": [
-              "win32"
-            ],
-            "policy": "required"
-          }
-        ]
-      },
-      {
-        "kind": "managed-command-set",
-        "key": "guide-communication",
+        "kind": "plugin-command",
         "tools": [
           {
             "key": "windows-job",
@@ -1151,32 +1076,6 @@
       {
         "kind": "plugin-test",
         "key": "node",
-        "tools": [
-          {
-            "key": "windows-job",
-            "platforms": [
-              "win32"
-            ],
-            "policy": "required"
-          }
-        ]
-      },
-      {
-        "kind": "managed-command-set",
-        "key": "guide-claude",
-        "tools": [
-          {
-            "key": "windows-job",
-            "platforms": [
-              "win32"
-            ],
-            "policy": "required"
-          }
-        ]
-      },
-      {
-        "kind": "managed-command-set",
-        "key": "guide-communication-claude",
         "tools": [
           {
             "key": "windows-job",

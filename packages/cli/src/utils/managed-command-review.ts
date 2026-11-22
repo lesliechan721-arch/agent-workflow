@@ -1,20 +1,22 @@
+import { antigravityPermissionResources } from '../platforms/antigravity-permissions.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { COMMAND_PRODUCER_RECORD_FILE, normalizeInstalledCommandProducer, type InstalledCommandProducer, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 
-import type { ClaudePermissions } from '../generators/permissions.js';
+import type { ClaudePermissions, InactiveManagedCommandPermission } from '../generators/permissions.js';
+import { isHostPermissionMutation, isPermissionHost, type HostPermissionMutation, type HostPermissionRule } from '../platforms/host-permission-policy.js';
 import type { DeploymentBinding, ProjectionResult, RenderUnit } from '../platforms/contracts.js';
 
 export type ManagedCommandPermissionReview =
   | { kind: 'codex-rules'; pluginId: string; path: string; content: string }
-  | { kind: 'claude-permissions'; pluginId: string; path: string; permissions: ClaudePermissions };
+  | { kind: 'claude-permissions'; pluginId: string; path: string; permissions: ClaudePermissions }
+  | { kind: HostPermissionMutation['kind']; pluginId: string; path: string; permissions: HostPermissionRule[] };
 
 /** Operation-local values copied from the same projected bytes that execution publishes. */
 export interface ManagedCommandReviewEvidence {
-  producers: InstalledCommandProducer[];
   permissions: ManagedCommandPermissionReview[];
+  inactivePermissions: InactiveManagedCommandPermission[];
 }
 
 function invalid(): never { throw new Error('commandReviewEvidenceInvalid: The prepared command Review does not match its deployment.'); }
@@ -29,38 +31,33 @@ async function ordinaryFile(file: string): Promise<Buffer> {
 export async function captureManagedCommandReviewEvidence(options: {
   binding: DeploymentBinding;
   renderUnits: readonly RenderUnit[];
-  components: readonly PluginComponent[];
   projections: readonly ProjectionResult[];
+  inactivePermissions?: readonly InactiveManagedCommandPermission[];
 }): Promise<ManagedCommandReviewEvidence> {
   const { binding } = options;
-  const producers: InstalledCommandProducer[] = [];
   const permissions: ManagedCommandPermissionReview[] = [];
   for (const projection of options.projections) {
     const unit = options.renderUnits.find((candidate) => candidate.id === projection.renderUnitId);
     if (!unit || unit.physicalKey !== binding.physicalKey && unit.output === 'package') invalid();
-    if (projection.bundle) for (const component of projection.components) {
-      if (!options.components.some((candidate) => candidate.id === component.id && candidate.kind === 'skill')) continue;
-      const relative = `skills/${component.nativeName}/${COMMAND_PRODUCER_RECORD_FILE}`;
-      if (!component.relativeOutputs.includes(relative)) continue;
-      const record = normalizeInstalledCommandProducer(JSON.parse((await ordinaryFile(path.join(projection.bundle.stagingRoot, relative))).toString('utf8')));
-      const producer = record.producer;
-      if (producer.kind === 'package' || producer.sourceId !== binding.plugin.sourceId
-        || producer.sourceIdentity !== binding.plugin.sourceIdentity || producer.pluginName !== binding.plugin.pluginId.split('/').at(-1)
-        || producer.platform !== binding.platform || producer.placementKey !== unit.physicalKey
-        || producer.scope !== unit.renderScope.kind || producer.projectRoot !== (unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : null)
-        || component.id !== (producer.kind === 'static-skill' ? `skill:${producer.key}` : producer.key)) invalid();
-      producers.push(record);
-    }
     for (const contribution of projection.supplements) {
       const codex = binding.platform === 'codex' && contribution.kind === 'owned-file'
         && contribution.id.startsWith('policy:') && path.extname(contribution.destination) === '.rules';
       const claude = binding.platform === 'claude' && contribution.kind === 'config-entry'
         && contribution.mergeKey?.startsWith('claude-permissions:');
-      if (!codex && !claude) continue;
+      const host = isPermissionHost(binding.platform) && contribution.kind === 'config-entry'
+        && contribution.mergeKey?.startsWith(`${binding.platform}-permissions:`);
+      if (!codex && !claude && !host) continue;
       const bytes = await ordinaryFile(contribution.stagingPath);
       if (`sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}` !== contribution.contentDigest) invalid();
       if (codex) {
         permissions.push({ kind: 'codex-rules', pluginId: binding.plugin.pluginId, path: contribution.destination, content: bytes.toString('utf8') });
+      } else if (host) {
+        const mutation: unknown = JSON.parse(bytes.toString('utf8'));
+        if (!isPermissionHost(binding.platform) || !isHostPermissionMutation(mutation, binding.platform)) invalid();
+        permissions.push({ kind: mutation.kind, pluginId: binding.plugin.pluginId, path: contribution.destination,
+          permissions: mutation.effective });
+        for (const affected of mutation.affected ?? []) permissions.push({ kind: mutation.kind, path: contribution.destination,
+          pluginId: affected.pluginId, permissions: affected.permissions });
       } else {
         const mutation = JSON.parse(bytes.toString('utf8')) as { kind?: unknown; permissions?: unknown };
         const value = mutation.permissions;
@@ -74,5 +71,21 @@ export async function captureManagedCommandReviewEvidence(options: {
       }
     }
   }
-  return { producers, permissions };
+  return { permissions, inactivePermissions: (options.inactivePermissions ?? [])
+    .map((permission) => ({ ...permission, argsPrefix: [...permission.argsPrefix] })) };
+}
+
+/** Review only inactive restrictions that survive the final shared-file merge. */
+export function reviewedInactivePermissions(binding: DeploymentBinding, evidence?: ManagedCommandReviewEvidence): InactiveManagedCommandPermission[] {
+  if (!evidence) return [];
+  if (!isPermissionHost(binding.platform)) return evidence.inactivePermissions;
+  const active = evidence.permissions.flatMap((item) => item.kind !== 'codex-rules' && item.kind !== 'claude-permissions'
+    && item.pluginId === binding.plugin.pluginId ? item.permissions : []);
+  return evidence.inactivePermissions.filter(({ action, argsPrefix }) => {
+    const tokens = ['aw', 'command', 'run', binding.plugin.pluginId, '--', ...argsPrefix];
+    const prefix = tokens.join(' ');
+    const resources = binding.platform === 'antigravity' ? antigravityPermissionResources({ tokens })
+      : [binding.platform === 'grok' ? prefix : prefix + ' *'];
+    return active.some((rule) => resources.includes(rule.resource) && rule.effect === action);
+  });
 }

@@ -6,9 +6,9 @@ import { build } from 'esbuild';
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptRoot, '..');
 const entries = [
-  'skills/spawn-subagent/scripts/file-selection/selection.mjs',
-  'skills/spawn-subagent/scripts/adapters/codex-profile.mjs',
-  'skills/spawn-subagent/scripts/runtime/windows-native.mjs',
+  'commands/scripts/file-selection/selection.mjs',
+  'commands/scripts/adapters/codex-profile.mjs',
+  'commands/scripts/runtime/windows-native.mjs',
 ];
 
 const readerPath = process.env.AW_PLUGIN_NATIVE_READER;

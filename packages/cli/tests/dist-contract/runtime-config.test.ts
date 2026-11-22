@@ -22,7 +22,9 @@ it('ships a standalone runtime reader in the CLI tarball', async () => {
   });
   const packed = JSON.parse(result.stdout) as Array<{ filename: string; files: Array<{ path: string }> }>;
   const helperRelative = 'dist/authoring/assets/aw-runtime-config.mjs';
-  expect(packed[0]!.files.some((file) => file.path === helperRelative)).toBe(true);
+  expect(packed[0]!.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+    helperRelative, 'dist/authoring/assets/command-runtime-config.mjs',
+  ]));
   await exec('tar', ['-xzf', path.join(packRoot, packed[0]!.filename), '-C', packRoot, `package/${helperRelative}`]);
   const skillRoot = path.join(root, 'installed', 'standalone-tool');
   const caller = Buffer.from("import {readRuntimeConfig} from './aw-runtime-config.mjs'; console.log(JSON.stringify(await readRuntimeConfig({from:import.meta.url,keys:['displayStyle']})));\n");

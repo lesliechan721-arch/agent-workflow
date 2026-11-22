@@ -5,7 +5,7 @@ import type {
   CatalogManifestV7,
   CatalogSourceId,
   CliVersion,
-  DistributionName,
+  CommandRoutesArtifact,
   ManagedArtifactId,
   PlatformName,
   PlatformTarget,
@@ -19,17 +19,15 @@ import type {
 import type { Diagnostic } from './output/public-result.js';
 import type { ComponentDelivery } from './output/component-delivery.js';
 
-export type ArtifactSurface =
-  | { kind: 'platform'; name: PlatformTarget }
-  | { kind: 'distribution'; name: DistributionName }
-  | { kind: 'aw'; name: 'managed-commands' };
-export type ArtifactRenderSurfaceName = PlatformTarget | DistributionName | 'managed-commands';
-
 export interface CommandProducerResult {
   producer: ProducerIdentity;
+  packageId: string;
+  selector: string;
+  action: 'created' | 'updated' | 'unchanged' | 'removed';
+  availability: 'ready' | 'empty' | 'unavailable' | 'removed';
+  subcommands: string[];
+  hasFallback: boolean;
   state: 'completed' | 'partial' | 'failed';
-  commandIds: string[];
-  removedCommandIds: string[];
   errors: Array<{ code: string; message: string; subject?: string }>;
   recoveryActions: string[];
 }
@@ -487,15 +485,6 @@ export interface PortableSkillCandidate {
   configDigest?: string;
 }
 
-export interface ArtifactPlan {
-  version: 2;
-  artifacts: ArtifactPlanArtifact[];
-}
-
-export type ArtifactPlanArtifact =
-  | import('@lesliechan721/aw-plugin-core/manifest').CommandSetArtifact
-  | import('@lesliechan721/aw-plugin-core/manifest').CommandPackageArtifact;
-
 export interface GeneratedArtifact {
   path: string;
   paths?: string[];
@@ -504,7 +493,7 @@ export interface GeneratedArtifact {
   artifactKey?: string;
   hookGroups?: TrackedHookGroupIdentity[];
   id?: ManagedArtifactId;
-  target?: ArtifactPlanArtifact['target'];
+  target?: CommandRoutesArtifact['target'];
   state?: ArtifactState;
   disabledReason?: string;
   refreshKeys?: string[];

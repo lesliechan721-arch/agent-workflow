@@ -17,11 +17,6 @@ export type PluginPath = string
 export type StringArray = string[]
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "commandName".
- */
-export type CommandName = string
-/**
- * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "permissionCommands".
  */
 export type PermissionCommands = (string | ManagedCommandPermission)[]
@@ -304,40 +299,47 @@ capabilitySetDigest: string
 }[]
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "managedCommandSet".
+ * via the `definition` "pluginCommand".
  */
-export type ManagedCommandSet = ({
-set: CommandName
-producer: ManagedCommandProducer
+export type PluginCommand = ({
+sourceDir: PluginPath
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")[]
+runtimeConfig?: {
+keys: string[]
+}
 mode: "static"
-entries: CommandDefinition[]
+routes: CommandRoutes
 } | {
-set: CommandName
-producer: ManagedCommandProducer
+sourceDir: PluginPath
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")[]
+runtimeConfig?: {
+keys: string[]
+}
 mode: "dynamic"
 refreshKeys: string[]
 })
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "managedCommandProducer".
+ * via the `definition` "commandName".
  */
-export type ManagedCommandProducer = ({
-kind: "artifact"
-artifactId: string
-platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")
-} | {
-kind: "static-skill"
-platform: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")
-skillKey: string
-} | {
-kind: "package"
-packageKey: CommandName
-})
+export type CommandName = string
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "commandRelativeFile".
  */
 export type CommandRelativeFile = string
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "nativeToolConsumer".
+ */
+export type NativeToolConsumer = ({
+kind: "plugin-command"
+tools: NativeToolBinding[]
+} | {
+kind: "plugin-test"
+key: "node"
+tools: NativeToolBinding[]
+})
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "nativeToolBinding".
@@ -467,7 +469,7 @@ marketplace: Marketplace
 interface?: Interface
 extensions?: Extensions
 artifacts?: Artifacts
-managedCommands?: ManagedCommands
+command?: PluginCommand
 nativeTools?: NativeTools
 buildConfig?: BuildConfig
 scripts?: Scripts
@@ -677,17 +679,7 @@ agentOverrides?: PermissionOverrides
  * via the `definition` "managedCommandPermission".
  */
 export interface ManagedCommandPermission {
-command: ManagedCommandReference
-argsPrefix?: string[]
-}
-/**
- * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "managedCommandReference".
- */
-export interface ManagedCommandReference {
-set: CommandName
-key: CommandName
-variant?: CommandName
+argsPrefix: string[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -937,31 +929,18 @@ scopes?: ("user" | "project")[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "managedCommands".
+ * via the `definition` "commandRoutes".
  */
-export interface ManagedCommands {
-packages?: ManagedCommandPackage[]
-sets?: ManagedCommandSet[]
+export interface CommandRoutes {
+subcommands?: CommandSubcommand[]
+fallback?: CommandLaunch
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "managedCommandPackage".
+ * via the `definition` "commandSubcommand".
  */
-export interface ManagedCommandPackage {
-key: CommandName
-scope: ("user" | "project")
-platforms: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "copilot" | "grok")[]
-sourceDir: PluginPath
-render?: true
-refreshKeys?: string[]
-}
-/**
- * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "commandDefinition".
- */
-export interface CommandDefinition {
-key: CommandName
-variant?: CommandName
+export interface CommandSubcommand {
+name: CommandName
 runner: ("node" | "executable")
 entry: CommandRelativeFile
 args?: string[]
@@ -985,6 +964,18 @@ export interface CommandEnvironmentSource {
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "commandLaunch".
+ */
+export interface CommandLaunch {
+runner: ("node" | "executable")
+entry: CommandRelativeFile
+args?: string[]
+env?: CommandEnvironment
+envFrom?: CommandEnvironmentSource
+cwd?: ("caller" | "resource")
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "nativeTools".
  */
 export interface NativeTools {
@@ -994,15 +985,6 @@ key: CommandName
 protocol: string
 }[]
 consumers: NativeToolConsumer[]
-}
-/**
- * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
- * via the `definition` "nativeToolConsumer".
- */
-export interface NativeToolConsumer {
-kind: ("managed-command-set" | "plugin-test")
-key: CommandName
-tools: NativeToolBinding[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema

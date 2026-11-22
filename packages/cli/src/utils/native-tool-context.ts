@@ -11,14 +11,14 @@ export function assertSupportedNativeToolProtocol(protocol: string): void {
 
 export async function prepareNativeToolContext(options: {
   closure?: NativeToolClosure;
-  kind: 'managed-command-set' | 'plugin-test';
-  key: string;
   platform?: NodeJS.Platform;
   arch?: string;
   prepare?: (options?: PrepareWindowsJobHelperOptions) => Promise<string>;
-}): Promise<NativeToolContext> {
+} & ({ kind: 'plugin-command' } | { kind: 'plugin-test'; keys: readonly string[] })): Promise<NativeToolContext> {
   const context: NativeToolContext = { schemaVersion: 1, tools: {} };
-  const closure = getNativeToolConsumerClosure(options.closure, options.kind, options.key);
+  const closure = options.kind === 'plugin-command'
+    ? getNativeToolConsumerClosure(options.closure, options.kind)
+    : getNativeToolConsumerClosure(options.closure, options.kind, options.keys);
   if (!closure) return context;
   const platform = options.platform ?? process.platform;
   for (const binding of closure.consumers.flatMap((consumer) => consumer.tools)) {

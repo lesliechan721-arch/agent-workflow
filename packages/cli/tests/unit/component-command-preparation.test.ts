@@ -2,88 +2,77 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
+import { normalizeInstalledCommandProducer } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers } from '../../src/utils/component-command-preparation.js';
-import { readInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 
-// Protect the shared prepare boundary with actual component and agent-command renderer requests.
+// The same frozen routes govern Markdown substitutions and host grants, including empty packages.
 describe('component command preparation', () => {
-  it.each([false, true])('freezes one complete Skill before its command request (missing entry: %s)', async (missingEntry) => {
+  it.each([true, false])('binds Skills and permissions against the provided routes (active: %s)', async (active) => {
     const isolated = await createIsolatedTestEnv();
     try {
-      const root = path.join(isolated.layout.fixtureCwd, 'plugin');
-      const trace = path.join(isolated.layout.fixtureCwd, 'render-trace.jsonl');
-      await fs.outputJson(path.join(root, '.agents-plugin', 'plugin.json'), {
-        schemaVersion: 4, name: 'command-profile', version: '1.0.0', description: 'Command closure fixture.',
-        platforms: ['codex'],
+      const cwd = isolated.layout.fixtureCwd;
+      const root = path.join(cwd, 'plugin');
+      const trace = path.join(cwd, 'render-trace');
+      const manifest = {
+        schemaVersion: 4, name: 'command-profile', version: '1.0.0', description: 'Command fixture.',
+        platforms: ['claude'], skills: './skills',
         marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-        requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } },
-        nativeTools: {
-          definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],
-          consumers: [{ kind: 'managed-command-set', key: 'tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] }],
-        },
-        artifacts: { configKeys: [] },
+        requires: { aw: { capabilities: ['aw.managed-commands.v2', 'aw.claude.sandbox-exclusions.v1'] } },
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-        managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', platform: 'codex', artifactId: 'provider' },
-          mode: 'dynamic', refreshKeys: [] }] },
-      });
-      await fs.outputFile(path.join(root, 'render.mjs'), `
-import fs from 'node:fs';
-const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(context.surface) + '\\n');
-if (context.surface === 'agent-plugin') {
- console.log(JSON.stringify({version:3,components:[{id:'provider',kind:'skill',name:'provider',content:{files:{
-  'SKILL.md':{text:'---\\nname: provider\\ndescription: Command closure fixture.\\n---\\n{{aw.command:tools/run}} check\\n'},
-  'README.md':{text:'# Provider\\n'},
-  'scripts/run.mjs':{text:'process.stdout.write("ok");\\n'}
- }}},{id:'unrelated',kind:'skill',name:'unrelated',content:{files:{'SKILL.md':{text:'---\\nname: unrelated\\ndescription: Independent Skill.\\n---\\nNo commands.\\n'},'README.md':{text:'# Independent\\n'}}}}],omitted:[],unmet:[]}));
-} else if (context.surface === 'agent-commands') {
- if (!fs.existsSync(context.producers[0].resourceRoot + '/scripts/run.mjs')) process.exit(32);
- console.log(JSON.stringify({version:2,artifacts:[{id:'command-set.tools',target:'aw.command-set',kind:'commandSet',platform:'codex',state:'present',refreshKeys:[],entries:[{key:'run',runner:'node',entry:'scripts/${missingEntry ? 'missing' : 'run'}.mjs'}]}]}));
-} else process.exit(33);
-`);
-      const source = { ...await readPluginManifest(root), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+        command: { sourceDir: './commands', mode: 'dynamic', refreshKeys: [] },
+        extensions: { permissions: [{ name: 'run', allow: [{ argsPrefix: [] }, { argsPrefix: ['check-all'] }],
+          ask: [{ argsPrefix: ['missing'] }], deny: [{ argsPrefix: ['check', 'hidden'] }],
+          agentOverrides: { claude: { sandbox: { excludedCommands: [{ argsPrefix: ['check'] }, { argsPrefix: ['Check'] }] } } } }] },
+      };
+      await fs.outputJson(path.join(root, '.agents-plugin', 'plugin.json'), manifest);
+      await fs.outputFile(path.join(root, 'render.mjs'), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(trace)}, 'unexpected'); process.exitCode = 2;`);
+      await fs.outputFile(path.join(root, 'commands', 'check.mjs'), 'process.exitCode = 0;\n');
+      for (const [name, text] of [['dependent', '{{aw.command}} check'], ['independent', 'Read this.']]) {
+        await fs.outputFile(path.join(root, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: Example Skill.\n---\n${text}\n`);
+      }
+      const plugin = { ...await readPluginManifest(root), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`,
         pluginId: 'fixture/command-profile' };
-      const bundleRoot = path.join(isolated.layout.fixtureCwd, 'bundle');
-      await bundleLocalPlugin(source, bundleRoot, { buildMode: 'staging', commandEnv: isolated.env });
-      const plugin = { ...await readPluginManifest(bundleRoot, { mode: 'bundle' }), sourceId: source.sourceId,
-        sourceIdentity: source.sourceIdentity, pluginId: source.pluginId };
-      // This lower boundary takes already qualified facts. It does not qualify a real client.
-      const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
+      const capabilities = getAuthoringPlatformCapabilities('claude', 'user');
       capabilities.kinds.skill = { status: 'supported', reasonCodes: [], delivery: ['native-package'] };
       const config = await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, manifest: plugin.manifest,
-        platform: 'codex', scope: 'user', cwd: isolated.layout.fixtureCwd, env: isolated.env });
-      const prepared = await preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user', kinds: ['skill'],
-        capabilities, config, cwd: isolated.layout.fixtureCwd, commandEnv: isolated.env });
-      const finalize = () => finalizePlatformSkillProducers({ plugin, platform: 'codex', prepared,
-        renderUnit: { physicalKey: `sha256:${'b'.repeat(64)}`, renderScope: { kind: 'user' }, kinds: ['skill'] },
-        skillWorkRoot: path.join(isolated.layout.fixtureCwd, 'skill-candidates'), cwd: isolated.layout.fixtureCwd, env: isolated.env });
-      const finalized = await finalize();
-      try {
-        if (missingEntry) {
-          expect(finalized.skills.map((skill) => skill.tree.skillKey)).toEqual(['unrelated']);
-          expect(finalized.commandCandidates).toEqual([]);
-          expect(finalized.producerResolutions).toContainEqual(expect.objectContaining({state:'failed',componentId:'provider'}));
-          expect(finalized.prepared.expected.unmet).toContainEqual(expect.objectContaining({id:'provider',reasonCode:'dependency-unmet'}));
-        } else {
-          expect(finalized.commandCandidates).toHaveLength(1);
-          expect(finalized.commandCandidates[0]?.producer.placementKey).toBe(`sha256:${'b'.repeat(64)}`);
-          expect(finalized.skills[0]?.tree.files['SKILL.md']?.toString('utf8')).toMatch(/aw command run cmdp_[0-9a-f]{16} -- check/u);
-          expect(finalized.skills[0]?.tree.files['aw-plugin-requirements.json']).toBeDefined();
-          expect(await readInstalledCommandProducer(finalized.skills[0]!.resourceRoot)).toMatchObject({
-            producer: { placementKey: `sha256:${'b'.repeat(64)}` }, sets: [{ set: 'tools', state: 'present' }],
-            nativeTools: { definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }] },
-          });
-          expect(finalized.commandResolver?.({ set: 'tools', key: 'run', variant: 'default' })).toMatch(/^cmdp_[0-9a-f]{16}$/u);
-        }
-      } finally { await finalized.cleanup(); }
-      expect((await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)))
-        .toEqual(['agent-plugin', 'agent-commands']);
+        platform: 'claude', scope: 'user', cwd, env: isolated.env });
+      const prepared = await preparePlatformComponents({ plugin, platform: 'claude', renderScope: 'user', kinds: ['skill'],
+        capabilities, config, cwd, commandEnv: isolated.env });
+      const commandRecord = normalizeInstalledCommandProducer({
+        schemaVersion: 2, producer: { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name },
+        pluginVersion: manifest.version, sourceContentDigest: `sha256:${'c'.repeat(64)}`, runtimeConfigPlatforms: [], dynamicRefreshKeys: [],
+        routes: { subcommands: active ? [{ name: 'check', runner: 'node', entry: 'check.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' }] : [] },
+      });
+      const finalized = await finalizePlatformSkillProducers({ plugin, platform: 'claude', prepared, commandRecord,
+        renderUnit: { renderScope: { kind: 'user' }, kinds: ['skill'] },
+        skillWorkRoot: path.join(cwd, 'skill-candidates'), cwd, env: isolated.env });
+      const independent = finalized.skills.find(({ componentId }) => componentId === 'skill:independent');
+      expect(independent?.tree.files['SKILL.md']?.toString('utf8')).toContain('Read this.');
+      const dependent = finalized.skills.find(({ componentId }) => componentId === 'skill:dependent');
+      if (active) {
+        expect(dependent?.tree.files['SKILL.md']?.toString('utf8')).toContain('aw command run fixture/command-profile -- check');
+        expect(finalized.prepared.expected.unmet).toEqual([]);
+      } else {
+        expect(dependent).toBeUndefined();
+        expect(finalized.prepared.expected.unmet).toContainEqual(expect.objectContaining({
+          id: 'skill:dependent', reasonCode: 'command-route-unreachable',
+        }));
+      }
+      expect(finalized.invocationPolicy.policy.permissions).toEqual([{ name: 'run',
+        allow: active ? [{ argsPrefix: [] }] : [], ask: [{ argsPrefix: ['missing'] }], deny: [{ argsPrefix: ['check', 'hidden'] }],
+        ...(active ? { sandbox: { excludedCommands: [{ argsPrefix: ['check'] }] } } : {}) }]);
+      expect(finalized.invocationPolicy.inactivePermissions).toEqual([
+        { name: 'run', action: 'ask', argsPrefix: ['missing'] },
+        ...(active ? [] : [{ name: 'run', action: 'deny', argsPrefix: ['check', 'hidden'] }]),
+      ]);
+      expect(finalized.invocationPolicy.diagnostics).toMatchObject([{ code: 'invocationPolicyNotApplied',
+        subject: { field: 'permissions.run' }, detail: { reasonCode: 'command-route-unreachable', skippedPermissionActions: ['allow', 'sandbox'] } }]);
+      expect(await fs.pathExists(trace)).toBe(false);
     } finally { await isolated.cleanup(); }
   });
 });

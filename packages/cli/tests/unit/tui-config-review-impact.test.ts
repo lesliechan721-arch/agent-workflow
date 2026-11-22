@@ -106,9 +106,8 @@ describe('config Review impact', () => {
       config: {
         scope: 'user', context: 'user', storeDigest: 'store', impactState: 'known', affectedTargets: [],
         commandPackages: [{
-          producer: { sourceId: 'official', sourceIdentity: 'source', pluginName: 'demo',
-            kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
-          packageId: 'tools-package', packageKey: 'tools', refreshKeys: ['mode'], declared: true, installed: true,
+          producer: { sourceId: 'official', sourceIdentity: 'source', pluginName: 'demo' },
+          packageId: 'tools-package', runtimeConfigKeys: [], runtimeConfigPlatforms: [], refreshKeys: ['mode'], declared: true, installed: true,
         }],
       },
     });
@@ -116,6 +115,6 @@ describe('config Review impact', () => {
       kind: 'configSave', pluginId: 'official/demo', context: 'user', apply: true, retryApply: true,
     });
     expect(review.configImpact).toEqual({ state: 'known', affectedTargetCount: 1 });
-    expect(review.changes).toContainEqual(expect.objectContaining({ title: '刷新命令包 tools' }));
+    expect(review.changes).toContainEqual(expect.objectContaining({ title: '刷新命令包 official/demo' }));
   });
 });

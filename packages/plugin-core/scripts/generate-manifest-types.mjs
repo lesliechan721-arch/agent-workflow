@@ -9,19 +9,8 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const schemaPath = path.join(packageRoot, 'schemas', 'plugin-manifest-v4.json')
 const outputPath = path.join(packageRoot, 'src', 'generated', 'plugin-manifest-v4.ts')
 const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'))
-// Runtime validation keeps the 1..4 join limit; the public TypeScript contract uses an array.
+// Runtime validation checks cardinality; public TypeScript collections use arrays.
 const typeSchema = structuredClone(schema)
-delete typeSchema.$defs.configJoinSummary.properties.parts.minItems
-delete typeSchema.$defs.configJoinSummary.properties.parts.maxItems
-// Collection cardinality is checked at runtime; normalized collections use arrays.
-for (const collection of [
-  typeSchema.$defs.nativeTools.properties.definitions,
-  typeSchema.$defs.nativeTools.properties.consumers,
-  typeSchema.$defs.nativeToolConsumer.properties.tools,
-]) {
-  delete collection.minItems
-  delete collection.maxItems
-}
 function normalizeArrayTypes(value) {
   if (!value || typeof value !== 'object') return
   if (value.type === 'array') { delete value.minItems; delete value.maxItems }

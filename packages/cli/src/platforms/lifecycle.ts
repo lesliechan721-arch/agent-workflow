@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { grokUserWorkspace } from '../intent/scope-context.js';
+import { COMMAND_ROUTE_UNREACHABLE, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { NativeCliError } from '../utils/native-cli.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -13,6 +14,8 @@ import type {
 import { inspectDeployment, requiredDeploymentActivation, selectedNativeConsumer } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, piProjectRegistrationHidden, routeReload } from './lifecycle-native.js';
 import { selectNativeProduct } from './discovery.js';
+import { permissionFailureNotice } from './permission-sidecar.js';
+import { relatedProjectPermissionNotices } from './permission-ownership.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -45,7 +48,7 @@ function componentPath(component: OwnedComponent): string | null {
 function contributionDestination(component: OwnedComponent): string | null {
   if ('path' in component) return component.path;
   if (!('locator' in component)) return null;
-  if (component.locator.kind === 'claude-permissions') return component.locator.settingsPath;
+  if (component.locator.kind === 'claude-permissions' || component.locator.kind === 'host-permissions') return component.locator.settingsPath;
   if (component.locator.kind === 'cursor-workspace-hook') return component.locator.hooksPath;
   return null;
 }
@@ -54,7 +57,7 @@ function matchesContribution(component: OwnedComponent, contribution: HostContri
     && (contribution.kind === 'owned-file' && component.kind === 'owned-text-file'
       || contribution.kind === 'owned-directory' && (component.kind === 'owned-directory' || component.kind === 'skill-directory'));
   if (!('locator' in component) || contribution.kind !== 'config-entry') return false;
-  if (component.locator.kind === 'claude-permissions') return component.locator.settingsPath === contribution.destination;
+  if (component.locator.kind === 'claude-permissions' || component.locator.kind === 'host-permissions') return component.locator.settingsPath === contribution.destination;
   if (component.locator.kind === 'cursor-workspace-hook') return component.locator.hooksPath === contribution.destination
     && component.locator.ownerKey === contribution.mergeKey;
   return false;
@@ -81,7 +84,8 @@ function exactScope(binding: DeploymentBinding, component: OwnedComponent): bool
 }
 
 export function hasCompleteDeliveryDeclaration(expected: LifecyclePrepareInput['expected']): boolean {
-  return expected.unmet.every((gap) => isDeliveryCapabilityGap(gap) && (expected.sources[gap.id] === 'static'
+  return expected.unmet.every((gap) => gap.reasonCode === COMMAND_ROUTE_UNREACHABLE
+    || isDeliveryCapabilityGap(gap) && (expected.sources[gap.id] === 'static'
     || expected.declaredComponentIds?.includes(gap.componentId ?? gap.id)
     || expected.components.some((component) => component.id === gap.componentId)));
 }
@@ -99,7 +103,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   }
   const legacyConflict = observation.diagnostics.find(({ code }) => code === 'antigravityLegacyPackageUnconfirmed');
   if (!removing && legacyConflict) return { status: 'blocked', diagnostics: [legacyConflict] };
-  if (!removing && !expected.components.length && expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap))) {
+  if (!removing && !expected.components.length && expected.unmet.some((gap) =>
+    gap.reasonCode !== COMMAND_ROUTE_UNREACHABLE && !isDeliveryCapabilityGap(gap))) {
     const residual = evidence.ownership.filter((slot) => slot.state !== 'absent').map((slot) =>
       contributionDestination(slot.component) ?? evidence.layout.activationPath);
     if (observation.registration === 'present') residual.push(evidence.layout.activationPath);
@@ -158,10 +163,18 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     packageComponent: packageSlot?.component ?? null, bundle: bundles[0] ?? null, contributions: [], removals: [], retainedPaths: [] };
   const retainedGaps: LifecyclePrepareInput['expected']['unmet'] = [];
   const ids = input.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components.map((component) => component.id));
-  const independentContribution = (contribution: HostContribution): boolean => binding.platform === 'codex'
-    && contribution.kind !== 'config-entry' && belowRoot(evidence.layout.supplementRoot, contribution.destination)
-    && contribution.componentIds.length > 0 && contribution.componentIds.every((id) => expected.components.some((component) => component.id === id && component.kind === 'agent')
-      && !expected.unmet.some((gap) => gap.componentId === id || gap.id === id));
+  const skippedRoutePermissions = input.projections.some((projection) => projection.diagnostics.some((notice) =>
+    notice.detail?.reasonCode === COMMAND_ROUTE_UNREACHABLE));
+  const routePolicySlot = (component: OwnedComponent): boolean => skippedRoutePermissions && (
+    component.kind === 'shared-config' && (component.locator.kind === 'claude-permissions' || component.locator.kind === 'host-permissions')
+    || binding.platform === 'codex' && component.kind === 'owned-text-file'
+      && path.dirname(component.path) === path.join(evidence.layout.activationPath, 'rules') && component.path.endsWith('.rules'));
+  const independentContribution = (contribution: HostContribution): boolean =>
+    slots.some((slot) => routePolicySlot(slot.component) && matchesContribution(slot.component, contribution))
+    || binding.platform === 'codex' && contribution.kind !== 'config-entry'
+      && belowRoot(evidence.layout.supplementRoot, contribution.destination)
+      && contribution.componentIds.length > 0 && contribution.componentIds.every((id) => expected.components.some((component) => component.id === id && component.kind === 'agent')
+        && !expected.unmet.some((gap) => gap.componentId === id || gap.id === id));
   if (retainPackage) {
     const skippedIds = new Set([...ids, ...allContributions.filter((contribution) => !independentContribution(contribution)).flatMap((contribution) => contribution.componentIds)]);
     retainedGaps.push(...expected.components.filter((component) => skippedIds.has(component.id)).map((component) => ({
@@ -183,7 +196,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       const replaced = allContributions.some((contribution) => matchesContribution(slot.component, contribution)
         && (!retainPackage || independentContribution(contribution)));
       const kept = slot === packageSlot ? retainPackage || !state.bundle && (hasReferences || observation.ownership !== 'aw' || !complete)
-        : !replaced && (!complete || retainPackage || !exactScope(binding, slot.component)
+        : !replaced && ((!complete || retainPackage) && !routePolicySlot(slot.component) || !exactScope(binding, slot.component)
           || !['present', 'partial'].includes(slot.state));
       if (kept) state.retainedPaths.push(contributionDestination(slot.component) ?? evidence.layout.activationPath);
     }
@@ -191,7 +204,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       state.retainedPaths.push(identity?.sourceLocation ?? evidence.layout.activationPath);
     }
   }
-  const empty = !expected.components.length && complete && !retainPackage;
+  const empty = !expected.components.length && !allContributions.length && complete && !retainPackage;
   if (removing || empty) {
     // Scope-local entries are revoked before any package or native registration.
     if (nativeRoute(binding.route) && identity && observation.registration !== 'absent'
@@ -274,7 +287,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       if (slot === packageSlot || !['present', 'partial'].includes(slot.state) || !exactScope(binding, slot.component)) continue;
       // Missing contributions in an unmet set can still be required. Preserve
       // them even when this deployment has no native package to retain.
-      if (retainPackage || !complete) continue;
+      if ((retainPackage || !complete) && !routePolicySlot(slot.component)) continue;
       const destination = contributionDestination(slot.component);
       if (!destination || allContributions.some((item) => matchesContribution(slot.component, item))) continue;
       state.removals.push({ effectId: add('remove-owned', destination, [], true, slot.component.identity.artifactKey, slot.physicalKey), component: slot.component });
@@ -297,7 +310,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   const { binding } = plan;
   const receipt: DeploymentReceipt = { bindingId: binding.id, effects: [], after: state.before,
     unmet: plan.expected.unmet.map((gap) => ({ ...gap, productIds: binding.consumers.map((item) => item.id) })),
-    reload: 'none', diagnostics: plan.projections.flatMap((projection) => projection.diagnostics) };
+    reload: 'none', diagnostics: plan.projections.flatMap((projection) => projection.diagnostics.filter(({ code }) => code !== HOST_PERMISSION_ADDITIONAL_IMPACT)) };
+  if (plan.evidence.permissionOwnershipWarning) receipt.diagnostics.push(plan.evidence.permissionOwnershipWarning);
   receipt.diagnostics.push(...[...new Set(state.retainedPaths)].map((location) => retainedOutput(binding, location)));
   let cleanupFailure: Diagnostic | undefined;
   const recordCleanupFailure = (error: unknown) => {
@@ -342,7 +356,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     const contribution = state.contributions.find((item) => item.effectId === effect.id);
     const packageRemoval = removal && componentPath(removal.component) === plan.evidence.layout.packageRoot;
     const dependencyFailed = !packageReady && ['register', 'refresh', 'activate'].includes(effect.kind)
-      || !nativeReady && effect.kind === 'activate'
+      || !nativeReady && (effect.kind === 'activate' || binding.route === 'grok-cli'
+        && contribution?.component.kind === 'shared-config' && contribution.component.locator.kind === 'host-permissions')
       || !packageReady && contribution?.contribution.kind === 'config-entry'
       || removal && (plan.operation === 'ensure' || plan.operation === 'reinstall') && (!packageReady || !nativeReady)
       || packageRemoval && (!nativeRemoved || !activationRemoved);
@@ -370,6 +385,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       } else {
         outcome = await executeNativeLifecycle(ctx, prepared, effect);
       }
+      if (outcome.diagnostics) result.diagnostics.push(...outcome.diagnostics);
       result.mutation = outcome.mutation;
       result.status = outcome.mutation === 'possible' ? 'unknown' : outcome.changed ? 'applied' : 'unchanged';
       if (outcome.mutation === 'possible') throw Object.assign(new Error('nativeMutationUnknown'), { mutation: 'possible' });
@@ -408,7 +424,12 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       const definite = code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired';
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
       result.status = definite ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
-      result.diagnostics.push(lifecycleDiagnostic(binding, code === 'operationPlanStale' || definite ? code : 'platformMutationFailed',
+      const subject = { pluginId: binding.plugin.pluginId, target: binding.platform, scope: binding.scope.kind };
+      const failurePath = error && typeof error === 'object' && 'path' in error && typeof error.path === 'string' ? error.path : effect.destination;
+      const permissionNotice = permissionFailureNotice(code, failurePath, subject);
+      const relatedNotices = relatedProjectPermissionNotices(error, subject);
+      if (relatedNotices.length) result.diagnostics.push(...relatedNotices);
+      else result.diagnostics.push(permissionNotice ?? lifecycleDiagnostic(binding, code === 'operationPlanStale' || definite ? code : 'platformMutationFailed',
         definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.'
           : 'A platform action did not complete. Check status and retry the remaining actions.'));
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')

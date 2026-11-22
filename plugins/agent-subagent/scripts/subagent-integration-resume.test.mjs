@@ -11,7 +11,7 @@ test('terminal send resumes the same run in an independent execution with frozen
   // Force the legal pending return on every host. Only the caller's clock
   // advances; the real worker, backend and native observers keep real time.
   const clock = await f.clock(['start', 'send'], { stepMs: 1000 });
-  Object.assign(f.snapshot.effectiveValues.subagentCommands[0], { args: ['original-option'], env: { EMPTY: '' }, envFrom: { SERVICE_DATA: 'SOURCE' } });
+  Object.assign(f.snapshot.values.subagentCommands[0], { args: ['original-option'], env: { EMPTY: '' }, envFrom: { SERVICE_DATA: 'SOURCE' } });
   await f.save();
   const first = await f.start({ resume: true, readyGate: true, messages: ['Old unread message.'], finalText: 'Old final.' }, {
     // The execution deadline must leave room for native Windows setup and
@@ -28,9 +28,16 @@ test('terminal send resumes the same run in an independent execution with frozen
   assert.equal((await f.evidence(first.run)).directory, before.directory);
   await fs.writeFile(path.join(before.directory, 'outbox', 'old.json'), JSON.stringify({ id: 'a'.repeat(32), text: 'Old queued input.', phase: 'queued' }));
   await fs.writeFile(path.join(before.directory, 'gaps', 'old.json'), JSON.stringify({ text: 'Old gap.', status: 'unknown', code: 'inputDeliveryUnknown' }));
-  f.snapshot.effectiveValues.subagentCommands = [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: '/missing/new-command' }];
-  f.snapshot.installedIdentity.pluginVersion = '999.0.0';
-  await f.save();
+  f.snapshot.values.subagentCommands = [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: '/missing/new-command' }];
+  for (const [key, replacement] of [['pluginVersion', '999.0.0'], ['sourceContentDigest', 'sha256:' + 'c'.repeat(64)]]) {
+    const original = f.snapshot.installedIdentity[key];
+    f.snapshot.installedIdentity[key] = replacement; await f.save();
+    const changed = await f.resume(first, 'Do not submit after a code change.', { resume: true });
+    assert.equal(field(changed.stderr, 'code'), 'resumeExecutionChanged');
+    assert.equal((await f.evidence(first.run)).directory, before.directory);
+    f.snapshot.installedIdentity[key] = original;
+  }
+  await f.rotate();
   const text = 'Only the new task.\r\n继续检查。\n';
   const resumed = await f.resume(first, text, { resume: true, readyGate: true, finalText: 'New final.' }, { env: { ...clock.environment, SOURCE: 'current-host-value' } });
   await f.initialized(resumed); assert.equal(field(resumed.stdout, 'run'), first.run);

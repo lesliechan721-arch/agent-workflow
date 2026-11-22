@@ -77,9 +77,11 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 安装就绪只要求该路由需要的包、登记、启用和组件产物。已确认的输入或内容漂移作为 warning 且目标待同步，附精确插件、目标和范围的同步操作。明确禁用或缺少必要输出也待处理。必要事实无法观察时保持未知，实际归属冲突和安全门禁继续阻断。加载诊断可见，OpenCode 的可选加载及其诊断对目录交付和汇总无影响。
 
-包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
+包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。原生包输入摘要考虑组件 renderer 的 configKeys。共享命令包独立核对已应用的路由输入及按平台快照。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
 静态组件的输入摘要采用该类别的写入方式和所需字段的交付映射。显式跨类别前提仍采用宿主运行资格，动态 renderer 仍绑定完整的能力输入。Pi 角色已就绪时，状态根据现场扩展更新执行提示，单纯的扩展变动不要求同步角色文件。
+
+OpenCode、Grok 和 Antigravity CLI Global 的 `status` 对照当前 scope 下该插件的权限声明、AW 归属记录，以及上次交付实际采用的原生规则。已交付规则被删时显示待修复；归属受损、配置不可读或 Grok 项目信任无法核验时显示未确认。保留其他插件和用户的独立规则；有意跳过的动作不计为丢失。检查只反映已配置的规则，宿主的会话批准另行决定。
 
 Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。补足记录的摘要覆盖绑定、输入和每个产物的组件 ID、文件名及内容摘要。有包和仅有补足文件的交付都用这份记录。只生成补足文件时，交付记录另外绑定本次完整输入、已核实的包缺席、实际交付的补足组件 ID 和权限提示。Grok 的个人规则与项目规则均适用。独立 `status` 复查包与登记，并对完整的补足集合逐个查归属和文件字节。缺失显示待修复，外来文件显示冲突。清单漏项或受损时保留未确认。旧版补足清单须与同一绑定的完整空包交付记录中的全部补足 ID 一致才可复用。旧包缺席证据仍可与完整补足记录一起使用。普通 `sync` 可重新准备、核验并写入完整补足记录。输入摘要过期且已确认旧产物时显示待同步。
 
@@ -216,9 +218,8 @@ sequenceDiagram
   - Config Review 与锁内 writer 使用同一用户文档、profile、context 和有效输入证据。
   - `common` 变化检查公共及已知相关平台，平台变化只检查该平台；same-platform `valueRef` 的 provider 使用相同编译配置。
   - 普通保存保护授权来源中原先有效的引用，包括尚未安装的消费者。
-  - apply 通过联合恢复计划，只刷新已存在且受影响的原生平台、generic 与无平台命令包。缺失输出提示 sync。无平台命令包只读公共 schema/common，发布前重新核对该包的归属、已安装记录、文件内容和每个命令绑定的实际状态。在 POSIX 上还核对发布会恢复的文件权限。Review 后包被移走或改写时，保留现场并返回该包的恢复入口。提供者失败阻止相关消费者，其它独立目标继续。apply 不新增 Intent 或 target。
-  - 共享影响通过 sharedNativeRenderUnits 记录 pluginName、platform、renderScope、configKeys、dynamicComponents 和真实 commandSets；没有准备结果时不伪造动态 Skill 身份。
-  - 平台配置变更命中 renderer configKeys 或真实命令声明的 refreshKeys 时，保存仍只提交用户配置。后续 apply Review 明示共享包体影响与必要脚本授权；缺少 apply 授权不撤销已经保存的值。
+  - apply 通过联合恢复计划刷新既有受影响的原生平台、generic 与共享命令包。缺失输出提示同步。命令包发布前复核 Active 版本、现有归属、安装证据、资源与可见权限影响。证据变动时重新准备 Review。失败阻断相关消费者，独立目标继续。apply 沿用现有 Intent 与目标。
+  - 平台共享影响以实际渲染单元和组件为依据。命令包单独记录路由变化和按平台的配置快照差异。带 `--platform` 的应用只可能更新该平台快照。公共配置改变时可刷新动态路由和已受影响的快照。完整条件见[命令包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。
 
 ### 4.3 配置变更命令行为与显式恢复（Set / Unset / Reset）
 

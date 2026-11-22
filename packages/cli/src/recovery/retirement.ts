@@ -246,13 +246,12 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     if (nativeToolChanges.length) receipt.nativeToolChanges = nativeToolChanges;
     for (const change of nativeToolChanges) {
       if (change.before) changes.push(...describeNativeToolClosure(change.before).map((description) =>
-        `撤销原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
+        `撤销原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${description}`));
     }
     for (const action of preview?.operationPlan?.actions ?? []) {
       if (action.kind !== 'retainManagedCommandPackage') continue;
-      changes.push(`保留命令包 ${action.producer.key}：${action.producer.sourceId}/${action.producer.pluginName}`
-        + ` · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`
-        + ` · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}`);
+      changes.push(`保留命令包 ${action.selector} · ${action.packageId} · 所有项目共用 · ${action.availability}`,
+        ...action.recoveryActions);
     }
     const { signal: _signal, ...executionOptions } = options;
     return { options: executionOptions, context, evidence: removed, portable, receipt: finish(receipt, options, portable),
@@ -387,6 +386,10 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                   && entry.target.scope === target.scope && entry.target.platform === platform);
                 const rebuildTargets = result.rebuildResults.filter((entry) => entry.target.pluginId === target.pluginId
                   && entry.target.scope === target.scope && entry.target.platform === platform);
+                const cleanupNotices = rebuildTargets.flatMap((entry) => entry.cleanupNotices ?? []);
+                for (const notice of cleanupNotices) {
+                  (notice.severity === 'error' ? target.blockers : (target.reasons ??= [])).push(notice);
+                }
                 const deployments = rebuildTargets.flatMap((entry) => entry.deploymentReceipts ?? []);
                 const deploymentPlans = (result.operationPlan?.deploymentPlans ?? plan.operationPlan?.deploymentPlans ?? [])
                   .filter((entry) => entry.binding.plugin.pluginId === target.pluginId
@@ -409,20 +412,15 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                     && (after.package === 'present' || after.registration === 'present');
                 });
                 const failed = backendTargets.some((entry) => entry.state === 'failed');
-                const commandFailures = (result.commandResults ?? []).filter((entry) => entry.state !== 'completed'
-                  && entry.producer.sourceId === plan.evidence!.sourceId
-                  && entry.producer.sourceIdentity === plan.evidence!.sourceIdentity
-                  && entry.producer.pluginName === plan.evidence!.pluginName
-                  && entry.producer.platform === platform);
                 const sharedNativePreserved = platform === 'codex'
                   && result.warnings.some((warning) => warning.startsWith('sharedNativePreserved:'));
                 const preserved = rebuildTargets.some((entry) => entry.residual.length > 0 || entry.quarantined.length > 0)
                   || (deployments.length ? nativeIncomplete : backendTargets.some((entry) => entry.action === 'keep') || sharedNativePreserved);
-                target.execution = failed ? 'failed' : commandFailures.length
-                  ? backendTargets.length ? 'partial' : 'failed' : backendTargets.length ? 'applied' : 'no-op';
+                target.execution = failed ? rebuildTargets.some((entry) => entry.cleanupMutation !== undefined) ? 'partial' : 'failed'
+                  : backendTargets.length ? 'applied' : 'no-op';
                 if (!failed && nativeIncomplete) target.execution = deployments.some((entry) =>
                   entry.effects.some((effect) => effect.mutation !== 'none')) ? 'partial' : 'not-run';
-                target.observation = failed || commandFailures.length ? 'unknown'
+                target.observation = failed ? 'unknown'
                   : target.content === 'absent' ? 'missing' : 'unknown';
                 target.backend = backendTargets.map((entry) => {
                   const matching = rebuildTargets.filter((result) => result.target.pluginId === entry.target.pluginId
@@ -442,13 +440,9 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                     || entry.after.package === 'unknown' || entry.after.ownership === 'unknown';
                 })) target.blockers.push(diagnostic('nativeObservationUnknown'));
                 const observedReasons = deployments.flatMap((entry) => [...entry.diagnostics, ...entry.after.diagnostics]);
-                if (observedReasons.length) target.reasons = [...new Map(observedReasons.map((entry) =>
-                  [entry.code, diagnostic(entry.code, entry.message)])).values()];
-                for (const producer of commandFailures) {
-                  target.blockers.push(...(producer.errors.length ? producer.errors.map((error) =>
-                    diagnostic(error.code, error.message)) : [diagnostic('managedCommandRecoveryFailed')]));
-                }
-                partialAttributed ||= failed || preserved || commandFailures.length > 0;
+                if (observedReasons.length) (target.reasons ??= []).push(...new Map(observedReasons.map((entry) =>
+                  [entry.code, diagnostic(entry.code, entry.message)])).values());
+                partialAttributed ||= failed || preserved;
               }
               if (result.overallState === 'partial' && !partialAttributed) {
                 receipt.blockers.push(diagnostic('nativeRetirePartial'));

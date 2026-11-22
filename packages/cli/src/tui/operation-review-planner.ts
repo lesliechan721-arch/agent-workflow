@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { additionalPermissionEffects, configApplyDeploymentUnavailable, deploymentAdditionalPermissionImpacts,
+  relatedProjectPermissionEffects } from '../commands/deployment-confirmation.js';
+import { HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 
 import { requestedIntentAction } from '../output/command-receipt.js';
@@ -24,9 +27,9 @@ import {
   SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../commands/options.js';
 import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
-import { canonicalizeIdentityValue, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
-import { normalizeInstalledCommandProducer, type InstalledCommandProducer } from '../utils/managed-command-store.js';
-import type { ManagedCommandPermissionReview } from '../utils/managed-command-review.js';
+import { canonicalizeIdentityValue } from '@lesliechan721/aw-plugin-core/manifest';
+import { reviewedInactivePermissions, type ManagedCommandPermissionReview } from '../utils/managed-command-review.js';
+import { describeManagedCommandRouteReview, describeManagedCommandRuntimeConfigChanges } from '../utils/managed-command-cli-review.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { CodexManagerPreview } from '../utils/codex-manager.js';
@@ -61,38 +64,66 @@ function configCommandPackageChanges(evidence: OperationEvidence | undefined, ap
     kind: target.declared && apply ? 'change' : 'warning',
     group: 'configImpact',
     pluginId: `${target.producer.sourceId}/${target.producer.pluginName}`,
-    title: `${target.declared ? apply ? '刷新' : '需同步' : '保留残留'}命令包 ${target.packageKey}`,
-    description: `${target.producer.sourceId}/${target.producer.pluginName} · ${scopeLabel(target.producer.scope)} · ${target.producer.platform
-      ? `${agentLabel(target.producer.platform)} 平台配置` : '公共配置'}${target.declared ? ''
-      : ` · 声明已删除；aw command package remove ${target.packageId} --yes`}`,
+    title: `${target.declared ? apply ? '刷新' : '需同步' : '保留残留'}命令包 ${target.producer.sourceId}/${target.producer.pluginName}`,
+    description: target.declared
+      ? `所有项目共用${target.runtimeConfigPlatforms.length ? ` · 已应用快照 ${target.runtimeConfigPlatforms.map(agentLabel).join('、')}` : ''}`
+      : `声明已删除 · aw command package remove ${target.packageId}`,
   }));
+}
+
+function planAdditionalPermissionImpacts(actions: readonly OperationAction[], deploymentPlans: readonly FrozenDeploymentPlan[]) {
+  return [
+    ...deploymentPlans.flatMap(deploymentAdditionalPermissionImpacts),
+    ...actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.additionalImpacts ?? [] : []),
+  ];
 }
 
 export function managedCommandPlanChanges(actions: readonly OperationAction[], nativeToolChanges: NativeToolChange[] = [],
   deploymentPlans: readonly FrozenDeploymentPlan[] = []): OperationReviewChange[] {
   const changes: OperationReviewChange[] = [];
-  const producers = new Map<string, InstalledCommandProducer>();
   const permissions = new Map<string, ManagedCommandPermissionReview>();
-  const retained = new Set<string>();
-  const addProducer = (record: InstalledCommandProducer): void => {
-    const key = getCommandPackageId(record.producer);
-    const previous = producers.get(key);
-    if (previous && canonicalizeIdentityValue(previous) !== canonicalizeIdentityValue(record)) throw plannerError('commandReviewConflict', '同一命令生产者有不同的冻结命令。');
-    producers.set(key, record);
-  };
   const addPermission = (permission: ManagedCommandPermissionReview): void => {
     const key = `${permission.kind}\0${permission.pluginId}\0${permission.path}`;
     const previous = permissions.get(key);
     if (previous && canonicalizeIdentityValue(previous) !== canonicalizeIdentityValue(permission)) throw plannerError('commandReviewConflict', '同一权限位置有不同的冻结规则。');
     permissions.set(key, permission);
   };
+  const related = [
+    ...deploymentPlans.flatMap((plan) => relatedProjectPermissionEffects(plan.evidence.permissionBatch)),
+    ...actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? relatedProjectPermissionEffects(action.permissionRemoval?.batch) : []),
+  ];
+  for (const description of new Set(related.map(({ message }) => message))) {
+    changes.push({ kind: 'change', group: 'runtime', title: '更新关联项目的 OpenCode 权限', description });
+  }
+  const restorations = [
+    ...deploymentPlans.flatMap((plan) => plan.evidence.permissionBatch?.restorations ?? []),
+    ...actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.restorations ?? [] : []),
+  ];
+  for (const notice of restorations) changes.push({ kind: 'change', group: 'runtime', pluginId: notice.subject?.pluginId,
+    title: `恢复 ${agentLabel(notice.subject?.target ?? '')} 权限`, description: notice.message });
+  for (const { subject, message } of additionalPermissionEffects(planAdditionalPermissionImpacts(actions, deploymentPlans))) {
+    changes.push({ kind: 'warning', group: 'runtime', pluginId: subject?.pluginId,
+      title: `${agentLabel(subject?.target ?? '')} 权限的额外影响`, description: message });
+  }
   for (const plan of deploymentPlans) {
     const evidence = plan.evidence.managedCommandReview;
-    if (!evidence || plan.evidence.retainPackage) continue;
+    if (!evidence) continue;
+    if (plan.binding.platform === 'antigravity' || plan.binding.platform === 'grok' || plan.binding.platform === 'opencode' && plan.effects.some((effect) => effect.kind === 'write-supplement')) {
+      for (const notice of plan.projections.flatMap((projection) => projection.diagnostics)) {
+        if (notice.code === 'invocationPolicyNotApplied') changes.push({ kind: 'warning', group: 'runtime',
+          pluginId: notice.subject?.pluginId ?? plan.binding.plugin.pluginId,
+          title: `${agentLabel(plan.binding.platform)} · ${(notice.detail?.skippedPermissionActions ?? []).join(', ')}`,
+          description: notice.message });
+      }
+    }
     const publishes = plan.effects.some((effect) => effect.kind === 'publish-package' && effect.destination === plan.evidence.layout.packageRoot);
-    if (publishes) for (const record of evidence.producers) addProducer(record);
     for (const permission of evidence.permissions) {
       if (publishes || plan.effects.some((effect) => effect.kind === 'write-supplement' && effect.destination === permission.path)) addPermission(permission);
+    }
+    for (const permission of reviewedInactivePermissions(plan.binding, evidence)) {
+      const { pluginId } = plan.binding.plugin;
+      changes.push({ kind: 'keep', group: 'runtime', pluginId, title: `保留 ${permission.action} 规则`,
+        description: `aw command run ${pluginId} --${permission.argsPrefix.length ? ` ${permission.argsPrefix.join(' ')}` : ''} · 当前无可达处理程序 · ${agentLabel(plan.binding.platform)} · ${scopeLabel(plan.binding.scope.kind)}` });
     }
   }
   for (const change of operationPlanNativeToolChanges({ actions: [...actions], nativeToolChanges })) {
@@ -100,29 +131,31 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[], n
     for (const [kind, closure] of [['remove', change.before], ['add', change.after]] as const) {
       if (!closure) continue;
       for (const description of describeNativeToolClosure(closure)) changes.push({ kind, group: 'runtime', pluginId,
-        title: `${kind === 'remove' ? '撤销' : '使用'}原生工具 · ${pluginId} · ${change.producer.key}`, description });
+        title: `${kind === 'remove' ? '撤销' : '使用'}原生工具 · ${pluginId}`, description });
     }
   }
   for (const action of actions) {
     if (action.kind === 'retainManagedCommandPackage') {
-      if (retained.has(action.packageId)) continue;
-      retained.add(action.packageId);
       changes.push({ kind: 'keep', group: 'preserved', pluginId: action.pluginId,
-        title: `保留命令包 ${action.producer.key}`,
-        description: `${action.producer.sourceId}/${action.producer.pluginName} · ${action.packageId} · ${scopeLabel(action.producer.scope)} · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'} · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}` });
-    } else if (action.kind === 'syncManagedCommandPackage') {
-      addProducer({ schemaVersion: 1, producer: action.producer, sets: action.sets, ...(action.nativeTools ? { nativeTools: action.nativeTools } : {}) });
-    } else if (action.kind === 'writeOwnedArtifact' || action.kind === 'materializeNativeSkill') {
-      for (const file of action.files ?? []) {
-        if (file.relativePath !== '.aw-command-producer.json') continue;
-        const record = normalizeInstalledCommandProducer(JSON.parse(Buffer.from(file.contentBase64, 'base64').toString('utf8')));
-        addProducer(record);
+        title: `保留命令包 ${action.selector}`,
+        description: [action.packageId, '所有项目共用', action.availability, ...action.recoveryActions].join(' · ') });
+    } else if (action.kind === 'syncManagedCommandPackage' || action.kind === 'removeManagedCommandPackage') {
+      const removes = action.kind === 'removeManagedCommandPackage';
+      changes.push({ kind: removes ? 'remove' : 'change', group: 'runtime', pluginId: action.pluginId,
+        title: `${removes ? '撤销' : '刷新'}命令包 ${action.pluginId}`,
+        description: removes ? '共享命令入口将失效，影响所有使用该命令包的项目。' : '命令包更新会影响所有引用者。' });
+      for (const description of describeManagedCommandRouteReview(action.routeReview)) {
+        changes.push({ kind: 'change', group: 'runtime', pluginId: action.pluginId, title: '命令路由与审批', description });
       }
-      if (action.kind === 'writeOwnedArtifact' && action.platform === 'codex'
-        && action.artifactKind === 'owned-text-file' && path.extname(action.path) === '.rules') {
-        const rules = action.sourceContent ?? action.content;
-        if (rules) addPermission({ kind: 'codex-rules', pluginId: action.pluginId, path: action.path, content: rules });
+      if (action.kind === 'syncManagedCommandPackage') {
+        for (const description of describeManagedCommandRuntimeConfigChanges(action.runtimeConfigChanges)) {
+          changes.push({ kind: 'change', group: 'runtime', pluginId: action.pluginId, title: '命令运行配置', description });
+        }
       }
+    } else if (action.kind === 'writeOwnedArtifact' && action.platform === 'codex'
+      && action.artifactKind === 'owned-text-file' && path.extname(action.path) === '.rules') {
+      const rules = action.sourceContent ?? action.content;
+      if (rules) addPermission({ kind: 'codex-rules', pluginId: action.pluginId, path: action.path, content: rules });
     } else if (action.kind === 'updateSharedConfig' && action.mutation.kind === 'claude-permissions' && action.locator.kind === 'claude-permissions') {
       addPermission({ kind: 'claude-permissions', pluginId: action.pluginId, path: action.locator.settingsPath,
         permissions: action.mutation.permissions as import('../generators/permissions.js').ClaudePermissions });
@@ -132,6 +165,11 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[], n
     if (permission.kind === 'codex-rules') {
       changes.push({ kind: 'change', group: 'runtime', pluginId: permission.pluginId,
         title: `Codex 权限规则 ${path.basename(permission.path)}`, description: permission.content.trim() });
+    } else if (permission.kind !== 'claude-permissions') {
+      for (const rule of permission.permissions) {
+        changes.push({ kind: 'change', group: 'runtime', pluginId: permission.pluginId,
+          title: `${agentLabel(permission.kind.split('-')[0]!)} · ${rule.effect}`, description: `${rule.action} ${rule.resource} · ${permission.path}` });
+      }
     } else for (const kind of ['allow', 'ask', 'deny', 'excludedCommands'] as const) {
       const rules = permission.permissions[kind];
       if (!rules?.length) continue;
@@ -139,35 +177,24 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[], n
         title: kind === 'excludedCommands' ? 'Claude sandbox.excludedCommands' : `Claude permissions.${kind}`, description: rules.join('；') });
     }
   }
-  for (const { producer, sets } of producers.values()) {
-    const pluginId = `${producer.sourceId}/${producer.pluginName}`;
-    changes.push({ kind: 'change', group: 'runtime', pluginId,
-      title: `命令${producer.kind === 'package' ? '包' : '生产者'} ${producer.key}`,
-      description: `${pluginId} · ${scopeLabel(producer.scope)}${producer.platform ? ` · ${platformLabel(producer.platform)}`
-        : ' · 平台共用同一份生效配置'}${producer.scope === 'user' ? ' · 更新会影响全部引用者' : ''}` });
-    for (const set of sets) {
-      if (set.entries.length === 0) changes.push({ kind: 'change', group: 'runtime', pluginId,
-        title: `命令集合 ${set.set}`, description: set.state === 'disabled' ? '已禁用；本集合命令失效' : '空集合；本集合没有可用命令' });
-      for (const entry of set.entries) changes.push({ kind: 'change', group: 'runtime', pluginId,
-        title: `${set.set}/${entry.key}/${entry.variant}`,
-        description: `${entry.runner} · ${entry.entry} · 固定参数 ${JSON.stringify(entry.args)} · cwd=${entry.cwd}` });
-    }
-  }
-  return changes;
+  return [...new Map(changes.map((change) => [JSON.stringify(change), change])).values()];
 }
 
 /** Config and scoped recovery consume the same prepared plans, including both joint scopes. */
 export function managedCommandRecoveryPlanChanges(plan: RecoveryPlan): OperationReviewChange[] {
   const plans = new Map<string, NonNullable<OperationEvidence['operationPlan']>>();
+  const actions: OperationAction[] = [];
   const visit = (current: RecoveryPlan): void => {
+    actions.push(...current.portableCommandWithdrawals ?? []);
     for (const group of current.nativeGroups) {
       const prepared = group.preview.operationPlan;
-      if (prepared) plans.set(prepared.planFingerprint, prepared);
+      if (prepared) plans.set(prepared.planFingerprint, { ...prepared,
+        deploymentPlans: prepared.deploymentPlans?.filter((deployment) => !configApplyDeploymentUnavailable(current, deployment)) });
     }
     for (const child of current.joint?.children ?? []) visit(child);
   };
   visit(plan);
-  return managedCommandPlanChanges([...plans.values()].flatMap((prepared) => prepared.actions),
+  return managedCommandPlanChanges([...actions, ...[...plans.values()].flatMap((prepared) => prepared.actions)],
     [...plans.values()].flatMap((prepared) => prepared.nativeToolChanges ?? []),
     [...plans.values()].flatMap((prepared) => prepared.deploymentPlans ?? []));
 }
@@ -289,6 +316,14 @@ function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationR
       title: '其他根插件仍可按自己的设置使用或安装此依赖',
     },
   ];
+}
+
+function sourceCommandRebindingChange(sourceId: string): OperationReviewChange {
+  return {
+    kind: 'warning',
+    title: '同名插件会沿用已有命令审批',
+    description: `安装新来源的同名插件后，已有的 aw command run ${sourceId}/<插件> -- 审批可能放行新代码。本次检查限于当前用户与项目，其他项目也可能保留匹配规则。`,
+  };
 }
 
 function sourceMutationReviewChanges(
@@ -798,6 +833,7 @@ function reviewChanges(
       { kind: 'keep', title: '现有安装和设置不会迁移' },
     );
     if (intent.action === 'remove') changes.push({ kind: 'keep', title: '保留其他来源' });
+    if (evidence?.sourceWrite?.identityChanged) changes.push(sourceCommandRebindingChange(intent.sourceId));
     const impact = evidence?.sourceWrite?.impact;
     if (impact) {
       for (const category of ['installation', 'config', 'lifecycle', 'marketplace'] as const) {
@@ -846,6 +882,7 @@ function reviewChanges(
         description: '旧版本无法安全比较；确认后只切换到本次已检查的版本。',
       }] : []),
       ...(generation.sourceMutation ? sourceMutationReviewChanges(generation.sourceMutation) : []),
+      ...(generation.impactMode === 'identityChange' ? [sourceCommandRebindingChange(intent.sourceId)] : []),
       ...(generation.explicitSourceChange && generation.candidateRelation === 'rollbackDetected' ? [{
         kind: 'warning' as const,
         title: '来源切换将降低插件目录版本',
@@ -941,7 +978,7 @@ function reviewChanges(
       ...(evidence?.config?.sharedNativeRenderUnits ?? []).filter((shared) => evidence?.config?.affectedTargets
         .some((target) => sharedUnitMatchesTarget(shared, target, intent.pluginId))).map((shared): OperationReviewChange => ({
         kind: 'change', group: 'configImpact', title: `重新生成 ${shared.pluginName} · ${platformLabel(shared.platform)} 共享组件集合`,
-        description: `配置来源为用户配置；影响所有启用项目。${shared.dynamicComponents ? '动态组件名称和数量需在准备后确认。' : ''}${shared.commandSets.length ? `命令集合：${shared.commandSets.map((set) => set.set).join('、')}。` : ''}`,
+        description: `配置来源为用户配置，影响所有启用项目。${shared.dynamicComponents ? '动态组件名称和数量需在准备后确认。' : ''}`,
       })),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
@@ -1006,6 +1043,7 @@ function reviewChanges(
       }] : []),
       ...sharedNativeImpact,
       ...configCommandPackageChanges(evidence, intent.apply),
+      ...(evidence?.config?.commandReviewChanges ?? []),
       ...(evidence?.config?.impactState === 'unknown' || noEffectiveChange || sharedNativeTargets.length > 0
         ? []
         : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
@@ -1018,13 +1056,15 @@ function reviewChanges(
           }))
         : (evidence?.config?.commandPackages?.length ?? 0) > 0 ? []
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
-      { kind: 'keep', group: 'preserved', title: '其他项目不会被自动扫描' },
+      ...(evidence?.config?.hostPermissionEffects?.some(({ code }) => code === 'changeRelatedProjectPermissions') ? [] :
+        [{ kind: 'keep' as const, group: 'preserved' as const, title: '其他项目不会被自动扫描' }]),
     ];
   }
   const updateKeys = Object.keys(intent.updates ?? {});
   return [
     ...scriptTimeoutChanges(intent),
     ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
+    ...(evidence?.config?.commandReviewChanges ?? []),
     ...updateKeys.map((key): OperationReviewChange => ({
       kind: 'change',
       title: key,
@@ -1395,7 +1435,18 @@ export function buildOperationReviewProjection(options: {
       && (evidence.configBatch?.groups.some((group) =>
         group.config.sharedNativeRenderUnits?.some((shared) => group.config.affectedTargets
           .some((target) => sharedUnitMatchesTarget(shared, target, intent.pluginId)))) ?? false));
-  const requiresConfirmation = sharedNativeConfigApply
+  const configPermissionEffects = [
+    ...(evidence.config?.hostPermissionEffects ?? []),
+    ...(evidence.configBatch?.groups.flatMap(({ config }) => config.hostPermissionEffects ?? []) ?? []),
+  ];
+  const relatedProjectConfigApply = configPermissionEffects.some(({ code }) => code === 'changeRelatedProjectPermissions');
+  const permissionImpacts = [
+    ...configPermissionEffects.filter(({ code }) => code === HOST_PERMISSION_ADDITIONAL_IMPACT),
+    ...[evidence.operationPlan, ...batchEvidence?.groups.map(({ preview }) => preview.operationPlan) ?? [],
+      ...taskEvidence?.taskPlan.sources.map(({ preview }) => preview.operationPlan) ?? []]
+      .flatMap((plan) => plan ? planAdditionalPermissionImpacts(plan.actions ?? [], plan.deploymentPlans ?? []) : []),
+  ];
+  const requiresConfirmation = sharedNativeConfigApply || relatedProjectConfigApply || permissionImpacts.length > 0
     || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
@@ -1429,6 +1480,8 @@ export function buildOperationReviewProjection(options: {
     const agents = intent.platform === 'both' ? ['codex', 'claude'] : [intent.platform];
     const targets = intent.action === 'cleanup' ? agents.map((agent) => ` --target ${agent}`)
       : [sync ? agents.map((agent) => ` --target ${agent}`).join('') : ''];
+    const changesCommandPackage = evidence.operationPlan?.actions.some((action) => action.kind === 'removeManagedCommandPackage'
+      || action.kind === 'syncManagedCommandPackage' && (action.routeReview.routeChanges.length > 0 || action.runtimeConfigChanges.length > 0));
     equivalentCommand = targets.map((target) =>
       `aw plugin ${action} ${intent.pluginId} --${sync ? 'context' : 'scope'} ${intent.scope}${target}`
       + (intent.action === 'cleanup' ? ' --only outputs' : '')
@@ -1436,7 +1489,13 @@ export function buildOperationReviewProjection(options: {
       + (intent.action === 'refreshAndSync' ? ' --refresh' : '')
       + (scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : '')
       + (intent.action === 'cleanup' && intent.force === true ? ' --force' : '')
-      + (requiresConfirmation || hasPreApply || intent.action === 'cleanup' || intent.action === 'uninstall' ? ' --yes' : '')).join(' && ');
+      + (requiresConfirmation || hasPreApply || changesCommandPackage || intent.action === 'cleanup' || intent.action === 'uninstall' ? ' --yes' : '')).join(' && ');
+  } else if (intent.kind === 'configSave' && intent.retryApply) {
+    equivalentCommand = `aw plugin config apply ${intent.pluginId} --context ${intent.context ?? 'user'}`
+      + (intent.platform ? ` --platform ${intent.platform}` : '')
+      + (intent.targets ?? []).map((target) => ` --target ${target}`).join('')
+      + (intent.scriptTimeoutMs === undefined ? '' : ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs)}`)
+      + (requiresConfirmation || hasPreApply || evidence.config?.commandReviewChanges?.length ? ' --yes' : '');
   }
   return {
     title: labels.title,
@@ -1476,9 +1535,14 @@ export function buildOperationReviewProjection(options: {
           reference.pluginId ? [reference.pluginId] : []),
         ...(evidence.catalogGeneration?.primaryImpact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),
-        ...(sharedNativeConfigApply && 'pluginId' in intent ? [intent.pluginId] : []),
+        ...((sharedNativeConfigApply || relatedProjectConfigApply) && 'pluginId' in intent ? [intent.pluginId] : []),
+        ...permissionImpacts.flatMap(({ subject }) => subject?.pluginId ? [subject.pluginId] : []),
       ])],
       ...(warning ? { warning }
+        : relatedProjectConfigApply
+          ? { warning: '应用设置会更新 Review 中列出的 OpenCode 项目权限。' }
+        : permissionImpacts.length
+          ? { warning: '本次权限变更可能影响 Review 中列出的其他命令。' }
         : sharedNativeConfigApply
           ? { warning: '更新被共用的原生 Skill 会影响所有启用项目。' }
         : requiresConfirmation && (evidence.sourceWrite

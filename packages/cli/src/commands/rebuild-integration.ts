@@ -1,20 +1,12 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { captureNativeToolChanges } from '../utils/native-tool-review.js';
 
 import { catalogFileMode } from '@lesliechan721/aw-plugin-core';
-import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
+import type { InstalledCommandProducer } from '@lesliechan721/aw-plugin-core/manifest';
 import fs from 'fs-extra';
-import os from 'node:os';
-import {
-  discoverRetainedManagedCommandPackages,
-  managedCommandProducerIdentity,
-  prepareManagedCommandPackage,
-  retainedManagedCommandPackageResult,
-  type ManagedCommandCandidate,
-  type PreparedManagedCommandPackage
-} from '../utils/managed-command-materialization.js';
-import { assertManagedCommandBindingIdentities, listManagedCommands, managedCommandDiagnostic, ManagedCommandError, revokeManagedCommandBindings, syncManagedCommandPackage } from '../utils/managed-command-store.js';
+import { ManagedCommandError } from '../utils/managed-command-store.js';
+import type { PreparedManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import { prepareLifecycleCommandPackage, publishLifecycleCommandPackages, retainedManagedCommandPackageResult } from './lifecycle-command-package.js';
 
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import {
@@ -113,12 +105,12 @@ import type {
   RebuildTargetDriver,
   RebuildTargetIdentity,
 } from './rebuild-operations.js';
+import { hasPermissionOwner, updateHostPermissions } from '../platforms/permission-ownership.js';
 import { platformOwnership, PlatformRebuildSession } from './rebuild-platform-integration.js';
 
 const MARKETPLACE_NAME = 'aw';
 const LEGACY_MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
 
-const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<{ action: OperationAction; candidate: ManagedCommandCandidate }>>>();
 const platformRebuildSessions = new WeakMap<Map<string, PluginProcessResult>, Map<PlatformName | undefined, PlatformRebuildSession>>();
 const commandPackageCandidates = new WeakMap<Map<string, PluginProcessResult>, Map<string, Promise<PreparedManagedCommandPackage>>>();
 
@@ -147,65 +139,6 @@ export async function disposePreparedPlatformRebuildSession(results: Map<string,
   }
 }
 
-async function commandPackageActions(options: {
-  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  context: RebuildExecutionContext;
-}): Promise<{ actions: OperationAction[]; candidates: ManagedCommandCandidate[] }> {
-  const actions: OperationAction[] = [];
-  const candidates: ManagedCommandCandidate[] = [];
-  const packageCache = options.context.packagePreparationCache ??= new Map();
-  let cache = commandPackagePreparationCaches.get(options.context);
-  if (!cache) {
-    cache = new Map();
-    commandPackagePreparationCaches.set(options.context, cache);
-  }
-  for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
-    if (!declaration.platforms.includes(options.platform) || options.scope === 'user' && declaration.scope === 'project') continue;
-    const producer = await managedCommandProducerIdentity({ ...options, scope: declaration.scope,
-      producer: { kind: 'package', packageKey: declaration.key } });
-    const key = getCommandPackageId(producer);
-    let preparation = cache.get(key);
-    if (!preparation) {
-      preparation = (async () => {
-        let candidate = packageCache.get(key);
-        if (!candidate) {
-          candidate = prepareManagedCommandPackage({ ...options, referencePlugins: options.context.referencePlugins,
-            packageKey: declaration.key, scope: declaration.scope, signal: options.context.signal,
-            scriptTimeoutMs: options.context.scriptTimeoutMs });
-          packageCache.set(key, candidate);
-        }
-        const prepared = await candidate;
-        const files: Array<import('./operation-plan.js').OperationArtifactFile & { mode: number }> = [];
-        async function visit(directory: string, prefix: string): Promise<void> {
-          for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-            const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-            const absolute = path.join(directory, entry.name);
-            if (entry.isDirectory()) {
-              await visit(absolute, relativePath);
-            } else if (entry.isFile()) {
-              const content = await fs.readFile(absolute);
-              files.push({ relativePath, contentBase64: content.toString('base64'),
-                contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
-                mode: (await fs.stat(absolute)).mode & 0o777 });
-            } else throw new ManagedCommandError('commandResourceInvalid', 'The prepared package contains an unsafe resource.');
-          }
-        }
-        await visit(prepared.resourceRoot, '');
-        files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-        return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin),
-          scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools,
-          files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` },
-        candidate: { producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools } };
-      })();
-      cache.set(key, preparation);
-    }
-    const prepared = await preparation;
-    actions.push(prepared.action);
-    candidates.push(prepared.candidate);
-  }
-  return { actions, candidates };
-}
-
 export interface RebuildIntegration {
   resolvePlatformTargets(inputs: readonly Parameters<RebuildIntegration['buildTarget']>[0][]): Promise<void>;
   sealMarketplaceGenerations(targets: readonly DesiredTarget[]): Promise<void>;
@@ -226,6 +159,7 @@ export interface RebuildIntegration {
     cwd: string;
     command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
     catalog: CatalogResolution;
+    commandRecord?: InstalledCommandProducer | null;
     readOnlyInspectionPlan?: boolean;
     /** Fresh read window for peers undergoing the same placement check or plan verification. */
     observationBatch?: import('../platforms/inspection-query.js').NativeObservationBatch;
@@ -257,11 +191,16 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  removeHostPermissions?: (locator: import('../platforms/permission-ownership.js').PermissionLocator) => Promise<void>;
+  invocationCwd?: string;
   recoveryCandidates?: readonly import('../platforms/contracts.js').RecoveryCandidate[];
   sharedReferenceView?: import('../utils/native-demand.js').NativeSharedReferenceView;
   platformRebuildSession?: PlatformRebuildSession;
   /** Concurrent native groups share a session across scopes of the same platform. */
   batchInstallPlatform?: PlatformName;
+  configApply?: boolean;
+  retainCommandPackages?: boolean;
+  commandPackagePlatforms?: ReadonlyMap<string, readonly PlatformName[]>;
   packagePreparationCache?: Map<string, Promise<PreparedManagedCommandPackage>>;
   interruption?: import('./public-interruption.js').PublicCommandInterruption;
   /** Validated renderer process output shared only by preparations of this operation. */
@@ -285,7 +224,6 @@ export interface RebuildExecutionContext {
   preserveLegacyNativeSkills?: boolean;
   nativeActivationOnlyTargets?: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
   commandResults?: CommandProducerResult[];
-  managedCommandCandidates?: Map<string, ManagedCommandCandidate[]>;
 }
 
 function codexObservationScope(
@@ -1447,14 +1385,20 @@ export async function inspectNativeMarketplaceRegistrations(options: {
   return { codex, claude };
 }
 
-export async function applyPlannedOperationAction(action: OperationAction): Promise<void> {
+export async function applyPlannedOperationAction(action: OperationAction): Promise<ClaudePermissions> {
   if (action.kind !== 'updateSharedConfig' || action.mutation.kind !== 'claude-permissions'
     || action.locator.kind !== 'claude-permissions') {
     throw new Error('platformContributionUnsupported: expected a Claude permissions contribution.');
   }
   const settings = await readClaudeSettings(action.locator.settingsPath);
+  const before = settings.permissions;
   rebuildClaudePermissions(settings, action.locator.ownerKey, action.mutation.permissions as ClaudePermissions);
   await writeClaudeSettings(action.locator.settingsPath, settings);
+  return {
+    allow: (settings.permissions?.allow ?? []).filter((rule) => !before?.allow?.includes(rule)),
+    ask: (settings.permissions?.ask ?? []).filter((rule) => !before?.ask?.includes(rule)),
+    deny: (settings.permissions?.deny ?? []).filter((rule) => !before?.deny?.includes(rule)),
+  };
 }
 
 function createNativeDriver(options: {
@@ -1469,60 +1413,6 @@ function createNativeDriver(options: {
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
   const runner = options.context.nativeCliRunner;
-  const revokeAtRoot = async (root: string, recursive = false, platform?: PlatformName): Promise<void> => {
-    const listed = await listManagedCommands(options.context.env);
-    const producers = new Map<string, import('../types.js').ProducerIdentity>();
-    for (const command of listed.commands) {
-      if (command.owner.kind !== 'plugin' || !command.resourceRoot) continue;
-      if (platform && command.owner.producer.platform !== platform) continue;
-      const relative = path.relative(path.resolve(root), path.resolve(command.resourceRoot));
-      if (relative !== '' && (!recursive || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) continue;
-      producers.set(getCommandPackageId(command.owner.producer), command.owner.producer);
-    }
-    for (const producer of producers.values()) {
-      const removedCommandIds = await revokeManagedCommandBindings(producer, options.context.env);
-      options.context.commandResults ??= [];
-      options.context.commandResults.push({ producer, state: 'completed', commandIds: [], removedCommandIds, errors: [], recoveryActions: [] });
-    }
-  };
-  const publishPackages = async (target: DesiredTarget): Promise<void> => {
-    const cache = options.context.managedCommandProducerCache ??= new Map();
-    for (const action of target.operationActions ?? []) {
-      if (action.kind !== 'syncManagedCommandPackage') continue;
-      const key = getCommandPackageId(action.producer);
-      let publication = cache.get(key);
-      if (!publication) {
-        publication = (async (): Promise<CommandProducerResult> => {
-          await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'start' } });
-          const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-publish-'));
-          try {
-            const digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(action.files)).digest('hex')}`;
-            if (digest !== action.contentDigest) throw new ManagedCommandError('commandResourceInvalid', 'The prepared command package digest changed.');
-            const resourceRoot = path.join(temporary, 'resource');
-            await fs.ensureDir(resourceRoot);
-            for (const file of action.files) {
-              const content = Buffer.from(file.contentBase64, 'base64');
-              if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) throw new ManagedCommandError('commandResourceInvalid', 'The prepared command package file digest changed.');
-              const destination = path.join(resourceRoot, ...file.relativePath.split('/'));
-              await fs.outputFile(destination, content);
-              await fs.chmod(destination, file.mode);
-            }
-            const result = await syncManagedCommandPackage({ producer: action.producer, sourceDirectory: resourceRoot, sets: action.sets, nativeTools: action.nativeTools, env: options.context.env });
-            await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'success' } });
-            return { producer: action.producer, state: 'completed', commandIds: result.commandIds, removedCommandIds: result.removedCommandIds, errors: [], recoveryActions: [] };
-          } catch (error) {
-            await options.context.reporter.event({ type: 'managed-command:producer', source: { plugin: action.producer.pluginName, scope: action.producer.scope }, data: { packageKey: action.producer.key, phase: 'failure' } });
-            return { producer: action.producer, state: 'failed', commandIds: [], removedCommandIds: [], errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command package sync ${action.producer.sourceId}/${action.producer.pluginName} ${action.producer.key} --scope ${action.producer.scope} --yes`] };
-          } finally { await fs.remove(temporary); }
-        })();
-        cache.set(key, publication);
-      }
-      const result = await publication;
-      options.context.commandResults ??= [];
-      if (!options.context.commandResults.some((entry) => getCommandPackageId(entry.producer) === key)) options.context.commandResults.push(result);
-      if (result.state !== 'completed') throw new Error('commandPackagePublishFailed: sync the command package and retry the plugin operation.');
-    }
-  };
   const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
   const codexNativeStates = new Map<string, 'present' | 'absent'>();
   const pendingCodexNativeStates = new Map<string, 'present' | 'absent'>();
@@ -1708,6 +1598,8 @@ function createNativeDriver(options: {
     inspectShared: async (component) => {
       const locator = component.locator;
       switch (locator.kind) {
+        case 'host-permissions':
+          return await hasPermissionOwner(options.context.env, locator) ? 'present' : 'absent';
         case 'cursor-workspace-hook':
           return platformOwnership.inspectShared(component);
         case 'claude-permissions':
@@ -1757,6 +1649,10 @@ function createNativeDriver(options: {
     removeShared: async (component) => {
       const locator = component.locator;
       switch (locator.kind) {
+        case 'host-permissions':
+          if (options.context.removeHostPermissions) return options.context.removeHostPermissions(locator);
+          await updateHostPermissions({ env: options.context.env, cwd: locator.projectRoot ?? locator.hostConfigRoot, invocationCwd: options.context.invocationCwd }, locator);
+          return;
         case 'cursor-workspace-hook':
           return platformOwnership.removeShared(component);
         case 'claude-permissions': {
@@ -1887,9 +1783,6 @@ function createNativeDriver(options: {
   };
   return {
     ownership,
-    beforeCleanupMutation: async (component) => {
-      if (component.kind === 'skill-directory') await revokeAtRoot(component.path);
-    },
     setNativeMarketplaceEligibleTargets: (eligibleTargets) => {
       nativeMarketplaceEligibleTargets = new Set(eligibleTargets);
     },
@@ -1970,11 +1863,6 @@ function createNativeDriver(options: {
               : 'user'),
         )));
     },
-    preflightMutation: async (target) => {
-      await assertManagedCommandBindingIdentities({ producers: (target.operationActions ?? []).flatMap((action) =>
-        action.kind === 'syncManagedCommandPackage' ? [{ producer: action.producer, sets: action.sets, nativeTools: action.nativeTools }] : []),
-      env: options.context.env });
-    },
     preflightMaterialize: async (target) => {
       if (target.identity.sourceId && options.context.expectedCatalogConfigDigest) {
         const current = await readCatalogSourcesConfigSnapshot(options.context.env);
@@ -1989,7 +1877,7 @@ function createNativeDriver(options: {
       for (const action of target.operationActions ?? []) {
         if (action.kind !== 'retainManagedCommandPackage') continue;
         options.context.commandResults ??= [];
-        if (!options.context.commandResults.some((result) => getCommandPackageId(result.producer) === action.packageId)) options.context.commandResults.push(retainedManagedCommandPackageResult(action));
+        if (!options.context.commandResults.some((result) => result.packageId === action.packageId)) options.context.commandResults.push(retainedManagedCommandPackageResult(action));
       }
     },
     probeNative: async (component) => {
@@ -2080,10 +1968,7 @@ function createNativeDriver(options: {
           throw new Error('codexNativeObservationUnavailable: native group precheck is missing.');
         }
         const removalRequired = before === 'present';
-        if (!removalRequired) {
-          await revokeAtRoot(path.join(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env), 'plugins', target.identity.pluginName), true, 'codex');
-          return;
-        }
+        if (!removalRequired) return;
         try {
           codexMutationMarketplaces.add(marketplaceName);
           await runObservedCodexMutation({
@@ -2133,7 +2018,6 @@ function createNativeDriver(options: {
               ? `codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`
               : `codexNativeInstallIncomplete: ${component.pluginId} is absent from Codex plugin list.`);
           }
-          if (expected === 'absent') await revokeAtRoot(path.join(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env), 'plugins', target.identity.pluginName), true, 'codex');
         };
         if (options.operationScopedNativePhases) {
           deferredPostchecks.push({ target, postcheck });
@@ -2166,7 +2050,7 @@ function createNativeDriver(options: {
         }
       }
     },
-    applyManagedCommands: publishPackages,
+    applyManagedCommands: (target) => publishLifecycleCommandPackages(target, options.context),
     writeNative: async () => { throw new Error('platformDeploymentRequired: native writes require a frozen platform deployment.'); },
     writeArtifacts: async (target) => {
       if (target.artifacts.length > 0) throw new Error('platformDeploymentRequired: platform output requires a frozen platform deployment.');
@@ -2252,8 +2136,17 @@ export function createRebuildIntegration(options: {
   options.context.platformRebuildSession = platformSession;
   platformSession.updateContext(options.context);
   platformSession.setOwnershipExecutor(driver.ownership);
+  const targetPlatforms = new Map<string, PlatformName[]>();
   return {
-    resolvePlatformTargets: (inputs) => platformSession.resolveAll(inputs),
+    resolvePlatformTargets: async (inputs) => {
+      await platformSession.resolveAll(inputs);
+      for (const input of inputs) {
+        const id = input.pluginId ?? pluginActionId(input.plugin);
+        const platforms = targetPlatforms.get(id) ?? [];
+        if (!platforms.includes(input.platform)) platforms.push(input.platform);
+        targetPlatforms.set(id, platforms);
+      }
+    },
     sealMarketplaceGenerations: (eligible) => platformSession.sealMarketplaceGenerations(eligible),
     driver,
     setNativeMarketplaceEligibleTargets: driver.setNativeMarketplaceEligibleTargets,
@@ -2261,27 +2154,25 @@ export function createRebuildIntegration(options: {
     postcheckCodexProvider: driver.postcheckCodexProvider,
     captureCodexPostMutationSnapshots: driver.captureCodexPostMutationSnapshots,
     buildTarget: async (input) => {
-      const target = await platformSession.buildTarget(input);
+      const removed = input.command === 'cleanup' || input.command === 'uninstall';
+      const id = input.pluginId ?? pluginActionId(input.plugin);
+      const platforms = options.context.commandPackagePlatforms?.get(id) ?? targetPlatforms.get(id) ?? [input.platform];
+      let commands: Awaited<ReturnType<typeof prepareLifecycleCommandPackage>> | undefined;
       if (!input.readOnlyInspectionPlan) {
-        const removed = input.command === 'cleanup' || input.command === 'uninstall';
-        const commands = removed ? { actions: [], candidates: [] }
-          : await commandPackageActions({ ...input, env: options.context.env, context: options.context });
-        const retained = removed ? await discoverRetainedManagedCommandPackages({
-          selectors: [{ sourceId: input.sourceId ?? input.plugin.sourceId, pluginName: input.plugin.manifest.name }],
-          scope: input.scope, cwd: input.cwd, env: options.context.env }) : [];
-        const operationActions: OperationAction[] = [...commands.actions, ...retained.map((entry) => ({ ...entry,
-          kind: 'retainManagedCommandPackage' as const, pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`,
-          scope: entry.producer.scope }))];
-        options.context.managedCommandCandidates ??= new Map();
-        options.context.managedCommandCandidates.set(pluginActionId(input.plugin), commands.candidates);
+        try { commands = await prepareLifecycleCommandPackage({ ...input, removing: removed, platforms, context: options.context }); }
+        catch (error) {
+          if (error instanceof ManagedCommandError) throw new Error(`${error.code}: ${error.message}`, { cause: error });
+          throw error;
+        }
+      }
+      const target = await platformSession.buildTarget({ ...input, commandRecord: commands?.record });
+      if (commands) {
+        const operationActions = commands.actions;
         const preApply = input.plugin.manifest.scripts?.preApply;
         if (preApply && !removed && !isNativeActivationOnlyTarget(options.context, target.identity)) operationActions.push({ kind: 'runPreApply',
           pluginId: input.pluginId ?? pluginActionId(input.plugin), platform: input.platform, scope: input.scope,
           script: preApply.path, scriptDigest: `sha256:${crypto.createHash('sha256')
             .update(await fs.readFile(path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, '')))).digest('hex')}` });
-        const nativeToolChanges = await captureNativeToolChanges({ actions: operationActions,
-          producers: commands.candidates.map((candidate) => candidate.producer), removed, env: options.context.env });
-        if (nativeToolChanges.length) operationActions[0]!.nativeToolChanges = nativeToolChanges;
         target.operationActions = operationActions;
       }
       targets.push(target);

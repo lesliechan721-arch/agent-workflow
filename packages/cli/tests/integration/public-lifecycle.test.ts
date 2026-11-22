@@ -23,7 +23,7 @@ import { runPublicLifecycle as executePublicLifecycle, type LifecycleData } from
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
-import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizeCommandRoutes } from '@lesliechan721/aw-plugin-core/manifest';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import type { CommandResult } from '../../src/output/public-result.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
@@ -382,7 +382,7 @@ describe('public plugin lifecycle', () => {
     }
   });
 
-  it('retains every producer result when removing Active and retired plugins together', async () => {
+  it('reports each retained shared command package when removing Active and retired plugins together', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     await fs.ensureDir(path.join(cwd, '.git'));
@@ -401,8 +401,11 @@ describe('public plugin lifecycle', () => {
     for (const pluginName of ['active', 'retired']) {
       const sourceDirectory = path.join(cwd, `${pluginName}-commands`);
       await fs.outputFile(path.join(sourceDirectory, 'run.mjs'), 'process.exit(0);\n');
-      packages.push(await syncManagedCommandPackage({ producer: { sourceId: 'team', sourceIdentity, pluginName, kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null },
-        sourceDirectory, sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'run.mjs' })] }], env: isolation.env }));
+      const producer = { sourceId: 'team', sourceIdentity, pluginName };
+      const installed = await syncManagedCommandPackage({ producer, sourceDirectory, env: isolation.env,
+        record: { schemaVersion: 2, producer, pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'b'.repeat(64)}`,
+          runtimeConfigPlatforms: [], routes: normalizeCommandRoutes({ subcommands: [{ name: 'run', runner: 'node', entry: 'run.mjs' }] }) } });
+      packages.push({ packageId: installed.id, selector: `team/${pluginName}` });
     }
     await createNativeDependencyCatalog(source, [{ name: 'active' }]);
     await fs.remove(path.join(source, 'plugins', 'retired'));
@@ -414,9 +417,13 @@ describe('public plugin lifecycle', () => {
     expect(result.status, JSON.stringify(result)).toMatch(/^(success|partial)$/u);
     const data = result.data as LifecycleData;
     expect(data.commandResults?.map((entry) => entry.producer.pluginName).sort(), JSON.stringify(result)).toEqual(['active', 'retired']);
-    for (const value of packages) {
-      expect(data.commandResults?.flatMap((entry) => entry.commandIds)).toEqual(expect.arrayContaining(value.commandIds));
-      expect((await resolveManagedCommand(value.commandIds[0]!, isolation.env)).view.availability).toBe('ready');
+    for (const { packageId, selector } of packages) {
+      expect(data.commandResults).toContainEqual({ packageId, selector, action: 'unchanged', availability: 'ready',
+        subcommands: ['run'], hasFallback: false, state: 'completed', blockerCodes: [],
+        producer: { sourceId: 'team', sourceIdentity, pluginName: selector.split('/')[1] } });
+      expect(result.nextActions).toContainEqual(expect.objectContaining({ kind: 'command',
+        argv: ['aw', 'command', 'package', 'remove', packageId], requiresConfirmation: true }));
+      expect((await resolveManagedCommand(selector, isolation.env, { args: ['run'] })).view.availability).toBe('ready');
     }
   });
   it.each([[['generic']], [['generic', 'pi']]])('reports foreign output blockers with independently observed targets %j', async (targets) => {

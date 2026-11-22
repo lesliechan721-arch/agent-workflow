@@ -48,7 +48,7 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
-`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
+`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。命中声明平台的部署共用一个命令包候选及其冻结路由。最终回执按计划顺序归并，各目标保留实际执行和读回结果。命令包撤销和显式维护见[包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。
 
 独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。需要扫描多个宿主的现有登记时，读取会等这些位置的写入结束，以免把正在更新的清单当作损坏。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
 
@@ -118,7 +118,7 @@ discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻
 
 完整声明只缺平台能力时，适用组件照常交付，缺口随同结果报告。所有项都跳过时保留需求，完成零项交付。已完成或无适用项的目标在输入、能力和现场证据相同时无需重新写入。配置、版本、能力变化或实际产物漂移会重新求值。真正缺少依赖或资源、renderer 失败、权限拒绝及原生写入失败仍保留未完成与恢复路径。
 
-成功有意空集合在 Review 中明确撤销旧输出，新目标可为成功 no-op。完整的新声明如果明确请求了一个旧入口无法保留的限制，Review 只撤回已证实归 AW 独占、当前作用域的旧入口，例如新版要求无工具但当前适配器不能表达该限制的角色。旧 renderer 只返回 `unmet` 而未提供完整声明时，保留缺少撤回依据的旧项。共享、外来、归属未知以及撤销失败的内容继续受保护，已观察到仍可能生效的旧输出随结果单列，并保留适用的恢复方法。取消需求时保留仍被引用的共享包或命令绑定。preApply 失败时保留旧输出，Grok 同 scope 的 Instructions 渲染失败时停止相关 Agent 包的发布。
+成功有意空集合在 Review 中明确撤销旧输出，新目标可为成功 no-op。完整的新声明如果明确请求了一个旧入口无法保留的限制，Review 只撤回已证实归 AW 独占、当前作用域的旧入口，例如新版要求无工具但当前适配器不能表达该限制的角色。旧 renderer 只返回 `unmet` 而未提供完整声明时，保留缺少撤回依据的旧项。共享、外来、归属未知以及撤销失败的内容继续受保护，已观察到仍可能生效的旧输出随结果单列，并保留适用的恢复方法。取消需求时保留仍被引用的共享原生包。插件的 AW_HOME 共享命令包在平台卸载或清理后保留。preApply 失败时保留旧输出，Grok 同 scope 的 Instructions 渲染失败时停止相关 Agent 包的发布。
 
 结果按本次真实范围汇总：全部完成 success/0；有完成部分、有效部分结果或 confirmed/possible 变更为 partial/4；全部执行前受阻且无业务变更为 blocked/3；执行失败且无有效部分或已知/可能变更为 failed/1。成功保存需求、配置或偏好也是已提交变更。超时或异常后先有限 observe，重试重新 prepare，不盲目重放。
 
@@ -143,6 +143,18 @@ CLI 在 preApply 执行期间收到 `SIGINT` 或 `SIGTERM` 时，先清理脚本
 ## 恢复与性能证据
 
 每条失败链必须可用 `cleanup`、`cleanup --force`、`reinstall`、来源刷新或新版本发布恢复。无法证明 ownership 时宁可保留内容，也不能删除用户或共享内容。
+
+### 宿主权限恢复
+
+卸载和 `aw plugin remove --only outputs` 撤回本次移除的 owner 中已核验的权限贡献。OpenCode User、Project 和 Antigravity CLI Global 可按各自配置路径与归属记录离线清理。缺失或损坏的归属证据不妨碍其他专属输出清理。遗留规则仍可能生效，`--force` 也只处理可证实归属的内容。先在宿主配置中核对遗留规则，再用相同目标和范围同步以重建后续归属证据。同步会保留无法区分出处的规则。
+
+移除某个 owner 后若会恢复其他插件的权限，Review 先列出受影响的插件和恢复规则。写入成功后回执标明恢复的插件和位置。OpenCode User 限制的变更也可能恢复 AW 已知 Project 的规则，按[平台权限投影](platforms.md#opencode-v2)中的项目 Review 一并确认。
+
+`permissionRelatedProjectUpdateIncomplete` 或项目写入中断时，先检查回执列出的项目权限配置。在每个未完成的项目根运行 `aw plugin sync --context project --target opencode`，审阅本项目当前规则后重试。如果需要保持 User 输出已移除，在对应项目打开 TUI，仅选择 Project 的 OpenCode 位置同步。`--only outputs` 保留 User 需求，联合 CLI 同步可能重新部署该位置。已经完成的写入保留，失败项目仍保存用于同步的 owner 声明。
+
+宿主文件不可解析或检查后被修改时，权限写入以 `permissionConfigurationConflict` 停止。确认或修复文件后重新准备 Review。若回执为 `permissionOwnershipWriteFailed`，宿主规则可能已经交付，先检查当前文件再同步，避免假定写入已回滚。相对 `OPENCODE_CONFIG_DIR` 导致路径无法确认时，设置客户端实际使用的绝对路径后重试。诊断含义见[CLI 回执](../../reference/cli.md#4-业务-payload-的边界)。
+
+### 性能取证
 
 性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`performance:stage` 记录 `catalog.load`、`catalog.validation`、`inventory`、`dependency.plan`、`target.build` 及 `recovery.*` 的阶段名与耗时。恢复阶段覆盖规划、锁等待、锁内重查、子计划准备与执行及最终状态读取，记录开始、成功或失败；诊断失败不覆盖操作结果。命令阶段另记录结果，Catalog load 另记录聚合 source/Active/validation 计数，不记录 digest、路径或错误文本。`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `inspect`、`native.write`、`artifacts.write` 和 `postcheck.inspect` 等真实写阶段耗时。没有 native 或 artifact 动作时不伪造对应阶段。测试用 provider 调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的总时长只对受控 fake native runner 使用宽松门槛；本地 Catalog 阶段 p95 目标为 500ms，不能据此承诺第三方 CLI 时长。
 

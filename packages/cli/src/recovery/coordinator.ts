@@ -3,7 +3,6 @@ import path from 'node:path';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { CatalogSourceInventoryIncompleteError } from '../utils/catalog-source-references.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
-import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   CatalogGenerationActiveV1,
@@ -17,6 +16,7 @@ import type {
   Scope,
 } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
+import { commandPackageProviderSatisfied } from '../commands/lifecycle-command-package.js';
 import { runRebuildCommand, type PreApplyAuthorizationTarget, type RebuildCommandResult, type RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import { buildRebuildReceiptJson } from '../output/command-receipt.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
@@ -73,6 +73,7 @@ export type { CheckedPortableProgress } from '../portable/recovery.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
 import { disposePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
 import { operationPlanNativeToolChanges } from '../commands/operation-plan.js';
+import type { ManagedCommandWithdrawal } from '../commands/lifecycle-command-package.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 /** Borrowed during preparation. Returned plans must perform later checks independently. */
@@ -169,6 +170,7 @@ export interface RecoveryPlan {
   declaration?: string[];
   preferences?: DeploymentPreferences;
   nativeGroups: NativeGroup[];
+  portableCommandWithdrawals?: ManagedCommandWithdrawal[];
   portableGroups: PortablePreparation[];
   portableProtectionGroups: PortablePreparation[];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
@@ -372,7 +374,7 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
   if (executed && result.commandResults?.length) {
     plan.receipt.commandResults = [...new Map([
       ...(plan.receipt.commandResults ?? []), ...result.commandResults,
-    ].map((entry) => [getCommandPackageId(entry.producer), entry])).values()];
+    ].map((entry) => [entry.packageId, entry])).values()];
   }
   const backend = buildRebuildReceiptJson(group.command === 'install' ? 'sync' : group.command, result);
   for (const { pluginId, platform } of nativeGroupTargets(group)) {
@@ -383,6 +385,8 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
     const matchesTarget = (entry: ReceiptTargetResult) => entry.target.pluginId === pluginId
       && entry.target.platform === platform && entry.target.scope === plan.options.scope;
     const backendTargets = result.targetResults.filter(matchesTarget);
+    const rebuildTargets = result.rebuildResults.filter((entry) => entry.target.pluginId === pluginId
+      && entry.target.platform === platform && entry.target.scope === plan.options.scope);
     const deploymentPlans = new Map([
       ...(group.preview.operationPlan?.deploymentPlans ?? []),
       ...(result.operationPlan?.deploymentPlans ?? []),
@@ -407,18 +411,11 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
     const dependencies = result.dependencyPlan?.targets.filter((entry) =>
       entry.platform === platform && (entry.pluginId === pluginId || entry.requiredBy?.includes(pluginId))) ?? [];
     const producers = (result.commandResults ?? []).filter((entry) => {
-      if (entry.producer.platform !== null && entry.producer.platform !== platform) return false;
-      if (entry.producer.platform === null) {
-        // Package identity is shared by AW; its declaration defines the Native consumers.
-        const plugin = plan.demand.plugins.find((plugin) => plugin.sourceId === entry.producer.sourceId
-          && plugin.sourceIdentity === entry.producer.sourceIdentity
-          && plugin.manifest.name === entry.producer.pluginName);
-        const declaration = plugin?.manifest.managedCommands?.packages.find((declaration) =>
-          declaration.key === entry.producer.key && declaration.scope === entry.producer.scope);
-        if (!declaration?.platforms.includes(platform)
-          || entry.producer.scope === 'project' && entry.producer.projectRoot !== plan.context.projectRoot) return false;
-      }
-      const producerPluginId = `${entry.producer.sourceId}/${entry.producer.pluginName}`;
+      const producerPluginId = entry.selector;
+      const plugin = plan.demand.plugins.find((plugin) => plugin.pluginId === producerPluginId);
+      if (plugin && plugin.sourceIdentity !== entry.producer.sourceIdentity) return false;
+      const declaration = plugin?.manifest.command;
+      if (!declaration?.platforms.includes(platform)) return false;
       return producerPluginId === pluginId
         || dependencies.some((dependency) => dependency.pluginId === producerPluginId)
         || result.targetResults.some((target) => target.target.pluginId === producerPluginId
@@ -437,10 +434,9 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       block(target, failure.errorCode ?? 'nativeRecoveryFailed');
     }
     // Keep checked recovery locations even when preparation stops before execution.
-    const nativeDiagnostics = result.rebuildResults.filter((entry) => entry.target.pluginId === pluginId
-      && entry.target.platform === platform && entry.target.scope === plan.options.scope)
-      .flatMap((entry) => entry.deploymentReceipts ?? [])
-      .flatMap((entry) => [...entry.diagnostics, ...entry.effects.flatMap((effect) => effect.diagnostics)])
+    const nativeDiagnostics = rebuildTargets
+      .flatMap((entry) => [...(entry.cleanupNotices ?? []), ...(entry.deploymentReceipts ?? []).flatMap((deployment) =>
+        [...deployment.diagnostics, ...deployment.effects.flatMap((effect) => effect.diagnostics)])])
       .filter((entry) => entry.detail);
     for (const entry of nativeDiagnostics) {
       const destination = entry.severity === 'error' ? target.blockers : (target.reasons ??= []);
@@ -458,13 +454,11 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       }
     }
     if (executed) {
-      const deployments = result.rebuildResults.filter((entry) => entry.target.pluginId === pluginId
-        && entry.target.platform === platform && entry.target.scope === plan.options.scope)
-        .flatMap((entry) => entry.deploymentReceipts ?? []);
+      const deployments = rebuildTargets.flatMap((entry) => entry.deploymentReceipts ?? []);
       if (deployments.length) target.deploymentReceipts = deployments.map((entry) => ({ ...entry,
         products: deploymentPlans.get(entry.bindingId)?.binding.consumers ?? [],
       }));
-      const commandFailures = producers.filter((entry) => entry.state !== 'completed');
+      const commandFailures = producers.filter((entry) => !commandPackageProviderSatisfied(entry));
       for (const producer of commandFailures) {
         for (const error of producer.errors) block(target, error.code);
         if (producer.errors.length === 0) block(target, 'managedCommandRecoveryFailed');
@@ -472,7 +466,8 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       const succeeded = commandFailures.length === 0 && backendTargets.length > 0
         && backendTargets.every((entry) => entry.state === 'completed');
       const effects = deployments.flatMap((entry) => entry.effects);
-      const changed = effects.some((effect) => effect.mutation !== 'none');
+      const changed = effects.some((effect) => effect.mutation !== 'none')
+        || rebuildTargets.some((entry) => entry.cleanupMutation !== undefined);
       if (succeeded) {
         const unchanged = deployments.length > 0 ? effects.every((effect) => effect.status === 'unchanged')
           : backendTargets.every((entry) => entry.action === 'skipped');
@@ -974,8 +969,12 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
       const delivery = preciseCleanup ? isPortableAgent(agent)
         ? { kind: 'agent-skills' as const, provider: 'aw' as const, agentId: 'generic' as const }
         : { kind: 'native' as const, platform: agent } : resolvedDelivery;
+      const configPackageBlocker = delivery?.kind === 'native' && options.existingOnly
+        ? runtime.configApplyPackages?.targets.find((target) => target.pluginId === pluginId
+          && target.platforms.includes(delivery.platform))?.blocker : undefined;
       receipt.targetResults.push({ pluginId, agent, scope: options.scope, delivery, execution: 'not-run', observation: 'unknown',
         blockers: [...(preciseCleanup ? [] : root?.blockers ?? []).map(diagnostic),
+          ...(configPackageBlocker ? [configPackageBlocker] : []),
           ...(refreshFailures.has(parsePluginId(pluginId).sourceId!)
             ? [diagnostic(refreshFailures.get(parsePluginId(pluginId).sourceId!)!)] : []),
 
@@ -1031,7 +1030,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
       for (const change of nativeToolChanges) {
         for (const [verb, closure] of [['撤销', change.before], ['使用', change.after]] as const) {
           if (closure) plan.changes.push(...describeNativeToolClosure(closure).map((description) =>
-            `${verb}原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
+            `${verb}原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${description}`));
         }
       }
       for (const override of preview.dependencyPlan?.scopeOverrides ?? []) {
@@ -1251,8 +1250,7 @@ async function executeNativeGroup(plan: RecoveryPlan, group: NativeGroup, native
     receipt.outputsMayHaveChanged ||= result.rebuildResults.some((result) => result.actions.some((action) =>
       action.name === 'stale.cleanup' || action.name === 'native.write' || action.name === 'artifacts.write'
         || action.name === 'recovery.cleanup' || action.name === 'cleanup.owned'))
-      || ((result.commandResults?.length ?? 0) > 0
-        && result.operationPlan?.actions.some((action) => action.kind === 'syncManagedCommandPackage') === true);
+      || (result.commandResults ?? []).some(({ action, state }) => action !== 'unchanged' || state === 'partial');
     nativeResults(plan, group, result, true);
   } catch (error) {
     if (error instanceof RebuildInterruptedError) {
@@ -1630,6 +1628,7 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
     pendingUserSkills: plan.joint?.pendingUserSkills,
     providerRetirements: plan.joint ? [...plan.joint.providerRetirements] : undefined,
     command: plan.command, dependencyCleanupTargets: plan.dependencyCleanupTargets,
-    declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
+    declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined,
+    portableCommandWithdrawals: plan.portableCommandWithdrawals, blockers: plan.receipt.blockers,
     children: (plan.joint?.children ?? [plan]).map(describe) };
 }

@@ -4,6 +4,8 @@ import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
+import { recoveryHostPermissionEffects } from '../commands/deployment-confirmation.js';
+import { isPermissionHost } from '../platforms/host-permission-policy.js';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import { resolveWorkContext } from '../intent/work-context.js';
@@ -61,6 +63,7 @@ import {
   activateRecoverySourcesAndReprepare,
   prepareRecovery,
   executeRecovery,
+  type RecoveryPlan,
 } from '../recovery/coordinator.js';
 import { prepareRetire, executeRetire } from '../recovery/retirement.js';
 import { prepareTargetsPlan, executeTargetsPlan, prepareIntentPlan, executeIntentPlan } from './scoped-flow.js';
@@ -74,6 +77,7 @@ import {
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
 import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigRenderUnits } from '../utils/plugin-config-impact.js';
+import { describeConfigCommandPackageReviews, type ConfigCommandPackageReview } from '../utils/plugin-config-command-apply.js';
 import { collectPluginConfigReferenceEvidence, pluginConfigHasExternalReferences, resolvePluginConfigReferenceConsumers, resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
@@ -85,8 +89,10 @@ import {
   TuiConfigInvalidStoreError,
   TuiController,
   TuiOperationBlockedError,
+  type ConfigOperationEvidence,
   type OperationEvidence,
   type OperationIntent,
+  type OperationReviewChange,
   type ConfigSaveBatchExecutionResult,
   type ConfigSaveBatchGroup,
   type ReviewPreparationStageId,
@@ -442,12 +448,40 @@ async function configRetrySharedNativeRenderUnits(
       && target.platform === shared.platform)));
 }
 
+function configPackageReviewChanges(plan: RecoveryPlan, reviews: readonly ConfigCommandPackageReview[]): OperationReviewChange[] {
+  return [
+    ...describeConfigCommandPackageReviews(reviews).map((description) => ({
+      kind: 'change' as const, group: 'configImpact' as const, title: '命令包影响', description,
+    })),
+    ...managedCommandRecoveryPlanChanges(plan).map((change) => ({ ...change, group: 'configImpact' as const })),
+  ];
+}
+
+async function reviewConfigMutationApply(options: Parameters<typeof preparePluginConfigApply>[0],
+  reviewed: ConfigOperationEvidence | undefined, fresh: boolean): Promise<Pick<ConfigOperationEvidence,
+    'commandPackageEvidence' | 'commandReviewChanges' | 'hostPermissionEffects'>> {
+  const mayChangeHostPermissions = options.applyTargets?.some(({ platform }) => isPermissionHost(platform) || platform === 'claude');
+  // The writer revalidates the frozen command package candidate before saving.
+  if (fresh && !mayChangeHostPermissions) return {
+    commandPackageEvidence: reviewed?.commandPackageEvidence,
+    commandReviewChanges: reviewed?.commandReviewChanges,
+  };
+  if (!options.applyCommandPackages?.length && !mayChangeHostPermissions) return { commandPackageEvidence: [] };
+  const prepared = await preparePluginConfigApply(options);
+  try {
+    const hostPermissionEffects = recoveryHostPermissionEffects(prepared.plan);
+    return { commandPackageEvidence: prepared.commandPackageEvidence,
+      commandReviewChanges: configPackageReviewChanges(prepared.plan, prepared.commandPackageReviews),
+      ...(hostPermissionEffects.length ? { hostPermissionEffects } : {}) };
+  } finally { await disposePluginConfigApply(prepared.plan); }
+}
+
 async function configRetryStoreDigest(options: {
   plugin: PluginMeta;
   scope: Scope;
   platform?: PlatformTarget;
   targets: readonly { pluginName: string; platform: PlatformName; scope: Scope }[];
-  commandPackages: readonly { producer: { pluginName: string; scope: Scope; platform?: PlatformName | null } }[];
+  commandPackages: readonly { producer: { pluginName: string }; runtimeConfigPlatforms: PlatformName[] }[];
   preApplyAuthorization: readonly { pluginName: string; scope: Scope }[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -463,8 +497,8 @@ async function configRetryStoreDigest(options: {
       if (!plugin) throw operationReviewStale('重试目标的插件定义已变化。');
       return pluginConfigTargetRenderScopes(plugin, target).map((scope) => ({ pluginName: target.pluginName, scope, platform: target.platform }));
     }),
-    ...options.commandPackages.map(({ producer }) => ({ pluginName: producer.pluginName, scope: producer.scope,
-      platform: producer.platform ?? undefined })),
+    ...options.commandPackages.flatMap(({ producer, runtimeConfigPlatforms }) => [undefined, ...runtimeConfigPlatforms]
+      .map((platform) => ({ pluginName: producer.pluginName, scope: 'user' as const, platform }))),
     ...options.preApplyAuthorization.map(({ pluginName, scope }) => ({ pluginName, scope, platform: options.platform }))];
   return digest(await collectPluginConfigReferenceEvidence({ ...options, profiles, plugins }));
 }
@@ -1191,6 +1225,7 @@ export function createTuiControllerDependencies(
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
     reusableCandidate?: CatalogSessionReusableCandidate,
+    reviewedEvidence?: Pick<OperationEvidence, 'config' | 'configBatch'>,
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
       || intent.kind === 'pluginWriteTask') {
@@ -1230,6 +1265,7 @@ export function createTuiControllerDependencies(
           operationInventory,
           freshCatalog,
           reusableCandidate,
+          { config: reviewedEvidence?.configBatch?.groups.find((item) => item.platform === group.platform)?.config },
         );
         if (!current.config || !current.source || !current.targetFingerprint) {
           throw operationReviewStale('设置批次缺少单层证据。');
@@ -1660,6 +1696,7 @@ export function createTuiControllerDependencies(
         sourceWrite: {
           configDigest: preview.configDigest,
           proposedConfigDigest: preview.proposedConfigDigest,
+          ...(preview.identityChanged ? { identityChanged: true } : {}),
           ...(preview.sourceIdentity ? { sourceIdentity: preview.sourceIdentity } : {}),
           inventoryDigest: digest({ references: preview.references.references, errors: preview.references.errors }),
           impactDigest: preview.impactDigest,
@@ -1779,6 +1816,7 @@ export function createTuiControllerDependencies(
             ...(intent.targets ? { targets: intent.targets } : {}),
             cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
             nativeCliRunner: context.nativeCliRunner,
+            expectedCommandPackageEvidence: reviewedEvidence?.config?.commandPackageEvidence,
             rebuildRuntime: {
               ...context,
               referencePlugins,
@@ -1810,9 +1848,12 @@ export function createTuiControllerDependencies(
                 impactState: 'known', affectedTargets: targets,
                 commandPackages: prepared.commandPackages,
                 applyEvidence: prepared.evidence, applyChanges: prepared.plan.changes,
-                commandReviewChanges: managedCommandRecoveryPlanChanges(prepared.plan),
+                commandPackageEvidence: prepared.commandPackageEvidence,
+                commandReviewChanges: configPackageReviewChanges(prepared.plan, prepared.commandPackageReviews),
+                hostPermissionEffects: recoveryHostPermissionEffects(prepared.plan),
                 applyWarnings: prepared.plan.warnings,
                 applyBlockers: [...new Map([
+                  ...prepared.commandPackageEvidence.flatMap(({ blocker }) => blocker ? [blocker] : []),
                   ...prepared.plan.receipt.blockers, ...prepared.plan.receipt.errors,
                   ...prepared.plan.receipt.targetResults.flatMap((target) => target.blockers),
                 ].map((item) => [`${item.code}\0${item.message}`, item])).values()],
@@ -1929,12 +1970,22 @@ export function createTuiControllerDependencies(
                 },
               })).targets
             : [];
+          const commandReview = configIntentRequestsApply(intent) ? await reviewConfigMutationApply({
+            plugin, scope: 'user', context: intent.context ?? 'user', platform: intent.platform,
+            cwd: context.cwd, env: context.env, cliVersion: packageInfo.version, nativeCliRunner: context.nativeCliRunner,
+            applyTargets: affectedTargets, applyCommandPackages: commandPackages.map(({ packageId }) => packageId),
+            mutation: { kind: 'patch', updates: intent.updates, removeKeys: intent.removeKeys },
+            rebuildRuntime: { ...context, signal, referencePlugins, catalogOperationContext: preparedCatalogOperation,
+              expectedGenerationSetDigest: preparedCatalogOperation.generationSetDigest,
+              scriptTimeoutMs: reviewedScriptTimeoutMs(intent), inventoryCatalogSourceReferences: operationInventory },
+          }, reviewedEvidence?.config, freshCatalog) : {};
           return {
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
             schemaIdentity: configSchemaIdentity(plugin, source.manifestDigest, intent.platform),
             impact,
             commandPackages,
+            commandReview,
             preApplyAuthorization,
             retryStoreDigest: intent.retryApply ? await configRetryStoreDigest({ plugin, scope: intent.context ?? 'user', platform: intent.platform,
               targets: affectedTargets, commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env, plugins: referencePlugins }) : undefined,
@@ -1962,6 +2013,7 @@ export function createTuiControllerDependencies(
           impactState: selected.impact?.impactState ?? 'known',
           ...(selected.impact?.noEffectiveChange ? { noEffectiveChange: true as const } : {}),
           ...(selected.commandPackages.length ? { commandPackages: selected.commandPackages } : {}),
+          ...selected.commandReview,
           affectedTargets: (selected.impact?.affectedTargets
             ?? relevantTargets).map(({ pluginName, platform, scope }) => ({ pluginName, platform, scope })),
           ...(selected.preApplyAuthorization.length > 0
@@ -2078,12 +2130,22 @@ export function createTuiControllerDependencies(
                   },
                 })).targets
               : [];
+            const commandReview = intent.kind === 'configSave' && configIntentRequestsApply(intent) ? await reviewConfigMutationApply({
+              plugin, scope: 'user', context: intent.context ?? 'user', platform: intent.platform,
+              cwd: context.cwd, env: context.env, cliVersion: packageInfo.version, nativeCliRunner: context.nativeCliRunner,
+              applyTargets: affectedTargets, applyCommandPackages: commandPackages.map(({ packageId }) => packageId),
+              mutation: { kind: 'patch', updates: intent.updates, removeKeys: intent.removeKeys },
+              rebuildRuntime: { ...context, signal, referencePlugins, catalogOperationContext: catalogOperation,
+                expectedGenerationSetDigest: catalogOperation?.generationSetDigest,
+                scriptTimeoutMs: reviewedScriptTimeoutMs(intent), inventoryCatalogSourceReferences: operationInventory },
+            }, reviewedEvidence?.config, freshCatalog) : {};
             return {
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
               schemaIdentity: configSchemaIdentity(plugin, source.manifestDigest, intent.platform),
               impact,
               commandPackages,
+              commandReview,
               preApplyAuthorization,
               retryStoreDigest: intent.kind === 'configSave' && intent.retryApply
                 ? await configRetryStoreDigest({ plugin, scope: intent.context ?? 'user', platform: intent.platform, targets: affectedTargets,
@@ -2124,6 +2186,7 @@ export function createTuiControllerDependencies(
         ...(impact?.noEffectiveChange ? { noEffectiveChange: true } : {}),
         ...('commandPackages' in selected && selected.commandPackages.length
           ? { commandPackages: selected.commandPackages } : {}),
+        ...('commandReview' in selected ? selected.commandReview : {}),
         affectedTargets: (impact?.affectedTargets
           ?? evidenceTargets).map(({ pluginName, platform, scope }) => ({ pluginName, platform, scope })),
         ...('sharedNativeRenderUnits' in selected
@@ -2939,7 +3002,7 @@ export function createTuiControllerDependencies(
           await tuiControllerRuntimeTestHooks?.beforeMutationEvidenceCapture?.();
           const operationInventory = createOperationInventoryReader();
           const currentEvidence = await captureEvidence(intent, undefined, undefined,
-            operationInventory, true);
+            operationInventory, true, undefined, expectedEvidence);
           if (!operationEvidenceMatches(expectedEvidence, currentEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
@@ -3066,6 +3129,8 @@ export function createTuiControllerDependencies(
                       ...(applyTargets.length ? { applyTargets } : {}),
                       request: { updates: group.updates, removeKeys: group.removeKeys },
                       sharedNativeApplyConfirmed: true,
+                      expectedCommandPackageEvidence: reviewedGroup.config.commandPackageEvidence,
+                      expectedHostPermissionEffects: reviewedGroup.config.hostPermissionEffects,
                       preApplyConfirmed: true,
                       preApplyAuthorizedTargets: approvedPreApplyTargets,
                     });
@@ -3213,6 +3278,8 @@ export function createTuiControllerDependencies(
                         },
                         awHomeMutationToken,
                         expectedEvidence: expectedEvidence.config?.applyEvidence,
+                        expectedCommandPackageEvidence: expectedEvidence.config?.commandPackageEvidence,
+                        expectedHostPermissionEffects: expectedEvidence.config?.hostPermissionEffects,
                         sharedNativeApplyConfirmed: true,
                         preApplyConfirmed: true,
                         preApplyAuthorizedTargets:
@@ -3243,6 +3310,8 @@ export function createTuiControllerDependencies(
                       ...(applyTargets.length ? { applyTargets } : {}),
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
                       sharedNativeApplyConfirmed: true,
+                      expectedCommandPackageEvidence: expectedEvidence.config?.commandPackageEvidence,
+                      expectedHostPermissionEffects: expectedEvidence.config?.hostPermissionEffects,
                       preApplyConfirmed: true,
                       preApplyAuthorizedTargets:
                         expectedEvidence.config?.preApplyAuthorization ?? [],

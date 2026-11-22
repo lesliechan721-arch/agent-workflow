@@ -262,7 +262,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
           // Platform projections can translate frontmatter and command bindings.
           // Read back an authored body line at the actual native publication path.
           const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
-          const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('aw.command:') && !line.includes('{{'));
+          const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('{{'));
           assert(authored, id + '/' + dir.name + ' must have an authored body');
           const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
           verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });

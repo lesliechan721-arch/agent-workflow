@@ -22,6 +22,7 @@ import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARG
 import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
   addCatalogSourceCommand,
+  describeSourceCommandRebinding,
   preflightCatalogSourceMutation,
   explicitRefPolicy,
   listCatalogSources,
@@ -76,6 +77,7 @@ import {
   ConfigApplyInterruptedError,
   applyPluginConfig,
   buildConfigMutationReceipt,
+  configActiveAvailabilityError,
   configWriteStateForError,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
@@ -621,8 +623,7 @@ function renderRecoveryReceipt(write: (text: string) => void, value: RecoveryRec
     writeLine(write, `${target.pluginId} / ${target.agent} [${target.scope}]: ${target.execution}; ${target.content ?? target.observation}`);
   }
   for (const result of value.commandResults ?? []) {
-    const producer = result.producer;
-    writeLine(write, `托管命令 ${producer.sourceId}/${producer.pluginName}/${producer.key} [${producer.scope}]: ${result.state}`);
+    writeLine(write, `托管命令 ${result.selector} [${result.packageId}] ${result.action} / ${result.availability} (${result.state})`);
   }
   for (const change of value.nativeToolChanges ?? []) {
     for (const phase of ['before', 'after'] as const) {
@@ -849,6 +850,11 @@ function writeConfigApplyNotice(
     const partialSummary = partiallyDelivered > 0 ? `部分完成 ${partiallyDelivered} 个；` : '';
     writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；${partialSummary}失败 ${failed} 个；跳过 ${skipped} 个。`);
     writeTargetFailures();
+  }
+  if (receipt.apply.state !== 'skipped') for (const entry of receipt.apply.commandResults ?? []) {
+    writeLine(write, `托管命令 ${entry.selector} [${entry.packageId}] ${entry.action} / ${entry.availability} (${entry.state})`);
+    for (const error of entry.errors) writeLine(write, `[${error.code}] ${sanitizeMessage(error.message)}`);
+    for (const action of entry.recoveryActions) writeLine(write, action);
   }
   writeWarnings(write, receipt.warnings);
 }
@@ -2551,12 +2557,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               throw error;
             }
             const mutation = command === 'unset' ? { kind: 'patch' as const, removeKeys: [key!] } : { kind: 'patch' as const, updates: { [key!]: inputValue } };
-            const confirmation = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
+            const reviewed = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
               context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
               nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
               rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
-                expectedGenerationSetDigest: catalogOperationContext.generationSetDigest } })
-              : { required: false, provided: rawOptions.yes === true, effects: [] };
+                expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+                ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) } })
+              : undefined;
+            const confirmation = reviewed?.confirmation ?? { required: false, provided: rawOptions.yes === true, effects: [] };
             const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
               scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
               cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
@@ -2564,6 +2572,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
                 ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) },
               awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
+              expectedCommandPackageEvidence: reviewed?.commandPackageEvidence,
+              expectedHostPermissionEffects: reviewed?.hostPermissionEffects,
               apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
@@ -2601,28 +2611,38 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           if (confirmed.cancelled || confirmed.value !== true) return;
         }
         const located = await resolveStoredConfigResetIdentity({ selector, context, scope: 'user' });
-        const resetStore = async (plugin: ResolvedCatalogPlugin['plugin'] | null, pluginError: Error | null) =>
-          withAwHomeMutationLock({ env: context.env, action: async (awHomeMutationToken) => {
-            const confirmation = plugin && rawOptions.apply ? await preparePublicConfigConfirmation({ plugin,
-              scope: work.context, context: work.context, platform, cwd: context.cwd, env: context.env,
-              cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken,
-              yes: rawOptions.yes, mutation: { kind: 'reset' }, rebuildRuntime: context }) : null;
-            const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
-              context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
-              nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
-              rebuildRuntime: { ...context, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
-              sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
-            return { ...receipt, confirmation };
-          } });
-        let started = false;
-        const resetReceipt = await runActionWithContext(context, async () => {
-          try { return await withResolvedCatalogPlugin({ selector: located.pluginId, cliVersion: resolveCliVersion(), env: context.env,
-            consume: ({ plugin }) => { started = true; return resetStore(plugin, null); } }); }
-          catch (error) {
-            if (started) throw error;
-            return resetStore(null, error instanceof Error ? error : new Error(String(error)));
-          }
-        });
+        const resetStore = async (plugin: ResolvedCatalogPlugin['plugin'] | null, pluginError: Error | null,
+          awHomeMutationToken: AwHomeMutationToken, catalogOperationContext?: CatalogOperationContext) => {
+          const rebuildRuntime = { ...context, awHomeMutationToken, catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext?.generationSetDigest, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) };
+          const reviewed = plugin && rawOptions.apply ? await preparePublicConfigConfirmation({ plugin,
+            scope: work.context, context: work.context, platform, cwd: context.cwd, env: context.env,
+            cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken,
+            yes: rawOptions.yes, mutation: { kind: 'reset' }, rebuildRuntime }) : null;
+          const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
+            context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
+            nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
+            expectedCommandPackageEvidence: reviewed?.commandPackageEvidence, expectedHostPermissionEffects: reviewed?.hostPermissionEffects, rebuildRuntime,
+            sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
+          return { ...receipt, confirmation: reviewed?.confirmation ?? null };
+        };
+        const resetReceipt = await runActionWithContext(context, () => withAwHomeMutationLock({
+          env: context.env, signal: context.signal, action: async (token) => {
+            let started = false;
+            try {
+              const operationContext = await resolveCatalogOperationContext({ sourceIds: [located.sourceId],
+                env: context.env, signal: context.signal });
+              return await withResolvedCatalogPlugin({ selector: located.pluginId, cliVersion: resolveCliVersion(),
+                operationContext, env: context.env, signal: context.signal, consume: ({ plugin }) => {
+                  started = true;
+                  return resetStore(plugin, null, token, operationContext);
+                } });
+            } catch (error) {
+              if (started || context.signal?.aborted || error instanceof CatalogLeaseEscapeError) throw error;
+              return resetStore(null, error instanceof Error ? error : new Error(String(error)), token);
+            }
+          },
+        }));
         const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
           ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
           context: work, platform: platform ?? 'common' });
@@ -2636,34 +2656,47 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   contextualCommand(config.command('apply').argument('<plugin>'))
+    .addOption(strictValueOption('--platform <target>', 'apply the selected configuration profile', PLATFORM_TARGETS))
     .option('--target <target>', 'limit existing-output refresh to this platform target', collectUniqueOption)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .action(async (selector: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:apply', rawOptions);
       const work = await configContext(context, rawOptions, true);
+      const platform = configPlatform(rawOptions);
       const targets = rawOptions.target?.map((target) => normalizeWriteRequest(() => parsePlatformTargetValue(target)));
       let resolved: { plugin: string; pluginId: string; sourceId: string } | undefined;
       let confirmed: Confirmation | undefined;
       const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(context, selector,
-        async ({ plugin, pluginId, source }, awHomeMutationToken) => {
+        async ({ plugin, pluginId, source }, awHomeMutationToken, catalogOperationContext) => {
           const identity = { plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId };
           resolved = identity;
-          const confirmation = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, targets, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, rebuildRuntime: context });
-          confirmed = confirmation;
-          const applied = await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
+          const rebuildRuntime = { ...context, catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) };
+          const reviewed = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, platform, targets,
+            cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner,
+            awHomeMutationToken, yes: rawOptions.yes, rebuildRuntime });
+          confirmed = reviewed.confirmation;
+          const applied = await applyPluginConfig({ plugin, scope: work.context, context: work.context, platform, targets,
+            expectedEvidence: reviewed.evidence,
+            expectedHostPermissionEffects: reviewed.hostPermissionEffects,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
-            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime,
           }).catch((error: unknown) => {
             if (!(error instanceof ConfigApplyInterruptedError)) throw error;
             const { code, message } = configMutationFailure(error, context.env, context.cwd);
             return { configWrite: error.configWrite, overallState: 'partial' as const,
               apply: error.apply, errors: [{ code, message }] };
           });
-          return { ...applied, ...identity, confirmation, context: work };
+          return { ...applied, ...identity, confirmation: reviewed.confirmation, context: work, platform: platform ?? 'common' };
         }, { retainCompletedResultOnAbort: true })).catch((error: unknown) => {
           if (error instanceof CatalogLeaseEscapeError) throw error;
+          const sourceError = configActiveAvailabilityError(error);
+          if (!resolved && sourceError) {
+            return { plugin: selector, confirmation: null, context: work, configWrite: 'notStarted' as const,
+              overallState: 'failed' as const, errors: [sourceError] };
+          }
           const code = recoveryInterruptionCode(error, context.signal);
           if (!code) throw error;
           if (!resolved) parsePluginId(selector);
@@ -2767,7 +2800,9 @@ async function runAuthoringCliAdapter(argv: string[], options: CliRuntimeOptions
 
 function sourceConfirmation(sourceId: string, yes: boolean | undefined, preview?: Awaited<ReturnType<typeof preflightCatalogSourceMutation>>): Confirmation {
   const required = preview !== undefined && (preview.identityChanged || !preview.references.inventoryComplete || preview.references.references.length > 0);
-  return { required, provided: yes === true, effects: required ? [{ code: 'changeSource', message: 'Change the source used by the affected or unobserved plugin references.', subject: { sourceId }, impact: preview?.references.inventoryComplete ? 'shared' : 'unknown' }] : [] };
+  const message = preview?.identityChanged ? describeSourceCommandRebinding(sourceId)
+    : 'Change the source used by the affected or unobserved plugin references.';
+  return { required, provided: yes === true, effects: required ? [{ code: 'changeSource', message, subject: { sourceId }, impact: preview?.references.inventoryComplete ? 'shared' : 'unknown' }] : [] };
 }
 
 function commandId(command: Command): string {
@@ -2980,7 +3015,11 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     commandOptions.signal = id === 'plugin.config.apply' && options.signal
       ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal;
   }
-  if (id === 'command.run' && !presentation.help) return runManagedCommandCli(['run', ...argv.slice(resolvedCommand.index + 1)], { ...context, interactive: false }, { cliEntry: fileURLToPath(import.meta.url), cliVersion: resolveCliVersion() });
+  if (id === 'command.run' && !awArgs.some((arg) => arg === '--help' || arg === '-h')) {
+    const prefix = argv.slice(0, resolvedCommand.index).filter((arg) => arg !== 'command');
+    return runManagedCommandCli(['run', ...prefix, ...argv.slice(resolvedCommand.index + 1)],
+      { ...context, interactive: false }, { cliEntry: fileURLToPath(import.meta.url), cliVersion: resolveCliVersion() });
+  }
   let confirmation: Confirmation | null = null;
   const emit = (result: CommandResult<object>, invalid = false): number => {
     if (result.diagnostics.some((diagnostic) => diagnostic.code === 'catalogWorkspaceMissing')) {

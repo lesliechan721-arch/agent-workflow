@@ -13,6 +13,8 @@ import {
   type ComponentPreparationBinding,
   type PreparedSkillPluginBundle,
 } from '../src/review/skill-materialization.js';
+import { resolveArtifactRenderConfig } from '../src/utils/artifact-renderer.js';
+import { readManagedCommandSource } from '../src/utils/managed-command-closure.js';
 import type { PluginMeta } from '../src/types.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import { validateSkillDirectoriesRoot, validatePortableSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
@@ -39,6 +41,7 @@ export interface MaterializeAwSkillEvalOptions {
   sourceIdentity: string;
   workspaceIdentity: string;
   env?: NodeJS.ProcessEnv;
+  commandFixture?: { pluginName: string; outputRoot: string };
 }
 
 export interface AwSkillEvalMaterializedSubject {
@@ -202,6 +205,7 @@ async function materializeProfile(options: {
   outputRoot: string;
   baseEnv: NodeJS.ProcessEnv;
   initializeGitRepository: boolean;
+  commandFixture?: MaterializeAwSkillEvalOptions['commandFixture'];
 }): Promise<AwSkillEvalMaterializedSubject> {
   const scopeRoot = path.join(options.outputRoot, 'subjects', options.profile.id);
   await fs.remove(scopeRoot);
@@ -244,6 +248,31 @@ async function materializeProfile(options: {
       projectRoot,
       env,
     }));
+  }
+
+  if (options.commandFixture) {
+    const plugin = options.preparedByName.get(options.commandFixture.pluginName)?.bundlePlugin;
+    const command = plugin?.manifest.command;
+    const { platform, scope } = options.profile;
+    if (plugin && command?.mode === 'static' && command.runtimeConfig && command.platforms.some((target) => target === platform)) {
+      const config = await resolveArtifactRenderConfig({
+        pluginName: plugin.manifest.name, manifest: plugin.manifest, sourceId: plugin.sourceId,
+        sourceIdentity: plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
+        referencePlugins: installations.map(({ prepared }) => prepared.bundlePlugin),
+        platform, scope, cwd: projectRoot, env,
+      });
+      const effectiveValues = Object.fromEntries(command.runtimeConfig.keys.filter((key) => Object.hasOwn(config.values, key))
+        .map((key) => [key, config.values[key]]));
+      const fields = Object.fromEntries(command.runtimeConfig.keys.map((key) => [key, config.schema?.[key]]));
+      const { sourceRoot } = await readManagedCommandSource(plugin);
+      const { outputRoot } = options.commandFixture;
+      const nativeTools = plugin.manifest.nativeTools;
+      await fs.copy(sourceRoot, path.join(outputRoot, 'command'), { dereference: false, overwrite: false, errorOnExist: true });
+      await fs.writeJson(path.join(outputRoot, 'command.json'), {
+        schemaVersion: 1, platform, command, effectiveValues, fields,
+        ...(nativeTools && { nativeTools: { ...nativeTools, consumers: nativeTools.consumers.filter(({ kind }) => kind === 'plugin-command') } }),
+      });
+    }
   }
 
   const subjectRoot = options.profile.scope === 'project'
@@ -359,6 +388,7 @@ export async function materializeAwSkillEvalSubject(
       outputRoot: options.outputRoot,
       baseEnv: options.env ?? process.env,
       initializeGitRepository: options.initializeGitRepository,
+      commandFixture: options.commandFixture,
     });
   } finally {
     await Promise.all([...preparedByName.values()].map((prepared) => prepared.cleanup()));

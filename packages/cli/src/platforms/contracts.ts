@@ -96,6 +96,8 @@ export interface CapabilityInput {
 }
 
 export interface ProjectionInput {
+  /** A native Grok observation can withhold access even when the project has a saved trust entry. */
+  grokScopeAuthorization?: DeploymentObservation['grokScopeAuthorization'];
   binding: DeploymentBinding;
   renderUnit: RenderUnit;
   capabilities: PlatformCapabilitiesV2;
@@ -204,6 +206,8 @@ export interface GrokOrderEntry {
 /** Operation-local facts for rechecking confirmed Grok writes within one host scope. */
 interface GrokScopeEvidence {
   scopeDigest: string;
+  permissionConfigs: Array<{ path: string; digest: string | null }>;
+  permissionInventoryDigest: string;
   /** Exact, exclusive User registration (installed copy and source) for the Project target's name. */
   userRegistrationDigest?: string;
   sourceDigests: string[];
@@ -264,7 +268,6 @@ export interface DeploymentReceipt {
 
 export interface StageContext extends ReadContext {
   stagingRoot: string;
-  commandResolver?: import('../generators/permissions.js').CommandReferenceResolver;
 }
 export interface RecoveryCandidate {
   binding: DeploymentBinding;
@@ -303,6 +306,8 @@ export interface DeploymentLayoutEvidence {
   marketplaceName: string | null;
 }
 export interface PreparationEvidence {
+  permissionOwnershipWarning?: Diagnostic;
+  permissionBatch?: import('./permission-ownership.js').ReviewedPermissionBatch;
   fingerprint: string;
   managedCommandReview?: import('../utils/managed-command-review.js').ManagedCommandReviewEvidence;
   marketplace?: { files: Array<{ relativePath: string; contentBase64: string; contentDigest: string }>; fingerprint: string };
@@ -321,6 +326,7 @@ export interface PreparationEvidence {
   userActivationEnabled?: boolean | 'unknown';
 }
 export interface MutationOutcome {
+  diagnostics?: Diagnostic[];
   mutation: 'none' | 'confirmed' | 'possible';
   changed: boolean;
   /** Exact Pi 1.5 Project remove acknowledgment, valid only for this action. */

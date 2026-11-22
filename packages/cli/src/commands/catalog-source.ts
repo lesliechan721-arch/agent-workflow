@@ -100,12 +100,16 @@ export class CatalogSourceImpactConfirmationRequiredError extends Error {
   }
 }
 
+export function describeSourceCommandRebinding(sourceId: string): string {
+  return `After installing a same-named plugin from the new source, existing approvals for aw command run ${sourceId}/<plugin> -- can authorize the new code. This review covers the current user and project. Other projects may have matching rules.`;
+}
+
 export class CatalogSourceIdentityChangeConfirmationRequiredError extends Error {
   readonly code = 'catalogSourceIdentityChangeConfirmationRequired';
   readonly impact: CatalogSourcePreflightInventory;
 
-  constructor(impact: CatalogSourcePreflightInventory) {
-    super('catalogSourceIdentityChangeConfirmationRequired: use --yes to confirm the source URL, path, or subdirectory change.');
+  constructor(impact: CatalogSourcePreflightInventory, sourceId: string) {
+    super(`catalogSourceIdentityChangeConfirmationRequired: ${describeSourceCommandRebinding(sourceId)} Use --yes to confirm the source change.`);
     this.name = 'CatalogSourceIdentityChangeConfirmationRequiredError';
     this.impact = impact;
   }
@@ -521,16 +525,14 @@ export async function updateCatalogSourceCommand(options: {
           && calculateCatalogSourceImpactDigest(impact) !== options.expectedImpactDigest) {
           throw new CatalogSourceReviewStaleError(references);
         }
+        if (changedIdentity && options.requireIdentityChangeConfirmation && options.confirmIdentityChange !== true) {
+          throw new CatalogSourceIdentityChangeConfirmationRequiredError(references, options.sourceId);
+        }
         if (primaryChange && options.requireImpactConfirmation === true
           && catalogSourceImpactRequiresConfirmation(impact)
           && options.confirmImpact !== true) {
           throw new CatalogSourceImpactConfirmationRequiredError(references);
         }
-      }
-      if (options.requireIdentityChangeConfirmation
-        && changedIdentity
-        && options.confirmIdentityChange !== true) {
-        throw new CatalogSourceIdentityChangeConfirmationRequiredError(references);
       }
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });

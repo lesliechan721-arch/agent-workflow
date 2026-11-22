@@ -106,15 +106,7 @@ describe('v4 author profile consumers', () => {
     const manifest = await fs.readJson(manifestPath);
     // A native Skill can be qualified while its installed configuration protocol is unavailable.
     manifest.platforms = ['generic', 'codex', 'antigravity'];
-    manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.installed-runtime-config.v2'] } };
-    manifest.managedCommands = { sets: [{ set: 'tools',
-      producer: { kind: 'artifact', platform: 'antigravity', artifactId: 'computed' }, mode: 'static',
-      entries: [{ key: 'run', variant: 'default', runner: 'node', entry: 'scripts/run.mjs' }],
-    }] };
-    manifest.extensions = { permissions: [{ name: 'command-permission',
-      allow: [{ command: { set: 'tools', key: 'run', variant: 'default' } }],
-      agentOverrides: { codex: null, generic: null },
-    }] };
+    manifest.requires = { aw: { capabilities: ['aw.installed-runtime-config.v2'] } };
     await fs.writeJson(manifestPath, manifest);
     const out = path.join(root, 'native-review');
     const result = await prepareReviewTarget({ cwd: root, target: pluginRoot, platform: 'antigravity', scope: 'project',

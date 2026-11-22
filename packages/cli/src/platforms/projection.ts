@@ -10,11 +10,16 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic } from '../output/public-result.js';
 import type { DeploymentBinding, HostContribution, ProjectionInput, ProjectionResult, StageContext } from './contracts.js';
-import { getDeploymentLayout, getDeploymentResourceKey, getNativePackageName } from './layout.js';
+import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPath, getNativePackageName, scopedPermissionPath } from './layout.js';
 import { ProjectionFiles, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath, type ProjectedFile } from './projection-files.js';
 import { projectCodeExtension } from './projection-code-extension.js';
 import { bindPlatformCommandResources } from './projection-command-resources.js';
-import { generateCodexPermissionArtifacts, mergeClaudePermissions, selectPlatformInvocationPolicy } from '../generators/permissions.js';
+import { generateCodexPermissionArtifacts, mergeClaudePermissions, renderClaudeBashRule, hostPermissionClaims, selectPlatformInvocationPolicy } from '../generators/permissions.js';
+import { grokProjectPermissionsAuthorized } from './grok-permission-config.js';
+import { resolvePlatformConfigRoot } from './discovery.js';
+import { supportsAntigravityGlobalPermissions } from './antigravity-permissions.js';
+import { hostPermissionDiagnostics, hostPermissionImpactDiagnostics, isPermissionHost } from './host-permission-policy.js';
+import { previewHostPermissions } from './permission-ownership.js';
 import { supplementRelativePath } from './supplement-layout.js';
 
 type Agent = Extract<PluginComponent, { kind: 'agent' }>;
@@ -356,25 +361,71 @@ async function supplementContributions(ctx: StageContext, input: ProjectionInput
   });
 }
 
-async function policyContributions(ctx: StageContext, input: ProjectionInput, files: ProjectionFiles, componentIds: string[]): Promise<HostContribution[]> {
+async function policyContributions(ctx: StageContext, input: ProjectionInput, files: ProjectionFiles, componentIds: string[], diagnostics: Diagnostic[]): Promise<HostContribution[]> {
   if (!input.policy.permissions.length || input.renderUnit.output !== 'package') return [];
   const platform = input.binding.platform;
-  const layout = await getDeploymentLayout(ctx, input.binding);
   const resourceKey = getDeploymentResourceKey(input.binding.plugin);
+  const selector = input.binding.plugin.pluginId;
   if (platform === 'codex') {
+    const layout = await getDeploymentLayout(ctx, input.binding);
     if (input.policy.permissions.some((permission) => permission.sandbox?.excludedCommands.length)) throw new Error('platformProjectionInvocationPolicyUnsupported');
-    return generateCodexPermissionArtifacts(`${input.binding.plugin.sourceId}-${getNativePackageName(input.binding.plugin)}`, input.policy.permissions, ctx.commandResolver).map((artifact) => {
+    return generateCodexPermissionArtifacts(`${input.binding.plugin.sourceId}-${getNativePackageName(input.binding.plugin)}`, input.policy.permissions, selector).map((artifact) => {
       const relative = `permissions/${path.posix.basename(artifact.relativePath)}`;
       files.add(relative, artifact.content);
       return { id: `policy:${artifact.artifactKey}`, componentIds, kind: 'owned-file', destination: path.join(layout.activationPath, artifact.relativePath),
         stagingPath: `host/${relative}`, contentDigest: files.digest(relative) };
     });
   }
+  if (isPermissionHost(platform)) {
+    const permissions = hostPermissionClaims(input.policy.permissions, selector);
+    if (platform === 'antigravity' && !supportsAntigravityGlobalPermissions(input.binding)) {
+      diagnostics.push(...hostPermissionDiagnostics({ skipped: permissions.map((claim) => ({ ...claim, reasonCode: 'antigravity-cli-global-only' })),
+        ownershipDegraded: false }, input.binding, ''));
+      return [];
+    }
+    const entry = input.binding.consumers[0]?.entry;
+    const hostRoot = entry && entry.kind !== 'generic' ? entry.configRoot : undefined;
+    if (platform === 'grok' && input.binding.scope.kind === 'project'
+      && (input.grokScopeAuthorization === 'denied' || input.grokScopeAuthorization === 'unknown'
+        || !await grokProjectPermissionsAuthorized(ctx, hostRoot ?? resolvePlatformConfigRoot('grok', ctx), input.binding.scope.projectRoot))) {
+      diagnostics.push(...hostPermissionDiagnostics({ skipped: permissions.map((claim) => ({ ...claim, reasonCode: 'grok-project-trust-required' })),
+        ownershipDegraded: false }, input.binding, ''));
+      return [];
+    }
+    const destination = await scopedPermissionPath(ctx, platform, input.binding.scope, hostRoot);
+    if (!destination) {
+      diagnostics.push(...hostPermissionDiagnostics({ skipped: permissions.map((claim) => ({ ...claim, reasonCode:
+        platform === 'antigravity' ? 'antigravity-config-path-unconfirmed' : 'permission-config-path-unconfirmed' })),
+        ownershipDegraded: false }, input.binding, platform === 'opencode' ? 'OPENCODE_CONFIG_DIR' : 'HOME'));
+      return [];
+    }
+    const preview = await previewHostPermissions(ctx, input.binding, destination, permissions);
+    diagnostics.push(...hostPermissionDiagnostics(preview, input.binding, destination));
+    const kind = `${platform}-permissions`;
+    const relative = kind + '.json';
+    files.json(relative, { kind, permissions, effective: preview.effective, reviewDigest: preview.reviewDigest,
+      ...(preview.affected.length ? { affected: preview.affected } : {}) });
+    return [{ id: 'policy:' + kind, componentIds, kind: 'config-entry', destination,
+      stagingPath: `host/${relative}`, contentDigest: files.digest(relative), mergeKey: `${kind}:${resourceKey}` }];
+  }
   if (platform === 'claude') {
-    const mutation = { kind: 'claude-permissions', permissions: mergeClaudePermissions(input.policy.permissions, ctx.commandResolver) };
+    const destination = await getInvocationPolicyPath(ctx, input.binding);
+    const adjusted = hostPermissionClaims(input.policy.permissions, selector).map((claim) => {
+      const resource = renderClaudeBashRule(claim.tokens);
+      const extra = claim.effect === 'allow' ? 'It also matches after known-safe environment assignments.'
+        : 'It also matches after any leading environment assignment or within a compound command.';
+      const program = path.posix.basename(claim.tokens[0] ?? '');
+      const safetyCheck = claim.effect !== 'allow' ? ''
+        : program === 'find' ? ' Claude Code can still require approval for find actions such as -exec and -delete.'
+          : ['watch', 'setsid', 'ionice', 'flock'].includes(program) ? ` Claude Code can still require approval for commands run through ${program}.` : '';
+      return { ...claim, pluginId: selector, resource, reasonCode: 'claude-bash-wrapper-matching',
+        message: 'Claude Code matches this written prefix with or without additional arguments and inside recognized shell wrappers such as timeout and time. ' + extra + safetyCheck };
+    });
+    diagnostics.push(...hostPermissionImpactDiagnostics(adjusted, platform, input.binding.scope.kind, destination));
+    const mutation = { kind: 'claude-permissions', permissions: mergeClaudePermissions(input.policy.permissions, selector) };
     const relative = 'claude-permissions.json';
     files.json(relative, mutation);
-    return [{ id: 'policy:claude-permissions', componentIds, kind: 'config-entry', destination: path.join(layout.activationPath, input.binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json'),
+    return [{ id: 'policy:claude-permissions', componentIds, kind: 'config-entry', destination,
       stagingPath: `host/${relative}`, contentDigest: files.digest(relative), mergeKey: `claude-permissions:${resourceKey}` }];
   }
   throw new Error('platformProjectionInvocationPolicyUnsupported');
@@ -459,7 +510,7 @@ export async function projectPlatform(ctx: StageContext, input: ProjectionInput)
         projectHooks(input, files, selected.filter((component): component is Hook => component.kind === 'hook'), selected.filter((component): component is Instruction => component.kind === 'instruction'));
       }
       if (selected.length) projectManifest(input, files, selected, servers);
-      supplements.push(...await policyContributions(ctx, input, hostFiles, input.components.map((component) => component.id)));
+      supplements.push(...await policyContributions(ctx, input, hostFiles, input.components.map((component) => component.id), diagnostics));
       if (input.binding.platform === 'cursor') {
         const layout = await getDeploymentLayout(ctx, input.binding);
         const command = cursorWorkspaceOpenCommand(input.binding, ctx.platform);

@@ -40,7 +40,7 @@ it('ships the native author contract and produces a reader usable without AW or 
     });
     expect(JSON.parse(child.stdout)).toEqual(ready);
     expect(child.stderr).toBe('');
-    expect(getAwCapabilityRegistry()).toContain('aw.native-tools.v2');
+    expect(getAwCapabilityRegistry()).toContain('aw.native-tools.v3');
     expect(getPluginAuthoringCapabilitySurface('native-tools').entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: 'nativeTools.consumers[].tools[].policy', acceptedValues: ['required', 'preferred'] }),
     ]));

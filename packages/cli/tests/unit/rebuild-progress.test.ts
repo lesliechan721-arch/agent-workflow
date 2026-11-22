@@ -21,8 +21,8 @@ describe('rebuild progress feed', () => {
   it('shows managed command package progress without a platform or arbitrary error text', () => {
     const feed = createRebuildProgressFeed();
     feed.addEvent({ type: 'managed-command:producer', source: { plugin: 'demo', scope: 'user' },
-      data: { packageKey: 'tools', phase: 'failure', message: 'private-token-value' } });
-    expect(feed.get().current).toEqual({ target: 'demo · 命令包 tools · 个人默认', phase: '命令包失败' });
+      data: { selector: 'official/demo', phase: 'failure', message: 'private-token-value' } });
+    expect(feed.get().current).toEqual({ target: '命令包 official/demo', phase: '命令包失败' });
     expect(feed.get().messages.join('\n')).not.toContain('private-token-value');
   });
   it('keeps at most 50 messages and tracks the latest target and real phase', () => {

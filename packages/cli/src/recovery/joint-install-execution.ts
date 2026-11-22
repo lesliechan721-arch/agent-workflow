@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
+import { commandPackageProviderSatisfied } from '../commands/lifecycle-command-package.js';
 import type { CommandProducerResult } from '../types.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -112,7 +113,7 @@ export async function executeJointInstall(options: {
   const failed = new Set<string>();
   const produced = new Map<PackageTarget, CommandProducerResult[]>();
   const pending = new Map<PackageTarget, Promise<CommandProducerResult[]>>();
-  const packageFailed = (entry: PackageTarget) => produced.get(entry)?.some((result) => result.state !== 'completed');
+  const packageFailed = (entry: PackageTarget) => produced.get(entry)?.every(commandPackageProviderSatisfied) === false;
   const blockers = new Map<string, RecoveryDiagnostic>();
   const states = new Map<string, { target: RecoveryTarget; group: InstallGroup; value: 'waiting' | 'running' | 'completed' }>();
   for (const group of groups) for (const target of group.targets) {

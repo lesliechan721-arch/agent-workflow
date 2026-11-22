@@ -20,8 +20,7 @@ function context(values = {}, platform = 'codex', scope = 'user', allowedOutputK
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
         'agent.prompt-mode': { status: 'supported', reasonCodes: [], values: ['host-default'] },
-        'agent.declaration-protocol': { status: 'supported', reasonCodes: [], values: ['aw.pi.agents.v1'] },
-        'skill.runtime-config': { status: 'supported', reasonCodes: [], values: ['aw.installed-runtime-config.v2'] } } },
+        'agent.declaration-protocol': { status: 'supported', reasonCodes: [], values: ['aw.pi.agents.v1'] } } },
     config: { values: { ...structuredClone(defaultValues), ...values } } };
 }
 async function files(plan) {
@@ -43,11 +42,11 @@ function rows(text, first) {
 }
 
 // Test Value Gate: these parsed declarations are the configuration and platform delivery contracts.
-test('owns generic configuration, optional native overrides and Codex command producers', async () => {
+test('owns generic configuration and one command package with platform-scoped invocation permissions', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'agent-subagent');
   assert.equal(manifest.config.schemaVersion, 5);
-  assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set(CONFIG_KEYS));
+  assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set([...CONFIG_KEYS, 'subagentRetentionHours']));
   const { definitions, fields, presentation } = manifest.config;
   const profile = definitions?.agentProfile ?? fields.generalTaskProfile;
   assert.equal(profile.additionalProperties, false);
@@ -94,28 +93,47 @@ test('owns generic configuration, optional native overrides and Codex command pr
   assert.deepEqual(manifest.artifacts.configKeys, SKILL_CONFIG_KEYS['spawn-subagent']);
   assert.deepEqual(manifest.artifacts.sourceDirs, ['./skills/spawn-subagent']);
   assert.equal(Object.hasOwn(manifest.artifacts, 'targets'), false);
-  assert.deepEqual(manifest.managedCommands.packages ?? [], []);
-  assert.deepEqual(manifest.managedCommands.sets.map((set) => set.set), ['guide', 'guide-communication', 'guide-claude', 'guide-communication-claude']);
-  for (const set of manifest.managedCommands.sets) {
-    assert.deepEqual(set.producer, { kind: 'artifact', platform: set.set.endsWith('-claude') ? 'claude' : 'codex', artifactId: set.set.endsWith('-claude') ? 'spawn-subagent-claude-skill' : 'spawn-subagent-skill' });
+  const { sourceDir, platforms, mode, runtimeConfig, routes } = manifest.command;
+  assert.equal(mode, 'static');
+  assert.deepEqual(platforms, ['codex', 'claude']);
+  assert.deepEqual(runtimeConfig, { keys: ['subagentCommands', 'subagentRetentionHours'] });
+  assert.equal(routes.fallback, undefined);
+  assert.deepEqual(routes.subcommands.map(({ name }) => name), ['start', 'send', 'wait', 'result', 'stop', 'message']);
+  for (const launch of routes.subcommands) {
+    const { name, runner, entry, args = [], env = {}, envFrom = {}, cwd = 'caller' } = launch;
+    assert.deepEqual({ runner, entry, args, env, envFrom, cwd }, {
+      runner: 'node', entry: name === 'message' ? 'scripts/message.mjs' : 'scripts/subagent.mjs',
+      args: name === 'message' ? [] : [name], env: {}, envFrom: {}, cwd: 'caller',
+    });
+    assert.ok(await readFile(path.join(root, sourceDir, entry)));
   }
-  const communicationEntries = manifest.managedCommands.sets[1].entries;
-  assert.equal(communicationEntries.length, 1);
-  const { args = [], env = {}, envFrom = {}, variant = 'default', cwd = 'caller', ...communicationEntry } = communicationEntries[0];
-  assert.deepEqual(communicationEntry, { key: 'message', runner: 'node', entry: 'scripts/message.mjs' });
-  // Source may omit launch defaults; a normalized bundle can make them explicit.
-  assert.deepEqual({ args, env, envFrom, variant, cwd },
-    { args: [], env: {}, envFrom: {}, variant: 'default', cwd: 'caller' });
-  const permission = manifest.extensions.permissions[0];
-  assert.deepEqual(permission.allow.map((entry) => entry.argsPrefix[0]), ['start', 'send', 'wait', 'result', 'stop']);
-  assert.equal(permission.agentOverrides.claude, null);
+  assert.deepEqual(manifest.nativeTools.consumers, [
+    { kind: 'plugin-command', tools: [{ key: 'windows-job', platforms: ['win32'], policy: 'required' }] },
+    { kind: 'plugin-test', key: 'node', tools: [{ key: 'windows-job', platforms: ['win32'], policy: 'required' }] },
+  ]);
+  const [permission] = manifest.extensions.permissions;
+  assert.equal(manifest.extensions.permissions.length, 1);
+  for (const [platform, allow] of [['codex', permission.allow], ['claude', permission.agentOverrides.claude.allow]]) {
+    assert.deepEqual(allow, [
+      { argsPrefix: ['start', '--platform', platform] },
+      { argsPrefix: ['send'] }, { argsPrefix: ['wait'] }, { argsPrefix: ['result'] }, { argsPrefix: ['stop'] },
+    ]);
+  }
+  for (const platform of manifest.platforms.filter((platform) => !platforms.includes(platform))) {
+    assert.equal(permission.agentOverrides[platform], null);
+  }
   const managed = fields.subagentCommands.items.variants.cases['custom-managed'];
-  assert.deepEqual(Object.keys(managed.properties), ['mode', 'commandId']);
+  assert.deepEqual(Object.keys(managed.properties), ['mode', 'commandId', 'subcommand']);
   assert.equal(managed.properties.commandId.required, true);
+  assert.equal(managed.properties.subcommand.required, undefined);
   const pattern = new RegExp(managed.properties.commandId.validation.pattern);
-  assert.equal(pattern.test(`cmdp_${'a'.repeat(16)}`), true);
+  assert.equal(pattern.test('aw-official/agent-subagent'), true);
+  assert.equal(pattern.test(`cmdp_${'a'.repeat(16)}`), false);
   assert.equal(pattern.test('cmdu_4ba70354-0867-4ecb-a927-120c1933f514'), true);
   assert.equal(pattern.test('guide'), false);
+  const subcommand = new RegExp(managed.properties.subcommand.validation.pattern);
+  assert.equal(subcommand.test('Group.start-v2_1'), true);
+  assert.equal(subcommand.test('--help'), false);
 });
 
 // Test Value Gate: the rendered configuration must not invent native overrides or leak backend settings.
@@ -148,8 +166,8 @@ test('renders default inheritance, custom ordering, escaping and fixed adapter m
   assert.deepEqual(rows(refreshed['references/external-delegation.md'], '| key |'), []);
 });
 
-// Test Value Gate: both platforms retain the method and runtime while targeting the installed role and command identities.
-test('projects the common method and runtime to both platforms and scopes', async () => {
+// Test Value Gate: generated command examples must match each platform's approved start invocation.
+test('projects the common method and matching start platform to both scheduling hosts', async () => {
   for (const scope of ['user', 'project']) {
     const input = context({}, 'codex', scope);
     input.platformCapabilities.basis = 'local';
@@ -162,27 +180,26 @@ test('projects the common method and runtime to both platforms and scopes', asyn
     assert.deepEqual(claude.components.map((artifact) => artifact.id), ['spawn-subagent-claude-skill', 'subagent-role']);
     const codexFiles = await files(codex);
     assert.ok(codexFiles['SKILL.md'].includes('`aw-fixture-agent-subagent-subagent`'));
-    const restored = Object.fromEntries(Object.entries(await files(claude)).map(([name, body]) => [name,
-      body.replaceAll('aw.command:guide-claude/', 'aw.command:guide/').replaceAll('aw.command:guide-communication-claude/', 'aw.command:guide-communication/')]));
-    assert.deepEqual(restored, { ...codexFiles,
-      'SKILL.md': codexFiles['SKILL.md'].replace('`aw-fixture-agent-subagent-subagent`', '`subagent`') });
+    const claudeFiles = await files(claude);
+    for (const [platform, plan, output] of [['codex', codex, codexFiles], ['claude', claude, claudeFiles]]) {
+      assert.equal(plan.components.find((item) => item.kind === 'skill').runtimeConfig, undefined);
+      const calls = Object.values(output).flatMap((body) =>
+        [...body.matchAll(/^\{\{aw\.command\}\} (.+)$/gm)].map(([, invocation]) => invocation.split(' ')));
+      assert.deepEqual(calls.map(([action]) => action).sort(), ['result', 'send', 'start', 'stop', 'wait']);
+      assert.deepEqual(calls.find(([action]) => action === 'start').slice(0, 3), ['start', '--platform', platform]);
+    }
   }
 });
 
-// Test Value Gate: installed content must contain the referenced module and document closure.
-test('Codex delivered resources retain their module and document closure', async () => {
+// Test Value Gate: the installed Skill must resolve its referenced documents without command runtime files.
+test('Codex delivered Skill retains its document closure', async () => {
   const output = await files(await renderArtifactPlan(context()));
-  for (const entry of ['subagent.mjs', 'worker.mjs', 'scan-expired.mjs', 'message.mjs', 'message-mcp.mjs',
-    'adapters/codex-v5.mjs', 'adapters/codex-profile.mjs', 'adapters/claude-code-v5.mjs', 'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
-    assert.equal(typeof output[`scripts/${entry}`], 'string');
-  }
+  assert.equal(Object.keys(output).some((name) => name.startsWith('scripts/')), false);
   for (const [name, body] of Object.entries(output)) {
-    const references = name.endsWith('.md') ? [...body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)]
-      : name.endsWith('.mjs') ? [...body.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"\n]+)['"]/g)] : [];
+    const references = name.endsWith('.md') ? [...body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)] : [];
     for (const [, reference] of references) {
-      if (name.endsWith('.mjs') ? !reference.startsWith('.') : /^[a-z][a-z0-9+.-]*:/.test(reference) || reference.startsWith('#')) continue;
+      if (/^[a-z][a-z0-9+.-]*:/.test(reference) || reference.startsWith('#')) continue;
       const target = path.posix.normalize(path.posix.join(path.posix.dirname(name), reference.split('#', 1)[0]));
-      if (target === 'scripts/aw-runtime-config.mjs' || target === 'scripts/runtime/native-tool-reader.mjs') continue;
       assert.equal(Object.hasOwn(output, target), true, `${name} -> ${reference}`);
     }
   }
@@ -192,7 +209,7 @@ test('Codex delivered resources retain their module and document closure', async
 // declarations remain available for projection when those prerequisites are absent.
 test('returns complete role declarations independently of scheduling', async () => {
   const input = context({}, 'codex', 'user', ['skill']);
-  input.changedConfigKeys = ['subagentRetentionHours'];
+  input.changedConfigKeys = ['subagentCommands'];
   assert.deepEqual((await renderArtifactPlan(input)).components.map((item) => item.id), ['spawn-subagent-skill']);
   const roles = context({}, 'codex', 'user', ['agent']);
   Object.defineProperty(roles, 'config', { get() { throw new Error('role read config'); } });
@@ -223,12 +240,6 @@ test('returns complete role declarations independently of scheduling', async () 
   const legacy = await renderArtifactPlan(pi);
   assert.equal(legacy.components.length, 0);
   assert.equal(legacy.unmet[0].reasonCode, 'consumer-missing');
-  const noRuntime = context({}, 'claude');
-  noRuntime.platformCapabilities.features['skill.runtime-config'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
-  const claude = await renderArtifactPlan(noRuntime);
-  assert.deepEqual(claude.components.map((item) => item.id), ['subagent-role']);
-  assert.deepEqual(claude.unmet[0].requiredFeatures,
-    [{ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }]);
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'other' }));
   await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
   await assert.rejects(renderArtifactPlan({ ...context(), surface: 'agent-commands' }), /surface=agent-plugin/);

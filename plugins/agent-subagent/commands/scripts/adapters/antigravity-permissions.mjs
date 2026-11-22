@@ -4,14 +4,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { fail, object } from '../runtime/contracts.mjs';
 import { atomicJson, safePath, textFromBytes } from '../runtime/files.mjs';
+import { isCommunicationCommandArgs } from '../runtime/managed-host.mjs';
 
 const invalid = () => fail('communicationPermissionConfigInvalid', 'The Antigravity user settings are invalid or unsafe. Repair settings.json, then start a new run.');
 const conflict = () => fail('communicationPermissionConflict', 'Antigravity settings changed while being read. Start a new run to read the current settings.');
 
-/** Only the fixed AW host and the dedicated communication ID may be allowed. */
+/** Allow the fixed AW host and the exact message route. */
 export function antigravityPermissionRule(command, args, platform = process.platform) {
   if (!['darwin', 'linux'].includes(platform)) fail('communicationPermissionUnsupported', 'Exact Antigravity command permissions require qualification on this platform.');
-  if (!Array.isArray(args) || args.length !== 5 || args[1] !== 'command' || args[2] !== 'run' || !/^cmdp_[0-9a-f]{16}$/.test(args[3]) || args[4] !== '--') fail('communicationPermissionUnsupported', 'Use the exact installed Guide communication command.');
+  if (!isCommunicationCommandArgs(args)) fail('communicationPermissionUnsupported', 'Use the exact installed Guide communication command.');
   if (![command, args[0]].every((value) => typeof value === 'string' && path.posix.isAbsolute(value) && path.posix.normalize(value) === value && /^\/[A-Za-z0-9_./:@%+=,-]+$/.test(value))) fail('communicationPermissionUnsupported', 'This AW host path requires an Antigravity token quoting qualification. Use a qualified AW host path.');
   return `command(${[command, ...args].join(' ')})`;
 }

@@ -2,14 +2,16 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import { sealPermissionBatches } from './permission-batch.js';
+import { COMMAND_ROUTE_UNREACHABLE, HOST_PERMISSION_ADDITIONAL_IMPACT, publicHostPermissionResource } from '../output/component-delivery.js';
+import { createMarketplaceManifestEntry, getComponentFeatureRequirements, normalizeStaticPluginComponents } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentBinding, DeploymentEvidenceChangeReason, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
   GrokOrderEntry, PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
 import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGroup } from '../platforms/discovery.js';
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory } from '../platforms/layout.js';
 import { getPhysicalKey } from '../platforms/identity.js';
 import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
@@ -17,6 +19,9 @@ import { piAgentConsumerDiagnostic, piProjectListContainsOnly } from '../platfor
 import { grokRegistrationOwned, piProjectEmptyDeliveryObserved, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
+import { grokProjectPermissionsAuthorized } from '../platforms/grok-permission-config.js';
+import { isPermissionHost } from '../platforms/host-permission-policy.js';
+import { hostPermissionFingerprint, missingPermissionOwnershipWarning, permissionComponent, permissionOwnerContentDigest, updateHostPermissions } from '../platforms/permission-ownership.js';
 import { cursorHookEntryCommand, cursorHooks } from '../platforms/cursor-workspace-hook.js';
 import { gapSupplementFiles, ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
 import { projectPlatformMarketplace } from '../platforms/projection-marketplace.js';
@@ -31,9 +36,6 @@ import type { CleanupResult } from '../utils/ownership.js';
 import { createPlatformInputEvidence, platformPackageInputDigest, platformPermissionNotices, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
 import { writePlatformSupplementState } from '../platforms/supplement-state.js';
 import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
-import { assertManagedCommandBindingIdentities, captureManagedCommandBindingRecoveryEvidence, publishManagedCommandBindings, listManagedCommands, readInstalledCommandProducer, revokeManagedCommandBindings,
-  type ManagedCommandBindingRecoveryEvidence } from '../utils/managed-command-store.js';
-import { captureNativeToolChanges, type NativeToolChange } from '../utils/native-tool-review.js';
 import { captureManagedCommandReviewEvidence } from '../utils/managed-command-review.js';
 import { readClaudeSettings } from '../adapters/helpers.js';
 import { skillInvocationWarning } from '../utils/skill-invocation-warning.js';
@@ -51,9 +53,7 @@ export interface PreparedPlatformTarget {
   plans: FrozenDeploymentPlan[];
   readonly blockedReceipts: readonly DeploymentReceipt[];
   readonly cleanupResults: readonly CleanupResult[];
-  readonly writesManagedCommands?: boolean;
   privatePackage?: { prepare(): Promise<void>; dispose(): Promise<void> };
-  captureNativeToolChanges(): Promise<NativeToolChange[]>;
   verify(batch?: NativeObservationBatch): Promise<void>;
   canVerifyAtExecution(): boolean;
   execute(options?: { verifyBeforeExecution: true }): Promise<DeploymentReceipt[]>;
@@ -63,13 +63,21 @@ export interface PreparedPlatformTarget {
 export function nativeInstallResources(plans: readonly FrozenDeploymentPlan[]): InstallResource[] {
   if (!plans.length) return [{ kind: 'exclusive' }];
   const paths = new Set<string>();
+  const readPaths = new Set<string>();
   for (const plan of plans) {
     const { binding, evidence } = plan;
     const { layout } = evidence;
     paths.add(layout.packageRoot);
+    for (const project of evidence.permissionBatch?.relatedProjects ?? []) paths.add(project.path);
     for (const { component } of evidence.ownership) {
       if ('path' in component) paths.add(component.path);
       else if (component.kind === 'shared-config' && component.locator.kind === 'claude-permissions') paths.add(component.locator.settingsPath);
+      else if (component.kind === 'shared-config' && component.locator.kind === 'host-permissions') {
+        const { settingsPath } = component.locator;
+        // A plugin with no current permissions may still own rules from an earlier version.
+        if (plan.effects.some((effect) => effect.destination === settingsPath)) paths.add(settingsPath);
+        else readPaths.add(settingsPath);
+      }
       else if (component.kind === 'shared-config' && component.locator.kind === 'cursor-workspace-hook') paths.add(component.locator.hooksPath);
     }
     for (const projection of plan.projections) {
@@ -81,6 +89,8 @@ export function nativeInstallResources(plans: readonly FrozenDeploymentPlan[]): 
     // Grok inspects the entire project's packages and rules in one inventory.
     // Keep peers out until this write and its confirming inspection finish.
     if (binding.route === 'grok-directory') {
+      const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
+      if (entry?.kind === 'cli') readPaths.add(path.join(entry.configRoot, 'config.toml'));
       if (plan.effects.length) paths.add(layout.activationPath);
       continue;
     }
@@ -94,7 +104,10 @@ export function nativeInstallResources(plans: readonly FrozenDeploymentPlan[]): 
       paths.add(consumer.entry.configRoot);
     }
   }
-  return [...paths].map((value) => ({ kind: 'path', value }));
+  return [
+    ...Array.from(paths, (value): InstallResource => ({ kind: 'path', value })),
+    ...[...readPaths].filter((value) => !paths.has(value)).map((value): InstallResource => ({ kind: 'path', value, access: 'read' })),
+  ];
 }
 interface UnitPreparation {
   unit: RenderUnit;
@@ -256,9 +269,10 @@ async function pathEvidence(location: string): Promise<unknown> {
   return { mode: stat.mode & 0o777, digest: crypto.createHash('sha256').update(await fs.readFile(location)).digest('hex') };
 }
 
-async function ownedContentDigest(component: OwnedComponent): Promise<string | undefined> {
+async function ownedContentDigest(component: OwnedComponent, ctx: ReadContext): Promise<string | undefined> {
   if (component.kind === 'owned-directory' || component.kind === 'skill-directory') return readPlatformPackageContentDigest(component.path);
   if (component.kind === 'shared-config') {
+    if (component.locator.kind === 'host-permissions') return permissionOwnerContentDigest(ctx, component.locator);
     let value: unknown;
     if (component.locator.kind === 'claude-permissions') {
       const permissions = (await readClaudeSettings(component.locator.settingsPath)).awGenerated?.permissions?.[component.locator.ownerKey];
@@ -296,7 +310,7 @@ async function ownedSupplements(binding: DeploymentBinding, root: string | null,
   return result;
 }
 function readContext(context: RebuildExecutionContext, cwd: string): ReadContext {
-  return { cwd, env: context.env, runner: context.nativeCliRunner, signal: context.signal,
+  return { cwd, invocationCwd: context.invocationCwd, env: context.env, runner: context.nativeCliRunner, signal: context.signal,
     codexObservationSession: context.codexObservationSession };
 }
 function operation(input: TargetInput): 'ensure' | 'reinstall' | 'remove' | 'cleanup' {
@@ -321,6 +335,9 @@ function contributionComponent(binding: DeploymentBinding, contribution: HostCon
     sourceIdentity: binding.plugin.sourceIdentity, physicalKey,
     platform: binding.platform, scope: binding.scope.kind, artifactKey: path.basename(contribution.destination) };
   if (contribution.kind === 'config-entry') {
+    if (isPermissionHost(binding.platform) && contribution.mergeKey?.startsWith(`${binding.platform}-permissions:`)) {
+      return permissionComponent(binding, contribution.destination, physicalKey);
+    }
     if (binding.platform === 'claude' && contribution.mergeKey?.startsWith('claude-permissions:')) {
       const owner = { ...identity, artifactKey: contribution.mergeKey.replace(':', '-') };
       return { kind: 'shared-config', identity: owner, label: contribution.destination,
@@ -474,6 +491,18 @@ export class PlatformRebuildSession {
   private readonly published = new Map<string, Promise<{ mutation: 'none' | 'confirmed' | 'possible'; changed: boolean }>>();
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
   private readonly piProjectRegisteredRoots = new Map<string, Set<string>>();
+  // A sibling target can update the same permission file. Only the exact pair
+  // of host and sidecar bytes confirmed by our own write inherits its baseline.
+  private readonly permissionWrites = new Map<string, { previous: string; current: string }>();
+  private readonly grokPermissionWrites = new Map<string, { previous: string | null; current: string | null }>();
+  private recordPermissionWrite(target: string, previous: string, current: string, host?: { previous: string | null; current: string | null }): void {
+    const last = this.permissionWrites.get(target);
+    this.permissionWrites.set(target, { previous: last?.current === previous ? last.previous : previous, current });
+    if (host && host.previous !== host.current) {
+      const earlier = this.grokPermissionWrites.get(target);
+      this.grokPermissionWrites.set(target, { previous: earlier && earlier.current === host.previous ? earlier.previous : host.previous, current: host.current });
+    }
+  }
   private readonly grokPublications = new Map<string, GrokPublication>();
   private readonly grokProjectRetirements = new Map<string, GrokProjectRetirement>();
   private readonly exclusions = new Map<string, DeploymentExclusion[]>();
@@ -590,7 +619,7 @@ export class PlatformRebuildSession {
       userContentDigest: user.nativePackageContentDigest, userPhysicalKey: user.physicalKey });
   }
   async dispose(): Promise<void> {
-    for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
+    await Promise.allSettled(this.units.values());
     if (this.staging) await fs.remove(await this.staging);
     this.staging = undefined;
     this.targets.clear(); this.resolutions.clear(); this.units.clear(); this.published.clear();
@@ -683,6 +712,7 @@ export class PlatformRebuildSession {
     for (const target of targets) this.marketplaceTargets.add(target);
     targets = [...this.marketplaceTargets];
     await this.freezeSharedPreApplyActions(targets);
+    await sealPermissionBatches(targets, (target) => readContext(this.context, target.identity.cwd), this.adapterFor);
     const retained = new Map(targets.flatMap((target) => (target.platformDeployment?.plans ?? [])
       .filter((plan) => plan.evidence.retainPackage).map((plan) => [plan.binding.physicalKey, plan.expected.unmet] as const)));
     for (const target of targets) for (const deployment of [...target.platformDeployment?.deployments ?? []]) {
@@ -750,9 +780,6 @@ export class PlatformRebuildSession {
         prepared.deployments.splice(prepared.deployments.indexOf(deployment), 1, next.prepared);
         prepared.plans.splice(prepared.plans.findIndex((plan) => plan.binding.id === deployment.plan.binding.id), 1, next.prepared.plan);
       }
-    }
-    for (const target of targets) if (target.platformDeployment) {
-      target.nativeToolChanges = await target.platformDeployment.captureNativeToolChanges();
     }
   }
   private async verifyMarketplace(plan: FrozenDeploymentPlan): Promise<boolean> {
@@ -869,7 +896,7 @@ export class PlatformRebuildSession {
           const finalized = await finalizePlatformSkillProducers({ plugin: input.plugin, plugins: this.context.referencePlugins,
             platform: input.platform, renderUnit: commonUnit, prepared, skillWorkRoot: path.join(await this.root(), artifactValueDigest(unit.physicalKey).slice(7), 'skills'),
             cwd: input.cwd, env: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
-            packagePreparationCache: this.context.packagePreparationCache });
+            commandRecord: input.commandRecord });
           return { unit: commonUnit, prepared: finalized.prepared, finalized,
             evidenceInput: { renderUnit: commonUnit, capabilities, config } };
         })();
@@ -885,51 +912,18 @@ export class PlatformRebuildSession {
     const checks = new Map<string, BindingEvidenceCheck>();
     const shadowedUsers = new Map<string, GrokShadowedUser>();
     let initialDiscoveryCheck: BindingEvidenceCheck | undefined;
-    const priorProducers = new Map<string, ProducerIdentity[]>();
-    const priorResourceRoots = new Map<string, string[]>();
-    const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
     const emptyStates = new Map<string, PlatformEmptyState>();
     const gapStates = new Map<string, PlatformEmptyState>();
     const inputDigests = new Map<string, string>();
     const supplementInputDigests = new Map<string, string>();
-    const commandInventory = await listManagedCommands(this.context.env);
-    for (const entry of observed) priorProducers.set(entry.binding.id, commandInventory.commands.flatMap((command) => {
-      if (command.owner.kind !== 'plugin') return [];
-      const producer = command.owner.producer;
-      return producer.kind !== 'package' && producer.sourceId === entry.binding.plugin.sourceId
-        && producer.sourceIdentity === entry.binding.plugin.sourceIdentity && producer.pluginName === input.plugin.manifest.name
-        && producer.platform === entry.binding.platform && producer.placementKey === entry.binding.physicalKey ? [producer] : [];
-    }));
-    for (const entry of observed) {
-      const component = deploymentPackageComponent(entry.binding, entry.layout);
-      if (component.kind !== 'owned-directory') continue;
-      const marker = await readSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot,
-        expectedIdentity: component.identity }).catch(() => null);
-      for (const mapping of marker?.nativeProjection?.components ?? []) {
-        if (!mapping.relativeOutputs.includes(`skills/${mapping.nativeName}/SKILL.md`)) continue;
-        const root = path.join(component.path, 'skills', mapping.nativeName);
-        const record = await readInstalledCommandProducer(root).catch(() => null);
-        const producer = record?.producer;
-        if (!producer || producer.kind === 'package' || producer.sourceId !== entry.binding.plugin.sourceId
-          || producer.sourceIdentity !== entry.binding.plugin.sourceIdentity || producer.pluginName !== input.plugin.manifest.name
-          || producer.platform !== entry.binding.platform || producer.placementKey !== entry.binding.physicalKey
-          || mapping.id !== (producer.kind === 'static-skill' ? `skill:${producer.key}` : producer.key)) continue;
-        priorProducers.get(entry.binding.id)!.push(producer);
-        priorResourceRoots.set(entry.binding.id, [...priorResourceRoots.get(entry.binding.id) ?? [], root]);
-        if (!removing) {
-          // An unreadable index has no authority. Only the installed canonical
-          // producer and its owned resources can establish its former identity.
-          const recovery = await captureManagedCommandBindingRecoveryEvidence({ producer, resourceRoot: root,
-            env: this.context.env }).catch(() => null);
-          if (recovery) bindingRecoveryEvidence.push(recovery);
-        }
-      }
-    }
-    await assertManagedCommandBindingIdentities({ producers: [...preparedUnits.values()].flatMap((unit) => unit.finalized.commandCandidates),
-      env: this.context.env, bindingRecoveryEvidence });
     for (const entry of observed) {
       const units = entry.binding.renderUnitIds.flatMap((id) => preparedUnits.has(id) ? [preparedUnits.get(id)!] : []);
       const projections: ProjectionResult[] = [];
+      const hostEntry = entry.binding.consumers[0]?.entry;
+      const hostRoot = hostEntry && hostEntry.kind !== 'generic' ? hostEntry.configRoot : undefined;
+      const grokProjectBlocked = entry.binding.platform === 'grok' && entry.binding.scope.kind === 'project'
+        && (entry.observation.grokScopeAuthorization !== 'granted' || !hostRoot
+          || !await grokProjectPermissionsAuthorized(ctx, hostRoot, entry.binding.scope.projectRoot));
       for (const unit of units) {
         const sameScope = units.filter((candidate) => artifactValueDigest(candidate.unit.renderScope) === artifactValueDigest(unit.unit.renderScope));
         const components = mergeExpectedComponentSets(sameScope.map((candidate) => candidate.prepared.expected)).components;
@@ -938,19 +932,24 @@ export class PlatformRebuildSession {
           files: sameScope.flatMap((candidate) => candidate.prepared.resources.files),
           commandResources: sameScope.flatMap((candidate) => candidate.prepared.resources.commandResources),
           digest: artifactValueDigest(sameScope.map((candidate) => candidate.prepared.resources.digest)) };
-        const projection = await adapter.project({ ...ctx, stagingRoot: path.join(await this.root(), 'projection'), commandResolver: unit.finalized.commandResolver }, {
+        const projection = await adapter.project({ ...ctx, stagingRoot: path.join(await this.root(), 'projection') }, {
           binding: entry.binding, renderUnit: unit.unit, capabilities: adapter.capabilities({ ...entry, renderUnit: unit.unit, profile: getQualifiedPlatformProfile(input.platform) }),
-          components, resources, policy: components.length ? unit.finalized.invocationPolicy.policy : { platform: input.platform, permissions: [] } });
+          components, resources, policy: unit.finalized.invocationPolicy.policy,
+          ...(grokProjectBlocked ? { grokScopeAuthorization: 'denied' as const } : {}) });
         for (const notice of unit.finalized.invocationPolicy.diagnostics) {
           projection.diagnostics.push({ ...notice, subject: { ...notice.subject, scope: entry.binding.scope.kind } });
         }
         projections.push(projection);
       }
-      const policyKey = input.platform === 'codex' || input.platform === 'claude' ? await getInvocationPolicyPhysicalKey(ctx, entry.binding) : undefined;
+      const hostPolicyPath = isPermissionHost(input.platform) && (input.platform !== 'antigravity' || entry.binding.route === 'antigravity-cli')
+        ? await scopedPermissionPath(ctx, input.platform, entry.binding.scope, hostEntry && hostEntry.kind !== 'generic' ? hostEntry.configRoot : undefined)
+        : undefined;
+      const policyKey = hostPolicyPath || input.platform === 'codex' || input.platform === 'claude'
+        ? await getInvocationPolicyPhysicalKey(ctx, entry.binding) : undefined;
       const expected = mergeExpectedComponentSets(units.map((unit) => unit.prepared.expected));
       const currentComponents = [deploymentPackageComponent(entry.binding, entry.layout),
         ...projections.flatMap((projection) => projection.supplements.map((contribution) => contributionComponent(entry.binding, contribution,
-          policyKey && (contribution.mergeKey?.startsWith('claude-permissions:') || input.platform === 'codex' && contribution.destination.endsWith('.rules'))
+          policyKey && (contribution.mergeKey?.startsWith(`${input.platform}-permissions:`) || input.platform === 'codex' && contribution.destination.endsWith('.rules'))
             ? policyKey : entry.layout.renderUnits.find((unit) => unit.id === projection.renderUnitId)!.physicalKey)))];
       const historical = await ownedSupplements(entry.binding, entry.layout.supplementRoot,
         entry.layout.renderUnits.find((unit) => unit.output === 'supplement')?.physicalKey);
@@ -959,6 +958,9 @@ export class PlatformRebuildSession {
         ? antigravityLegacyProjectComponent(entry.binding, entry.layout) : undefined;
       if (legacyPackage) historical.push(legacyPackage);
       if (entry.binding.platform === 'codex' && policyKey) historical.push(...await ownedSupplements(entry.binding, path.join(entry.layout.activationPath, 'rules'), policyKey));
+      if (hostPolicyPath && policyKey && !grokProjectBlocked) {
+        historical.push(permissionComponent(entry.binding, hostPolicyPath, policyKey));
+      }
       if (entry.binding.platform === 'claude' && policyKey) {
         const destination = path.join(entry.layout.activationPath, entry.binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json');
         historical.push(contributionComponent(entry.binding, { id: 'policy:claude-permissions', componentIds: [], kind: 'config-entry',
@@ -987,12 +989,21 @@ export class PlatformRebuildSession {
       }
       const inspected = await inspectOwnedComponents({ components, executor: this.ownership });
       const managedCommandReview = await captureManagedCommandReviewEvidence({ binding: entry.binding,
-        renderUnits: entry.layout.renderUnits, components: units.flatMap((unit) => unit.prepared.expected.components), projections });
+        renderUnits: entry.layout.renderUnits, inactivePermissions: units.flatMap((unit) => unit.finalized.invocationPolicy.inactivePermissions), projections });
       const currentMutable = async (batch?: NativeObservationBatch) => {
         const observation = await adapter.inspect(batch ? { ...ctx, ...batch } : ctx, entry.binding);
         return { observation, references: await sharedReferences(this.context, entry.binding, observation, entry.layout),
-          paths: await Promise.all(components.map(async (component) => 'path' in component ? pathEvidence(component.path) : {
-            ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
+          paths: await Promise.all(components.map(async (component) => {
+            if ('path' in component) return pathEvidence(component.path);
+            const ownership = await inspectOwnedComponents({ components: [component], executor: this.ownership });
+            if (component.kind === 'shared-config' && component.locator.kind === 'host-permissions') {
+              const locator = component.locator;
+              const plannedWrite = projections.some((projection) => projection.supplements.some((item) => item.destination === locator.settingsPath));
+              const fingerprint = await hostPermissionFingerprint(ctx, locator, plannedWrite);
+              const last = this.permissionWrites.get(component.locator.settingsPath);
+              return { ownership, fingerprint: last?.current === fingerprint ? last.previous : fingerprint };
+            }
+            return { ownership, contentDigest: await ownedContentDigest(component, ctx) };
           })) };
       };
       const shadowedUser = operation(input) === 'ensure' ? await grokUserBehindProject(ctx, entry.binding, entry.observation) : undefined;
@@ -1059,13 +1070,25 @@ export class PlatformRebuildSession {
         const retirements = binding.route === 'grok-directory' && operation(input) === 'ensure'
           ? [...this.grokProjectRetirements.values()].filter((item) => item.projectRoot === scopeRoot) : [];
         const baselineDigest = artifactValueDigest(mutableBaseline);
-        if (!publications.length && !retirements.length) return artifactValueDigest(current) === baselineDigest;
+        if (artifactValueDigest(current) === baselineDigest) return true;
+        if (!scopeRoot || !publications.length && !retirements.length && !this.grokPermissionWrites.size) return false;
         const before = mutableBaseline.observation.prerequisites.nativeSources;
         const after = current.observation.prerequisites.nativeSources;
         const priorEvidence = before?.grokScopeEvidence;
         const scopeEvidence = after?.grokScopeEvidence;
         if (before?.observation !== 'complete' || after?.observation !== 'complete' || !scopeEvidence || !priorEvidence
           || scopeEvidence.scopeDigest !== priorEvidence.scopeDigest) return false;
+        let permissionChanged = false;
+        if (scopeEvidence.permissionConfigs.length !== priorEvidence.permissionConfigs.length) return false;
+        for (const [index, file] of scopeEvidence.permissionConfigs.entries()) {
+          const prior = priorEvidence.permissionConfigs[index]!;
+          if (prior.path !== file.path) return false;
+          if (prior.digest === file.digest) continue;
+          const write = this.grokPermissionWrites.get(file.path);
+          if (!write || write.previous !== prior.digest || write.current !== file.digest) return false;
+          permissionChanged = true;
+        }
+        if (!permissionChanged && scopeEvidence.permissionInventoryDigest !== priorEvidence.permissionInventoryDigest) return false;
         const paths = after.sources.map((source) => path.normalize(source.path));
         const priorPaths = before.sources.map((source) => path.normalize(source.path));
         if (new Set(paths).size !== paths.length || new Set(priorPaths).size !== priorPaths.length) return false;
@@ -1076,7 +1099,7 @@ export class PlatformRebuildSession {
         const orderChecks = [priorEvidence];
         const instructions = [...scopeEvidence.instructions];
         const retiredSources = new Set<string>();
-        let adjusted = false;
+        let adjusted = permissionChanged;
         for (const retirement of retirements) {
           const { name, projectPackage, projectDigest, userPackage, userDigest, userSource, userContentDigest, userPhysicalKey } = retirement;
           if (!priorPaths.includes(projectPackage)) continue;
@@ -1173,8 +1196,8 @@ export class PlatformRebuildSession {
             || !scopeEvidence.resourceOrder.every((order, index) => matchesGrokComponentOrder(previous.resourceOrder[index]!, order, publishedRoots))) return false;
         }
         const normalizedSources = { ...after, sources: sources.filter((_, index) => !addedSources.has(paths[index]!)),
-          configurationEvidence: before.configurationEvidence, grokScopeEvidence: { ...scopeEvidence, instructions,
-            hookOrder: priorEvidence.hookOrder, resourceOrder: priorEvidence.resourceOrder,
+          configurationEvidence: before.configurationEvidence, grokScopeEvidence: { ...scopeEvidence, instructions, permissionConfigs: priorEvidence.permissionConfigs,
+            permissionInventoryDigest: priorEvidence.permissionInventoryDigest, hookOrder: priorEvidence.hookOrder, resourceOrder: priorEvidence.resourceOrder,
             sourceDigests: sourceDigests.filter((_, index) => !addedSources.has(paths[index]!)) } };
         const observation = { ...current.observation, prerequisites: { ...current.observation.prerequisites, nativeSources: normalizedSources } };
         const normalizedBefore = { ...before, sources: before.sources.filter((_, index) => !retiredSources.has(priorPaths[index]!)),
@@ -1256,13 +1279,20 @@ export class PlatformRebuildSession {
         } });
       const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
-          contentDigest: state === 'present' ? await ownedContentDigest(component) : undefined,
+          contentDigest: state === 'present' ? await ownedContentDigest(component, ctx) : undefined,
           physicalKey: component.identity.physicalKey ?? entry.binding.physicalKey }))),
         sharedReferences: await sharedReferences(this.context, entry.binding, preparationObservation, entry.layout),
         nativeIdentity: preparationObservation.nativeIdentity ?? entry.layout.nativeIdentity,
         contentMatches: projections.some((projection) => projection.bundle !== null)
           && (!antigravityProject || preparationObservation.ownership === 'aw')
           && await readPlatformPackageContentDigest(entry.layout.packageRoot) === projections.find((projection) => projection.bundle !== null)?.bundle?.contentDigest };
+      if (removing && isPermissionHost(entry.binding.platform) && (entry.binding.platform === 'opencode' || hostPolicyPath)) {
+        const permission = historical.find((component) => component.kind === 'shared-config' && component.locator.kind === 'host-permissions');
+        const settingsPath = permission?.kind === 'shared-config' && permission.locator.kind === 'host-permissions'
+          ? permission.locator.settingsPath : undefined;
+        const notice = await missingPermissionOwnershipWarning(ctx, entry.binding.plugin.pluginId, entry.binding.scope.kind, settingsPath ?? hostPolicyPath, entry.binding.platform, grokProjectBlocked);
+        if (notice) evidence.permissionOwnershipWarning = notice;
+      }
       if (entry.binding.platform === 'codex') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli'
           || removing && consumer.entry?.kind === 'directory')?.entry;
@@ -1302,16 +1332,17 @@ export class PlatformRebuildSession {
         const hasNativeCopy = ['grok-cli', 'antigravity-cli'].includes(entry.binding.route) && preparationObservation.registration === 'present';
         const previousCopyUnconfirmed = hasNativeCopy && (!old?.nativeProjection
           || old.nativeProjection.contentDigest !== preparationObservation.nativePackageContentDigest);
-        evidence.retainPackage = expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || previousCopyUnconfirmed
+        evidence.retainPackage = expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap) && gap.reasonCode !== COMMAND_ROUTE_UNREACHABLE) || previousCopyUnconfirmed
           || !evidence.contentMatches && (!previousContentsVerified || dropsPriorComponent
             && (!complete || evidence.sharedReferences !== 'none' || preparationObservation.ownership !== 'aw'));
       }
       if (!removing) {
-        const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
+        const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, commandRoutes: input.commandRecord?.routes, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
         const packageComponents = projections.find((projection) => projection.bundle)?.components;
         inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence, packageComponents));
         if (expected.unmet.every(isDeliveryCapabilityGap)) {
-          const permissionNotices = platformPermissionNotices(projections.flatMap(({ diagnostics }) => diagnostics));
+          const permissionNotices = platformPermissionNotices(projections.flatMap(({ diagnostics }) => diagnostics)
+            .filter((notice) => !notice.subject?.pluginId || notice.subject.pluginId === entry.binding.plugin.pluginId));
           const noticeFields = permissionNotices.length ? { permissionNotices } : {};
           if (expected.unmet.length || expected.components.length && permissionNotices.length) gapStates.set(entry.binding.id, { ...inputEvidence,
             kind: 'aw-platform-empty-state', result: 'capability-gaps', gaps: expected.unmet,
@@ -1341,7 +1372,6 @@ export class PlatformRebuildSession {
     }
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
-    let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
     const verifyChecks = async (selected: Iterable<BindingEvidenceCheck>, batch?: NativeObservationBatch): Promise<void> => {
       for (const check of selected) if (await check(batch) !== true) throw new Error('operationPlanStale: deployment evidence changed.');
       for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
@@ -1351,7 +1381,7 @@ export class PlatformRebuildSession {
       const prepared = deployments[0];
       if (!prepared || deployments.length !== 1 || plans.length !== 1 || plans[0] !== prepared.plan || blockedReceipts.length
         || target.operationActions === undefined || target.operationActions.some((action) =>
-          action.kind === 'runPreApply' || action.kind === 'syncManagedCommandPackage')) return false;
+          action.kind === 'runPreApply' || action.kind === 'syncManagedCommandPackage' || action.kind === 'removeManagedCommandPackage')) return false;
       const { plan, driverState } = prepared;
       const hiddenEmptyPiProject = piProjectRegistrationHidden(plan.binding, driverState.before)
         && driverState.before.package === 'absent' && driverState.before.ownership === 'absent'
@@ -1385,29 +1415,7 @@ export class PlatformRebuildSession {
         },
       } : undefined;
     target.platformDeployment = { deployments, plans, blockedReceipts, cleanupResults, privatePackage,
-      writesManagedCommands: [...preparedUnits.values()].some((unit) => unit.finalized.commandCandidates.length > 0)
-        || [...priorProducers.values()].some((producers) => producers.length > 0),
       canVerifyAtExecution,
-      captureNativeToolChanges: async () => {
-        const signature = artifactValueDigest(deployments.map(({ plan }) => ({ bindingId: plan.binding.id,
-          retainPackage: plan.evidence.retainPackage, effects: plan.effects })));
-        if (frozenNativeTools?.signature === signature) return frozenNativeTools.changes;
-        const changes: NativeToolChange[] = [];
-        for (const { plan } of deployments) {
-          const root = plan.evidence.layout.packageRoot;
-          const publishes = plan.effects.some((effect) => effect.kind === 'publish-package' && effect.destination === root);
-          const removes = plan.effects.some((effect) => effect.kind === 'remove-owned' && effect.destination === root);
-          if (plan.evidence.retainPackage || !publishes && !removes) continue;
-          const next = publishes ? [...preparedUnits.values()].flatMap((unit) => unit.finalized.commandCandidates)
-            .filter((candidate) => candidate.producer.kind !== 'package' && candidate.producer.placementKey === plan.binding.physicalKey) : [];
-          changes.push(...await captureNativeToolChanges({ actions: [],
-            producers: [...priorProducers.get(plan.binding.id) ?? [], ...next.map((candidate) => candidate.producer)],
-            nextProducers: next, removed: removes, env: this.context.env,
-            resourceRoots: [...priorResourceRoots.get(plan.binding.id) ?? [], ...(removes ? [root] : [])] }));
-        }
-        frozenNativeTools = { signature, changes };
-        return changes;
-      },
       verify,
       postcheck: async (receipts, options) => {
         let incomplete = false;
@@ -1553,8 +1561,7 @@ export class PlatformRebuildSession {
         for (const prepared of deployments) {
           const supplementFiles = componentSupplementFiles(prepared.plan);
           const writtenFiles = new Map<string, { digest: string; componentIds: string[] }>();
-          const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
-            .some((resolution) => resolution.state === 'failed'));
+          const appliedPermissionNotices: import('../platforms/contracts.js').Diagnostic[] = [];
           let receipt: DeploymentReceipt;
           const peers = prepared.plan.binding.route === 'codex-marketplace' ? [...this.mutableChecks.values()].filter((check) =>
             check.physicalKey !== prepared.plan.binding.physicalKey && check.marketplaceRoot === prepared.plan.evidence.layout.marketplaceRoot
@@ -1589,7 +1596,7 @@ export class PlatformRebuildSession {
                   components: prepared.plan.projections.filter((projection) => projection.bundle !== null).flatMap((projection) => projection.components),
                   inputDigest: inputDigests.get(prepared.plan.binding.id)!, contentDigest: bundle.contentDigest,
                   ...(bundle.piExtensionDigest ? { piExtensionDigest: bundle.piExtensionDigest } : {}),
-                  preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
+                  preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) ? 'partial' : 'complete',
                   physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity,
                 }, stagedPackage);
                 this.published.set(prepared.plan.binding.physicalKey, publication);
@@ -1613,12 +1620,28 @@ export class PlatformRebuildSession {
                 const desired = cursorHooks(await jsonObject(contribution.stagingPath)).entries;
                 await atomicReplaceSafeFile({ filePath: component.locator.hooksPath, allowedRoot: path.dirname(component.locator.hooksPath), label: 'Cursor workspaceOpen',
                   content: `${JSON.stringify({ ...value, hooks: { ...hooks, workspaceOpen: [...entries.filter((item) => cursorHookEntryCommand(item) !== locator.command), ...desired] } }, null, 2)}\n` });
+              } else if (component.kind === 'shared-config' && component.locator.kind === 'host-permissions') {
+                const locator = component.locator;
+                const changed = await updateHostPermissions(ctx, locator, await jsonObject(contribution.stagingPath),
+                  (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), prepared.plan.evidence.permissionBatch,
+                  (notices) => appliedPermissionNotices.push(...notices));
+                return { mutation: changed ? 'confirmed' : 'none', changed };
               } else if (component.kind === 'shared-config' && component.locator.kind === 'claude-permissions') {
                 const content = await jsonObject(contribution.stagingPath);
                 if (content.kind !== 'claude-permissions') throw new Error('platformContributionUnsupported');
-                await applyPlannedOperationAction({ kind: 'updateSharedConfig', pluginId: prepared.plan.binding.plugin.pluginId,
+                const added = await applyPlannedOperationAction({ kind: 'updateSharedConfig', pluginId: prepared.plan.binding.plugin.pluginId,
                   platform: 'claude', scope: prepared.plan.binding.scope.kind, owner: component.identity, locator: component.locator,
                   contentDigest: contribution.contentDigest, mutation: { kind: 'claude-permissions', permissions: content.permissions } });
+                for (const projection of prepared.plan.projections) {
+                  for (const notice of projection.diagnostics) {
+                    const { permissionAction, permissionResource, path } = notice.detail ?? {};
+                    if (notice.code === HOST_PERMISSION_ADDITIONAL_IMPACT && path === contribution.destination
+                      && permissionAction && permissionResource
+                      && added[permissionAction].some((rule) => publicHostPermissionResource(rule) === permissionResource)) {
+                      appliedPermissionNotices.push(notice);
+                    }
+                  }
+                }
               } else throw new Error('platformContributionUnsupported');
               return { mutation: 'confirmed', changed: true };
             },
@@ -1633,13 +1656,30 @@ export class PlatformRebuildSession {
                   });
                 }
               }
-              const result = await cleanupOwnedComponents({ components: [component], executor: this.ownership });
+              const locator = component.kind === 'shared-config' && component.locator.kind === 'host-permissions' ? component.locator : undefined;
+              const restorations: import('../platforms/contracts.js').Diagnostic[] = [];
+              let permissionFailure: unknown;
+              const executor = locator ? { ...this.ownership, removeShared: async () => {
+                try {
+                  await updateHostPermissions(ctx, locator, undefined, (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), prepared.plan.evidence.permissionBatch,
+                    (notices) => {
+                      for (const notice of notices) {
+                        (notice.code === HOST_PERMISSION_ADDITIONAL_IMPACT ? appliedPermissionNotices : restorations).push(notice);
+                      }
+                    });
+                } catch (error) {
+                  permissionFailure = error;
+                  throw error;
+                }
+              } } : this.ownership;
+              const result = await cleanupOwnedComponents({ components: [component], executor });
               cleanupResults.push(result);
               if (result.failures.length || result.residual.length || result.quarantined.length) {
+                if (permissionFailure) throw permissionFailure;
                 throw Object.assign(new Error('deploymentCleanupIncomplete'), result.removed.length || result.quarantined.length
                   ? { mutation: 'confirmed' } : {});
               }
-              return { mutation: result.removed.length ? 'confirmed' : 'none', changed: result.removed.length > 0 };
+              return { mutation: result.removed.length ? 'confirmed' : 'none', changed: result.removed.length > 0, diagnostics: restorations };
             },
           } }, prepared); } catch (error) {
             const diagnostic = { code: recoveryInterruptionCode(error) ?? 'platformExecutionFailed', severity: 'error' as const,
@@ -1651,6 +1691,7 @@ export class PlatformRebuildSession {
               unmet: prepared.plan.expected.unmet.map((gap) => ({ ...gap, productIds: prepared.plan.binding.consumers.map(({ id }) => id) })),
               reload: 'unknown', diagnostics: [diagnostic] };
           }
+          receipt.diagnostics.push(...appliedPermissionNotices);
           receipts.push(receipt);
           if (receipt.diagnostics.some(({ code }) => code === 'processCleanupUnconfirmed')) return receipts;
           if ((prepared.plan.operation === 'remove' || prepared.plan.operation === 'cleanup'
@@ -1660,11 +1701,6 @@ export class PlatformRebuildSession {
               message: prepared.plan.evidence.sharedReferences === 'unknown'
                 ? 'The shared package was kept because references outside the observed scope could not be ruled out.'
                 : 'The shared package was kept for another scope.',
-              subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
-          }
-          for (const unitId of prepared.plan.binding.renderUnitIds) for (const resolution of preparedUnits.get(unitId)?.finalized.producerResolutions ?? []) {
-            if (resolution.state !== 'failed') continue;
-            receipt.diagnostics.push({ code: 'managedCommandProducerFailed', severity: 'error', message: resolution.error.message,
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
           }
           const publish = prepared.plan.effects.find((effect) => effect.kind === 'publish-package');
@@ -1703,17 +1739,8 @@ export class PlatformRebuildSession {
             this.piProjectRegisteredRoots.set(piInventoryKey, registered);
           }
           try {
-            const candidates = [...preparedUnits.values()].flatMap((unit) => unit.finalized.commandCandidates)
-              .filter((candidate) => candidate.producer.kind !== 'package' && candidate.producer.placementKey === prepared.plan.binding.physicalKey);
             const root = prepared.plan.evidence.layout.packageRoot;
             const mappings = prepared.plan.projections.filter((projection) => projection.bundle !== null).flatMap((projection) => projection.components);
-            for (const candidate of candidates) {
-              const componentId = candidate.producer.kind === 'static-skill' ? `skill:${candidate.producer.key}` : candidate.producer.key;
-              const mapping = mappings.find((item) => item.id === componentId);
-              if (!mapping || !mapping.relativeOutputs.some((output) => output === `skills/${mapping.nativeName}/SKILL.md`)) throw new Error('commandProducerProjectionMissing');
-              await publishManagedCommandBindings({ ...candidate, resourceRoot: path.join(root, 'skills', mapping.nativeName),
-                env: this.context.env, bindingRecoveryEvidence });
-            }
             const bundle = prepared.plan.projections.find((projection) => projection.bundle)?.bundle;
             const packageOwner = prepared.plan.evidence.ownership.find((slot) => 'path' in slot.component && slot.component.path === root)?.component;
             if (bundle && packageOwner?.kind === 'owned-directory' && prepared.plan.evidence.contentMatches
@@ -1722,7 +1749,7 @@ export class PlatformRebuildSession {
               && await readPlatformPackageContentDigest(root) === bundle.contentDigest) {
               const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, expectedIdentity: packageOwner.identity });
               const projection: NativeProjectionEvidence = { components: mappings, contentDigest: bundle.contentDigest,
-                inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) || commandPreparationFailed ? 'partial' : 'complete',
+                inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.some((gap) => !isDeliveryCapabilityGap(gap)) ? 'partial' : 'complete',
                 ...(bundle.piExtensionDigest && marker?.nativeProjection?.piExtensionDigest === bundle.piExtensionDigest
                   ? { piExtensionDigest: bundle.piExtensionDigest } : {}),
                 physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity };
@@ -1730,14 +1757,6 @@ export class PlatformRebuildSession {
                 await writeSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, identity: packageOwner.identity, nativeProjection: projection });
                 for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey) await check.rebase();
                 receipt.after = await adapter.inspect(ctx, prepared.plan.binding);
-              }
-            }
-            const packageRemoved = !await fs.pathExists(root);
-            for (const producer of priorProducers.get(prepared.plan.binding.id) ?? []) {
-              if (candidates.some((candidate) => artifactValueDigest(candidate.producer) === artifactValueDigest(producer))) continue;
-              const componentId = producer.kind === 'static-skill' ? `skill:${producer.key}` : producer.key;
-              if (packageRemoved || publication && !prepared.plan.expected.unmet.some((gap) => gap.id === componentId)) {
-                await revokeManagedCommandBindings(producer, this.context.env);
               }
             }
             const emptyState = gapStates.get(prepared.plan.binding.id) ?? emptyStates.get(prepared.plan.binding.id);
@@ -1768,7 +1787,7 @@ export class PlatformRebuildSession {
                 detail: { reasonCode: 'previousDeploymentRetained', path: root } });
             }
           } catch (error) {
-            receipt.diagnostics.push({ code: 'managedCommandPublicationFailed', severity: 'error',
+            receipt.diagnostics.push({ code: 'platformProjectionEvidenceFailed', severity: 'error',
               message: error instanceof Error ? error.message : String(error),
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
           }

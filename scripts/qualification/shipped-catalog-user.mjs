@@ -14,6 +14,7 @@ import { getAgentPluginAdapters } from '../../packages/cli/dist/src/platforms/re
 import { getQualifiedPlatformProfile } from '../../packages/cli/dist/src/platforms/capabilities.js';
 import { COMPONENT_KINDS, readPluginManifest, getComponentFeatureRequirements, normalizeStaticPluginComponents, resolveInvocationPolicy } from '../../packages/cli/dist/src/utils/manifest.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../packages/cli/dist/src/utils/artifact-renderer.js';
+import { finalizePlatformSkillProducers } from '../../packages/cli/dist/src/utils/component-command-preparation.js';
 
 const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('yaml');
 // These expectations are independent of production flags. Regressing a
@@ -202,16 +203,16 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
             }
           }
           if (!staticOnly && manifest.scripts?.artifacts?.render) {
-            // The two current role-dependent renderers have their own independent
-            // outcome oracle. A new renderer requires its own output contract.
+            // Each shipped renderer needs an independent output expectation.
             assert(['agent-subagent', 'codex-enhance'].includes(manifest.name),
               `Add an independent output expectation for shipped renderer ${manifest.name}`);
             const names = manifest.artifacts.sourceDirs.map(directory => path.basename(directory)).sort();
             const skills = components.filter(c => c.kind === 'skill').map(c => c.name).sort();
-            assert.deepEqual(skills, platform === 'codex' ? names : [], label);
-            const offered = platform === 'codex' || platform === 'claude' && manifest.name === 'agent-subagent';
+            const claudeGuide = platform === 'claude' && manifest.name === 'agent-subagent';
+            const offered = platform === 'codex' || claudeGuide;
+            assert.deepEqual(skills, offered ? names : [], label);
             if (offered) {
-              assert.deepEqual([...skills, ...unmet.filter(c => c.kind === 'skill').map(c => c.name)].sort(), names, label);
+              assert.deepEqual(unmet.filter(c => c.kind === 'skill'), [], label);
               assert.deepEqual(omitted, [], label);
             } else {
               const ids = manifest.name === 'agent-subagent' ? ['spawn-subagent-skill'] : ['codex-advisor-skill', 'codex-explore-skill'];
@@ -233,6 +234,25 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
             }
             assert.deepEqual(roleSet.components.filter(c => c.kind === 'agent').map(c => c.name).sort(), rolePlatform(platform) ? roles : [], label);
             assert.deepEqual(roleSet.unmet.filter(c => c.kind === 'agent').map(c => c.name).sort(), rolePlatform(platform) ? [] : roles, label);
+            if (claudeGuide) {
+              const stage = path.join(root, 'projection', label);
+              const finalized = await finalizePlatformSkillProducers({ plugin, plugins, platform, renderUnit: unit, prepared,
+                ...ctx, skillWorkRoot: path.join(stage, 'skills') });
+              const projected = await adapter.project({ ...ctx, stagingRoot: path.join(stage, 'package') }, {
+                binding, renderUnit: unit, capabilities, components: finalized.prepared.expected.components,
+                resources: finalized.prepared.resources, policy: finalized.invocationPolicy.policy,
+              });
+              assert(projected.bundle, label);
+              const guide = projected.components.find(c => c.id === 'spawn-subagent-claude-skill');
+              const role = projected.components.find(c => c.id === 'subagent-role');
+              const skillFile = guide?.relativeOutputs.find(file => file.endsWith('/SKILL.md'));
+              const roleFile = role?.relativeOutputs.find(file => file.startsWith('agents/') && file.endsWith('.md'));
+              assert(skillFile && roleFile, label);
+              const bundle = projected.bundle.stagingRoot;
+              const reference = await fs.readFile(path.join(bundle, path.dirname(skillFile), 'references/external-delegation.md'), 'utf8');
+              assert.match(reference, /^aw command run official\/agent-subagent -- start --platform claude --executor /m, label);
+              await fs.access(path.join(bundle, roleFile));
+            }
           }
         }
       }

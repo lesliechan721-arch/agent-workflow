@@ -97,8 +97,8 @@ function installedHealth(fact: ComponentDelivery & Pick<PluginDetailPlacement, '
 }
 
 function deliveryDetailLines(fact: ComponentDelivery & Pick<PluginDetailPlacement, 'deliveryNotices'>): string[] {
-  return [...componentDeliveryLines(fact), ...(fact.deliveryNotices ?? []).map(({ code, detail, subject }) =>
-    `  ${deliveryNoticeText(code, detail, subject?.field)}`)];
+  return [...componentDeliveryLines(fact), ...(fact.deliveryNotices ?? []).map(({ code, detail, subject, message }) =>
+    `  ${deliveryNoticeText(code, detail, subject?.field, message)}`)];
 }
 
 function placementIdentity(fact: Pick<EntityPlacementFact, 'platform' | 'agent' | 'delivery' | 'scope'>): string {

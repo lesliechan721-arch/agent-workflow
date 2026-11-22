@@ -5,15 +5,15 @@ import os from 'node:os';
 import test from 'node:test';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
-import { prepareRun, prepareResume, executionConfiguration, validateCommandHost } from '../skills/spawn-subagent/scripts/runtime/runner.mjs';
-import { selectExecution } from '../skills/spawn-subagent/scripts/runtime/plan.mjs';
+import { prepareRun, prepareResume, executionConfiguration, validateCommandHost } from '../commands/scripts/runtime/runner.mjs';
+import { selectExecution } from '../commands/scripts/runtime/plan.mjs';
 
 const resourceRoot = path.dirname(guideRuntimeScripts(import.meta.url));
 
 function select(command, request = {}) {
   return selectExecution({
     installedIdentity: { pluginName: 'agent-subagent' }, resourceRoot,
-    effectiveValues: { subagentCommands: [{ key: 'selected', ...command }] },
+    values: { subagentCommands: [{ key: 'selected', ...command }] },
   }, { executor: 'selected', ...request });
 }
 
@@ -44,15 +44,15 @@ test('resume preparation preserves frozen choices and does not reselect bundle f
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-resume-plan-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const installedIdentity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/agent-subagent',
-    pluginName: 'agent-subagent', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'spawn-subagent-skill', skillKey: 'spawn-subagent' };
-  const snapshot = { installedIdentity, resourceRoot, effectiveValues: { subagentCommands: [{
+    pluginName: 'agent-subagent', platform: 'codex', pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'c'.repeat(64) };
+  const snapshot = { installedIdentity, resourceRoot, values: { subagentCommands: [{
     key: 'selected', adapter: 'custom', mode: 'bundle', command: await fs.realpath(process.execPath),
     args: ['original-option'], envFrom: { SERVICE_DATA: 'SOURCE' },
   }] } };
   const selected = selectExecution(snapshot, { executor: 'selected', model: 'original-model', reasoningEffort: 'original-effort' });
   const request = { prompt: 'Original task.', workspace: directory, files: ['original.txt'], deadlineMs: 20000 };
   const configuration = executionConfiguration(await prepareRun(selected, request, { environment: { SOURCE: 'old-value' } }), request);
-  snapshot.effectiveValues.subagentCommands = [];
+  snapshot.values.subagentCommands = [];
   const text = 'Only the new task.\r\n继续检查。\n';
   const prepared = await prepareResume(configuration, text, 'original-session', { runtimeSnapshot: snapshot, environment: { SOURCE: 'current-value' } });
   assert.equal(prepared.request.prompt, text);
@@ -77,7 +77,7 @@ test('plans all adapters with independent communication and resume choices', () 
   for (const adapter of ['codex', 'claude-code', 'antigravity', 'oracle', 'custom', 'custom-managed']) {
     const command = adapter === 'custom'
       ? { adapter, mode: 'workspace', command: process.execPath }
-      : adapter === 'custom-managed' ? { adapter, mode: 'workspace', commandId: `cmdp_${'a'.repeat(16)}` } : { adapter };
+      : adapter === 'custom-managed' ? { adapter, mode: 'workspace', commandId: 'fixture/tool' } : { adapter };
     for (const communication of [undefined, false, true]) {
       for (const resume of [undefined, false, true]) {
         const plan = select({ ...command, ...(communication === undefined ? {} : { communication }), ...(resume === undefined ? {} : { resume }) });
@@ -145,7 +145,7 @@ test('normalizes permission modes only for the supported backend branches', () =
 // Test Value Gate: managed custom plans use exact IDs without accepting legacy
 // paths or backend-specific controls; the original custom branch remains usable.
 test('managed custom plans enforce command identity and protected environment fields', () => {
-  const managed = { adapter: 'custom-managed', mode: 'workspace', commandId: 'cmdp_' + 'a'.repeat(16) };
+  const managed = { adapter: 'custom-managed', mode: 'workspace', commandId: 'fixture/tool' };
   assert.equal(select(managed).executor.commandId, managed.commandId);
   assert.deepEqual(select({ ...managed, args: ['', '中文\nvalue'] }).executor.args, ['', '中文\nvalue']);
   for (const commandId of ['cmdp_' + 'A'.repeat(16), 'cmdp_short', 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514x', 'other']) {
@@ -197,8 +197,34 @@ test('managed host validation fixes nested AW argv and environment without expos
   assert.equal(prepared.environment.AW_COMMAND_OLD, undefined); assert.equal(prepared.environment.AW_PLUGIN_CONTEXT, undefined);
   assert.equal(JSON.stringify(prepared.request).includes('AW_COMMAND_HOST'), false); assert.equal(JSON.stringify(prepared.request).includes(cliEntry), false);
   await assert.rejects(prepareRun(select({ adapter: 'custom-managed', mode: 'workspace', commandId, envFrom: { EMPTY: 'MISSING' } }), { prompt: 'task', workspace: directory }, { environment }), { code: 'environmentSourceMissing' });
+  await assert.rejects(prepareRun(select({ adapter: 'custom-managed', mode: 'workspace', commandId, subcommand: 'execute' }), { prompt: 'task', workspace: directory }, { environment }), { code: 'executorInvalid' });
   const task = '\ufeff  task\n\n'; await fs.writeFile(path.join(directory, 'prompt.txt'), task);
   const otherWorkspace = path.join(directory, 'workspace'); await fs.mkdir(otherWorkspace);
   const input = await prepareRun(plan, { promptFile: 'prompt.txt', workspace: otherWorkspace }, { environment, callerCwd: directory });
   assert.equal(input.request.prompt, task); assert.equal(input.request.workspace, otherWorkspace);
+});
+
+// The Guide chooses the route from the public show response before invoking AW.
+test('plugin adapter requires its configured route and passes an empty argv for fallback', async (t) => {
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-guide-fallback-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const commandId = 'fixture/adapter';
+  const launch = { runner: 'node', entry: 'adapter.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' };
+  const descriptor = { selector: commandId, owner: { kind: 'plugin', producer: { sourceId: 'fixture', pluginName: 'adapter', sourceIdentity: 'sha256:' + 'a'.repeat(64) } },
+    resourceRoot: directory, availability: 'ready', pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64),
+    routes: { subcommands: [{ name: 'execute', ...launch }] } };
+  const cliEntry = path.join(directory, 'aw.mjs');
+  const save = () => fs.writeFile(cliEntry, `console.log(JSON.stringify(${JSON.stringify({ schemaVersion: 2, command: 'command.show', status: 'success', data: { commands: [descriptor] } })}));`);
+  await save();
+  const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
+  const options = { environment: { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host) } };
+  const request = { prompt: 'task', workspace: directory };
+  const config = { adapter: 'custom-managed', mode: 'workspace', commandId };
+  await assert.rejects(prepareRun(select(config), request, options), (e) => e.code === 'executorInvalid' && e.message.includes('execute'));
+  const named = await prepareRun(select({ ...config, subcommand: 'execute' }), request, options);
+  assert.deepEqual(named.executable.args, [cliEntry, 'command', 'run', commandId, '--no-fallback', '--', 'execute']);
+  descriptor.routes.fallback = launch; await save();
+  const fallback = await prepareRun(select(config), request, options);
+  assert.deepEqual(fallback.executable.args, [cliEntry, 'command', 'run', commandId, '--']);
+  assert.deepEqual(fallback.managedLaunch.route, { kind: 'fallback' });
 });

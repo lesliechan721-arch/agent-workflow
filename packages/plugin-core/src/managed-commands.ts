@@ -3,13 +3,13 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { compilePluginConfigDefinition, getPluginConfigDependencyKeys } from './plugin-config.js';
-import { formatManifestPlatformsForError, supportsPlatform, NATIVE_PLATFORM_TARGETS } from './platform-support.js';
+import { applyPlatformOverride } from './platform-entries.js';
+import { getPluginConfigDependencyKeys, selectPluginConfigProfile } from './plugin-config.js';
+import { NATIVE_PLATFORM_TARGETS, resolveSupportedNativePlatforms, resolveSupportedPlatforms } from './platform-support.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
-import { normalizeNativeToolClosure, type NativeToolClosure } from './native-tools.js';
-import type {
-  ArtifactState, NormalizedPluginManifest, PlatformName, Scope,
-} from './types.js';
+import { DEFAULT_NATIVE_TOOL_READER, normalizeNativeToolClosure, type NativeToolClosure } from './native-tools.js';
+import { assertStrictSemVer } from './strict-semver.js';
+import type { NormalizedPluginManifest, PlatformName, PlatformTarget } from './types.js';
 
 export interface CommandLaunch {
   runner: 'node' | 'executable';
@@ -19,65 +19,100 @@ export interface CommandLaunch {
   envFrom: Record<string, string>;
   cwd: 'caller' | 'resource';
 }
-export interface CommandDefinition extends CommandLaunch { key: string; variant: string }
-export interface ManagedCommandReference { set: string; key: string; variant: string }
-export interface ManagedCommandPermission { command: ManagedCommandReference; argsPrefix: string[] }
+
+export interface CommandSubcommand extends CommandLaunch { name: string }
+export interface CommandRoutes { subcommands: CommandSubcommand[]; fallback?: CommandLaunch }
+export interface ManagedCommandPermission { argsPrefix: string[] }
 export type PermissionCommand = string | ManagedCommandPermission;
-export type ManagedCommandProducerRef =
-  | { kind: 'artifact'; platform: PlatformName; artifactId: string }
-  | { kind: 'static-skill'; platform: PlatformName; skillKey: string }
-  | { kind: 'package'; packageKey: string };
-export interface ManagedCommandPackage {
-  key: string; scope: Scope; platforms: [PlatformName, ...PlatformName[]]; sourceDir: string;
-  render?: true; refreshKeys: string[];
+
+interface PluginCommandBase {
+  sourceDir: string;
+  platforms: PlatformName[];
+  runtimeConfig?: { keys: string[] };
 }
-export type ManagedCommandSet =
-  | { set: string; producer: ManagedCommandProducerRef; mode: 'static'; entries: CommandDefinition[] }
-  | { set: string; producer: ManagedCommandProducerRef; mode: 'dynamic'; refreshKeys: string[] };
-export interface ManagedCommands { packages: ManagedCommandPackage[]; sets: ManagedCommandSet[] }
+
+export type PluginCommand = PluginCommandBase & (
+  | { mode: 'static'; routes: CommandRoutes }
+  | { mode: 'dynamic'; refreshKeys: string[] }
+);
+
 export interface ProducerIdentity {
   sourceId: string; sourceIdentity: string; pluginName: string;
-  kind: 'artifact' | 'static-skill' | 'package'; key: string;
-  platform: PlatformName | null; scope: Scope; projectRoot: string | null; placementKey: string | null;
 }
-export interface CommandIdentity {
-  schemaVersion: 2; producer: ProducerIdentity; set: string; key: string; variant: string;
-}
+
 export interface InstalledCommandProducer {
-  schemaVersion: 1;
+  schemaVersion: 2;
   producer: ProducerIdentity;
-  sets: Array<{ set: string; state: ArtifactState; entries: CommandDefinition[] }>;
+  pluginVersion: string;
+  sourceContentDigest: string;
+  routes: CommandRoutes;
+  dynamicRefreshKeys?: string[];
+  routeConfigDigest?: string;
+  routeConfigKeyDigests?: Record<string, string>;
   nativeTools?: NativeToolClosure;
+  runtimeConfigPlatforms: PlatformName[];
+  runtimeConfigKeys?: string[];
+  runtimeConfigCommonDigests?: Partial<Record<PlatformName, string>>;
 }
+
 export interface UserCommandDefinition {
   schemaVersion: 1; id: string; name: string; packageRevision: string; launch: CommandLaunch;
 }
-export type ManagedCommandArtifactSurface =
-  | { kind: 'platform'; platform: PlatformName }
-  | { kind: 'aw'; name: 'managed-commands' };
+
+export interface CommandRoutesArtifact {
+  id: 'command-routes';
+  target: 'aw.command-routes';
+  kind: 'commandRoutes';
+  refreshKeys: string[];
+  routes: CommandRoutes;
+}
+
 export interface ManagedCommandArtifactTargetDefinition {
-  id: string; target: 'aw.command-set' | 'aw.command-package'; kind: 'commandSet' | 'commandPackage';
-  surface: ManagedCommandArtifactSurface; platform?: PlatformName; scopes: Scope[];
-  states: ArtifactState[]; refreshKeys: string[]; producer: ManagedCommandProducerRef;
-  set?: string; packageKey?: string;
+  id: 'command-routes';
+  target: 'aw.command-routes';
+  kind: 'commandRoutes';
+  surface: { kind: 'aw'; name: 'managed-commands' };
+  scopes: ['user'];
+  refreshKeys: string[];
 }
-export interface CommandSetArtifact {
-  id: string; target: 'aw.command-set'; kind: 'commandSet'; platform?: PlatformName; distribution?: never;
-  state: ArtifactState; refreshKeys: string[]; entries: CommandDefinition[]; disabledReason?: string;
-}
-export interface CommandPackageArtifact {
-  id: string; target: 'aw.command-package'; kind: 'commandPackage'; platform?: never; distribution?: never; state: 'present';
-  refreshKeys: string[]; files: Record<string, string>;
-}
+
 export const COMMAND_PRODUCER_RECORD_FILE = '.aw-command-producer.json';
+export const COMMAND_RUNTIME_CONFIG_READER = '.aw/command-runtime-config.mjs';
 export const MANAGED_COMMAND_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
+export const SAFE_PERMISSION_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/u;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const SAFE_PERMISSION_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/u;
-const PLUGIN_COMMAND_ID = /^cmdp_[0-9a-f]{16}$/u;
 const USER_COMMAND_ID = /^cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const PACKAGE_ID = /^pkg_[0-9a-f]{64}$/u;
 const PACKAGE_PROTECTED_NAMES = new Set(['.git', 'node_modules', '.agents-plugin', '.codex-plugin', '.claude-plugin', '.release', '.tmp', 'evals', 'reports', COMMAND_PRODUCER_RECORD_FILE, '.agent-workflows-owner.json', '.aw-runtime-config.json', 'aw-plugin-requirements.json']);
 const PACKAGE_OUTPUT_ROOTS = new Set(['codex', 'claude', 'agent-skills']);
+
+const SOURCE_ID = /^[a-z][a-z0-9-]{0,31}$/u;
+const PLUGIN_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const LAUNCH_FIELDS = ['runner', 'entry', 'args', 'env', 'envFrom', 'cwd'] as const;
+
+export function getCommandPackageInjectedReaders(
+  manifest: Pick<NormalizedPluginManifest, 'command' | 'nativeTools'>,
+): { sourceDir: string; paths: string[] } | undefined {
+  const command = manifest.command;
+  if (!command) return undefined;
+  const paths: string[] = [];
+  if (command.runtimeConfig) paths.push(COMMAND_RUNTIME_CONFIG_READER);
+  if (manifest.nativeTools?.consumers.some((consumer) => consumer.kind === 'plugin-command')) {
+    paths.push(DEFAULT_NATIVE_TOOL_READER.slice(2));
+  }
+  return paths.length ? { sourceDir: command.sourceDir.slice(2), paths } : undefined;
+}
+
+export function isInjectedCommandReaderImport(
+  readers: ReturnType<typeof getCommandPackageInjectedReaders>,
+  importer: string,
+  requestedPath: string,
+): boolean {
+  return readers !== undefined
+    && importer.startsWith(`${readers.sourceDir}/`)
+    && readers.paths.some((file) => requestedPath === path.posix.join(readers.sourceDir, file));
+}
 
 function object(value: unknown, field: string, allowed: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${field}: expected an object.`);
@@ -148,7 +183,7 @@ export function validateCommandEnvironment(
   if (new Set(targetKeys).size !== targetKeys.length) throw new Error('Invalid command environment: duplicate target name.');
 }
 export function normalizeCommandLaunch(value: unknown, field = 'command launch'): CommandLaunch {
-  const input = object(value, field, ['runner', 'entry', 'args', 'env', 'envFrom', 'cwd']);
+  const input = object(value, field, LAUNCH_FIELDS);
   const args = input.args === undefined ? [] : strings(input.args, `${field}.args`);
   if (args.length > 128 || args.some((arg) => [...arg].length > 4096)) throw new Error(`Invalid ${field}.args: argument limit exceeded.`);
   const env = input.env === undefined ? {} : environmentMap(input.env, `${field}.env`, false);
@@ -160,129 +195,119 @@ export function normalizeCommandLaunch(value: unknown, field = 'command launch')
     cwd: input.cwd === undefined ? 'caller' : enumeration(input.cwd, `${field}.cwd`, ['caller', 'resource']),
   };
 }
-export function normalizeCommandDefinition(value: unknown, field = 'command'): CommandDefinition {
-  const input = object(value, field, ['key', 'variant', 'runner', 'entry', 'args', 'env', 'envFrom', 'cwd']);
-  const { key, variant, ...launch } = input;
-  return { key: name(key, `${field}.key`), variant: variant === undefined ? 'default' : name(variant, `${field}.variant`), ...normalizeCommandLaunch(launch, field) };
+export function normalizeCommandRoutes(value: unknown, field = 'command.routes'): CommandRoutes {
+  return normalizeRoutes(value, field);
 }
-export function normalizeCommandDefinitions(value: unknown, field = 'entries'): CommandDefinition[] {
-  if (!Array.isArray(value)) throw new Error(`Invalid ${field}: expected an array.`);
-  const entries = value.map((entry, index) => normalizeCommandDefinition(entry, `${field}[${index}]`));
-  const keys = entries.map((entry) => `${entry.key}/${entry.variant}`);
-  if (new Set(keys).size !== keys.length) throw new Error(`Invalid ${field}: duplicate command key/variant.`);
-  return entries;
+
+function normalizeRoutes(value: unknown, field: string, installed = false): CommandRoutes {
+  const input = object(value, field, ['subcommands', 'fallback']);
+  const subcommands = input.subcommands === undefined && !installed ? [] : input.subcommands;
+  if (!Array.isArray(subcommands)) throw new Error(`Invalid ${field}.subcommands: expected an array.`);
+  const entries = subcommands.map((entry, index): CommandSubcommand => {
+    const label = `${field}.subcommands[${index}]`;
+    const { name: entryName, ...launch } = object(entry, label, ['name', ...LAUNCH_FIELDS]);
+    return { name: name(entryName, `${label}.name`), ...normalizeRouteLaunch(launch, label, installed) };
+  });
+  if (new Set(entries.map((entry) => entry.name)).size !== entries.length) {
+    throw new Error(`Invalid ${field}.subcommands: duplicate command name.`);
+  }
+  if (input.fallback === undefined) return { subcommands: entries };
+  return { subcommands: entries, fallback: normalizeRouteLaunch(input.fallback, `${field}.fallback`, installed) };
 }
-export function normalizeManagedCommandReference(value: unknown, field = 'command reference'): ManagedCommandReference {
-  const input = object(value, field, ['set', 'key', 'variant']);
-  return { set: name(input.set, `${field}.set`), key: name(input.key, `${field}.key`), variant: input.variant === undefined ? 'default' : name(input.variant, `${field}.variant`) };
+
+function normalizeRouteLaunch(value: unknown, field: string, installed: boolean): CommandLaunch {
+  if (installed) requireLaunchDefaults(object(value, field, LAUNCH_FIELDS), field);
+  const launch = normalizeCommandLaunch(value, field);
+  if (launch.entry.split('/').some(isProtectedCommandPath) || isSkillAuthorOnlyPath(launch.entry)) {
+    throw new Error(`Invalid ${field}.entry: protected or author-only path.`);
+  }
+  return launch;
 }
+
+function requireLaunchDefaults(launch: Record<string, unknown>, field: string): void {
+  if (['args', 'env', 'envFrom', 'cwd'].some((key) => !Object.hasOwn(launch, key) || launch[key] === undefined)) {
+    throw new Error(`Invalid ${field}: installed launch must include defaults.`);
+  }
+}
+
 export function normalizeManagedCommandPermission(value: unknown, field = 'command permission'): ManagedCommandPermission {
-  const input = object(value, field, ['command', 'argsPrefix']);
-  const argsPrefix = input.argsPrefix === undefined ? [] : strings(input.argsPrefix, `${field}.argsPrefix`);
-  if (argsPrefix.some((token) => !SAFE_PERMISSION_TOKEN.test(token))) throw new Error(`Invalid ${field}.argsPrefix: expected safe non-empty tokens.`);
-  return { command: normalizeManagedCommandReference(input.command, `${field}.command`), argsPrefix };
-}
-function normalizeProducerRef(value: unknown, field: string): ManagedCommandProducerRef {
-  const input = object(value, field, ['kind', 'artifactId', 'platform', 'skillKey', 'packageKey']);
-  if (input.kind === 'artifact') {
-    object(value, field, ['kind', 'platform', 'artifactId']);
-    return { kind: 'artifact', platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS), artifactId: nonempty(input.artifactId, `${field}.artifactId`) };
+  const input = object(value, field, ['argsPrefix']);
+  const argsPrefix = strings(input.argsPrefix, `${field}.argsPrefix`);
+  if (argsPrefix.some((token) => !SAFE_PERMISSION_TOKEN.test(token))) {
+    throw new Error(`Invalid ${field}.argsPrefix: expected safe non-empty tokens.`);
   }
-  if (input.kind === 'static-skill') {
-    object(value, field, ['kind', 'platform', 'skillKey']);
-    const skillKey = normalizeCommandRelativeFile(input.skillKey, `${field}.skillKey`);
-    if (skillKey.includes('/')) throw new Error(`Invalid ${field}.skillKey: expected a declared Skill key.`);
-    return { kind: 'static-skill', platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS), skillKey };
-  }
-  object(value, field, ['kind', 'packageKey']);
-  if (input.kind !== 'package') throw new Error(`Invalid ${field}.kind.`);
-  return { kind: 'package', packageKey: name(input.packageKey, `${field}.packageKey`) };
+  return { argsPrefix };
 }
-export function normalizeManagedCommands(value: unknown, field = 'managedCommands'): ManagedCommands {
-  const input = object(value, field, ['packages', 'sets']);
-  const packages = input.packages === undefined ? [] : (() => {
-    if (!Array.isArray(input.packages)) throw new Error(`Invalid ${field}.packages: expected an array.`);
-    return input.packages.map((entry, index): ManagedCommandPackage => {
-      const label = `${field}.packages[${index}]`;
-      const item = object(entry, label, ['key', 'scope', 'platforms', 'sourceDir', 'render', 'refreshKeys']);
-      const platforms = strings(item.platforms, `${label}.platforms`, true).map((platform) => enumeration<PlatformName>(platform, `${label}.platforms`, NATIVE_PLATFORM_TARGETS));
-      if (platforms.length === 0) throw new Error(`Invalid ${label}.platforms: expected a non-empty array.`);
-      if (item.render !== undefined && item.render !== true) throw new Error(`Invalid ${label}.render: expected true.`);
-      const refreshKeys = item.refreshKeys === undefined ? [] : strings(item.refreshKeys, `${label}.refreshKeys`, true);
-      if (item.render !== true && refreshKeys.length > 0) throw new Error(`Invalid ${label}.refreshKeys: requires render: true.`);
-      const sourceDir = nonempty(item.sourceDir, `${label}.sourceDir`);
-      if (!sourceDir.startsWith('./')) throw new Error(`Invalid ${label}.sourceDir: expected ./ plugin-relative directory.`);
-      normalizeCommandRelativeFile(sourceDir.slice(2), `${label}.sourceDir`);
-      const parts = sourceDir.slice(2).split('/');
-      if (PACKAGE_OUTPUT_ROOTS.has(parts[0]!) || parts.some((part) => PACKAGE_PROTECTED_NAMES.has(part)) || isSkillAuthorOnlyPath(sourceDir.slice(2))) {
-        throw new Error(`Invalid ${label}.sourceDir: protected or author-only directory.`);
-      }
-      return { key: name(item.key, `${label}.key`), scope: enumeration(item.scope, `${label}.scope`, ['user', 'project']), platforms: platforms as [PlatformName, ...PlatformName[]], sourceDir, ...(item.render === true ? { render: true } : {}), refreshKeys };
-    });
-  })();
-  const sets = input.sets === undefined ? [] : (() => {
-    if (!Array.isArray(input.sets)) throw new Error(`Invalid ${field}.sets: expected an array.`);
-    return input.sets.map((entry, index): ManagedCommandSet => {
-      const label = `${field}.sets[${index}]`;
-      const item = object(entry, label, ['set', 'producer', 'mode', 'entries', 'refreshKeys']);
-      const set = name(item.set, `${label}.set`);
-      const producer = normalizeProducerRef(item.producer, `${label}.producer`);
-      if (item.mode === 'static') {
-        object(entry, label, ['set', 'producer', 'mode', 'entries']);
-        return { set, producer, mode: 'static', entries: normalizeCommandDefinitions(item.entries, `${label}.entries`) };
-      }
-      object(entry, label, ['set', 'producer', 'mode', 'refreshKeys']);
-      if (item.mode !== 'dynamic') throw new Error(`Invalid ${label}.mode.`);
-      return { set, producer, mode: 'dynamic', refreshKeys: strings(item.refreshKeys, `${label}.refreshKeys`, true) };
-    });
-  })();
-  if (new Set(packages.map((item) => item.key)).size !== packages.length) throw new Error(`Invalid ${field}.packages: duplicate package key.`);
-  if (new Set(sets.map((item) => item.set)).size !== sets.length) throw new Error(`Invalid ${field}.sets: duplicate set.`);
-  return { packages, sets };
+
+function configKeys(value: unknown, field: string, requireNonempty = false): string[] {
+  const keys = strings(value, field, true);
+  if ((requireNonempty && keys.length === 0) || keys.some((key) => key.length === 0)) {
+    throw new Error(`Invalid ${field}: expected non-empty config keys.`);
+  }
+  return keys;
+}
+
+function nativePlatforms(value: unknown, field: string): PlatformName[] {
+  return strings(value, field, true).map((platform) => enumeration(platform, field, NATIVE_PLATFORM_TARGETS));
+}
+
+function isProtectedCommandPath(segment: string): boolean {
+  // The injected directory must also stay reserved on case-insensitive filesystems.
+  return segment.toLowerCase() === '.aw' || PACKAGE_PROTECTED_NAMES.has(segment);
+}
+
+export function normalizePluginCommand(value: unknown, manifest: Pick<NormalizedPluginManifest, 'platforms'>): PluginCommand {
+  const baseFields = ['sourceDir', 'platforms', 'mode', 'runtimeConfig'];
+  const input = object(value, 'command', [...baseFields, 'routes', 'refreshKeys']);
+  const mode = enumeration(input.mode, 'command.mode', ['static', 'dynamic']);
+  object(value, 'command', [...baseFields, mode === 'static' ? 'routes' : 'refreshKeys']);
+  const sourceDir = nonempty(input.sourceDir, 'command.sourceDir');
+  if (!sourceDir.startsWith('./')) throw new Error('Invalid command.sourceDir: expected ./ plugin-relative directory.');
+  const relativePath = normalizeCommandRelativeFile(sourceDir.slice(2), 'command.sourceDir');
+  const parts = relativePath.split('/');
+  if (PACKAGE_OUTPUT_ROOTS.has(parts[0]!) || parts.some(isProtectedCommandPath) || isSkillAuthorOnlyPath(relativePath)) {
+    throw new Error('Invalid command.sourceDir: protected or author-only directory.');
+  }
+  const supported = resolveSupportedNativePlatforms(manifest);
+  const platforms = input.platforms === undefined ? [...supported] : nativePlatforms(input.platforms, 'command.platforms');
+  if (platforms.length === 0 || platforms.some((platform) => !supported.has(platform))) {
+    throw new Error('Invalid command.platforms: expected a non-empty subset of supported Native platforms.');
+  }
+  const runtimeConfig = input.runtimeConfig === undefined ? undefined : {
+    keys: configKeys(object(input.runtimeConfig, 'command.runtimeConfig', ['keys']).keys, 'command.runtimeConfig.keys', true),
+  };
+  const base = { sourceDir, platforms, ...(runtimeConfig ? { runtimeConfig } : {}) };
+  return mode === 'static'
+    ? { ...base, mode, routes: normalizeCommandRoutes(input.routes) }
+    : { ...base, mode, refreshKeys: configKeys(input.refreshKeys, 'command.refreshKeys') };
+}
+
+function normalizeDigest(value: unknown, field: string): string {
+  const digest = nonempty(value, field);
+  if (!DIGEST.test(digest)) throw new Error(`Invalid ${field}: expected a SHA-256 digest.`);
+  return digest;
+}
+
+function normalizeCommandNameParts(source: unknown, plugin: unknown, field: string): Pick<ProducerIdentity, 'sourceId' | 'pluginName'> {
+  const sourceId = nonempty(source, `${field}.sourceId`);
+  if (!SOURCE_ID.test(sourceId)) throw new Error(`Invalid ${field}.sourceId.`);
+  const pluginName = nonempty(plugin, `${field}.pluginName`);
+  if (!PLUGIN_NAME.test(pluginName)) throw new Error(`Invalid ${field}.pluginName.`);
+  return { sourceId, pluginName };
+}
+
+export function normalizeCommandSelector(value: unknown): Pick<ProducerIdentity, 'sourceId' | 'pluginName'> {
+  const parts = text(value, 'command selector').split('/');
+  if (parts.length !== 2) throw new Error('Invalid command selector: expected <source/plugin>.');
+  return normalizeCommandNameParts(parts[0], parts[1], 'command selector');
 }
 
 export function normalizeProducerIdentity(value: unknown, field = 'producer identity'): ProducerIdentity {
-  const input = object(value, field, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'platform', 'scope', 'projectRoot', 'placementKey']);
-  const sourceId = nonempty(input.sourceId, `${field}.sourceId`);
-  if (!/^[a-z][a-z0-9-]{0,31}$/u.test(sourceId)) throw new Error(`Invalid ${field}.sourceId.`);
-  const sourceIdentity = nonempty(input.sourceIdentity, `${field}.sourceIdentity`);
-  if (!/^sha256:[0-9a-f]{64}$/u.test(sourceIdentity)) throw new Error(`Invalid ${field}.sourceIdentity.`);
-  const pluginName = nonempty(input.pluginName, `${field}.pluginName`);
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(pluginName)) throw new Error(`Invalid ${field}.pluginName.`);
-  const kind = enumeration(input.kind, `${field}.kind`, ['artifact', 'static-skill', 'package']);
-  const key = nonempty(input.key, `${field}.key`);
-  if (kind === 'package') name(key, `${field}.key`);
-  const platform = kind === 'package'
-    ? (input.platform === null ? null : (() => { throw new Error(`Invalid ${field}.platform: package requires null.`); })())
-    : enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS);
-  const scope = enumeration(input.scope, `${field}.scope`, ['user', 'project']);
-  let projectRoot: string | null = null;
-  if (scope === 'user') {
-    if (input.projectRoot !== null) throw new Error(`Invalid ${field}.projectRoot: user requires null.`);
-  } else {
-    projectRoot = nonempty(input.projectRoot, `${field}.projectRoot`);
-    if (!path.isAbsolute(projectRoot)) throw new Error(`Invalid ${field}.projectRoot: expected a canonical absolute path.`);
-    const normalized = path.normalize(projectRoot);
-    const canonical = normalized === path.parse(normalized).root ? normalized : normalized.replace(/[\\/]+$/u, '');
-    const driveCanonical = process.platform === 'win32' ? canonical.replace(/^[a-z]:/u, (drive) => drive.toUpperCase()) : canonical;
-    if (driveCanonical !== projectRoot) throw new Error(`Invalid ${field}.projectRoot: expected a canonical absolute path.`);
-  }
-  let placementKey: string | null;
-  if (kind === 'package') {
-    if (input.placementKey !== null) throw new Error(`Invalid ${field}.placementKey: package requires null.`);
-    placementKey = null;
-  } else {
-    placementKey = nonempty(input.placementKey, `${field}.placementKey`);
-    if (!/^sha256:[0-9a-f]{64}$/u.test(placementKey)) throw new Error(`Invalid ${field}.placementKey: expected verified physical identity.`);
-  }
-  return { sourceId, sourceIdentity, pluginName, kind, key, platform, scope, projectRoot, placementKey };
-}
-export function normalizeCommandIdentity(value: unknown, field = 'command identity'): CommandIdentity {
-  const input = object(value, field, ['schemaVersion', 'producer', 'set', 'key', 'variant']);
-  if (input.schemaVersion !== 2) throw new Error(`Invalid ${field}.schemaVersion: expected 2.`);
-  // Identity records have no defaults: every identity field is part of the hash contract.
-  if (input.variant === undefined) throw new Error(`Invalid ${field}.variant: required.`);
-  return { schemaVersion: 2, producer: normalizeProducerIdentity(input.producer, `${field}.producer`), set: name(input.set, `${field}.set`), key: name(input.key, `${field}.key`), variant: name(input.variant, `${field}.variant`) };
+  const input = object(value, field, ['sourceId', 'sourceIdentity', 'pluginName']);
+  return {
+    ...normalizeCommandNameParts(input.sourceId, input.pluginName, field),
+    sourceIdentity: normalizeDigest(input.sourceIdentity, `${field}.sourceIdentity`),
+  };
 }
 export function canonicalizeIdentityValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalizeIdentityValue).join(',')}]`;
@@ -292,41 +317,70 @@ export function canonicalizeIdentityValue(value: unknown): string {
   }
   return JSON.stringify(value);
 }
-export function canonicalizeCommandIdentity(value: CommandIdentity): string { return canonicalizeIdentityValue(normalizeCommandIdentity(value)); }
-export function getPluginCommandId(identity: CommandIdentity): string {
-  return `cmdp_${createHash('sha256').update(canonicalizeCommandIdentity(identity), 'utf8').digest('hex').slice(0, 16)}`;
-}
+
 export function getCommandPackageId(producer: ProducerIdentity): string {
-  return `pkg_${createHash('sha256').update(canonicalizeIdentityValue(normalizeProducerIdentity(producer)), 'utf8').digest('hex')}`;
+  const identity = canonicalizeIdentityValue({ schemaVersion: 2, ...normalizeProducerIdentity(producer) });
+  return `pkg_${createHash('sha256').update(identity, 'utf8').digest('hex')}`;
 }
-export function isManagedCommandId(value: unknown): value is string { return typeof value === 'string' && (PLUGIN_COMMAND_ID.test(value) || USER_COMMAND_ID.test(value)); }
+
 export function isUserCommandId(value: unknown): value is string { return typeof value === 'string' && USER_COMMAND_ID.test(value); }
 export function isCommandPackageId(value: unknown): value is string { return typeof value === 'string' && PACKAGE_ID.test(value); }
 
 export function normalizeInstalledCommandProducer(value: unknown): InstalledCommandProducer {
-  const input = object(value, 'command producer record', ['schemaVersion', 'producer', 'sets', 'nativeTools']);
-  if (input.schemaVersion !== 1 || !Array.isArray(input.sets)) throw new Error('Invalid command producer record.');
-  const sets = input.sets.map((value, index) => {
-    const field = `command producer record.sets[${index}]`;
-    const item = object(value, field, ['set', 'state', 'entries']);
-    if (Array.isArray(item.entries)) {
-      for (const entry of item.entries) {
-        const definition = object(entry, `${field}.entries`, ['key', 'variant', 'runner', 'entry', 'args', 'env', 'envFrom', 'cwd']);
-        if (['variant', 'args', 'env', 'envFrom', 'cwd'].some((key) => definition[key] === undefined)) throw new Error(`Invalid ${field}.entries: installed definitions must include defaults.`);
-      }
-    }
-    const entries = normalizeCommandDefinitions(item.entries, `${field}.entries`);
-    const state = enumeration(item.state, `${field}.state`, ['present', 'disabled']);
-    if (state === 'disabled' && entries.length !== 0) throw new Error(`Invalid ${field}: disabled set must have no entries.`);
-    return { set: name(item.set, `${field}.set`), state, entries };
-  });
-  if (new Set(sets.map((item) => item.set)).size !== sets.length) throw new Error('Invalid command producer record: duplicate set.');
+  const field = 'command producer record';
+  const input = object(value, field, [
+    'schemaVersion', 'producer', 'pluginVersion', 'sourceContentDigest', 'routes',
+    'dynamicRefreshKeys', 'routeConfigDigest', 'routeConfigKeyDigests', 'nativeTools',
+    'runtimeConfigPlatforms', 'runtimeConfigKeys', 'runtimeConfigCommonDigests',
+  ]);
+  if (input.schemaVersion !== 2) throw new Error(`Invalid ${field}.schemaVersion: expected 2.`);
   const nativeTools = input.nativeTools === undefined ? undefined : normalizeNativeToolClosure(input.nativeTools);
-  if (nativeTools?.consumers.some((consumer) => consumer.kind !== 'managed-command-set' || !sets.some((set) => set.set === consumer.key))) {
-    throw new Error('Invalid command producer record: native consumer must belong to this producer.');
+  if (nativeTools?.consumers.some((consumer) => consumer.kind !== 'plugin-command')) {
+    throw new Error(`Invalid ${field}: native closure must contain only the plugin command consumer.`);
   }
-  return { schemaVersion: 1, producer: normalizeProducerIdentity(input.producer), sets, ...(nativeTools ? { nativeTools } : {}) };
+  const runtimeConfigPlatforms = nativePlatforms(input.runtimeConfigPlatforms, `${field}.runtimeConfigPlatforms`);
+  const runtimeConfigKeys = input.runtimeConfigKeys === undefined
+    ? undefined : configKeys(input.runtimeConfigKeys, `${field}.runtimeConfigKeys`, true);
+  if (runtimeConfigPlatforms.length && runtimeConfigKeys === undefined) {
+    throw new Error(`Invalid ${field}: runtime config platforms require allowed keys.`);
+  }
+  if (input.routeConfigDigest !== undefined && input.dynamicRefreshKeys === undefined) {
+    throw new Error(`Invalid ${field}: a route config digest requires dynamic routes.`);
+  }
+  let routeConfigKeyDigests: InstalledCommandProducer['routeConfigKeyDigests'];
+  if (input.routeConfigKeyDigests !== undefined) {
+    const digests = input.routeConfigKeyDigests;
+    if (input.routeConfigDigest === undefined || !digests || typeof digests !== 'object' || Array.isArray(digests)) {
+      throw new Error(`Invalid ${field}.routeConfigKeyDigests: expected an object and a route config digest.`);
+    }
+    configKeys(Object.keys(digests), `${field}.routeConfigKeyDigests`);
+    routeConfigKeyDigests = Object.fromEntries(Object.entries(digests)
+      .map(([key, digest]) => [key, normalizeDigest(digest, `${field}.routeConfigKeyDigests.${key}`)]));
+  }
+  const commonDigests = input.runtimeConfigCommonDigests === undefined ? undefined : Object.fromEntries(
+    Object.entries(object(input.runtimeConfigCommonDigests, `${field}.runtimeConfigCommonDigests`, runtimeConfigPlatforms))
+      .map(([platform, digest]) => [platform, normalizeDigest(digest, `${field}.runtimeConfigCommonDigests.${platform}`)]),
+  );
+  return {
+    schemaVersion: 2,
+    producer: normalizeProducerIdentity(input.producer),
+    pluginVersion: assertStrictSemVer(input.pluginVersion, `${field}.pluginVersion`),
+    sourceContentDigest: normalizeDigest(input.sourceContentDigest, `${field}.sourceContentDigest`),
+    routes: normalizeRoutes(input.routes, `${field}.routes`, true),
+    runtimeConfigPlatforms,
+    ...(runtimeConfigKeys === undefined ? {} : { runtimeConfigKeys }),
+    ...(input.dynamicRefreshKeys === undefined ? {} : {
+      dynamicRefreshKeys: configKeys(input.dynamicRefreshKeys, `${field}.dynamicRefreshKeys`),
+    }),
+    ...(input.routeConfigDigest === undefined ? {} : {
+      routeConfigDigest: normalizeDigest(input.routeConfigDigest, `${field}.routeConfigDigest`),
+    }),
+    ...(routeConfigKeyDigests === undefined ? {} : { routeConfigKeyDigests }),
+    ...(commonDigests === undefined ? {} : { runtimeConfigCommonDigests: commonDigests }),
+    ...(nativeTools ? { nativeTools } : {}),
+  };
 }
+
 export function normalizeUserCommandDefinition(value: unknown): UserCommandDefinition {
   const input = object(value, 'user command definition', ['schemaVersion', 'id', 'name', 'packageRevision', 'launch']);
   if (input.schemaVersion !== 1 || !isUserCommandId(input.id)) throw new Error('Invalid user command definition identity.');
@@ -334,105 +388,103 @@ export function normalizeUserCommandDefinition(value: unknown): UserCommandDefin
   if (displayName.trim().length === 0 || /[\u0000-\u001f\u007f-\u009f]/u.test(displayName)) throw new Error('Invalid user command definition.name.');
   const packageRevision = text(input.packageRevision, 'user command definition.packageRevision');
   if (!USER_COMMAND_ID.test(`cmdu_${packageRevision}`)) throw new Error('Invalid user command definition.packageRevision.');
-  const launch = object(input.launch, 'user command definition.launch', ['runner', 'entry', 'args', 'env', 'envFrom', 'cwd']);
-  if (['args', 'env', 'envFrom', 'cwd'].some((key) => launch[key] === undefined)) throw new Error('Invalid user command definition.launch: installed launch must include defaults.');
+  const launch = object(input.launch, 'user command definition.launch', LAUNCH_FIELDS);
+  requireLaunchDefaults(launch, 'user command definition.launch');
   return { schemaVersion: 1, id: input.id, name: displayName, packageRevision, launch: normalizeCommandLaunch(input.launch) };
 }
 
-export interface ManagedCommandPlaceholder { start: number; end: number; reference: ManagedCommandReference }
+export interface ManagedCommandPlaceholder { start: number; end: number }
+
 export function parseManagedCommandPlaceholders(value: string): ManagedCommandPlaceholder[] {
-  text(value, 'Skill Markdown');
-  const result: ManagedCommandPlaceholder[] = [];
-  const expression = /\{\{aw\.command:([^}]*)(\}\})?/gu;
-  for (const match of value.matchAll(expression)) {
-    const parts = match[1]!.split('/');
-    if (match[2] !== '}}' || (parts.length !== 2 && parts.length !== 3)) throw new Error('commandReferenceInvalid: malformed managed command placeholder.');
-    try {
-      result.push({ start: match.index, end: match.index + match[0].length, reference: normalizeManagedCommandReference({ set: parts[0], key: parts[1], ...(parts.length === 3 ? { variant: parts[2] } : {}) }) });
-    } catch { throw new Error('commandReferenceInvalid: malformed managed command placeholder.'); }
+  const placeholders: ManagedCommandPlaceholder[] = [];
+  for (const match of value.matchAll(/\{\{aw\.command(?=\b)[^}\r\n]*(?:\}\})?/gu)) {
+    if (match[0] !== '{{aw.command}}') {
+      throw new Error('commandReferenceInvalid: expected {{aw.command}}.');
+    }
+    placeholders.push({ start: match.index, end: match.index + match[0].length });
   }
-  return result;
+  return placeholders;
 }
-export function replaceManagedCommandPlaceholders(value: string, resolve: (reference: ManagedCommandReference) => string): string {
+
+export function replaceManagedCommandPlaceholders(value: string, selector: string): string {
+  normalizeCommandSelector(selector);
   let cursor = 0;
   let result = '';
   for (const placeholder of parseManagedCommandPlaceholders(value)) {
-    const id = resolve(placeholder.reference);
-    if (!isManagedCommandId(id)) throw new Error('commandReferenceInvalid: resolver returned an invalid command ID.');
-    result += value.slice(cursor, placeholder.start) + `aw command run ${id} --`;
+    result += value.slice(cursor, placeholder.start) + `aw command run ${selector} --`;
     cursor = placeholder.end;
   }
   return result + value.slice(cursor);
 }
 
+export function assertManagedCommandPlatform(
+  manifest: Pick<NormalizedPluginManifest, 'command'>,
+  platform: PlatformTarget,
+  field: string,
+): void {
+  if (!manifest.command) throw new Error(`Invalid ${field}: requires a command declaration.`);
+  if (platform === 'generic' || !manifest.command.platforms.includes(platform)) {
+    throw new Error(`Invalid ${field}: ${platform} is outside command.platforms.`);
+  }
+}
+
 export function validateManagedCommandManifest(manifest: NormalizedPluginManifest): void {
-  const managed = manifest.managedCommands;
-  if (!managed) return;
   const validateKeys = (keys: string[], field: string, platform?: PlatformName): void => {
     if (keys.length === 0) return;
     if (!manifest.config) throw new Error(`Invalid ${field}: requires a config definition.`);
-    const config = compilePluginConfigDefinition(manifest.config, platform);
-    if (config.schemaVersion !== 4) throw new Error(`Invalid ${field}: requires Config v4 or v5.`);
+    const config = selectPluginConfigProfile(manifest.config, platform);
+    const fieldLabel = platform === undefined ? field : `${field} for ${platform}`;
+    for (const key of keys) {
+      if (!Object.hasOwn(config.fields, key)) throw new Error(`Invalid ${fieldLabel}: unknown config key "${key}".`);
+    }
     for (const key of getPluginConfigDependencyKeys(config, keys)) {
-      if (config.fields[key]?.sensitive === true) throw new Error(`Invalid ${field}: sensitive config dependency is not permitted.`);
+      if (config.fields[key]?.sensitive === true) {
+        throw new Error(`Invalid ${fieldLabel}: sensitive config key or dependency "${key}" is not permitted.`);
+      }
     }
   };
-  for (const item of managed.packages) validateKeys(item.refreshKeys, `managedCommands.packages.${item.key}.refreshKeys`);
-  for (const item of managed.sets) {
-    const producer = item.producer;
-    let platform: PlatformName | undefined;
-    if (producer.kind === 'package') {
-      if (!managed.packages.some((pkg) => pkg.key === producer.packageKey)) throw new Error(`Invalid managedCommands set ${item.set}: unknown package producer.`);
-    } else if (producer.kind === 'artifact') {
-      platform = producer.platform;
-      if (!manifest.artifacts) throw new Error(`Invalid managedCommands set ${item.set}: dynamic Skill producer requires artifacts.`);
-      if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: producer platform is outside plugin support.`);
-      if (producer.artifactId.startsWith('command-set.') || producer.artifactId.startsWith('command-package.') || /[/\\]/u.test(producer.artifactId)) throw new Error(`Invalid managedCommands set ${item.set}: reserved or invalid component ID.`);
-    } else {
-      platform = producer.platform;
-      if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: static Skill producer requires ${producer.platform.toUpperCase()} support, but ${formatManifestPlatformsForError(manifest)}.`);
-      if (!manifest.skills) throw new Error(`Invalid managedCommands set ${item.set}: expected a static Skill producer.`);
+  const command = manifest.command;
+  if (command?.mode === 'dynamic') {
+    if (!manifest.scripts?.artifacts?.render) {
+      throw new Error('Invalid command: dynamic routes require scripts.artifacts.render.');
     }
-    if (item.mode === 'dynamic') validateKeys(item.refreshKeys, `managedCommands.sets.${item.set}.refreshKeys`, platform);
+    validateKeys(command.refreshKeys, 'command.refreshKeys');
   }
-  if ((managed.packages.some((item) => item.render) || managed.sets.some((item) => item.mode === 'dynamic')) && !manifest.scripts?.artifacts?.render) {
-    throw new Error('Invalid managedCommands: dynamic command targets require scripts.artifacts.render.');
+  if (command?.runtimeConfig) {
+    for (const platform of command.platforms) validateKeys(command.runtimeConfig.keys, 'command.runtimeConfig.keys', platform);
+  }
+  for (const [index, permission] of (manifest.extensions?.permissions ?? []).entries()) {
+    for (const platform of resolveSupportedPlatforms(manifest)) {
+      const entry = applyPlatformOverride(permission, platform);
+      if (!entry) continue;
+      const includesManaged = [entry.allow, entry.ask, entry.deny].some((items) =>
+        items?.some((item) => typeof item !== 'string'));
+      if (includesManaged || (entry.sandbox?.excludedCommands.length ?? 0) > 0) {
+        assertManagedCommandPlatform(manifest, platform, `extensions.permissions[${index}] for ${platform}`);
+      }
+    }
   }
 }
+
 export function getManagedCommandArtifactTargets(manifest: NormalizedPluginManifest): ManagedCommandArtifactTargetDefinition[] {
-  validateManagedCommandManifest(manifest);
-  const managed = manifest.managedCommands;
-  if (!managed) return [];
-  const result: ManagedCommandArtifactTargetDefinition[] = managed.packages.filter((pkg) => pkg.render).map((pkg) => ({
-    id: `command-package.${pkg.key}`, target: 'aw.command-package', kind: 'commandPackage',
-    surface: { kind: 'aw', name: 'managed-commands' }, scopes: [pkg.scope], states: ['present'],
-    refreshKeys: [...pkg.refreshKeys], producer: { kind: 'package', packageKey: pkg.key }, packageKey: pkg.key,
-  }));
-  for (const set of managed.sets) {
-    if (set.mode !== 'dynamic') continue;
-    const base = { id: `command-set.${set.set}`, target: 'aw.command-set' as const, kind: 'commandSet' as const, states: ['present', 'disabled'] as ArtifactState[], refreshKeys: [...set.refreshKeys], producer: set.producer, set: set.set };
-    const producer = set.producer;
-    if (producer.kind === 'package') {
-      const pkg = managed.packages.find((item) => item.key === producer.packageKey)!;
-      result.push({ ...base, surface: { kind: 'aw', name: 'managed-commands' }, scopes: [pkg.scope], packageKey: pkg.key });
-    } else if (set.producer.kind === 'static-skill') {
-      result.push({ ...base, platform: set.producer.platform, surface: { kind: 'platform', platform: set.producer.platform }, scopes: ['user', 'project'] });
-    } else {
-      const platform = producer.platform;
-      result.push({ ...base, platform, surface: { kind: 'platform', platform }, scopes: manifest.artifacts?.scopes ?? ['user', 'project'] });
-    }
-  }
-  return result;
+  if (manifest.command?.mode !== 'dynamic') return [];
+  return [{
+    id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes',
+    surface: { kind: 'aw', name: 'managed-commands' }, scopes: ['user'],
+    refreshKeys: [...manifest.command.refreshKeys],
+  }];
 }
 
 /** Checks entry path chains after a producer candidate is complete. */
-export async function validateCommandEntryFiles(resourceRoot: string, entries: readonly CommandDefinition[]): Promise<void> {
+export async function validateCommandEntryFiles(resourceRoot: string, entries: readonly CommandLaunch[]): Promise<void> {
   const root = await fs.lstat(resourceRoot);
   if (root.isSymbolicLink() || !root.isDirectory()) throw new Error('Invalid command resource root: expected a regular directory.');
   for (const entry of entries) {
-    normalizeCommandDefinition(entry);
+    const { entry: relativePath } = normalizeCommandLaunch({
+      runner: entry.runner, entry: entry.entry, args: entry.args, env: entry.env, envFrom: entry.envFrom, cwd: entry.cwd,
+    });
     let current = resourceRoot;
-    const segments = entry.entry.split('/');
+    const segments = relativePath.split('/');
     for (const [index, segment] of segments.entries()) {
       current = path.join(current, segment);
       const stat = await fs.lstat(current).catch(() => undefined);
@@ -441,52 +493,47 @@ export async function validateCommandEntryFiles(resourceRoot: string, entries: r
   }
 }
 
-/** Validates the package input closure without following dependency or author-only trees. */
+/** Validates the executable input tree before packaging or renderer execution. */
 export async function validateManagedCommandSources(pluginRoot: string, manifest: NormalizedPluginManifest): Promise<void> {
-  for (const set of manifest.managedCommands?.sets ?? []) {
-    if (set.producer.kind !== 'static-skill') continue;
-    const producer = set.producer;
-    const sourceRoot = path.join(pluginRoot, manifest.skills!.slice(2), producer.skillKey);
-    const bundleRoot = path.join(pluginRoot, producer.platform, manifest.skills!.slice(2), producer.skillKey);
-    const root = await fs.pathExists(sourceRoot) ? sourceRoot : bundleRoot;
-    const stat = await fs.lstat(path.join(root, 'SKILL.md')).catch(() => undefined);
-    if (!stat || stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Invalid managed command set ${set.set}: static Skill declaration key does not exist.`);
-  }
-  for (const pkg of manifest.managedCommands?.packages ?? []) {
-    let current = pluginRoot;
-    for (const segment of pkg.sourceDir.slice(2).split('/')) {
-      current = path.join(current, segment);
-      const stat = await fs.lstat(current).catch(() => undefined);
-      if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Invalid managed command package ${pkg.key}: sourceDir must be an ordinary directory without links.`);
+  const command = manifest.command;
+  if (!command) return;
+  let current = pluginRoot;
+  for (const segment of command.sourceDir.slice(2).split('/')) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current).catch(() => undefined);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('Invalid command.sourceDir: expected an ordinary directory without links.');
     }
-    const walk = async (directory: string, relative = ''): Promise<void> => {
-      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-        const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
-        if (PACKAGE_PROTECTED_NAMES.has(entry.name) || isSkillAuthorOnlyPath(relativePath)) {
-          throw new Error(`Invalid managed command package ${pkg.key}: protected or author-only content.`);
-        }
-        if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) throw new Error(`Invalid managed command package ${pkg.key}: only ordinary files and directories are supported.`);
-        if (entry.isDirectory()) await walk(path.join(directory, entry.name), relativePath);
+  }
+  const walk = async (directory: string, relative = ''): Promise<void> => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const relativePath = relative ? `${relative}/${entry.name}` : entry.name;
+      if (isProtectedCommandPath(entry.name) || isSkillAuthorOnlyPath(relativePath)) {
+        throw new Error(`Invalid command.sourceDir: protected or author-only content "${relativePath}".`);
       }
-    };
-    await walk(current);
-    const entries = (manifest.managedCommands?.sets ?? []).flatMap((set) =>
-      set.producer.kind === 'package' && set.producer.packageKey === pkg.key && set.mode === 'static' ? set.entries : []);
-    await validateCommandEntryFiles(current, entries);
+      if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
+        throw new Error('Invalid command.sourceDir: only ordinary files and directories are supported.');
+      }
+      if (entry.isDirectory()) await walk(path.join(directory, entry.name), relativePath);
+    }
+  };
+  await walk(current);
+  if (command.mode === 'static') {
+    await validateCommandEntryFiles(current, [
+      ...command.routes.subcommands, ...(command.routes.fallback ? [command.routes.fallback] : []),
+    ]);
   }
 }
 
-/** Validates command-only v2 renderer output before matching it to the exact request. */
-export function normalizeCommandSetArtifact(value: unknown, field = 'command set artifact'): CommandSetArtifact {
-  const input = object(value, field, ['id', 'target', 'kind', 'platform', 'state', 'refreshKeys', 'entries', 'disabledReason']);
-  if (input.target !== 'aw.command-set' || input.kind !== 'commandSet') throw new Error(`Invalid ${field}: expected aw.command-set.`);
-  const state = enumeration(input.state, `${field}.state`, ['present', 'disabled']);
-  const entries = normalizeCommandDefinitions(input.entries, `${field}.entries`);
-  if (state === 'disabled' && entries.length) throw new Error(`Invalid ${field}: disabled set requires empty entries.`);
-  if (state !== 'disabled' && input.disabledReason !== undefined) throw new Error(`Invalid ${field}.disabledReason.`);
-  return { id: nonempty(input.id, `${field}.id`), target: 'aw.command-set', kind: 'commandSet', state,
-    refreshKeys: strings(input.refreshKeys, `${field}.refreshKeys`, true), entries,
-    ...(input.platform === undefined ? {} : { platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS) }),
-    ...(input.disabledReason === undefined ? {} : { disabledReason: nonempty(input.disabledReason, `${field}.disabledReason`) }),
+/** Uses the same route validator as the static manifest and rejects renderer-owned metadata. */
+export function normalizeCommandRoutesArtifact(value: unknown, field = 'command routes artifact'): CommandRoutesArtifact {
+  const input = object(value, field, ['id', 'target', 'kind', 'refreshKeys', 'routes']);
+  if (input.id !== 'command-routes' || input.target !== 'aw.command-routes' || input.kind !== 'commandRoutes') {
+    throw new Error(`Invalid ${field}: expected command-routes / aw.command-routes / commandRoutes.`);
+  }
+  return {
+    id: input.id, target: input.target, kind: input.kind,
+    refreshKeys: configKeys(input.refreshKeys, `${field}.refreshKeys`),
+    routes: normalizeCommandRoutes(input.routes, `${field}.routes`),
   };
 }

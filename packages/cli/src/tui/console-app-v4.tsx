@@ -9,13 +9,13 @@ import type { AgentSettings } from './agent-settings.js';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import path from 'node:path';
 import {
-  getCommandPackageId,
   resolvePluginConfigObjectProperties,
   validatePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   CatalogSource,
+  CommandProducerResult,
   PlatformName,
   PluginConfigAdditionalPropertiesField,
   PluginConfigObject,
@@ -269,6 +269,9 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
     reasons.push(`本次还会清理 ${dependencyCleanup.length} 个不再需要的依赖位置；请确认所列依赖。`);
   }
   const visit = (entry: typeof plan.plan): void => {
+    for (const withdrawal of entry.portableCommandWithdrawals ?? []) {
+      reasons.push(`本次会撤销 ${withdrawal.selector} 的共享命令入口，影响所有项目。`);
+    }
     reasons.push(...entry.nativeGroups.flatMap((group) =>
       (group.preview.codexReconcilePlans ?? []).filter((item) => item.review.requiresConfirmation)
         .map((item) => item.review.sharedImpact.warning
@@ -374,9 +377,13 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
       const closure = change[phase];
       lines.push(`  ${phase === 'before' ? '变更前' : '变更后'}：${closure?.definitions.map((tool) => tool.key).join(' · ') || '无'}`);
       for (const consumer of closure?.consumers ?? []) for (const tool of consumer.tools) {
-        lines.push(`  ${consumer.key} 使用 ${tool.key}：${tool.policy === 'required' ? '必须可用' : '优先使用，可回退'}`);
+        lines.push(`  ${consumer.kind === 'plugin-command' ? '插件命令' : consumer.key} 使用 ${tool.key}：${tool.policy === 'required' ? '必须可用' : '优先使用，可回退'}`);
       }
     }
+  }
+  if (plan.kind === 'recovery') lines.push(...scopedCommandPlanText(plan));
+  else if (plan.kind === 'retire') for (const action of plan.plan.operationPlan?.actions ?? []) {
+    if (action.kind === 'retainManagedCommandPackage') lines.push(`保留命令包 ${action.selector} · 所有项目共用`, ...action.recoveryActions);
   }
   if (plan.kind === 'recovery') {
     const scripts = new Set<string>();
@@ -432,10 +439,10 @@ function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], 
 }
 
 function deliveryAdvisoryLines(diagnostics: readonly Diagnostic[], technical = false): string[] {
-  return diagnostics.filter(({ code }) => isDeliveryNoticeCode(code)).flatMap(({ code, subject, detail, severity }) => {
+  return diagnostics.filter(({ code }) => isDeliveryNoticeCode(code)).flatMap(({ code, subject, detail, severity, message }) => {
     const position = [subject?.pluginId, subject?.target ? agentLabel(subject.target) : undefined,
       subject?.scope ? scopeLabel(subject.scope) : undefined].filter(Boolean).join(' · ');
-    return [`${severity === 'error' ? '×' : '!'} ${position} · ${deliveryNoticeText(code, detail, subject?.field)}`,
+    return [`${severity === 'error' ? '×' : '!'} ${position} · ${deliveryNoticeText(code, detail, subject?.field, message)}`,
       ...(technical ? [`  ${code}${detail?.reasonCode ? ` · ${detail.reasonCode}` : ''}${detail?.path ? ` · ${detail.path}` : ''}`] : [])];
   });
 }
@@ -476,6 +483,7 @@ function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
     ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
+  const commandReview = plan.kind === 'recovery' ? managedCommandRecoveryPlanChanges(plan.plan) : [];
   return [
     `范围：${plan.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -491,10 +499,11 @@ function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
       ? `受阻：${target.blockers.map((blocker) => blocker.code).join('、')}` : target.observation}`),
     ...diagnostics,
     ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
-    ...plan.plan.changes.map((change) => `影响：${change}`),
+    ...plan.plan.changes.filter((line) => !commandReview.some(({ title, description }) => line === title || line === description))
+      .map((change) => `影响：${change}`),
     ...plan.plan.warnings.map((warning) => `注意：${warning}`),
     ...deploymentPlanLines(scopedDeploymentPlans(plan), true),
-    ...(plan.kind === 'recovery' ? scopedCommandPlanText(plan) : []),
+    ...commandReview.map(({ title, description }) => `${title}${description ? `：${description}` : ''}`),
     ...(plan.kind === 'retire' ? [`配置删除选项：${plan.plan.options.deleteConfig
       ? impact.config ? '已选择' : '已选择；当前没有可删除配置' : '关闭（默认）'}`] : []),
   ].join('\n');
@@ -511,10 +520,9 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     ...recoverySummaryErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
-  const nativeRecovery = inventoryRecoveryActions(receipt.targetResults.filter((target) => !target.deploymentReceipts?.length)
-    .flatMap((target) => [...target.blockers, ...(target.reasons ?? [])])
-    .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'
-      || entry.subject?.field === 'nativeConfigRoot'), receipt);
+  const nativeRecovery = inventoryRecoveryActions(receipt.targetResults.flatMap((target) =>
+    [...target.blockers, ...(target.reasons ?? [])].filter((entry) => entry.code === 'permissionRelatedProjectUpdateIncomplete'
+      || !target.deploymentReceipts?.length && ['nativeSource', 'workspace', 'nativeConfigRoot'].includes(entry.subject?.field ?? ''))), receipt);
   const notices = projectDeploymentNotices(receipt.targetResults);
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
@@ -540,18 +548,22 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
     ...nativeRecovery.flatMap((action) => action.kind === 'manual' ? [action.message] : []),
-    ...(receipt.commandResults ?? []).flatMap((result) => [
-      `命令${result.producer.kind === 'package' ? '包' : '生产者'} ${result.producer.key} · ${result.producer.sourceId}/${result.producer.pluginName} · ${scopeLabel(result.producer.scope)}${result.producer.platform ? ` · ${platformLabel(result.producer.platform)}` : ''} · ${result.state}`,
-      ...(result.recoveryActions.some((action) => action.startsWith('aw command package remove '))
-        ? [result.producer.scope === 'user' ? '保留命令包：所有项目共用' : '保留命令包：当前项目内共用'] : []),
-      ...result.commandIds.map((id) => `命令：${id}`),
-      ...result.removedCommandIds.map((id) => `撤销命令：${id}`),
-      ...result.errors.map((error) => `命令错误：${error.code} · ${error.message}`),
-      ...result.recoveryActions.map((action) => `命令恢复：${action}`),
-    ]),
+    ...(receipt.commandResults ?? []).flatMap((result) => commandPackageResultLines(result,
+      receipt.command === 'cleanup' || receipt.command === 'uninstall')),
     ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent} · ${scopeLabel(target.scope)}`),
     ...receipt.recoveryActions.map((action) => `恢复：${action}`),
   ].join('\n');
+}
+
+function commandPackageResultLines(result: CommandProducerResult, removal: boolean): string[] {
+  return [
+    `命令包 ${result.selector} · ${result.action} · ${result.availability} · ${result.state}`,
+    ...(removal && result.action === 'unchanged' ? [`保留命令包 ${result.packageId} · 所有项目共用`] : []),
+    ...result.subcommands.map((name) => `aw command run ${result.selector} -- ${name}`),
+    ...(result.hasFallback ? [`通用入口 · aw command run ${result.selector} --`] : []),
+    ...result.errors.map(({ code, message }) => `${code} · ${message}`),
+    ...result.recoveryActions,
+  ];
 }
 
 const PLUGIN_FILTERS: PluginInstallFilter[] = [
@@ -10270,7 +10282,9 @@ export function ConsoleAppV4(props: {
     const resultTargets: ResultTarget[] = configOperation ? resultSummary?.configTargets ?? resultSummary?.targets ?? []
       : resultSummary?.targets ?? [];
     const configDiagnostics = resultSummary?.configDiagnostics ?? [];
-    const configInvocationLines = [...skillInvocationResultLines(configDiagnostics, showTechnical),
+    const permissionRecovery = inventoryRecoveryActions(configDiagnostics.filter(({ code }) =>
+      code === 'permissionRelatedProjectUpdateIncomplete')).flatMap((action) => action.kind === 'manual' ? [action.message] : []);
+    const configInvocationLines = [...permissionRecovery, ...skillInvocationResultLines(configDiagnostics, showTechnical),
       ...deliveryAdvisoryLines(configDiagnostics, showTechnical)];
     const configInvocationRows = configInvocationLines.flatMap((line) => wrapDisplayText(line, size.columns - 6))
       .map((line, index) => <Text key={`config-skill:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>);
@@ -10286,12 +10300,13 @@ export function ConsoleAppV4(props: {
         description={group.errorCode} meta={outcome} status={status} compact />;
     }) ?? [];
     const commandResults = resultSummary?.commandResults ?? [];
+    const isRemoval = resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall';
     const retainedCommandPackage = (result: typeof commandResults[number]): boolean =>
-      result.producer.kind === 'package' && (resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall');
+      result.action === 'unchanged' && isRemoval;
     const commandResultRows = commandResults.map((result, index) => <ResultRow
       key={`command:${index}`}
-      title={`${retainedCommandPackage(result) ? '保留' : ''}命令${result.producer.kind === 'package' ? '包' : '生产者'} ${result.producer.key}`}
-      description={`${result.producer.sourceId}/${result.producer.pluginName} · ${scopeLabel(result.producer.scope)} · ${retainedCommandPackage(result) ? result.producer.scope === 'user' ? '所有项目共用 · ' : '当前项目内共用 · ' : ''}${result.commandIds.length} 个命令${result.removedCommandIds.length ? ` · 撤销 ${result.removedCommandIds.length} 个` : ''}${result.errors[0] ? ` · ${result.errors[0].code}` : ''}`}
+      title={`${retainedCommandPackage(result) ? '保留' : ''}命令包 ${result.selector}`}
+      description={`${result.action} · ${result.availability} · ${result.subcommands.length} 个子命令${result.hasFallback ? ' · 含通用入口' : ''}${retainedCommandPackage(result) ? ' · 所有项目共用' : ''}${result.errors[0] ? ` · ${result.errors[0].code}` : ''}`}
       meta={retainedCommandPackage(result) ? '保留' : result.state === 'completed' ? '完成' : result.state === 'partial' ? '部分完成' : '失败'}
       status={result.state === 'completed' ? 'success' : result.state === 'partial' ? 'warning' : 'error'}
       compact={policy.mode === 'compact'}
@@ -10414,14 +10429,7 @@ export function ConsoleAppV4(props: {
       ...(resultSummary?.recoveryActions ?? []),
       ...prioritizedTargets.map((target) =>
         `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${target.partialDelivery ? '部分完成' : operationTargetStateLabel(target.state).label}`),
-      ...commandResults.flatMap((result) => [
-        `命令生产者 ${result.producer.key} · ${scopeLabel(result.producer.scope)} · ${result.state}`,
-        ...(retainedCommandPackage(result) ? [`保留命令包 ${getCommandPackageId(result.producer)} · ${result.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`] : []),
-        ...result.commandIds.map((id) => `命令 ${id}`),
-        ...result.removedCommandIds.map((id) => `已撤销命令 ${id}`),
-        ...result.errors.map((error) => `${error.code}: ${error.message}`),
-        ...result.recoveryActions,
-      ]),
+      ...commandResults.flatMap((result) => commandPackageResultLines(result, isRemoval)),
       ...prioritizedPortablePairs.map((pair) =>
         `${pair.skill} · ${pair.agent ?? 'Agent 未确认'} · ${portablePairStateLabel(pair)}`),
       ...(taskSummary?.rootResults ?? []).map((root) => `${root.pluginId} · ${root.state}`),

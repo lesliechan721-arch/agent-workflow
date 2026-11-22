@@ -20,6 +20,18 @@
 
 六环境指 Linux、macOS、Windows 的 x64 / arm64。Grok 四环境指 Linux x64 / arm64、macOS arm64、Windows x64；缺少官方分发的另外两环境排除，不记通过。
 
+## 命令权限资格
+
+下面的独立记录使用 macOS 26.3.1 arm64、临时主目录和两个独立项目。公开 AW 命令生成配置。最终复验使用 AW 构建代次 `8a16a507-c508-4bb6-b040-ff7660eca3a1`，CLI 包摘要为 `93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540`。交互用例由本地回环夹具提供无害调用，启动次数来自临时执行记录。
+
+| 客户端 | 实机观察 | 固定证据 |
+| --- | --- | --- |
+| OpenCode `2.2.6`，`mini --standalone` 的 Build 新会话 | 15 例覆盖 Project 三动作、User 拒绝、跨项目收紧与恢复。较早的 API 读回证明同字节 `allow` 规则的顺序，规则命中依据该顺序推断。 | [15 例与 AW 构建摘要](native-opencode-command-permissions-2.2.6-darwin-arm64-replay.json) · [较早的规则读回](native-opencode-command-permissions-2.2.6-darwin-arm64.json) |
+| Grok Build `1.0.77`（`50ca579fa996`），交互默认权限模式 | 29 例覆盖普通和托管命令、User 及已明确授信 Project 的三动作与项目隔离。新增三例覆盖 `command sample-report` 的基线询问及 User 和 Project 放行。另验证公开 `status` 识别丢失的 User 规则，`sync` 恢复。 | [29 例、状态修复与 AW 产物摘要](native-grok-command-permissions-1.0.77-darwin-arm64.json) |
+| Antigravity CLI `1.5.14`，Global | 同值手工拒绝完全或部分遮蔽声明，移除拒绝后公开同步恢复两种规则。原生 CLI 重写配置并保留非空规则，公开同步和撤回通过。交互启动停在登录页。 | [冲突、恢复与原生配置记录](native-antigravity-command-permissions-1.5.14-darwin-arm64.json) |
+
+Windows、桌面端和热重载均未获得这组三宿主命令权限资格。Grok 的其他包装和内联脚本仅有源码和定向回归证据。Antigravity 的正则和包装已有投影验证，实际审批匹配仍待登录后的会话核验。旧报告的宿主观察可在客户端、运行模式、作用域和进入客户端的关键配置字节均保持一致时引用，另用新构建核验公开 AW 写入与退出结果。相关配置、判定或调用变化时，用隔离环境重做对应观察并记录新构建摘要。各摘录保留原报告 SHA-256 和脱敏范围。
+
 ## 如何核对证据
 
 每份记录保留原始 run / attempt、源码与候选摘要、报告 SHA-256、来源数组索引、客户端获取信息、关键命令及检查结果。临时目录已脱敏；原始完整报告、原生 stderr 或 RPC 响应正文没有保存的部分，按各文件的 `extraction` 与边界字段处理，不补造缺失输出。

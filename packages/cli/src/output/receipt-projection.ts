@@ -17,7 +17,7 @@ import { inventoryRecoveryActions, projectDeploymentNotices, projectTarget, reco
 import { isDeliveryNoticeCode, PREVIOUS_DEPLOYMENT_RETAINED, projectComponentDelivery } from './component-delivery.js';
 import { projectSkillInvocationDiagnostics } from './skill-invocation-notices.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
-import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
+import { CLI_OUTPUT_SCHEMA_VERSION, commandPackageRecoveryActions, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
 
 type RecordValue = Record<string, unknown>;
 /** Pick only the declared domain DTO members. Never spread a service result. */
@@ -97,13 +97,14 @@ function versionReport(value: RecordValue): RecordValue {
   return data;
 }
 function producer(value: RecordValue): RecordValue {
-  return pick(value, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'scope', 'projectRoot', 'platform', 'placementKey']);
+  return pick(value, ['sourceId', 'sourceIdentity', 'pluginName']);
 }
-function commandResults(values: CommandProducerResult[] | undefined, diagnostics: Diagnostic[]): unknown {
-  return values?.map((entry) => {
-    const subject = { pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope };
+function commandResults(values: CommandProducerResult[], diagnostics: Diagnostic[]): unknown {
+  return values.map((entry) => {
+    const subject = { pluginId: entry.selector, scope: 'user' as const };
     diagnostics.push(...entry.errors.map((error) => diagnostic(error, 'error', subject)));
-    return { ...pick(entry, ['state', 'commandIds', 'removedCommandIds']), producer: producer(record(entry.producer)), errors: entry.errors.map((error) => issue(record(error))), blockerCodes: entry.errors.map((error) => error.code) };
+    return { ...pick(entry, ['state', 'packageId', 'selector', 'action', 'availability', 'subcommands', 'hasFallback']),
+      producer: producer(record(entry.producer)), errors: entry.errors.map((error) => issue(record(error))), blockerCodes: entry.errors.map((error) => error.code) };
   });
 }
 function applyResult(value: ConfigApplyResult, diagnostics: Diagnostic[]): RecordValue {
@@ -368,21 +369,41 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
       return data;
     }
     case 'command.install': case 'command.update': case 'command.remove': case 'command.list': case 'command.show': case 'command.package.sync': case 'command.package.remove': {
-      const data: RecordValue = pick(r as unknown as CommandManagementResult, ['commands', 'packages', 'changes', 'nativeToolChanges']);
-      mapField(data, 'commands', (entry) => {
-        const result: RecordValue = pick(entry, ['id', 'name', 'availability', 'resourceRoot', 'launch']);
-        const owner = record(entry.owner);
-        result.owner = { kind: owner.kind, ...(owner.producer ? { producer: producer(record(owner.producer)) } : {}) };
-        mapField(result, 'launch', (launch) => pick(launch, ['runner', 'entry', 'args', 'env', 'envFrom', 'cwd']));
+      const data: RecordValue = pick(r as unknown as CommandManagementResult, ['commands', 'packages', 'orphanedPackages', 'changes', 'nativeToolChanges', 'packageReview', 'recoveryActions']);
+      const launch = (value: RecordValue) => pick(value, ['runner', 'entry', 'args', 'env', 'envFrom', 'cwd']);
+      const withStatus = (entry: RecordValue) => {
         diagnostics.push(...list(entry.errors).map((error) => diagnostic(error)));
-        result.blockerCodes = list(entry.errors).map((error) => error.code);
-        result.errors = list(entry.errors).map(issue);
+        return { blockerCodes: list(entry.errors).map((error) => error.code), errors: list(entry.errors).map(issue), recoveryActions: entry.recoveryActions };
+      };
+      mapField(data, 'commands', (entry) => {
+        const owner = record(entry.owner);
+        if (owner.kind === 'plugin') {
+          const result: RecordValue = {
+            ...pick(entry, ['selector', 'packageId', 'pluginVersion', 'sourceContentDigest', 'availability', 'resourceRoot', 'routes', 'runtimeConfigPlatforms', 'nativeTools']),
+            ...withStatus(entry),
+            owner: { kind: 'plugin', producer: producer(record(owner.producer)) },
+          };
+          mapField(result, 'routes', (routes) => {
+            const projected: RecordValue = {
+              subcommands: list(routes.subcommands).map((entry) => ({ name: entry.name, ...launch(entry) })),
+              ...pick(routes, ['fallback']),
+            };
+            mapField(projected, 'fallback', launch);
+            return projected;
+          });
+          mapField(result, 'nativeTools', nativeClosure);
+          return result;
+        }
+        const result: RecordValue = { ...pick(entry, ['id', 'name', 'availability', 'resourceRoot', 'launch']), ...withStatus(entry), owner: { kind: 'user' } };
+        mapField(result, 'launch', launch);
         return result;
       });
-      mapField(data, 'packages', (entry) => {
-        diagnostics.push(...list(entry.errors).map((error) => diagnostic(error)));
-        return { ...pick(entry, ['id', 'availability', 'resourceRoot']), producer: producer(record(entry.producer)), sets: list(entry.sets).map((set) => pick(set, ['set', 'state', 'commandIds'])), errors: list(entry.errors).map(issue), blockerCodes: list(entry.errors).map((error) => error.code) };
+      const packageSummary = (entry: RecordValue) => ({
+        ...pick(entry, ['selector', 'packageId', 'availability', 'subcommands', 'hasFallback']),
+        ...withStatus(entry),
       });
+      mapField(data, 'packages', packageSummary);
+      mapField(data, 'orphanedPackages', packageSummary);
       mapField(data, 'changes', (entry) => pick(entry, ['kind', 'id', 'action']));
       mapField(data, 'nativeToolChanges', nativeChange);
       return data;
@@ -439,7 +460,7 @@ function resultStatus(command: string, r: RecordValue, diagnostics: Diagnostic[]
   if (r.configWrite === 'succeeded' || r.preferencesChanged === true || r.outputsMayHaveChanged === true || r.activeChanged === true || r.changed === true || r.removed === true || r.state === 'uncertain'
     || list(r.changes).some((entry) => entry.action !== 'retained')
     || list(r.targetResults).some((entry) => ['applied', 'partial', 'failed'].includes(String(entry.execution)))) return 'partial';
-  if ((command === 'command.list' || command === 'command.show') && (list(r.commands).length || list(r.packages).length)) return 'partial';
+  if ((command === 'command.list' || command === 'command.show') && (list(r.commands).length || list(r.packages).length || list(r.orphanedPackages).length)) return 'partial';
   if (diagnostics.some((entry) => blockedCodes.has(entry.code))) return 'blocked';
   if (command.startsWith('target.') || command.startsWith('source.') || record(r.apply).state === 'unavailable') return 'blocked';
   return exitCode === 3 ? 'blocked' : 'failed';
@@ -528,18 +549,10 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
       else result.nextActions.push({ kind: 'manual', message: `Use the original workspace and remote selection to reconcile publication plan ${r.planDigest}. Review its current state before confirming apply.` });
     }
     if (command.startsWith('plugin.config.')) {
-      const apply = record(r.apply);
-      const packageActions = new Map<string, NextAction>();
-      for (const entry of list(apply.commandResults)) {
-        const identity = record(entry.producer);
-        if (entry.state !== 'completed' && identity.kind === 'package' && typeof identity.sourceId === 'string'
-          && typeof identity.pluginName === 'string' && typeof identity.key === 'string' && (identity.scope === 'user' || identity.scope === 'project')) {
-          const argv = ['aw', 'command', 'package', 'sync', `${identity.sourceId}/${identity.pluginName}`, identity.key, '--scope', identity.scope];
-          packageActions.set(JSON.stringify(argv), { kind: 'command', argv, reason: 'Repair the affected command package after resolving its diagnostics.', requiresConfirmation: true });
-        }
-      }
-      result.nextActions.push(...inventoryRecoveryActions(diagnostics.filter(({ code }) => code === PREVIOUS_DEPLOYMENT_RETAINED)),
-        ...packageActions.values(), ...configDeploymentRetryActions(r.apply as ConfigApplyResult | undefined));
+      const apply = r.apply as ConfigApplyResult | undefined;
+      result.nextActions.push(...inventoryRecoveryActions(diagnostics.filter(({ code }) =>
+        code === PREVIOUS_DEPLOYMENT_RETAINED || code === 'permissionRelatedProjectUpdateIncomplete')),
+        ...commandPackageRecoveryActions(apply?.commandResults), ...configDeploymentRetryActions(apply));
     }
     if (command === 'source.status' || command === 'source.sync') for (const entry of diagnostics) if (entry.subject?.sourceId) result.nextActions.push({ kind: 'command', argv: ['aw', 'source', 'status', entry.subject.sourceId], reason: 'Inspect the selected source before retrying a source change.', requiresConfirmation: false });
     if (!result.nextActions.length) result.nextActions.push({ kind: 'manual', message: status === 'partial' ? 'Review completed and incomplete results before retrying the operation.' : 'Resolve the reported diagnostics before retrying the operation.' });

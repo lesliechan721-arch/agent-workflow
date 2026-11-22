@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'fs-extra';
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { describe, expect, it } from 'vitest';
 
 import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
@@ -21,7 +22,7 @@ import { runCliEntry } from '../helpers/cli-entry.js';
 import type { CommandResult } from '../../src/output/public-result.js';
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 
-async function grokTrustFixture({ failProject = false, baseHook = false } = {}) {
+async function grokTrustFixture({ failProject = false, baseHook = false, commandPermissions = false, permissionOnly = false } = {}) {
   installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
@@ -30,7 +31,7 @@ async function grokTrustFixture({ failProject = false, baseHook = false } = {}) 
   const host = resolvePlatformConfigRoot('grok', { cwd, env });
   const projectScript = path.join(cwd, 'project-preapply');
   const names = ['base', 'bundle'];
-  for (const name of names) {
+  for (const name of permissionOnly ? [] : names) {
     const skill = path.join(catalog, 'plugins', name, 'skills', name);
     await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: Use ${name}.\n---\nUse ${name}.\n`);
     await fs.outputFile(path.join(skill, 'README.md'), `Use ${name}.\n`);
@@ -44,8 +45,12 @@ async function grokTrustFixture({ failProject = false, baseHook = false } = {}) 
   await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({
     name, dependencies: name === 'bundle' ? ['base'] : [], configureManifest(manifest) {
       manifest.platforms = ['grok', 'generic'];
-      manifest.skills = './skills';
+      if (!permissionOnly) manifest.skills = './skills';
       delete manifest.extensions;
+      if (commandPermissions && name === 'base') manifest.extensions = { permissions: [{
+        name: 'report', allow: ['env fixture-report'], ask: ['fixture-report show'], deny: ['fixture-report check'],
+      }] };
+      if (permissionOnly) manifest.extensions = { permissions: [{ name: 'native', deny: ['report shared', 'report ' + name] }] };
       if (failProject && name === 'base') manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
       if (baseHook && name === 'base') manifest.extensions = { hooks: [{ id: 'start', event: 'session_start', feedback: 'notify', command: 'true' }] };
     },
@@ -65,10 +70,17 @@ async function grokTrustFixture({ failProject = false, baseHook = false } = {}) 
     if (args.includes('--version')) stdout = 'grok 1.0.77';
     else if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(plugins.map((plugin) =>
       ({ ...plugin, repo_key: 'local-' + plugin.name, version: '1.0.0', status: 'installed' })));
-    else if (args[0] === 'inspect') stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true,
+    else if (args[0] === 'inspect') {
+      const configPath = path.join(host, 'config.toml');
+      const config = permissionOnly && await fs.pathExists(configPath)
+        ? getStaticTOMLValue(parseTOML(await fs.readFile(configPath, 'utf8'))) as { permission?: { rules: unknown[] } } : undefined;
+      const loaded = config?.permission?.rules.length ?? 0;
+      stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true,
+      ...(permissionOnly ? { permissions: { sources: loaded ? [configPath + ' (config)'] : [], loaded },
+        configSources: { layers: config ? [{ role: 'user', path: configPath }] : [] } } : {}),
       plugins: plugins.map(({ name, path: installed }) => ({ name, path: installed, scope: 'user', enabled: true })),
       skills: [], agents: [], mcpServers: [] });
-    else throw new Error('Unexpected automatic Grok mutation: ' + JSON.stringify(args));
+    } else throw new Error('Unexpected automatic Grok mutation: ' + JSON.stringify(args));
     return { exitCode: 0, stdout, stderr: '' };
   };
   const aw = async (argv: string[]) => {
@@ -107,6 +119,96 @@ async function grokTrustFixture({ failProject = false, baseHook = false } = {}) 
 }
 
 describe('native recovery dispatch', () => {
+  it('writes both permission-only Grok dependencies in one User plan and preserves an untrusted Project', async () => {
+    const { cwd, env, aw, runner } = await grokTrustFixture({ permissionOnly: true });
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    const user = path.join(host, 'config.toml');
+    const project = path.join(cwd, '.grok/config.toml');
+    const manual = '# Project settings\n';
+    await fs.outputFile(project, manual);
+    const install = ['aw', 'plugin', 'install', 'local/base', 'local/bundle', '--target', 'grok'];
+    const result = await aw([...install, '--scope', 'user', '--context', 'user']);
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+    const readRules = async () => (getStaticTOMLValue(parseTOML(await fs.readFile(user, 'utf8'))) as
+      { permission: { rules: Array<{ action: string; tool: string; pattern: string }> } }).permission.rules;
+    const deny = (pattern: string) => ({ action: 'deny', tool: 'bash', pattern });
+    expect(await readRules()).toEqual(expect.arrayContaining([deny('report shared'), deny('report bundle'), deny('report base')]));
+    expect((await readRules()).filter((rule) => rule.pattern === 'report shared')).toHaveLength(1);
+    const remove = ['--scope', 'user', '--context', 'user', '--target', 'grok', '--only', 'outputs'];
+    const withdrawn = await aw(['aw', 'plugin', 'remove', 'local/bundle', ...remove]);
+    expect(withdrawn.status, JSON.stringify(withdrawn.diagnostics)).toBe('success');
+    expect(await readRules()).toEqual(expect.arrayContaining([deny('report shared'), deny('report base')]));
+    expect(await readRules()).not.toContainEqual(deny('report bundle'));
+    const status = () => runPublicPluginStatus(['local/base'], { cwd, env, context: 'user' }, { nativeCliRunner: runner });
+    const target = (content: string) => expect.objectContaining({ inventory: expect.arrayContaining([expect.objectContaining({
+      pluginId: 'local/base', targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'local/base', target: 'grok', scope: 'user', content })]),
+    })]) });
+    const config = await fs.readFile(user, 'utf8');
+    await fs.writeFile(user, '# User note\n' + config);
+    expect((await status()).data).toEqual(target('satisfied'));
+    const removedRule = config.replace('"report base"', '"personal rule"');
+    await fs.writeFile(user, removedRule);
+    const drift = await status();
+    expect(drift.data).toEqual(target('drifted'));
+    expect(drift.diagnostics).toContainEqual(expect.objectContaining({ code: 'componentOutputMissing',
+      detail: expect.objectContaining({ path: user }) }));
+    expect(drift.nextActions).toContainEqual(expect.objectContaining({ kind: 'command',
+      argv: ['aw', 'plugin', 'sync', 'local/base', '--context', 'user', '--target', 'grok'] }));
+    expect(await fs.readFile(user, 'utf8')).toBe(removedRule);
+    await aw(['aw', 'plugin', 'sync', 'local/base', '--context', 'user', '--target', 'grok']);
+    expect((await status()).data).toEqual(target('satisfied'));
+    expect(await readRules()).toEqual(expect.arrayContaining([deny('report base'), deny('personal rule')]));
+    const ownershipDir = path.join(env.AW_HOME!, 'platforms/grok/permission-ownership');
+    const record = path.join(ownershipDir, (await fs.readdir(ownershipDir))[0]!);
+    const saved = await fs.readFile(record);
+    await fs.writeFile(record, '{');
+    const unconfirmed = await status();
+    expect(unconfirmed.data).toEqual(target('unknown'));
+    expect(unconfirmed.diagnostics).toContainEqual(expect.objectContaining({ code: 'permissionOwnershipDegraded' }));
+    expect(await fs.readFile(record, 'utf8')).toBe('{');
+    await fs.writeFile(record, saved);
+    const untrusted = await aw([...install, '--scope', 'project', '--context', 'project']);
+    const projectStatus = await runPublicPluginStatus(['local/base'], { cwd, env, context: 'project' }, { nativeCliRunner: runner });
+    expect(projectStatus.diagnostics).not.toContainEqual(expect.objectContaining({
+      detail: expect.objectContaining({ reasonCode: 'grok-project-trust-required' }), code: 'componentOutputUnconfirmed',
+    }));
+    expect(untrusted.diagnostics).toContainEqual(expect.objectContaining({ code: 'invocationPolicyNotApplied',
+      detail: expect.objectContaining({ reasonCode: 'grok-project-trust-required' }) }));
+    expect(await fs.readFile(project, 'utf8')).toBe(manual);
+    expect(await fs.pathExists(path.join(host, 'trusted_folders.toml'))).toBe(false);
+  });
+
+  it('delivers Grok native command rules with a per-action impact receipt and leaves project trust untouched', async () => {
+    const { cwd, env, aw, trustAndRetry } = await grokTrustFixture({ commandPermissions: true });
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    const file = path.join(host, 'config.toml');
+    const project = path.join(cwd, '.grok/config.toml');
+    const manual = '# local rules\n[permission]\nrules = [{ action = "ask", tool = "read", pattern = "notes/**" }]\n';
+    await fs.outputFile(file, manual);
+    await fs.outputFile(project, '# project settings\n');
+    const install = await aw(['aw', 'plugin', 'install', 'local/base', '--scope', 'user', '--target', 'grok']);
+    expect(await fs.readFile(file, 'utf8')).toBe(manual);
+    const result = await trustAndRetry(install, 'base', 'base');
+    expect(result.status).toBe('success');
+    const written = await fs.readFile(file, 'utf8');
+    expect(getStaticTOMLValue(parseTOML(written)).permission).toEqual({ rules: [
+      { action: 'ask', tool: 'read', pattern: 'notes/**' },
+      { action: 'allow', tool: 'bash', pattern: 'fixture-report' },
+      { action: 'ask', tool: 'bash', pattern: 'fixture-report show' },
+      { action: 'deny', tool: 'bash', pattern: 'fixture-report check' },
+    ] });
+    expect(written).toContain('# local rules');
+    expect([...install.diagnostics, ...result.diagnostics]).toEqual(expect.arrayContaining(['allow', 'ask', 'deny'].map(
+      (permissionAction) => expect.objectContaining({ code: 'hostPermissionAdditionalImpact',
+        subject: expect.objectContaining({ pluginId: 'local/base', target: 'grok', field: 'permissions.report' }),
+        detail: expect.objectContaining({ reasonCode: 'grok-shell-text-matching', permissionAction }) }),
+    )));
+    expect([...install.diagnostics, ...result.diagnostics]).toContainEqual(expect.objectContaining({
+      code: 'hostPermissionAdditionalImpact', message: expect.stringContaining('Calling the inner command directly can also be allowed'),
+    }));
+    expect(await fs.readFile(project, 'utf8')).toBe('# project settings\n');
+    expect(await fs.pathExists(path.join(host, 'trusted_folders.toml'))).toBe(false);
+  });
   // Grok reports just the winning package of each name in the project. The
   // first publication can hide its exact User provider while other writes stay observable.
   it.each(['unchanged', 'owned hook', 'foreign hook', 'reordered hooks', 'unmapped User hook', 'foreign registration',

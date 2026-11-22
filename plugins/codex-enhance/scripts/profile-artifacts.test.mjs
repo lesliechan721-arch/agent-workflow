@@ -45,7 +45,7 @@ test('keeps specialist native requirements and same-source provider references',
   for (const [key, [model, reasoningEffort]] of Object.entries(expected)) {
     assert.deepEqual(manifest.config.fields[key].default, { executor: 'native', model, reasoningEffort });
   }
-  assert.equal(manifest.managedCommands, undefined);
+  assert.equal(manifest.command, undefined);
   assert.equal(manifest.nativeTools, undefined);
   assert.deepEqual(new Set(manifest.artifacts.configKeys), new Set(CONFIG_KEYS));
   assert.deepEqual(manifest.artifacts.sourceDirs, ['./skills/codex-explore', './skills/codex-advisor']);

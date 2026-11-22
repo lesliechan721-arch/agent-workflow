@@ -10,4 +10,4 @@
 
 操作可能改变真实数据，填写也可能自动保存；不把一般浏览授权扩大为发送、购买或删除授权。产物默认留在本机，不自动外发或提交 Git；没有额外运行时提供统一脱敏、路径拦截或回滚保证。
 
-查看[技能说明](SKILL.md)和[上游来源与许可](references/upstream.md)。
+查看[技能说明](SKILL.md)、[上游文档](https://agent-browser.dev/)和[上游许可](assets/LICENSE.agent-browser)。

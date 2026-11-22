@@ -2,16 +2,18 @@
 
 联合 workflow 保留 J01–J18，直接执行者保留 W01–W08。J15 仍在只暴露 Guide 的 `joint-guide-only` suite。旧 `worker-instructions` 改名为 `executor-instructions`，用例文件同步改名。角色是本次 Eval 的职责标签，不是产品中的 worker 注册项。
 
-`run-role-boundary-evals.mjs` 实现 prepare 和 grade。准备阶段在该 Eval workspace 内从明确的 Guide 安装路径读取 keys-only v2 JSON，核对用例所需封套并仅投影允许字段；这只是配置前提观察，不证明 ownership、native receipt 或完整来源资格。实际外部生成通过产品 run，由公开 reader 唯一完成调用位置、来源和允许字段检查。准备阶段不执行动态 helper、不调用 resolve、不遍历 peer。它物化实际原始材料，选择本次指令文件。native 直接执行者探针用公共 Engine 的独立 developer 输入；不要求精确宿主角色版本证明。外部探针用 Engine 原生 workflow，让父任务调用安装 Guide 的 v5 `start`，随后用同一句柄 `wait`/`result`，使用必填 profile 与 prompt；任务可从 stdin 输入，显式 instructions-file 可选。公共 Engine 的 `instruction-v2` transport 是另一份合同，本 suite 不把它发给产品 v5 adapter，也不修改该 Engine 合同。
+`run-role-boundary-evals.mjs` 从该次 EvalSpec 绑定的 Skill 读取 Guide 命令名称、执行器 key/mode 表及所选角色的 profile 表。公开 Eval prepare 把构建后的 Guide 命令资源和隔离 profile 的运行配置绑定到本次私有 fixture。原生执行者通过公共 Engine 的 developer 输入收到独立指令，外部执行者通过 `aw command run <来源>/agent-subagent -- start --platform codex` 启动，用 `--prompt-file` 传入任务，再凭原句柄 wait/result。实际运行由 AW 的命令配置读取器校验来源和允许字段。
 
 外部资格用例需要真实配置，可向公开准备入口提供插件字段 map：
 
 ```sh
 aw dev eval prepare agent-subagent spawn-subagent \
-  --suite joint-workflow --case J18 --profile project-default \
+  --suite joint-workflow --case J18 --profile project-composition \
   --config-file /absolute/path/foreground-config.json \
   --output /absolute/new/output-directory --json
 ```
+
+J15 使用只包含 Guide 的 `project-default`，需将 `agent-subagent.generalTaskProfile.executor` 设为同一配置中已声明的外部执行器 key。
 
 `subagentCommands` 明确选择 adapter；内建入口来自本次安装产物，custom 的 command 和可选 entrypoint 使用实际绝对路径。外部 model/effort 可省略，不把后端默认写成假定值。`lab-workspace`、`lab-bundle`、`fixture-*` 是用例前提标签；prepare 核对实际 mode/model/effort，不将标签当远端模型名。J18 要求 general、complex、advanced 三个 profile 分别提供 native、workspace、bundle。Guide、Advisor、Explore 每类各完成三个入口，共九个明确授权的只读任务。
 
@@ -54,12 +56,12 @@ aw dev eval prepare agent-subagent spawn-subagent \
 
 API 文档 fixture 使用普通路径 `docs/api/`。确定性测试将 W06、W04 和 J07 的原始选择交给生产 `prepareRun`，核对 fileSelectors、安装资源内的 fileResolver 和合成 prompt，并确认准备阶段不启动 adapter。材料内容与引用由消费方的实际选择、读取和回答证据核对；runner 不扫描或内嵌正文。
 
-J11/J15/J16/J17 的 synthetic plugin 由公开 AW 的 validate/build/source sync/install/config save/apply 创建，仅 Guide 声明 keys-only v2 runtimeConfig。已保存值通过公开 `aw plugin sync` 应用；重复相同的 `config set --apply` 因没有配置变更而跳过刷新。固定完整 public AW package 树可放在同源 `evals/fixtures/public-aw/`，包含普通可执行 `bin/aw`；复制时拒绝 symlink并保留执行位。未提供该树时使用真实 PATH `aw`，缺少新能力则报告环境不可用。J11/J17 的 fixture 只证明 save/apply 值与输入文件变更；是否在活跃窗口更新、是否继续同一运行句柄、实际消费的正文及生成数必须来自真实工具和 adapter trace。结果 JSON、配置声明和模型自述不能替代这些证据。
+J11、J12、J15、J16、J17 的 setup 从私有 Eval fixture 取得本次构建的命令资源，用当前 AW 校验并从隔离 Catalog 安装测试插件。J11/J17 分别观察保存前、保存后和 `plugin config apply --platform codex` 后的快照。J17 还更新显式指令和无关 Skill。活跃窗口、同一运行句柄、实际消费正文和生成数由工具及 Adapter trace 取证。J15 使用只含 Guide 的 profile 和未注册的显式指令文件。
 
 J12 是明确标注的本地 fault control，使用产品 v5 start 帧，实际写一次标记并记录计数，退出时不提供服务回执。它只证明本地状态/副作用处理，不证明真实模型、费用、服务停止或生产写能力。J16 使用同一控制记录任何意外启动；只有 filesNotAllowedInWorkspace、退出2且没有 adapter 执行记录才能确认零启动。
 
 至少一个真实 workspace 和一个真实 bundle 必须验证完整合成 prompt、实际只读行为及服务终态。native 独立 developer 输入仍单独核对；外部 prompt 拼接不证明 system/developer 权限或 OS 隔离。外部显式指令文件无效时启动前失败，省略时不补读默认角色。缺少证据的检查保持 unknown。native 宿主、OS、远端取消和 workspace 写能力分别保留未运行状态，不能从 fake adapter 外推。加载轮次记录实际 trace，去除 resolve/native reference/plan；不承诺 description 自动加载依赖或固定总轮数。
 
-当前确定性检查验证 provider、fixture、解析和 grade 的机器合同。`role-boundary-public-contract.mjs` 用于使用已编译公开 CLI、临时 PATH 入口和隔离 home 验证 synthetic validate/build/source sync/install、save 后保持旧值、sync 应用新值、真实 installed reader、v5 JSONL 与纯文本消费者、J16 零启动及 J12 单次写入 unknown。后端都是明确的本地假 Adapter；未运行真实模型、公共模型 Eval prepare 或独立 Oracle Audit，不提供发布资格。现有 EvalSpec/EvalAudit/结果绑定继续由公共专用流程管理。
+确定性检查覆盖 provider 准备、快照数据投影、解析和 grade。独立脚本 `role-boundary-public-contract.mjs` 运行五个用例的真实公开入口和本地 Adapter，检查配置应用前后、当前结果块、未知终态和零启动证据。公开模型 Eval 沿用 EvalSpec、EvalAudit 和结果绑定。
 
 本轮采用 Adapter v5，更新外部生命周期、文本块解析与旧入口消费者。用例 ID 保持；原业务分析、来源和授权目标不变。新 Oracle 必须重新取得独立 EvalAudit，再运行模型 Eval。旧版模型成绩不适用于新输入、Oracle 或 grader；确定性测试仅证明本地合同与失败边界。真实后端、native 宿主、活跃调用连续性和打包分发仍未验证，不以本轮作者自检签发准入。

@@ -192,14 +192,14 @@ AW 允许插件按需声明配置、运行时资源、托管命令与原生工�
 
 ### 扩展 3：声明托管命令（Managed Commands）
 
-- **适用场景**：插件需要向宿主平台或外部 Agent 暴露确定性的包装命令，或在 Claude Code 中突破沙箱安全执行受信任工具。
-- **机制**：在 Manifest 中声明 `managedCommands.packages` 与 `managedCommands.sets`。AW 会为每个命令生成带 `cmdp_` 前缀的全局稳定 ID；可在权限扩展中为宿主平台声明可选的 `argsPrefix` 前缀匹配投影（运行时 AW 核验绑定后直接传递 argv，不设命令级内部参数 ACL）。
+- **适用场景**：插件需要让 Skill、用户或其它程序通过稳定名称运行工具。
+- **机制**：在 Manifest 中用 `command` 声明自包含的源目录、Native 目标和路由，要求能力 `aw.managed-commands.v2`。Skill 可写 `{{aw.command}} export report.csv`，AW 为该插件展开调用前缀。需要宿主审批时可声明 `{ "argsPrefix": ["export"] }` 限定调用前缀。
 - **完整合同**：详细命令声明、权限映射与 Claude Code 沙箱排除见 [托管命令参考合同](../reference/managed-commands.md)。
 
 ### 扩展 4：依赖原生工具（Native Tools）
 
 - **适用场景**：插件在特定操作系统（如 Windows）需要底层二进制进程树治理（Windows Job Helper）等原生支持。
-- **机制**：在 Manifest 的 `nativeTools.definitions` 中声明依赖协议（如 `aw.windows-job.v1`）。插件源码**绝不携带二进制可执行文件**，由 AW 在安装消费端自动解析对应平台包。
+- **机制**：用 `aw.native-tools.v3` 声明需要的协议（如 `aw.windows-job.v1`），并以 `plugin-command` 或 Node 测试 consumer 绑定所需工具。工具制品由当前 AW 解析。
 - **完整合同**：详细原生工具声明与依赖解析见 [原生工具参考合同](../reference/native-tools.md)。
 
 ---

@@ -23,7 +23,7 @@ import {
 const nativeTools = {
   definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],
   consumers: [
-    { kind: 'managed-command-set', key: 'guide', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
+    { kind: 'plugin-command', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
     { kind: 'plugin-test', key: 'node', tools: [{ key: 'job', platforms: ['win32'], policy: 'preferred', fallback: 'portable' }] },
   ],
 };
@@ -31,9 +31,9 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   return {
     schemaVersion: 4, name: 'example-plugin', version: '1.0.0', description: 'Example',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-    managedCommands: {
-      packages: [{ key: 'tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' }],
-      sets: [{ set: 'guide', producer: { kind: 'package', packageKey: 'tools' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] }],
+    command: {
+      sourceDir: './tools', platforms: ['codex'], mode: 'static',
+      routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'run.mjs' }] },
     },
     scripts: { tests: { node: ['tests/job.test.mjs'] } }, nativeTools,
     ...overrides,
@@ -55,11 +55,12 @@ describe('native tool author and installed closure contracts', () => {
     const normalized = validatePluginManifest('/plugin', manifest());
     expect(normalized.schemaVersion).toBe(4);
     expect(normalized.nativeTools).toEqual({ ...nativeTools, reader: './.aw/native-tool-reader.mjs' });
-    expect(deriveAwCapabilitiesFromManifest(normalized)).toContain('aw.native-tools.v2');
+    expect(deriveAwCapabilitiesFromManifest(normalized)).toContain('aw.native-tools.v3');
   });
 
   it.each([
     { ...nativeTools, consumers: [{ kind: 'hook', key: 'guide', tools: nativeTools.consumers[0]!.tools }] },
+    { ...nativeTools, consumers: [{ kind: 'managed-command-set', key: 'guide', tools: nativeTools.consumers[0]!.tools }] },
     { ...nativeTools, consumers: [{ ...nativeTools.consumers[0], key: 'missing' }] },
     { ...nativeTools, consumers: [{ ...nativeTools.consumers[1], key: 'python' }] },
     { ...nativeTools, consumers: [{ ...nativeTools.consumers[0], tools: [{ key: 'unknown', platforms: ['win32'], policy: 'required' }] }] },
@@ -70,6 +71,12 @@ describe('native tool author and installed closure contracts', () => {
     { ...nativeTools, definitions: [{ ...nativeTools.definitions[0], descriptor: './node_modules/job.lock.json' }] },
   ])('rejects a native declaration outside its controlled launch boundary %#', (nativeTools) => {
     expect(() => validatePluginManifest('/plugin', manifest({ nativeTools }))).toThrow();
+  });
+
+  it('requires a manifest command for a plugin command consumer', () => {
+    const input = manifest();
+    delete input.command;
+    expect(() => validatePluginManifest('/plugin', input)).toThrow(/requires a command/u);
   });
 
   it('loads host requirements without any descriptor or native dependency', async () => {
@@ -85,14 +92,18 @@ describe('native tool author and installed closure contracts', () => {
       const normalized = validatePluginManifest(root, manifest());
       await preparePluginNativeTools(root, normalized);
       const original = await loadPluginNativeToolClosure(root, normalized);
-      const selected = getNativeToolConsumerClosure(original, 'managed-command-set', ['guide'])!;
+      const selected = getNativeToolConsumerClosure(original, 'plugin-command')!;
       const resource = path.join(root, 'producer');
       await fs.mkdir(resource);
       const copied = await copyNativeToolClosureFiles({ sourceRoot: root, destinationRoot: resource, closure: selected });
       expect(copied).toEqual(materializeNativeToolClosureFiles(selected).closure);
-      const record = { schemaVersion: 1, producer: {
-        sourceId: 'third-party', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'example-plugin', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null,
-      }, sets: [{ set: 'guide', state: 'present', entries: [] }], nativeTools: copied };
+      const record = {
+        schemaVersion: 2, producer: {
+          sourceId: 'third-party', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'example-plugin',
+        },
+        pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'a'.repeat(64)}`,
+        routes: { subcommands: [] }, runtimeConfigPlatforms: [], nativeTools: copied,
+      };
       expect(normalizeInstalledCommandProducer(record).nativeTools).toEqual(copied);
       await fs.unlink(path.join(root, '.agents-plugin', 'plugin.json'));
       await expect(validateNativeToolClosureFiles(resource, copied)).resolves.toBeUndefined();

@@ -1,425 +1,249 @@
-# 托管命令合同 v1
+# 托管命令合同 v2
 
-本文件定义 Plugin Manifest v4 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw dev plugin capabilities --surface managed-commands --json` 查询作者合同。
+插件可在同一 `AW_HOME` 下发布一个以 `来源/插件` 调用的命令包。多个平台、User 和 Project 部署共用该包。用户也可以用 `aw command install` 注册自己的单入口命令，使用 `cmdu_` ID 调用。
 
-Guide 的参数、输出、文件与消费合同由 [Guide 运行生命周期](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md) 维护，Adapter v5 由 [适配器协议](../../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md) 维护。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立。
+作者在 Plugin Manifest v4 的 `requires.aw.capabilities` 声明 `aw.managed-commands.v2`。用 `aw dev plugin capabilities --surface managed-commands --json` 查询字段和限制，用 `aw command --help` 查询本机 CLI。Guide 的业务参数和适配器协议见 [Guide 运行生命周期](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)及[适配器协议](../../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md)。
 
-## A1. 版本与通用校验
+## 调用与路由
 
-声明 managedCommands、结构化命令权限或占位符要求 aw.managed-commands.v1；Claude sandbox 排除另要求 aw.claude.sandbox-exclusions.v1。运行能力 registry 与 Agent 组件能力分开。
-
-Manifest 使用 schemaVersion 4，Config Definition 使用 v5；五类组件使用 v3，命令响应仍为 ArtifactPlan v2。CommandIdentity 使用 schemaVersion 2；用户命令、主机描述与安装记录各自保持独立版本。旧命令身份没有别名或迁移索引。
-
-规范对象拒绝未知字段，显式字典除外。可选不等于 null，缺省只在规范化时补齐，不 trim 标识符、argv 或环境值。字符串须为合法 Unicode 且无 NUL。JSON 解析沿用既有合同，不新增重复 member name 检测器。Name 为 [A-Za-z][A-Za-z0-9_.-]{0,63}，区分大小写；Platform 为九个具体 Native target，Scope 为 user 或 project。generic 不成为本机 Skill producer。
-
-RelativeFile 是非空、以 / 分隔的相对文件路径，拒绝 /、./、盘符、UNC 前缀、空段、.、..、反斜杠和控制字符。解析后须为 producer 内普通文件，路径链不能有链接或特殊节点。sourceDir 沿用 ./ 插件相对目录及闭包规则，不放宽受保护目录。
-
-## A2. Manifest 的唯一声明入口
-
-~~~ts
-type ManagedCommands = { packages?: ManagedPackage[]; sets?: CommandSet[] };
-type ManagedPackage = {
-  key: Name; scope: Scope; platforms: Platform[]; sourceDir: string;
-  render?: true; refreshKeys?: string[];
-};
-type ProducerRef =
-  | { kind: 'artifact'; platform: Platform; artifactId: string }
-  | { kind: 'static-skill'; platform: Platform; skillKey: string }
-  | { kind: 'package'; packageKey: Name };
-type CommandSet =
-  | { set: Name; producer: ProducerRef; mode: 'static'; entries: CommandDefinition[] }
-  | { set: Name; producer: ProducerRef; mode: 'dynamic'; refreshKeys: string[] };
-type CommandDefinition = {
-  key: Name; variant?: Name; // default
-  runner: 'node' | 'executable'; entry: RelativeFile;
-  args?: string[]; env?: Record<string,string>; envFrom?: Record<string,string>;
-  cwd?: 'caller' | 'resource'; // caller
-};
-~~~
-
-packages、sets 缺省空数组；package key 与 set 名各自在插件内唯一。包 platforms 非空、无重复；render 只能省略或为 true。一个包可被多个 set 引用，不再声明第二份集合。entries 可为空，同集合规范化后的 key/variant 不得重复。args/env/envFrom 缺省空数组或空字典。
-
-artifact producer 的 platform 必填，artifactId 引用同插件该平台、本次实际 render scope 的动态 Skill ID，无须预声明该 ID。static-skill 引用静态 Skill key。构建校验声明形状，prepare 在完整组件集合产生后校验真实 producer，不绑定碰巧存在的旧目录、别的平台或非 Skill 组件。
-
-producer 的配置、集合 scope 与资源身份取实际 RenderUnit，不取 activation scope。共享包固定 user，项目启用不产生另一份共享命令；独立项目 Skill 使用 project 与规范 projectRoot。不同物理位置各有 placementKey，同一共享包的产品面/激活引用复用实例。独立 package 使用声明 scope；user/shared-user 不得引用 project 包，project 可引用明确声明的 user 包。包须允许消费者平台。
-
-refreshKeys 来自平台编译后的 Config v5 字段，键及校验依赖不得敏感。动态 set 必须声明 refreshKeys，即使为空；包无 render 时只能省略或为空。包文件和命令 set 的配置权限分别计算，不相互扩大。
-
-args 最多 128 项，每项最多 4096 个 Unicode code point，可为空串。env/envFrom 名称为 [A-Za-z_][A-Za-z0-9_]*；env 值最多 4096 个 code point，envFrom 的值是环境名。运行保护与优先级见 B3，安装与执行均校验。
-
-| 本次 producer 状态 | 命令集合与消费者 |
-| --- | --- |
-| 唯一合法 Skill | 使用完整候选目录，校验 set、占位符、nativeTools 与运行闭包后一同发布 |
-| 显式 omitted 或 render scope 被 artifacts.scopes 排除 | 有意关闭；Review 显示旧绑定撤销，仍引用它的组件不能可用 |
-| unmet | 集合也未满足，不当作关闭，不因空集合自动删除旧绑定 |
-| 既无组件也无 omitted/unmet | 缺失 producer，准备失败 |
-| 同 ID 改为非 Skill、多义或归属错误 | 准备失败，不退回旧目录 |
-
-Skill 改名且 ID 不变时重新绑定候选目录，改 ID 须同步 artifactId。失败阻断真实 producer 及其依赖，独立包和其他平台继续。活跃任务保护、已安装记录和 nativeTools 合同继续有效。
-
-## A3. Renderer 请求与响应
-
-五类组件请求为 surface=agent-plugin，输出完整 v3 集合，不含命令产物。绑定 Skill 的动态 set 为 surface=agent-commands；独立包及其动态 set 为 surface=managed-commands，后者不带 platform，也不接受 platformCapabilities。三类可使用同一脚本，请求与权限分开。
-
-~~~ts
-interface AgentCommandContextV1 {
-  schemaVersion: 1;
-  surface: 'agent-commands';
-  platform: Platform;
-  scope: 'user' | 'project'; // producer render scope
-  plugin: PlatformRenderContextV2['plugin'];
-  config: PlatformRenderContextV2['config'];
-  changedConfigKeys: string[];
-  requestedArtifactIds: string[];
-  previousArtifacts: CommandSetArtifact[];
-  producers: Array<{ set: string; componentId: string; resourceRoot: string }>;
-}
-~~~
-
-config 仅含本批 set 的 refreshKeys 及非敏感校验依赖，不用 artifacts.configKeys 扩权。resourceRoot 是完整只读候选 Skill，包括已核验运行资源。previousArtifacts 只属于同一 producer 实例与命令请求，不带其他组件正文或敏感值。
-
-动态 set 的 ID 为 command-set. 加 set，target/kind 为 aw.command-set/commandSet；render=true 包的 ID 为 command-package. 加 key，target/kind 为 aw.command-package/commandPackage。两种前缀保留，组件不得占用。静态 set/包不请求 renderer，仍进入候选校验与发布。
-
-独立包上下文沿用 event/plugin/config/changedConfigKeys/requestedArtifactIds/previousArtifacts/paths/renderer 及隔离 home，commandSources 只提供本次包的已核验 sourceDir。进程使用 AW_PLUGIN_SURFACE=managed-commands，不设置 AW_PLUGIN_PLATFORM 或 AW_PLUGIN_DISTRIBUTION。
-
-所有命令响应为一个 {version:2,artifacts:[...]}：
-
-~~~ts
-type CommandSetArtifact = {
-  id: string; target: 'aw.command-set'; kind: 'commandSet';
-  platform?: Platform; // agent-commands 必填，与请求相同；独立包禁止
-  state: 'present' | 'disabled';
-  refreshKeys: string[]; entries: CommandDefinition[];
-  disabledReason?: string;
-};
-type CommandPackageArtifact = {
-  id: string; target: 'aw.command-package'; kind: 'commandPackage';
-  state: 'present'; refreshKeys: string[];
-  files: Record<RelativeFile, string>;
-};
-~~~
-
-每个请求 ID 精确返回一次，无额外、缺失或重复；platform、refreshKeys 与请求一致。禁止 distribution、owner、commandId、resourceRoot、producer 或 scope 覆盖。disabled 时 entries=[]，disabledReason 若有须非空且仅用于 disabled；present 空 entries 是正常空集合。
-
-package files 必填、可为空，是本次完整生成集合。从 bundle sourceDir 重新准备，再覆盖同路径普通文本，不保留上次生成但本次未返回的文件。拒绝文件/目录冲突、链接、保留 owner/runtime receipt 路径及命令 entry 覆盖。新增文件 UTF-8、不可执行，二进制由 sourceDir 提供。保持既有 timeout、16 MiB 输出、64 KiB 诊断、敏感扫描与进程收尾，失败不发布 producer。
-
-准备顺序为：完整五类集合与 render scope → 真实 Skill producer → 动态 set → 引用、权限、nativeTools 和资源闭包 → 占位符与保留运行文件 → 平台投影与冻结。不为命令重复组件 renderer。只有静态 Skill 和动态 set 时不要求 artifacts；只有独立包时跳过平台组件和 Skill set 请求。命令与 producer 的变化一起进 Review。
-
-## A4. 稳定 ID 与物理实例
-
-字段来自 AW 已核验来源和 RenderUnit，renderer 不能提供：
-
-~~~ts
-interface ProducerIdentity {
-  sourceId: string; sourceIdentity: string; pluginName: string;
-  kind: 'artifact' | 'static-skill' | 'package'; key: string;
-  platform: PlatformId | null; scope: 'user' | 'project';
-  projectRoot: string | null; placementKey: string | null;
-}
-interface CommandIdentity {
-  schemaVersion: 2; producer: ProducerIdentity;
-  set: Name; key: Name; variant: Name;
-}
-~~~
-
-全部字段必填，sourceIdentity 为 sha256: 加 64 位小写 hex。key 是 artifactId/skillKey/packageKey；package 的 platform 和 placementKey 均为 null。Skill 的 placementKey 等于 RenderUnit.physicalKey，算法见[平台物理身份](../maintainers/architecture/platforms.md)。user 的 projectRoot 为 null；projectRoot 使用既有项目定位、realpath 与 path.normalize，Windows 只规范盘符大小写，不将全路径小写，缺失项目不以 caller cwd 代替。
-
-规范序列化 C：对象键按 ECMAScript 默认字符串排序、数组保序、primitive 用 JSON.stringify，递归拼接且无空白或末尾换行。身份不能有 undefined 或额外字段。命令 ID 为：
-
-~~~text
-cmdp_ + lowercaseHex(SHA256(UTF8(C(CommandIdentity))))[0:16]
-~~~
-
-同 ID 核对完整 identity，不一致返回 commandIdentityConflict。不同物理 namespace 有不同 key，同一共享包的 CLI/App 和多个 activation 复用 key。版本、配置摘要、staging/resourceRoot 和宿主版本化缓存不进入身份。移动安装 namespace 形成新身份，不承诺跨 home/机器保留 ID。
-
-发布、查询、权限引用、占位符、撤销和 nativeTools 闭包使用完整 identity，不退回 source/plugin/platform/scope/set 子集，不按最新记录或文件顺序选绑定。同物理部署解析其 Skill producer，显式 user package 遵循 scope 规则；不同 placement 的同名集合不能混用。list/show 与回执保留安全 placement 标识。
-
-取消共享包的一个 activation 不撤绑定；只有无引用且实际 producer 撤销后才移除该 placement。准备和执行核对候选仍在相同 placement；损坏记录不能授予另一实例删除权。用户命令仍为 cmdu_ 加小写 UUID v4，首次 install 生成、update 不变、remove 后重装生成新 ID；不接受名称路由或大小写修正。
-
-包内现有 owner/nativeProjection 证据保留冻结 PhysicalIdentity；运行时从已核验 marker 的实际 namespace 重算 key 和固定路由位置。同一 AW_HOME 切换宿主配置根后，旧命令 ID 仍指向旧物理实例，不按当前环境重绑定。marker 中的身份或路径本身不授予所有权。
-
-## A5. 引用与权限
-
-逻辑引用唯一结构为 `{set: Name, key: Name, variant?: Name}`，variant 缺省 default。正文占位符唯一语法为 `{{aw.command:<set>/<key>}}` 或 `{{aw.command:<set>/<key>/<variant>}}`，展开为 `aw command run <id> --`，不加引号或换行。其它以 `{{aw.command:` 开始但不合法的形式拒绝。它只在最终 Skill 树的 `.md` 文本文件中展开，包括静态和动态 Skill；不改二进制、脚本、JSON/TOML 配置或普通环境值。代码块中也展开。首版不提供“只返回 ID”的第二种模板。
-
-AW 先建立本次候选与未请求健康绑定的集合视图，再在消费者的 owner、平台、实际物化 scope 下解析。producer 声明明确决定 user/project，不能按调用 cwd 猜测；同一逻辑引用在不同合法消费者中可能展开为不同物理 producer 的 ID。引用不存在、disabled、跨插件或跨来源、scope 不合法、缺少可核验 producer 时均返回 `commandReferenceInvalid`，不发布该消费者。Portable 输出包含本机命令占位符时返回 `managedCommandPortableUnsupported`；作者须提供独立 Portable 内容。review prepare/作者验证只在隔离主机中计算候选，不注册真实命令。
-
-现有 `extensions.permissions[].allow/ask/deny` 的 item 从 string 扩展为下列 union；原 string parser 和含义不变：
-
-```ts
-type PermissionCommand = string | {
-  command: { set: Name; key: Name; variant?: Name };
-  argsPrefix?: string[]; // 缺省 []，即此 ID 的全部调用
-};
+```text
+aw command run <来源/插件> [--no-fallback] -- [args...]
+aw command run <cmdu-id> -- [args...]
 ```
 
-`argsPrefix` 每项必须是非空安全 token，匹配 `[A-Za-z0-9_./:@%+=,-]+`；不含空白、引号、反斜杠、通配符和 shell 控制字符。AW 不接受任意 shell 模板。它与 run 的完整 argv 能力不同：不能精确表达的权限前缀须由作者改为窄的安全子命令，不自动扩大。
+插件选择器由来源 ID（`[a-z][a-z0-9-]{0,31}`）和插件名（`[a-z0-9]+(?:-[a-z0-9]+)*`）组成。必须提供字面分隔符 `--`，即使业务参数为空。缺少分隔符、裸插件名、分隔符前存在未知选项，或对 `cmdu_` / 空参数使用 `--no-fallback`，均在启动前以 `invalidArguments` 和退出码 `2` 停止。帮助选项放在分隔符前。
 
-Claude 专属配置固定在 `extensions.permissions[].agentOverrides.claude.sandbox.excludedCommands`，元素只接受上述结构化对象，不接受普通字符串。不在 permission 顶层增加含糊的 sandbox 字段；Codex override 声明 sandbox 为错误。claude override 为 null 的现有禁用语义保留；正常 allow/ask/deny 的 override 合并规则不变。排除项独立于 allow，也不能推导 allow。
+AW 以 `--` 后第一个完整 argv 元素区分大小写地匹配子命令。匹配时消费该元素，再把剩余参数接到路由的固定 `args` 后面。通用入口 `fallback` 收到完整的业务 argv。空字符串、空格、Unicode 和其后的字面 `--` 均原样保留。
 
-解析 token 数组固定为 `["aw","command","run",id,"--",...argsPrefix]`。Codex 按原 prefix_rule 输出；Claude 将安全 token 用一个 ASCII 空格连接，尾部附加 ` *`，allow/ask/deny 再包 `Bash(...)`，excludedCommands 不包 Bash。排序和去重在解析后的同 decision、同 owner 内进行；跨 owner 的相同值仍保留各自 ownership。撤销一项时仅在没有用户或其它已知 owner 责任时移除物理值，不删除既有未知配置。
+| 调用 `aw command run office/plugin-a -- …` | 路由（声明了 `export`、`message` 和 `fallback`） | 固定 `args` 后的参数 |
+| --- | --- | --- |
+| `export report.csv` | `export` | `["report.csv"]` |
+| `export` | `export` | `[]` |
+| `message send hello` | `message` | `["send", "hello"]` |
+| `export-all report.csv` | `fallback` | `["export-all", "report.csv"]` |
+| `--help` | `fallback` | `["--help"]` |
+| 空参数 | `fallback` | `[]` |
 
-Claude 当前官方合同说明尾部 ` *` 覆盖有/无参数的该前缀，沙箱排除与 permission 独立，组合命令仍受额外条件约束。这里只生成直接调用所需规则；实际宿主匹配继续单独验收。
+程序已选定命名路由时，可将 `--no-fallback` 放在分隔符前。即使命名路由随后被移除，调用也只会尝试精确匹配。经过正常匹配仍无可用入口时，AW 写 stderr，返回 `commandRouteNotFound` 和退出码 `2`，并列出当前可用子命令。入口一旦选定，缺文件、启动失败和非零退出都直接返回该结果。用户命令的单入口收到全部业务参数。
 
-当前入口缺少声明的命令权限映射时（含 `generic`），AW 以 `invocationPolicyNotApplied` 标明受影响的具体动作。若本次组件集合明确省略了提供命令的 Skill、该 Skill 的 renderer 排除了当前渲染 scope，或该 Skill 缺少平台能力，AW 跳过引用该命令的权限与沙箱例外，并继续交付其他适用动作和独立组件。Skill 正文引用的命令仍须实际可用。未声明的集合、静态集合中的无效命令或 variant、必需资源缺失仍按上文处理。[CLI 诊断合同](cli.md#4-业务-payload-的边界)
+## Manifest 声明
 
-Guide 的 allow 与 Claude exclusion 均固定为 start/send/wait/result/stop 五项；不生成整个 ID 的宽前缀。管理入口与其它 ID 不匹配。
-
-## A6. 可交接示例
-
-以下是 Manifest v4 的字段片段；加入插件现有基础 metadata 和 render script 后使用：
+以下是静态命令包的 Manifest 字段片段。将相应脚本放入 `./commands`，并按插件需要补齐基础声明。
 
 ```json
 {
-  "requires": {"aw": {"capabilities": [
-    "aw.managed-commands.v1", "aw.claude.sandbox-exclusions.v1"
-  ]}},
-  "managedCommands": {
-    "packages": [{
-      "key": "review-tools", "scope": "user", "platforms": ["codex", "claude"],
-      "sourceDir": "./tools/review", "render": true, "refreshKeys": ["reviewMode"]
-    }],
-    "sets": [{
-      "set": "review-tools", "producer": {"kind": "package", "packageKey": "review-tools"},
-      "mode": "dynamic", "refreshKeys": ["reviewMode"]
-    }]
+  "requires": { "aw": { "capabilities": ["aw.managed-commands.v2"] } },
+  "command": {
+    "sourceDir": "./commands",
+    "platforms": ["codex", "claude"],
+    "mode": "static",
+    "routes": {
+      "subcommands": [
+        { "name": "export", "runner": "node", "entry": "export.mjs" },
+        { "name": "message", "runner": "node", "entry": "message.mjs" }
+      ],
+      "fallback": { "runner": "node", "entry": "main.mjs" }
+    }
   },
-  "extensions": {"permissions": [{
-    "name": "review-tools",
-    "allow": [{"command": {"set": "review-tools", "key": "review"}, "argsPrefix": ["check"]}],
-    "agentOverrides": {"claude": {"sandbox": {"excludedCommands": [
-      {"command": {"set": "review-tools", "key": "review"}, "argsPrefix": ["check"]}
-    ]}}}
-  }]}
+  "extensions": {
+    "permissions": [{ "name": "exports", "allow": [{ "argsPrefix": ["export"] }] }]
+  }
 }
 ```
 
-在 user scope 同批请求 `command-package.review-tools` 和 `command-set.review-tools` 时，对应输出：
+| 字段 | 要求 |
+| --- | --- |
+| `sourceDir` | 必填的 `./` 插件相对目录，内含独立运行所需的文件和依赖。只允许普通文件和目录，链接、受保护或仅供作者使用的路径、顶层 `codex`、`claude`、`agent-skills` 产物根及自带 `.aw/` 均拒绝。AW 保留 `.aw/` 用于注入运行时资源。 |
+| `platforms` | 插件所支持 Native 平台的非空、无重复子集。缺省为该插件全部 Native 平台。具体目标为 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`。选择集合外的平台或 `generic` 安装时，跳过命令包及它的原生工具依赖。 |
+| `mode` | `"static"` 或 `"dynamic"`，必填。 |
+| `routes` | 仅静态模式必填，包含可选 `subcommands`（默认 `[]`）和至多一个 `fallback`。空表合法。子命令 `name` 在包内唯一，匹配 `[A-Za-z][A-Za-z0-9_.-]{0,63}`。 |
+| `refreshKeys` | 仅动态模式必填，可为 `[]`。使用顶层 `config.fields` 中非敏感公共键，且校验依赖也须非敏感。平台专属键只可用于相应平台的配置快照。 |
+| `runtimeConfig.keys` | 可选的非空、无重复配置键数组。每个键及其校验依赖在所有 `command.platforms` 的编译配置中均须存在且非敏感。见[运行配置快照](#运行配置快照)。 |
+
+路由定义和用户命令的 `launch` 共享下列字段。未知字段、`null`、非法 Unicode 和 NUL 均拒绝。标识、参数与环境值按原始值校验。
+
+| 启动字段 | 要求 |
+| --- | --- |
+| `runner` | 必填，`node` 或 `executable`。 |
+| `entry` | 必填，资源根内的普通文件路径。使用 `/` 分段，拒绝绝对路径、盘符、空段、`.`、`..`、反斜杠和控制字符。文件及路径层级必须保持在核验过的资源树内。 |
+| `args` | 固定 argv，默认 `[]`。最多 128 项，每项最多 4096 个 Unicode code point。 |
+| `env` / `envFrom` | 默认 `{}`。名称匹配 `[A-Za-z_][A-Za-z0-9_]*`。前者提供字面值（上限 4096 个 Unicode code point），后者引用宿主环境名。见[运行环境与退出状态](#运行环境与退出状态)。 |
+| `cwd` | 默认 `caller`，使用调用目录。选择 `resource` 时使用已安装资源根。 |
+
+原生工具通过至多一条 `{ "kind": "plugin-command", "tools": […] }` 消费者声明绑定到这个包。使用能力 `aw.native-tools.v3`。详见[原生工具合同](native-tools.md)。
+
+## 动态路由渲染
+
+动态模式使用 `scripts.artifacts.render`。AW 运行同一个 Node renderer 的独立请求，`AW_PLUGIN_SURFACE=managed-commands`。该 surface 使用 [Artifact renderer 的隔离、超时和输出校验](plugin-runtime.md#3-动态-renderer-与-platformcomponentplan-合同)。只有动态命令需要 renderer 的插件可省略 `artifacts`，作者验证和安装会单独校验所选入口的资源闭包。
+
+| 请求字段 | 值 |
+| --- | --- |
+| `event` | `install`、`refresh` 或 `materialize`。 |
+| `surface` / `scope` | `{ "kind": "aw", "name": "managed-commands" }` 和 `"user"`。没有 platform、distribution、platformCapabilities 或项目字段。 |
+| `plugin` | `name`、`version`、已核验的 `rootDir`。 |
+| `config` | `mode: "artifact-render"`、`targetScope: "user"`，以及 `schema`、`values`、`sources`、`issues`。配置来自公共默认值和 User `common`，限于 `refreshKeys` 及非敏感校验依赖。 |
+| `changedConfigKeys` | `config apply` 刷新路由时，相比上次发布发生变化的已选公共输入键，包括非敏感校验依赖。`install`、`materialize` 以及旧包缺少逐键记录时提供 `[]`。始终返回完整路由表。 |
+| `requestedArtifactIds` | `["command-routes"]`。 |
+| `previousArtifacts` | 当前已安装动态路由的上次产物，含当时的 `refreshKeys` 和完整 `routes`。没有旧动态产物时为 `[]`。 |
+| `commandSources` | 单元素数组 `[{ "sourceDir": "<已核验命令源目录>" }]`。 |
+| `artifactSources` / `runtimeImports` | 均为 `[]`，组件 renderer 使用自己的请求和资源。 |
+
+例如，声明 `"mode": "dynamic", "refreshKeys": ["exportMode"]` 时，renderer 可以返回下列一个 ArtifactPlan v2 对象。
 
 ```json
 {
   "version": 2,
   "artifacts": [
     {
-      "id": "command-package.review-tools", "target": "aw.command-package",
-      "kind": "commandPackage", "state": "present", "refreshKeys": ["reviewMode"],
-      "files": {"settings.json": "{\"mode\":\"strict\"}\n"}
-    },
-    {
-      "id": "command-set.review-tools", "target": "aw.command-set",
-      "kind": "commandSet", "state": "present", "refreshKeys": ["reviewMode"],
-      "entries": [{"key": "review", "runner": "node", "entry": "adapter.mjs", "cwd": "caller"}]
+      "id": "command-routes",
+      "target": "aw.command-routes",
+      "kind": "commandRoutes",
+      "refreshKeys": ["exportMode"],
+      "routes": {
+        "subcommands": [{ "name": "export", "runner": "node", "entry": "export-fast.mjs" }],
+        "fallback": { "runner": "node", "entry": "main.mjs" }
+      }
     }
   ]
 }
 ```
 
-Skill 使用 `{{aw.command:review-tools/review}} check`。同一例子改为静态时删除 package 的 render/refreshKeys，并把 set 的 mode 改为 static、refreshKeys 换为 entries；没有别的动态 target 时不运行 renderer。
+响应精确包含所请求的一条产物，`id`、`target`、`kind` 和 `refreshKeys` 必须匹配。返回的是本次完整路由表。省略 `fallback` 会撤销通用入口，空 `routes` 会撤销全部路由，使包进入 `empty`。路由只能选择 `sourceDir` 内已有文件。来源、归属、权限和原生工具由 AW 按 manifest 确定。非法响应、重复子命令、资源闭包错误、脚本失败或取消均停止发布，原有效包保留。动态命令 renderer 计入有作者脚本的安装预览路径。
 
-## B1. 命令管理 CLI 与机器输出
+## Skill 引用与宿主权限
 
-公开参数如下。方括号表示可选；JSON 参数接受一个完整 JSON 值，不进行 shell 或环境展开。所有管理命令支持 `--json`；写命令支持现有 `--yes` 确认语义。非交互写操作缺少必要确认时，在写入前报错。
+在最终 Skill 的 Markdown 中，`{{aw.command}}` 展开为 `aw command run <已核验来源/插件> --`，包括代码块在内。引用只适用于同一插件有可运行命令且当前目标属于 `command.platforms` 的 Native Skill。空路由导致引用该命令的 Skill 不可用，独立组件继续。Portable 分发需提供独立可用正文和资源。[Portable 合同](plugin-runtime.md)
+
+`extensions.permissions[].allow/ask/deny` 可使用原有的字符串命令前缀或结构化 `{ "argsPrefix": ["export"] }`。结构化项要求 `aw.managed-commands.v2`、本插件有 `command` 且目标属于 `command.platforms`。每个 token 必须匹配 `[A-Za-z0-9_./:@%+=,-]+`。`argsPrefix` 必填。`[]` 明确匹配插件入口的所有直接调用，按实际需要缩小为命名路由或其参数前缀。
+
+- AW 生成的结构化权限前缀是逐项 argv `["aw", "command", "run", "<来源/插件>", "--", ...argsPrefix]`。它匹配字面 `--` 紧随选择器的调用。带 `--no-fallback` 的调用使用不同前缀，审批由宿主自身策略决定。
+- Codex 将前缀写入 `prefix_rule`，对应 `allow`、`prompt`、`forbidden`。Claude Code 将普通和托管命令的前缀以空格连接，在尾部加 ` *` 生成 `Bash(...)` 规则，覆盖零个或多个附加参数。Claude Code 匹配前可能移除 `timeout`、`time` 等已知包装，Review 会提示内部命令匹配的影响。AW 内部执行仍按实际 argv 路由。[Claude Code Bash 匹配](https://code.claude.com/docs/en/permissions#bash)
+- Claude 的沙箱排除声明在 `extensions.permissions[].agentOverrides.claude.sandbox.excludedCommands`，每项为同样的结构化对象。插件同时声明 `aw.managed-commands.v2` 与 `aw.claude.sandbox-exclusions.v1`。排除规则生成同样的前缀和尾部 ` *`，位置在 Claude 沙箱设置中。沙箱排除和 Bash 审批各自生效。
+- 宿主规则安装情况以本次回执为准。不能完整施加的动作报告 `invocationPolicyNotApplied`。实际会话证据见[宿主审批验证范围](#宿主审批验证范围)。
+
+Skill 与命令权限使用同一冻结路由表。非空 `argsPrefix` 的首词须命中子命令或存在通用入口才可达。空前缀只要求有至少一个路由。部署操作会跳过不可达的 `allow` 和 Claude 沙箱排除，并在本次可触达的部署中按归属撤回对应的旧规则。仍可投影的 `ask` 和 `deny` 会保留，即使当前没有处理程序，以便其他部署恢复路由时限制继续生效。跳过动作与原因见 [CLI 诊断合同](cli.md#4-业务-payload-的边界)。
+
+权限匹配调用文字。专用路由改为通用处理、新增子命令接走通用调用、入口或固定参数变化，都可能让已放行的调用执行不同代码。安装、同步、重建、命令包同步和配置应用的 Review 展示旧、新入口及可见权限影响，指出未检查的其他项目。已审阅的候选或现场证据发生变化时以 `operationReviewStale` 停止相应发布。来源 ID 改绑后，旧包不可再按名称调用。安装新来源的同名插件时，残留的同文字宿主规则仍可能匹配，Review 会提示这一点。通过相应部署的同步或卸载更新其归属规则。
+
+Codex Review 检查 User 和当前项目的规则文件，识别单行或多行的独立顶层字面 `prefix_rule`，包括参数备选项。Review 会标明无法读取或含无法判定表达式的文件。同一文件中的可判定规则仍会展示。Codex 0.171.0 的目录规则加载器跳过符号链接，Review 将链接列为未检查项。确认后的现场复核使用规则文件原始内容和符号链接的指向。
+
+### 宿主审批验证范围
+
+AW 优先投影能覆盖声明命令的宿主规则。已知宿主匹配还会放宽或收紧其他命令时，Review 会说明受影响的动作、原生规则及匹配差异，确认写入后回执保留同一提示。实际审批仍取决于客户端、会话使用的配置和运行模式。[CLI 回执](cli.md#4-业务-payload-的边界)
+
+| 宿主 | AW 规则投影 | 已验证的审批范围 |
+| --- | --- | --- |
+| Codex、Claude Code | Codex 命令前缀，Claude Bash 规则及独立沙箱排除。 | 按客户端的实际配置和会话结果核对。 |
+| OpenCode V2 | `shell` 规则按标准书写的命令前缀投影到 User 或 Project 的 `permissions` 数组。Windows 会折叠大小写并统一斜杠，Review 提示这些额外匹配。 | OpenCode v2.2.6，macOS 26.3.1 arm64，`opencode mini --standalone` 的 Build agent 交互新会话。15 例覆盖 Project 三动作、User `deny`、项目隔离和联动收紧与恢复。AW 写入的 User `allow` 和 `ask`、桌面端、热重载、Linux、Windows 和其他模式待验证。[会话复验](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64-replay.json) |
+| Antigravity | CLI Global 使用 `command(词前缀)`，在已知宿主需要整行匹配时追加有边界的原文规则。可识别包装的规则也会匹配内部命令的直接调用。其他范围按动作报告跳过。 | Antigravity CLI 1.5.14，macOS 26.3.1 arm64。已验证同值手工 `deny` 完全或部分阻挡声明、同步恢复、真实客户端重写文件并保留非空规则，以及公开撤回。交互会话停在登录页，三动作审批和正则或包装的实际匹配待验证。[配置冲突、读回与撤回](../../scripts/qualification/evidence/native-antigravity-command-permissions-1.5.14-darwin-arm64.json) |
+| Grok Build | 普通和托管命令按 `allow`、`ask`、`deny` 写入 User 或已授权 Project `config.toml` 的 `[permission].rules`。Review 显示实际 Bash pattern 和额外匹配范围。拼接后的文本会混合引号内和参数之间的空格。已知命令包装、词尾延长和通配符也可能匹配其他命令。 | Grok Build 1.0.77（构建 `50ca579fa996`），macOS 26.3.1 arm64，交互默认权限模式。29 例覆盖普通与托管命令的三动作、User 和已授信 Project、项目隔离，以及 `command sample-report` 的基线询问和两种范围放行。其他包装和内联脚本仍只有源码与定向回归证据。另验证 User 规则被移除后 `status` 报告待同步，`sync` 恢复该规则。[交互复验和状态修复](../../scripts/qualification/evidence/native-grok-command-permissions-1.0.77-darwin-arm64.json) · [规则手册](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md#rule-matching-reference) |
+| Cursor、Copilot CLI、Pi、`generic` | 当前没有通用命令权限投影。 | `generic` 无固定审批宿主。 |
+
+OpenCode Project `allow` 的执行结果与空白基线相同。较早的客户端 API 读回同字节规则，确认它排在默认允许之后，按该版本最后匹配的语义可推断规则命中。两个报告保留各自的观察和构建信息。[原配置读回](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64.json) · [OpenCode v2.2.6 匹配实现](https://github.com/anomalyco/opencode/blob/v2.2.6/packages/core/src/permission.ts#L84-L93)
+
+OpenCode 匹配命令文本。标准书写使用未加引号的字面词，以单个 ASCII 空格分隔，例如 `aw command run official/demo -- export`。生成规则在前缀后加 ` *`，覆盖该写法的零个或多个附加参数。普通命令前缀中的 `?` 会匹配一个字符，包括空格。方括号、花括号和 `~` 可由 Shell 在规则匹配后展开。Review 会提示这些差异。引号、转义或不同空白写法的审批依 OpenCode 自身规则处理。OpenCode 自己保存的允许记录可满足后续 `ask`，生效的 `deny` 仍由宿主阻止。[OpenCode 匹配与审批](https://opencode.ai/docs/permissions/#approvals)
+
+调整 OpenCode User 限制如果需要更新 AW 已知项目，Review 会逐个列出项目配置路径和待增删的规则，经确认后一起更新。规则路径、可表达的前缀范围和恢复见[平台权限投影](../maintainers/architecture/platforms.md#平台权限投影)。
+
+## 运行配置快照
+
+`command.runtimeConfig.keys` 为每个已发布平台声明同一组可读键。AW 在不可变命令包 revision 中注入 `.aw/command-runtime-config.mjs` 和各平台的 `.aw/runtime-config/<platform>.json`。调用脚本显式传入正确的平台，例如在命令包根的模块中调用：
+
+```js
+import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';
+
+const { values, platform, installedIdentity, resourceRoot } =
+  await readCommandRuntimeConfig({
+    from: import.meta.url,
+    platform: 'codex',
+    keys: ['exportDirectory'],
+  });
+```
+
+`from` 必须是同一 revision 内的普通文件。读取器按自身位置核对独立 owner、producer 记录和快照。平台必须是合法 Native 目标，所求键非空、唯一且在声明的允许列表内。快照是 schema 1 的 `aw-command-runtime-config`，含 `producer`、`pluginVersion`、`sourceContentDigest`、`platform`、`allowedKeys` 与 `effectiveValues`。读取器只返回所请求且有值的键，另附平台、当前 revision 根和 `installedIdentity`（`sourceId`、`sourceIdentity`、`pluginId`、`pluginName`、`pluginVersion`、`sourceContentDigest`、`platform`）。
+
+读取使用已应用值，缺失、越权键或损坏分别返回 `commandRuntimeConfigMissing`、`commandRuntimeConfigKeyDenied`、`commandRuntimeConfigInvalid`。先核对调用平台和请求键，必要时通过 `aw plugin sync` 或 `aw command package sync` 修复。同一个 `AW_HOME` 下，同平台多个配置根共享一份快照。不同平台分别记录已应用值。Skill 目录内的已安装配置读取器及其能力见[插件运行时合同](plugin-runtime.md)。
+
+## 包身份与发布
+
+命令包固定在 `<AW_HOME>/commands/packages/<pkg-id>/`。pkg-id 为 `pkg_` 加规范序列化 `{schemaVersion: 2, sourceId, sourceIdentity, pluginName}` 的 UTF-8 SHA-256 完整小写 hex。规范序列化按 ECMAScript 默认字符串顺序递归排序对象键、保持数组顺序、用 `JSON.stringify` 序列化 primitive，然后无空白拼接。来源 identity 为 `sha256:` 加 64 位小写 hex。当前项目和宿主配置根均不参与命令包身份。
+
+- `run` 和 `show` 读本机 `catalog-sources.json` 派生身份。文件缺失时按内置 `official` 来源处理，损坏时停止。两个入口均为离线读取，使用当前已核验包和 revision。
+- 独立 `owner.json` 为 `{schemaVersion: 2, owner: "agent-workflows", kind: "plugin-command-package", producer: {sourceId, sourceIdentity, pluginName}}`。它证明目录归属，适用于恢复损坏包。
+- `revisions/<uuid>/` 包含完整自足资源树、`.aw-command-producer.json` 和按需注入的 reader。producer 记录使用 `schemaVersion: 2`，含 `producer`、`pluginVersion`、`sourceContentDigest`、`routes` 和 `runtimeConfigPlatforms`。按声明保存 `nativeTools`、`dynamicRefreshKeys`、`routeConfigDigest`、逐键的 `routeConfigKeyDigests`、`runtimeConfigKeys` 和按平台的 `runtimeConfigCommonDigests`。来源内容摘要涵盖 manifest、命令源目录与 renderer 闭包。只更新配置快照时摘要保持相同。
+- 完整准备和复核后，AW 在单一 `AW_HOME` 写锁内原子替换 `current.json`（`{schemaVersion: 2, revision: "<uuid>"}`）。一次读取固定在同一个 revision，路由、入口和读取器来自同一版本。渲染或暂存失败时，旧版本继续可用。切换后尽力清理旧目录，仍被进程占用的旧目录可后续回收。更新或移除前先结束活跃任务。
+
+## 包维护与配置应用
+
+| 操作 | 共享命令包效果 |
+| --- | --- |
+| `aw plugin install` / `aw plugin sync` / `aw plugin sync --rebuild` | 命中 `command.platforms` 时发布一次共享包，并重新计算本次目标平台的快照。其他平台沿用已应用值。新版配置不再接受的旧值会重算并在 Review 展示，已排除的平台会移出快照。 |
+| 平台卸载或清理 | 撤回本次所选部署中可确认归属的 Skill 和权限。共享包及快照保留，包含最后一处卸载的情况。需要删除整包时，按回执执行 `aw command package remove`。 |
+| `aw source sync` | 刷新 Active Catalog。已安装命令包继续使用当前 revision。 |
+| 确认更新到不含 `command` 的插件版本 | 在写锁内按 owner 撤销共享包，包括本次只选择 Portable 部署的更新。撤销后按名查询或执行会报 `commandNotFound`。需要清理损坏残留时，使用回执中的精确 `pkg-id`。 |
+| 来源移除或改绑 | 原名称失去旧包定位。用 `aw command list` 查找孤立包的 `pkg-id`，据此精确移除。 |
+| `aw command package sync <来源/插件>` | 通过本机 Active Catalog 单独同步命令包。首次同步为所有声明平台生成所需快照，后续重算原已发布且仍受支持的平台。Review 列出已知权限影响供参考，宿主规则由相应平台的生命周期命令更新。Active 插件已无 `command` 时返回 `commandPackageDeclarationMissing`，可用显式移除或插件同步。 |
+| `aw command package remove <来源/插件 \| pkg-id>` | 按 owner 移除整包，所有该包调用失效。宿主规则和插件配置各由自身入口维护。按 `pkg-id` 移除可用旧来源 owner 证据，适用于来源已变化或损坏。 |
+
+保存配置只写 Config Store。命令读取上次应用的 snapshot 和路由。配置应用只刷新已安装且存在受影响输入的包，一次最多发布一个新 revision。配置存储分为 `common` 与 `platforms.<target>`。`--context user` 检查 User 部署，`--context project` 可检查 User 与当前项目，其他项目保留未检查。
+
+- `config apply --platform <target>` 可以刷新该目标的快照。共享动态路由和其他平台的已应用值保持原状。
+- 没有 `--platform` 时，公共 `refreshKeys` 的变化触发一次动态重渲染，并在本次可见部署中刷新受影响的 Skill 和权限。公共运行配置键变化时，重算已发布且受影响的平台快照。Review 逐平台列出变化，包括本次将随快照生效的已保存覆盖值。
+- 刷新前先核对当前 Active Catalog，按顺序处理 `sourceActiveUnavailable` 或 `pluginUnavailable`、原生工具闭包变更 `nativeToolSyncRequired`、版本或来源内容差异 `configApplyVersionMismatch`。历史快照不参与选择。核验失败时保留旧包和已保存配置。按诊断同步来源或先更新插件/共享包，再重试应用。[配置写入与回执](../maintainers/architecture/config-and-status.md)
+
+## 命令管理与 JSON
 
 ```text
 aw command install <directory> --name <name> --runner node|executable --entry <relative-file>
-  [--args-json <string[]>] [--env-json <object>] [--env-from-json <object>]
+  [--args-json <json>] [--env-json <json>] [--env-from-json <json>]
   [--cwd caller|resource] [--yes] [--json]
 aw command update <cmdu-id> --from <directory>
   [--name <name>] [--runner node|executable] [--entry <relative-file>]
-  [--args-json <string[]>] [--env-json <object>] [--env-from-json <object>]
+  [--args-json <json>] [--env-json <json>] [--env-from-json <json>]
   [--cwd caller|resource] [--yes] [--json]
 aw command remove <cmdu-id> [--force] [--yes] [--json]
 aw command list [--json]
-aw command show <command-id> [--json]
-aw command run <command-id> -- <args...>
-aw command package sync <source/plugin> <package-key> --scope user|project [--yes] [--json]
-aw command package remove <source/plugin> <package-key> --scope user|project
-  [--force] [--yes] [--json]
-aw command package remove <pkg-id> [--force] [--yes] [--json]
+aw command show <来源/插件 | cmdu-id> [--json]
+aw command package sync <来源/插件> [--yes] [--json]
+aw command package remove <来源/插件 | pkg-id> [--force] [--yes] [--json]
 ```
 
-name 为 1–128 个 Unicode code point 的非空白展示名，不含控制字符，允许重名。install 的启动定义使用 A2 相同规则但没有 key/variant。update 未提供的字段保留旧值；提供的数组/对象整体替换，`[]`/`{}` 显式清空，不接受 null。`--from` 必填；旧强配置损坏时 update 拒绝，用户可以按 ID 安全 remove 后重新 install，不能猜旧定义。install/update 的 directory 按 caller cwd 解析并复制全部合法普通节点，源目录只读；拒绝包含 AW_HOME、安装目标、仓库 `.git` 或其它受保护树的复制范围。
+`install` 创建 `cmdu_` 加小写 UUID v4，更新时保持 ID，移除后重新安装会创建新 ID。`name` 是 1–128 个 Unicode code point 的非全空白展示名，可重复且不可含控制字符。`update` 保留省略的字段，数组和字典整体替换，`[]` / `{}` 清空。相对源目录从调用位置解析。AW 读取并复制普通资源树，拒绝包含受保护目录、AW_HOME、安装目标或仓库 `.git` 的复制范围。
 
-run 必须有字面分隔符 `--`，即使目标参数为空。其前只接受规范 ID 与 help；不接受 `--json`、runner/env/entry/cwd 覆盖。其后不再解析 AW 参数。插件 ID 不能用 update/remove 修改；返回 `commandOwnerMismatch`，并提示 producer 的正常维护入口。
+用户定义为 `<AW_HOME>/commands/users/<cmdu-id>/definition.json`，包含 `schemaVersion: 1`、`id`、`name`、`packageRevision` 和 `launch`。资源根固定在同目录的 `packages/<packageRevision>/`。更新先准备新目录，再原子替换定义。独立 `owner.json` 为 `{schemaVersion: 1, owner: "agent-workflows", kind: "user-command", id}`。定义损坏时，可按 owner 精确移除并重装。owner 无法核验时保留现场。命令包的 `--force` 同样只处理可核验归属的专属资源，不能用于删除外来或共享配置。
 
-list 只扫描本 AW_HOME 命令目录、索引与其明确指向的资源，不扫描所有项目。它可列出以前已绑定但当前不在 cwd 的 project producer；不按 cwd 改写绑定。包含用户命令、插件命令和包；空集合/损坏包也有 package 项。show 的输入仍是 command ID，不把 package key 当命令 ID；包信息通过 list 或命令的 producer 字段读取。
+管理命令使用 [CLI 统一结果 schema 2](cli.md#2-统一结果结构)。以下字段位于 `data`。写操作的确认见 `data.confirmation`，需要确认的非交互写入须显式传 `--yes`。进程退出码遵循 CLI 统一合同。
 
-管理命令使用 [CLI 统一结果 schema 1](cli.md)。下列业务字段位于 `data`；空集合为 `[]`。写命令另有 `confirmation`，完整诊断与安全下一步分别位于顶层 `diagnostics` 和 `nextActions`。
-
-```ts
-type CommandIssue = {
-  code: string; message: string; subject?: string;
-  path?: string; blocking?: boolean; stage?: string; severity?: string;
-};
-type Launch = { runner: "node" | "executable"; entry: string;
-  args: string[]; env: Record<string,string>; envFrom: Record<string,string>;
-  cwd: "caller" | "resource" };
-type CommandView = {
-  id: string;
-  name: string; // 用户 name，或插件的 set/key/variant
-  owner: { kind: "user" } | { kind: "plugin"; producer: ProducerIdentity };
-  availability: "ready" | "unavailable";
-  resourceRoot: string | null;
-  launch: Launch | null; // 损坏而无法安全解析时为 null
-  errors: CommandIssue[];
-  blockerCodes: string[];
-};
-type PackageView = {
-  id: string; // pkg-id，供精确 remove 使用
-  producer: ProducerIdentity;
-  resourceRoot: string;
-  availability: "ready" | "empty" | "unavailable";
-  sets: Array<{ set: string; state: "present" | "disabled"; commandIds: string[] }>;
-  errors: CommandIssue[];
-  blockerCodes: string[];
-};
-type CommandManagementData = {
-  commands: CommandView[];
-  packages: PackageView[];
-  changes: Array<{ kind: "command" | "package"; id: string;
-    action: "created" | "updated" | "removed" | "retained" }>;
-  nativeToolChanges?: NativeToolChange[];
-  confirmation?: Confirmation | null; // 写命令必有，读命令省略
-};
-```
-
-`ProducerIdentity` 见 A4；package change 的 id 为 `pkg_` 加 `SHA256(UTF8(C(ProducerIdentity)))` 的小写完整 hex，用于展示、目录定位和精确 package remove，不作为 run ID。用户写操作成功返回受影响命令；remove 后 commands 可为空，changes 保留被删除 ID；package 操作返回受影响包/命令，删除后以 changes 保留身份。list 返回全部可观察项，show 最多返回一个命令及其所属独立包。秘密的解析值从不进入 Launch 或 errors。`resourceRoot` 与 launch 是 show/list 明确请求的既有命令身份信息，运行时调用方用它们验证生产者与资源树；这些字段保留，但不附带其它内部 AW_HOME 目录、临时执行上下文或 backend。
-
-`package remove <pkg-id>` 是精确现场选择分支，与 source/plugin + package-key + scope 分支互斥，不接受 `--scope`。它读取本 AW_HOME 中该 pkg-id 的独立 owner marker，校验目录、完整 ProducerIdentity 与重算 pkg-id 一致，再按既有边界删除这个专属包。它不读取当前 Catalog、不要求旧项目根仍存在、不用当前 sourceIdentity 替换 marker 的来源；Review 展示旧来源身份、旧项目根及全部命令失效影响。删除范围仍仅为 AW_HOME 内该包与其派生绑定，不删除旧项目目录或平台设置。原选择器分支要求当前 scope/project 和可核验来源唯一匹配；有歧义时报告候选 pkg-id，用户可用精确分支移除。marker 损坏或冲突时两个分支都不能绕过 ownership。
-
-`errors` 保留单个命令或包的问题，`blockerCodes` 供调用方按稳定 code 判断；这些问题同时汇入顶层 `diagnostics`。后续操作统一读取顶层 `nextActions`。`Confirmation` 见公共 CLI 合同；`NativeToolChange` 保留原生工具声明变更的 before/after 事实。
-
-管理命令退出码遵循统一合同：success 为 0，failed 执行错误为 1，参数错误为 2，blocked 为 3，partial 为 4。list/show 发现资源不可用但有有效记录时保留记录并返回 partial；无命令的健康 list 为 success。记录连身份也无法解析时只在顶层 `diagnostics` 报告，不伪造 PackageView。show 找不到 ID 为 `commandNotFound`。
-
-插件生命周期 data 以可选 `commandResults` 报告实际命令结果，无相关动作时省略。底层原生执行保留内部 Receipt v6，并由统一恢复协调器汇总。TUI 保留内部回执，公开 CLI 使用以下投影，不新增第三个平台：
-
-```ts
-type LifecycleCommandResult = {
-  producer: ProducerIdentity;
-  state: "completed" | "partial" | "failed";
-  commandIds: string[];
-  removedCommandIds: string[];
-  blockerCodes: string[];
-};
-// plugin install/remove/sync 的 data 字段
-commandResults?: LifecycleCommandResult[];
-```
-
-producer 写入或绑定失败参与整体 failed/partial 计算；权限写入仍计入其真实平台结果。Review 展示 package 的共享影响、固定参数和权限变化，不能因为没有平台枚举值就漏掉 AW-owned 包。
-
-生命周期 `commandResults` 使用 `blockerCodes` 关联诊断；诊断与恢复操作分别汇入顶层 `diagnostics` 和 `nextActions`。
-
-底层 Config Mutation Receipt v7 的 `apply` 对象保留可选 `commandResults`，与 `apply.targetResults` 并列，不向 ConfigApplyTargetIdentity 填入假平台。公开配置命令的 `data.apply.commandResults` 元素为 `LifecycleCommandResult & { errors: CommandIssue[] }`：除 `blockerCodes` 外，保留每个 producer 的问题，同时汇入顶层诊断；后续操作读取顶层 `nextActions`。所有 apply union 分支都接受此字段：没有命令目标时省略，skipped 时只能省略或为空；其它分支保留已经取得的实际结果。TUI 配置 Review、Progress 和 Result 继续消费内部的平台与命令两组结果。
-
-配置 apply 的发现范围固定为：本次 sourceId + sourceIdentity + pluginName 下，独立 owner marker 可核验的已安装包，加上本次既有平台 apply 计划明确引用的 package producer，按完整 ProducerIdentity 去重。user 配置 apply 检查 user 包和当前规范项目的 project 包；project 配置 apply 只检查当前项目的 project 包。它只扫描 AW_HOME 的包 marker，不扫描其它项目，也不刷新其它 projectRoot 的包。旧来源身份的包保留并提示精确 remove/sync，不按当前配置接管。
-
-是否刷新使用该 producer 的有效配置与其 package/动态 set refreshKeys 的并集，沿用现有值、来源和校验依赖的变更判定。已保留包即使没有平台 activation/placement，也可因匹配配置变化而刷新；仅有 manifest 声明且尚未安装/不在平台计划中的包不会被配置 apply 隐式安装。producer 已从当前 manifest 删除时只报告残留与 pkg-id remove 指引。
-
-独立包的配置 apply/replay 不得引入未确认的 native 闭包。当前 native 声明与已安装 producer 不同时，在 renderer 和 producer 写入前拒绝刷新，保留旧产物，并提示先通过 `sync` 或 `command package sync` 确认变化；配置保存及部分失败结果仍按下述合同处理。
-
-`noVisibleTarget` 仅在平台目标和包目标都为空时成立。`apply.state=succeeded` 要求两组中所有实际目标成功；任一包失败、部分完成或发现错误时，保存成功的配置仍保留，`apply.state=partial` 并带 commandResults/现有 stage 错误，公开 CLI 结果为 `status=partial`、退出码 `4`。前置 source/schema/effectiveConfig 不可用继续使用既有 unavailable 分支，并保留其已知目标证据。`notRequested`、`noConfigChange`、`noEffectiveConfigChange` 仍按现有合同判断，但不得只看平台目标而漏掉包。一次平台/配置操作内，同一 producer 最多刷新一次，不增加持久 claim。
-
-## B2. 持久定义、派生绑定与独立 owner 证据
-
-必须固定的持久格式只有用户定义及安装产物内的命令记录；派生索引文件的数量和组织保留实现自由。所有新增 schema 1 对象拒绝未知字段。弱文件损坏报告错误，不建立自动迁移或恢复日志。
-
-用户强配置固定在 `<AW_HOME>/commands/users/<cmdu-id>/definition.json`：
-
-```ts
-type UserCommandDefinition = {
-  schemaVersion: 1;
-  id: string;             // 与目录名相同的 cmdu-id
-  name: string;
-  packageRevision: string; // 小写 UUID v4，仅用于选择实际复制目录
-  launch: Launch;
-};
-```
-
-资源根由 AW 计算为同目录 `packages/<packageRevision>/`，强配置不接受任意绝对 resourceRoot。install/update 先完整准备新 revision，再原子替换 definition；切换后才清理旧自有 revision。没有版本保留承诺；revision 是避免破坏旧包的局部暂存名，不进入命令 ID。
-
-同一用户 ID 目录中的 `owner.json` 与 definition 分开，结构为 `{schemaVersion:1,owner:"agent-workflows",kind:"user-command",id}`。它只证明这个专属目录的归属，不能授权删除其它位置，也不描述安装成功或当前版本。definition 损坏时 remove/--force 仍可按该 marker 和路径边界清理；marker 缺失/冲突时保留内容并报告，不能凭用户提供的 ID 删除任意目录。
-
-独立插件包固定在 `<AW_HOME>/commands/packages/<pkg-id>/`，包含 `owner.json` 与 `resource/`。owner 格式为 `{schemaVersion:1,owner:"agent-workflows",kind:"plugin-command-package",producer:ProducerIdentity}`；pkg-id 算法见 B1。实际资源根为 resource。marker 原子写入，位于运行内容之外；内容/索引损坏不影响安全 remove 的身份判定。包变化可用同父临时目录准备；失败恢复沿用 sync/remove，不增加 journal。
-
-每个插件 producer 的实际资源根保存 `.aw-command-producer.json`：
-
-```ts
-type InstalledCommandProducer = {
-  schemaVersion: 1;
-  producer: ProducerIdentity;
-  sets: Array<{ set: string; state: "present" | "disabled";
-    entries: CommandDefinition[] }>;
-};
-```
-
-这里的 entries 已补齐缺省值，不能含命令 ID 或解析后的秘密。它保存这个实际产物的生效启动定义，供派生索引校验/重建；不保存最新 store 配置、平台 claim、历史或安装阶段。这个记录不代替 artifact 的已有 owner/native receipt；package 则另用目录外的 owner marker。新保留文件必须进入最终产物校验，作者不得覆盖。
-
-派生绑定的逻辑字段固定为 `{schemaVersion:1,id,identity,resourceRoot}`。identity 是 A4 CommandIdentity，id 必须重算一致。run 用它定位实际产物，再核验 `.aw-command-producer.json`、相应 owner/native evidence、入口和必要生效资源；启动定义从该产物记录取得。不能把索引中另一份 Launch 当作真值。索引缺失时 run 不自行重建；由 sync/reinstall/package sync 修复。绑定发布只发生于对应 producer 的成功边界；未请求集合的 entries 从已验证旧记录保留，不能被局部请求误删。
-
-读取旧 ID 不要求最新 Catalog 在线，也不以当前 store 值改写已安装记录。当前来源身份发生冲突时不能接管旧资源。弱内容损坏时 artifact cleanup 使用既有独立 ownership，package remove 使用目录外 marker；identity 仍不能核实时保留现场并报告具体路径，由用户处理归属冲突，不能猜测。
-
-上述记录是当前资源内容与目录 owner 证据，不是新安装 ledger。只要旧资源不能保持完整，写入前撤下相关派生绑定；普通失败允许 producer 不可用，由现有恢复入口重建。
-
-共享原生包内 Skill 的 producer 使用固定 canonical user 身份；独立位置使用 RenderUnit 的实际 scope 与 placementKey。平台的安装、启用及权限 scope 与资源身份分开：单个 scope 的 uninstall/cleanup 不撤销仍存在的共享资源绑定，真正移除或替换该资源时才撤销受影响绑定。run 使用已安装的 AW namespaced 原生产物及其来源、平台 manifest、精确 Skill 路径和 producer 记录核验证据，不以当前项目重新选择身份；资源缺失或冲突时拒绝并保留 reinstall 恢复入口。user 配置 apply 更新共享产物，project 保存不能覆盖共享生效定义。不得为此增加项目引用计数、全局扫描或安装 ledger。
-
-## B3. 运行参数、环境与主机描述
-
-Node runner 精确启动 `[process.execPath, absoluteEntry, ...fixedArgs, ...callArgs]`。executable runner 精确启动 `[absoluteEntry, ...fixedArgs, ...callArgs]`，shell=false。Unix 核验可执行位；Windows 只接受可直接启动的原生 executable，`.cmd/.bat/.ps1` 不隐式交给 shell，需作者提供 Node 或原生包装入口。空 argv、Unicode 和换行参数按数组保留。
-
-环境按以下顺序处理：
-
-1. 在本次 run 开始时快照宿主环境。去除 `AW_PLUGIN_*` 作者临时上下文、继承的旧 `AW_COMMAND_*` 和 `AW_NATIVE_*` 工具上下文。宿主按当前 producer 重新解析协议声明，从当前 CLI 的已安装依赖取得工具，不能继承其他 producer 的授权。不把 AW_SUBAGENT 的本次 worker 控制变量清掉，否则托管 adapter 无法使用既有通讯协议。
-2. envFrom 从这份原宿主快照取值，来源缺失报 `commandEnvironmentSourceMissing`，空值保留。没有递归引用、模板替换或从 env 字面值取源。
-3. 合并普通宿主环境与绑定 env/envFrom。一个绑定的两个 map 不能有相同目标键，Windows 按大小写不敏感比较；其它系统按精确名称比较。绑定显式值覆盖普通宿主值。
-4. AW 注入当前受保护主机描述、已固定 AW_HOME，以及按已安装 native 协议闭包生成的 `AW_NATIVE_TOOL_CONTEXT`。ready 结果为 `{ state: "ready", protocol, executable }`；required 解析成功后才启动消费者，缺依赖时提示重装当前 CLI/Eval 并包含 optional dependencies。preferred 在启动时固定 backend。不能用配置覆盖控制变量。完整原生准备和恢复见[原生工具合同](native-tools.md)。
-
-env 与 envFrom 的目标名、envFrom 的来源名均禁止 `AW_PLUGIN_*`、`AW_SUBAGENT_*`、`AW_COMMAND_*`、`AW_NATIVE_*`、`AW_AGENT_SKILL_EVAL_PROCESS_MARKER`，以及 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`。这些新增保护规则适用于命令绑定和新 custom-managed 分支；原绝对路径 custom 继续执行既有环境校验，不能因此拒绝原本合法的旧配置。校验禁止名时跨 OS 按 ASCII 大小写不敏感处理，避免 Windows 绕过。普通 PATH、HOME 等宿主配置保持既有工具语义。
-
-`AW_COMMAND_HOST` 是单个 JSON 环境值：
-
-```ts
-type CommandHost = {
-  schemaVersion: 1;
-  nodeExecutable: string; // 当前 process.execPath 的绝对入口
-  cliEntry: string;       // 当前 AW 的真实 JS CLI 入口绝对路径
-  awHome: string;         // 本次已解析的绝对 AW_HOME
-};
-```
-
-CLI 启动时固定自身入口，不读取 npm shim 字符串、不解析 shell command、不继承 process.execArgv，也不以 PATH 找另一个 AW。描述仅是同一进程链的启动上下文，不是授权凭据或对任意父进程的身份认证。Guide 校验 schema、绝对路径、普通可读 CLI 文件、Node 可执行入口及 awHome；缺失为 `managedCommandHostMissing`，不合法为 `managedCommandHostInvalid`。awHome 与本次受保护的 AW_HOME 必须一致。
-
-Guide 的 custom-managed 配置、worker argv 与环境覆盖顺序由 [配置与接入](../../plugins/agent-subagent/skills/spawn-subagent/docs/configuration.md#托管-custom-adapter) 定义。它用校验后的同一 CommandHost 启动嵌套 AW，不按 PATH 或另一 AW_HOME 回退；业务 executor args 与命令 binding args 的职责分别保留。
-
-stdin/stdout/stderr 全部透传，AW 自身错误只写 stderr。正常目标数值退出码原样返回。POSIX 收到 SIGINT/SIGTERM/SIGHUP 时转发给直接 child；child 被信号结束时，转发器以同一信号结束；无法自发同信号时采用 `128 + signalNumber`。Windows 沿用实际数值退出；显式收到的可支持 INT/TERM 转发尽力执行，转发器对应退出 130/143，不声称完成后代或远端取消。不会因前台正常退出清理整个进程树，也不新增超时或自动重启。
-
-AW 启动失败为 exit=1，并以 `aw: <stableCode>: <safeMessage>\n` 写 stderr；AW 参数错误为 2。只有执行层诊断能区分 AW 失败与目标相同数值的退出，不新增 stdout 控制封套。
-
-## 通用错误与恢复
-
-| code | 触发点与恢复 |
+| 入口 | 公开数据 |
 | --- | --- |
-| `commandNotFound` | 合法 ID 没有记录；检查 ID，或 sync/reinstall/install |
-| `commandDefinitionInvalid` | 用户强配置或声明形状不合法；修复声明，损坏用户配置可安全 remove 后重装 |
-| `commandBindingInvalid` | 索引/实际产物记录缺失、损坏或不相等；sync/reinstall/package sync |
-| `commandIdentityConflict` / `commandOwnerMismatch` | ID、来源、scope 或独立 owner 证据冲突；停止接管并报告现场 |
-| `commandResourceInvalid` | 入口/必要资源缺失，链接/特殊节点或越界；修复包并 update/sync |
-| `commandRunnerUnsupported` | 当前 OS 不能直接启动该 executable；提供可运行入口后更新 |
-| `commandEnvironmentInvalid` / `commandEnvironmentSourceMissing` | 环境键冲突、禁止项或缺少引用来源；修复定义/宿主环境 |
-| `commandSpawnFailed` | OS 启动失败；保留安全错误，不自动重试 |
-| `commandReferenceInvalid` / `managedCommandPortableUnsupported` | 引用不能在当前消费者解析；修复作者声明/Portable 内容 |
+| `list` | `commands` 为用户命令，`packages` 为当前配置来源的插件包，`orphanedPackages` 为来源缺失、损坏或失配的插件包。包摘要含 `selector`、`packageId`、`availability`、`subcommands`（名称数组）、`hasFallback`。 |
+| `show` | `commands[0]` 为已查询项。用户命令含 `owner.kind: "user"`、`id`、`name`、`launch`。插件命令含 `owner.kind: "plugin"`、`owner.producer`、`selector`、`packageId`、`pluginVersion`、`sourceContentDigest`、`routes`（`subcommands` 和可选 `fallback`）、`runtimeConfigPlatforms` 与 `nativeTools`。两类都含 `availability` 和 `resourceRoot`。无法安全解析的资源或启动信息可为 `null`。 |
+| 命令或包写操作 | `changes` 列出变动项的 `kind`、`id`、`action`。变动后可查看的记录随 `commands` 或 `packages` 返回。包同步可返回 `packageReview` 与 `nativeToolChanges`。 |
 
-参数错误沿用 CLI 参数诊断，Catalog、Review stale、I/O 和权限错误沿用各自稳定 code。错误不回显 envFrom 解析值、协议 prompt 或完整环境。
+可查询但不可用的记录同时附 `errors`、`blockerCodes` 和 `recoveryActions`，并在顶层 `diagnostics` 中报告问题。包的 `ready` 表示有可用路由，`empty` 表示有效空路由表，`unavailable` 表示不可用。找不到选择器时返回 `commandNotFound`。无法核验归属的包通过诊断报告，保留其内容。`run` 采用子程序透传协议。
 
-## Producer 的发布与生命周期
+插件生命周期的 `data.commandResults` 和配置应用的 `data.apply.commandResults` 记录共享包结果。每项含 `producer`、`packageId`、`selector`、`action`（`created`、`updated`、`unchanged`、`removed`）、`availability`（`ready`、`empty`、`unavailable`、`removed`）、`subcommands`、`hasFallback`、`state`（`completed`、`partial`、`failed`）、`blockerCodes` 和具体 `errors`。平台自己的权限结果保留在对应部署的回执。没有命令结果时省略该字段。通过顶层 `diagnostics` 和 `nextActions` 定位未完成事项。
 
-用户定义是强配置，复制的完整工具目录只在显式 update/remove 时修改。插件绑定索引和 producer 资源属于可重建输出；平台许可沿现有平台 ownership 维护。所有管理、物化和绑定变更共用现有单一 AW_HOME 写锁；run/list/show 不隐式安装、下载或执行 renderer，长运行子进程不持锁。
+## 运行环境与退出状态
 
-发布顺序是核验完整候选与身份，准备资源及生效配置，在 producer 成功边界发布对应绑定，再协调平台权限，最后按实际结果复核。完整旧产物仍在时失败可保留旧绑定；若原地改写会破坏完整性，改写前先撤下绑定，失败后通过 sync/reinstall/package sync 恢复。路径存在不表示绑定可用，不回退其它来源、scope 或最新 Catalog。
+Node runner 使用当前 `process.execPath` 启动已核验入口。executable runner 直接启动文件。POSIX 检查执行位，Windows 需要可直接启动的原生 `.exe`。两个 runner 都按数组传入固定参数及路由后的业务参数，使用 `shell: false`。
 
-独立包在 install/sync/reinstall 的所选平台声明引用它时进入同次计划；同一 producer 只处理一次，健康且符合本次目标时复用，共享更新在 Review 中展示影响。保存配置不改变运行值；匹配 refreshKeys 的 apply 按 B1 发现范围刷新一次。独立包没有平台激活时仍可被配置 apply 刷新，未安装包不会仅因 manifest 声明而隐式安装。
+1. AW 快照宿主环境，从传给子进程的继承值中清除 `AW_PLUGIN_*`、`AW_COMMAND_*` 与 `AW_NATIVE_*`。现有 worker 的 `AW_SUBAGENT_*` 通信变量按原值继承。
+2. `envFrom` 从原宿主快照取值，来源缺失报 `commandEnvironmentSourceMissing`，空值保留。显式 `env` 和 `envFrom` 覆盖普通宿主环境变量。两者的目标键必须互异，Windows 按不区分大小写处理。禁止把 `AW_PLUGIN_*`、`AW_SUBAGENT_*`、`AW_COMMAND_*`、`AW_NATIVE_*`、`AW_AGENT_SKILL_EVAL_PROCESS_MARKER`、`AW_HOME`、`AW_CODEX_HOME` 或 `AW_CLAUDE_HOME` 用作目标或来源，禁止名称统一按 ASCII 不区分大小写校验。
+3. AW 注入已解析的 `AW_HOME`、当前 `AW_COMMAND_HOST` 和按需解析的 `AW_NATIVE_TOOL_CONTEXT`。必需的原生依赖在实际业务入口启动前解析。参见[原生工具合同](native-tools.md)。
 
-平台 uninstall/cleanup 仅撤下自己的引用与权限，保留独立共享包。完整卸载 Review 和结果列出保留包及显式 package remove 入口，不推断最后一个使用者。producer 从 manifest 删除时报告残留与精确 pkg-id，不自动删除共享内容。显式 package sync 不激活平台；集合移除命令时报告旧引用可能失效，由对应平台普通 sync 更新生成内容。显式 package remove 删除该 producer 的自有资源和绑定，保留插件强配置及平台自己的引用/权限，并说明所有引用将不可用。
+`AW_COMMAND_HOST` 是 schema 1 JSON，含绝对路径 `nodeExecutable`（当前 Node）、`cliEntry`（当前 AW JS CLI）和 `awHome`（本次 AW_HOME）。嵌套 AW 调用经核验后以该 Node 和 CLI 入口启动，避免 PATH、npm shim 和环境切换选到另一份 AW。主机描述用于启动上下文，授权仍来自宿主和调用方的实际核验。Guide 还核对绝对路径、常规可读文件和受保护 AW_HOME，缺失报 `managedCommandHostMissing`，不合法报 `managedCommandHostInvalid`。[托管 adapter 配置](../../plugins/agent-subagent/skills/spawn-subagent/docs/configuration.md#托管-custom-adapter)
 
-损坏弱正文或索引不能永久阻止按独立 owner 证据移除。`--force` 只处理可证明为该 producer 专属的损坏目录/索引，保留 foreign、shared config 和无法核验的 marker。包不可用可用 package sync 重建；来源暂不可用先 source sync。相同 producer 可恢复相同 ID，不能接管其它 owner。这里不维护引用计数、全局项目扫描、持久平台 claim、额外锁、安装 ledger 或补偿事务。
+stdin、stdout、stderr 与正常数值退出码直接透传。POSIX 转发 SIGINT、SIGTERM、SIGHUP 至直接子进程，子进程因信号退出时转发器使用同一信号，无法自发同信号时用 `128 + signalNumber`。Windows 尽力转发 INT 和 TERM，转发器分别返回 130 和 143。停止整个进程树或远端会话由工具自己的协议负责。
 
-升级、重装或删除 Guide 及其托管 adapter 前，先完成或 stop 活跃外部任务。相同命令 ID 不表示旧 run 与新控制端协议兼容。Review 说明该前置条件；AW 不建立 run registry，也不声称已自动证明没有活跃任务。
+AW 执行错误在 stderr 以 `aw: <stableCode>: <safeMessage>` 报告。启动失败为退出码 1，语法和路由错误为退出码 2。stderr 诊断可区分同数值的子程序退出。诊断不回显环境引用的解析值或完整环境。
+
+| 错误码 | 恢复 |
+| --- | --- |
+| `commandNotFound` / `commandRouteNotFound` | 用 `list` 和 `show` 核对来源、命令包、子命令名称与通用入口。按包或平台同步。 |
+| `commandDefinitionInvalid` / `commandBindingInvalid` | 核对定义或已安装包记录。用户定义损坏可精确移除后重装，插件包用 sync/rebuild/package sync 恢复。 |
+| `commandIdentityConflict` / `commandOwnerMismatch` | 核对归属和身份，保留无法核验的资源。 |
+| `commandResourceInvalid` / `commandRunnerUnsupported` | 修复缺失、不安全或无法直接启动的入口后更新包。 |
+| `commandEnvironmentInvalid` / `commandEnvironmentSourceMissing` | 修复环境声明或提供缺失的宿主变量。 |
+| `commandSpawnFailed` | 查看安全错误并解决宿主启动条件。 |
+| `commandReferenceInvalid` / `managedCommandPortableUnsupported` | 检查 Skill、命令路由与目标，或提供独立 Portable 内容。 |

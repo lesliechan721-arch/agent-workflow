@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
-import { safeError } from '../skills/spawn-subagent/scripts/runtime/contracts.mjs';
+import { safeError } from '../commands/scripts/runtime/contracts.mjs';
 
 // Replace only the native host boundary before the runtime captures execFile.
 // This file runs in its own Node test process; the native platform tests use the
@@ -21,7 +21,7 @@ try {
   childProcess.execFile = Object.assign(() => {}, { [promisify.custom]: (...args) => executeNative(...args) });
   childProcess.spawn = windowsNativeSpawn((...args) => executeNative(...args), originalSpawn);
   syncBuiltinESMExports();
-  api = await import('../skills/spawn-subagent/scripts/runtime/platform.mjs');
+  api = await import('../commands/scripts/runtime/platform.mjs');
 } finally {
   childProcess.execFile = originalExecFile;
   childProcess.spawn = originalSpawn;
@@ -43,8 +43,8 @@ function windowsHostFixture(t, execute) {
   return api;
 }
 
-const sourceIdentity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent',
-  pluginVersion: '1.0.0', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'spawn-subagent-skill', skillKey: 'spawn-subagent' };
+const sourceIdentity = { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent',
+  pluginVersion: '1.0.0', platform: 'codex', sourceContentDigest: 'sha256:' + 'b'.repeat(64) };
 
 async function ownedExecution(root, owner, id, overrides = {}) {
   const executionId = id.repeat(2);
@@ -141,7 +141,7 @@ test('Windows host failures retain only safe execution and parse diagnostics', a
 // but before the Windows helper opens it. Missing bindings mean closed; a
 // native failure alone must not authorize tool access or resource deletion.
 test('bridge close during native ACL verification returns closed', async (t) => {
-  const { createChildBridge, invokeChildTool } = await import('../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs');
+  const { createChildBridge, invokeChildTool } = await import('../commands/scripts/runtime/adapter-channel.mjs');
   for (const phase of ['directory', 'binding', 'response']) {
     await t.test(phase, async (t) => {
       const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-bridge-native-close-'));
@@ -176,7 +176,7 @@ test('bridge close during native ACL verification returns closed', async (t) => 
 // Test Value Gate: only a confirmed missing binding permits the native-close
 // fallback. Preserve helper diagnostics and any resource that is still present.
 test('native bridge failures preserve errors when binding removal is unconfirmed', async (t) => {
-  const { invokeChildTool } = await import('../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs');
+  const { invokeChildTool } = await import('../commands/scripts/runtime/adapter-channel.mjs');
   for (const scenario of ['present', 'invalidJson', 'EACCES', 'replacement']) {
     await t.test(scenario, async (t) => {
       const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-bridge-native-error-'));
@@ -230,7 +230,7 @@ test('owned run reads verify entry and concrete execution without caching owners
   });
   const owner = await api.currentUserIdentity();
   const run = await ownedExecution(root, owner, 'a'.repeat(11));
-  const { readOwner } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
+  const { readOwner } = await import('../commands/scripts/runtime/store.mjs');
   assert.deepEqual((await readOwner({ root, owner }, run.meta.id)).meta, run.meta);
   const targets = new Set(verifications.flatMap(({ resources }) => resources.map(({ target }) => target)));
   for (const target of [root, run.entryDirectory, path.join(run.entryDirectory, 'current.json'), run.containerDirectory, run.directory, path.join(run.directory, 'owner.json')]) assert.ok(targets.has(target));
@@ -256,7 +256,7 @@ test('multi-run reads isolate unsafe owners and scans silently preserve damaged 
     return { result: true };
   });
   const owner = await api.currentUserIdentity();
-  const { openRuns, scanExpired } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
+  const { openRuns, scanExpired } = await import('../commands/scripts/runtime/store.mjs');
   const runs = [];
   for (const id of ['a', 'b', 'c'].map((value) => value.repeat(11))) runs.push(await ownedExecution(root, owner, id));
   const handles = runs.map(({ handle }) => handle);
@@ -308,7 +308,7 @@ test('large owner scans bound native stdin batches and the number of runs', asyn
   const owner = await api.currentUserIdentity();
   const runs = [];
   for (let index = 0; index < 129; index++) runs.push(await ownedExecution(root, owner, index.toString(16).padStart(11, '0')));
-  const { scanExpired } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
+  const { scanExpired } = await import('../commands/scripts/runtime/store.mjs');
   assert.equal(await scanExpired({ root, owner, retentionHours: 24, sourceIdentity }), undefined);
   const observed = new Set(payloads.flatMap(({ resources = [] }) => resources.filter(({ kind, target }) => kind === 'file' && path.basename(target) === 'owner.json').map(({ target }) => target)));
   assert.equal(observed.size, 128);
@@ -340,7 +340,7 @@ test('multi-target wait rechecks permissions after a polling delay', async (t) =
     await fs.writeFile(path.join(run.directory, 'observed.json'), JSON.stringify({ sequence: 2, initializationSequence: 0, terminalConsumed: false }));
     runs.push(run);
   }
-  const { waitRuns } = await import('../skills/spawn-subagent/scripts/runtime/commands.mjs');
+  const { waitRuns } = await import('../commands/scripts/runtime/commands.mjs');
   const result = await waitRuns({ root, owner }, { runs: runs.map(({ handle }) => handle), timeoutMs: 5000 });
   assert.equal(result.exitCode, 1);
   assert.match(result.text, /Healthy target message\./);
@@ -364,7 +364,7 @@ test('run creation protects prepared resources before entry publication', async 
     return { result: true };
   });
   const owner = await api.currentUserIdentity();
-  const { createRun, readOwner, publishRun } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
+  const { createRun, readOwner, publishRun } = await import('../commands/scripts/runtime/store.mjs');
   const context = { root, owner, sourceIdentity };
   const run = await createRun(context, 'fixture', root, sourceIdentity);
   await assert.rejects(readOwner(context, run.meta.id), { code: 'runUnavailable' });
@@ -389,7 +389,7 @@ test('batched JSON publication preserves old state on protection failure and cle
     if (reject) throw new Error('private ACL failure');
     return { result: true };
   });
-  const { atomicJsonFiles } = await import('../skills/spawn-subagent/scripts/runtime/files.mjs');
+  const { atomicJsonFiles } = await import('../commands/scripts/runtime/files.mjs');
   const first = path.join(directory, 'first.json');
   const second = path.join(directory, 'second.json');
   await fs.writeFile(first, '{"old":1}\n');
@@ -418,7 +418,7 @@ test('atomic JSON replacement recovers from transient Windows sharing failures',
     const input = request.input;
     return { result: true };
   });
-  const { atomicJson } = await import('../skills/spawn-subagent/scripts/runtime/files.mjs');
+  const { atomicJson } = await import('../commands/scripts/runtime/files.mjs');
   const target = path.join(directory, 'owner.json');
   const rename = fs.rename;
   t.after(() => { fs.rename = rename; });
@@ -447,7 +447,7 @@ test('atomic JSON replacement bounds Windows retries and preserves permanent fai
     const input = request.input;
     return { result: true };
   });
-  const { atomicJson } = await import('../skills/spawn-subagent/scripts/runtime/files.mjs');
+  const { atomicJson } = await import('../commands/scripts/runtime/files.mjs');
   const target = path.join(directory, 'owner.json');
   const rename = fs.rename;
   t.after(() => { fs.rename = rename; });
@@ -466,7 +466,7 @@ test('atomic JSON replacement bounds Windows retries and preserves permanent fai
 // Test Value Gate: file diagnostics identify an operation and runtime resource
 // without publishing host paths, arbitrary filenames, messages, or stacks.
 test('file failure diagnostics expose only allowlisted operations and resource categories', async () => {
-  const { fileFailureDiagnostic } = await import('../skills/spawn-subagent/scripts/runtime/files.mjs');
+  const { fileFailureDiagnostic } = await import('../commands/scripts/runtime/files.mjs');
   const directory = path.resolve(os.tmpdir(), 'PRIVATE_RUN');
   const error = Object.assign(new Error('PRIVATE_MESSAGE'), {
     code: 'EPERM', syscall: 'rename', path: path.join(directory, 'owner.json.0123456789abcdef.tmp'),
@@ -501,7 +501,7 @@ test('scratch cleanup batches native tree checks and retains files when verifica
     if (rejectTree && !input.resources) throw new Error('unsafe descendant');
     return { result: true };
   });
-  const { removeScratch } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
+  const { removeScratch } = await import('../commands/scripts/runtime/store.mjs');
   const run = { directory, meta: { localTreeStopped: true, owner: await api.currentUserIdentity() } };
   await assert.rejects(removeScratch(run), { code: 'platformOperationFailed' });
   assert.equal(await fs.readFile(path.join(nested, 'second'), 'utf8'), 'two');
@@ -518,7 +518,7 @@ test('scratch cleanup batches native tree checks and retains files when verifica
 // Test Value Gate: required native operations accept only the tool prepared by
 // AW. Missing or mismatched context cannot launch a helper or select a fallback.
 test('native operations reject absent or invalid AW context and keep the selected tool fixed', async () => {
-  const entry = new URL('../skills/spawn-subagent/scripts/runtime/windows-native.mjs', import.meta.url).href;
+  const entry = new URL('../commands/scripts/runtime/windows-native.mjs', import.meta.url).href;
   const execute = promisify(originalExecFile);
   const tool = { state: 'ready', protocol: 'aw.windows-job.v1', executable: path.resolve('fixture-native/aw-windows-job.exe') };
   const context = (value) => JSON.stringify({ schemaVersion: 1, tools: { 'windows-job': value } });
@@ -543,7 +543,7 @@ process.stdout.write(JSON.stringify([first, await windowsJobExecutable()]));`], 
 // Test Value Gate: only the fixed versioned input/output contract can authorize
 // a filesystem, process or Job result. Failed exits never supply valid evidence.
 test('native protocol bounds input and output and rejects invalid success evidence', async (t) => {
-  const { windowsNativeOperation } = await import('../skills/spawn-subagent/scripts/runtime/windows-native.mjs');
+  const { windowsNativeOperation } = await import('../commands/scripts/runtime/windows-native.mjs');
   let response = { result: true };
   let calls = 0;
   const target = path.resolve(os.tmpdir());
@@ -586,7 +586,7 @@ test('native protocol bounds input and output and rejects invalid success eviden
 // Test Value Gate: the finite protocol deadline must reject an unresponsive
 // helper and terminate it, so an operation cannot wait indefinitely.
 test('native protocol terminates an operation at its deadline', async (t) => {
-  const { windowsNativeOperation } = await import('../skills/spawn-subagent/scripts/runtime/windows-native.mjs');
+  const { windowsNativeOperation } = await import('../commands/scripts/runtime/windows-native.mjs');
   let launched;
   const started = new Promise((resolve) => { launched = resolve; });
   windowsHostFixture(t, async () => { launched(); return new Promise(() => {}); });
@@ -616,8 +616,8 @@ test('required process identities remain mandatory through observation and expir
     return { result: true };
   });
   const owner = await api.currentUserIdentity();
-  const { workerAlive, removeExpired } = await import('../skills/spawn-subagent/scripts/runtime/store.mjs');
-  const { observeTree, stopOwnedTree } = await import('../skills/spawn-subagent/scripts/runtime/processes.mjs');
+  const { workerAlive, removeExpired } = await import('../commands/scripts/runtime/store.mjs');
+  const { observeTree, stopOwnedTree } = await import('../commands/scripts/runtime/processes.mjs');
   const context = { root, owner, retentionHours: 1, sourceIdentity };
   assert.equal(await workerAlive(context, { worker: { pid: process.pid, started: '10' } }), true);
   inaccessible = true;

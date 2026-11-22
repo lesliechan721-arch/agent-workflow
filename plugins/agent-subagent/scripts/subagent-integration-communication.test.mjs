@@ -12,7 +12,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   const clock = await f.clock(['start'], { stepMs: 1000 });
   const instructions = 'Explicit fixture role.\r\n保留指令。\n';
   await fs.writeFile(path.join(f.directory, 'instructions.md'), instructions);
-  Object.assign(f.snapshot.effectiveValues.subagentCommands[0], {
+  Object.assign(f.snapshot.values.subagentCommands[0], {
     args: ['--region', 'literal; $(touch escaped)', ''], env: { SOURCE: 'replacement', EMPTY: '' },
     envFrom: { SERVICE_DATA: 'SOURCE', EMPTY_REFERENCE: 'EMPTY_HOST' },
   });
@@ -38,7 +38,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.deepEqual(observed.request.fileResolver, { command: process.execPath, args: [path.join(f.installed, 'scripts/resolve-files.mjs')] });
   assert.ok(Object.values(observed.request.runtime.toolkit).every((value) => value === process.execPath || value.startsWith(f.installed + path.sep)));
   assert.equal(observed.cwd, f.workspace); assert.deepEqual(observed.argv, []);
-  assert.deepEqual(observed.request.args, f.snapshot.effectiveValues.subagentCommands[0].args);
+  assert.deepEqual(observed.request.args, f.snapshot.values.subagentCommands[0].args);
   assert.equal(observed.environment.SOURCE, 'replacement'); assert.equal(observed.environment.SERVICE_DATA, 'host-value');
   assert.equal(observed.environment.EMPTY, ''); assert.equal(observed.environment.EMPTY_REFERENCE, '');
   assert.equal(observed.environment.ORDINARY_HOST, 'inherited'); assert.equal(observed.environment.AW_PLUGIN_CONTEXT, undefined);
@@ -46,7 +46,7 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.equal(JSON.stringify(observed.request).includes('host-value'), false);
   assert.equal(await fs.stat(path.join(f.workspace, 'escaped')).catch(() => null), null);
   await fs.writeFile(path.join(f.directory, 'instructions.md'), 'changed role');
-  f.snapshot.effectiveValues.subagentCommands = []; await f.save();
+  f.snapshot.values.subagentCommands = []; await f.save();
   const initialized = await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);
   successful(initialized, 'wait');
   if (started.code === 1) assert.equal(field(initialized.stdout, 'communication'), 'false');
@@ -62,7 +62,7 @@ test('managed custom execution retains the fixed host and v5 arguments after sta
   const f = await fixture(t);
   const cliEntry = path.join(f.directory, 'fake aw host 中文.mjs');
   const observedFile = path.join(f.directory, 'host-observed.json');
-  const commandId = 'cmdp_' + 'a'.repeat(16);
+  const commandId = 'cmdu_4ba70354-0867-4ecb-a927-120c1933f514';
   const args = ['', '原文\r\n😀', '--literal', '$(touch escaped)'];
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';
@@ -73,7 +73,7 @@ await fs.writeFile(${JSON.stringify(observedFile)}, JSON.stringify({ argv: proce
 await import(${JSON.stringify(pathToFileURL(path.join(f.directory, 'fake-adapter.mjs')).href)});
 }
 `);
-  f.snapshot.effectiveValues.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId, args }];
+  f.snapshot.values.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId, args }];
   await f.save();
   const started = await f.start({ echo: true }, { env: { AW_COMMAND_HOST: JSON.stringify(host) } });
   await f.initialized(started);
@@ -188,21 +188,21 @@ test('installed CLI rejects invalid arguments and stdin before side effects', { 
     [['--executor', 'Fixture'], 'executorUnknown'],
     [['--executor', 'fixture', '--executor', 'fixture'], 'argumentsInvalid'],
   ]) {
-    const rejected = await f.command(['start', ...args, '--prompt', 'must not start']);
+    const rejected = await f.command(['start', '--platform', 'codex', ...args, '--prompt', 'must not start']);
     assert.equal(rejected.code, 2); assert.equal(field(rejected.stderr, 'code'), code);
   }
-  const entry = f.snapshot.effectiveValues.subagentCommands[0];
+  const entry = f.snapshot.values.subagentCommands[0];
   for (const [registry, code] of [
     [[entry, { ...entry }], 'registryInvalid'],
     [[{ ...entry, title: 'Legacy title' }], 'executorInvalid'],
     [[{ ...entry, key: 'native' }, entry], 'registryInvalid'],
   ]) {
-    f.snapshot.effectiveValues.subagentCommands = registry; await f.save();
-    const rejected = await f.command(['start', '--executor', 'fixture', '--prompt', 'must not start']);
+    f.snapshot.values.subagentCommands = registry; await f.save();
+    const rejected = await f.command(['start', '--platform', 'codex', '--executor', 'fixture', '--prompt', 'must not start']);
     assert.equal(rejected.code, 2); assert.equal(field(rejected.stderr, 'code'), code);
   }
-  f.snapshot.effectiveValues.subagentCommands = [entry]; await f.save();
-  const prompt = await f.command(['start', '--executor', 'fixture', '--workspace', f.workspace, '--prompt', '-'], { keepStdinOpen: true });
+  f.snapshot.values.subagentCommands = [entry]; await f.save();
+  const prompt = await f.command(['start', '--platform', 'codex', '--executor', 'fixture', '--workspace', f.workspace, '--prompt', '-'], { keepStdinOpen: true });
   assert.equal(prompt.code, 2); assert.equal(field(prompt.stderr, 'code'), 'argumentsInvalid');
   const message = await f.command(['send', '--run', 'handle', '--text', '-'], { keepStdinOpen: true });
   assert.equal(message.code, 2); assert.equal(field(message.stderr, 'code'), 'argumentsInvalid');
@@ -215,7 +215,7 @@ test('installed CLI rejects invalid arguments and stdin before side effects', { 
 // plan, runner, worker and wire while public send and lifecycle remain correct.
 test('installed communication false rejects send and preserves result and stop', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentCommands[0].communication = false; await f.save();
+  f.snapshot.values.subagentCommands[0].communication = false; await f.save();
   const started = await f.start(); await f.initialized(started);
   assert.equal((await started.observed()).request.communication, false);
   const ready = started.code === 0 ? started : await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);

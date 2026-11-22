@@ -757,6 +757,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       })), blockers: [], errors: [], targetResults: [] },
       nativeGroups: [], changes: [], warnings: [] },
       evidence: planEvidence(), preApplyAuthorization, commandPackages: [], commandDiscoveryErrors: [],
+      commandPackageEvidence: [], commandPackageReviews: [],
     }));
     runtimeMocks.applyPluginConfig.mockImplementation(async () => ({
       configWrite: 'notStarted', overallState: 'succeeded', apply: { state: 'succeeded',
@@ -787,8 +788,9 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect({ scope: applyOptions.scope, context: applyOptions.context,
       expectedEvidence: applyOptions.expectedEvidence, scriptTimeoutMs: applyOptions.rebuildRuntime?.scriptTimeoutMs,
       preApplyAuthorizedTargets: applyOptions.preApplyAuthorizedTargets,
+      expectedCommandPackageEvidence: applyOptions.expectedCommandPackageEvidence,
     }).toEqual({ scope: 'user', context: 'user', expectedEvidence: planEvidence(),
-      scriptTimeoutMs: 18_000, preApplyAuthorizedTargets: preApplyAuthorization });
+      scriptTimeoutMs: 18_000, preApplyAuthorizedTargets: preApplyAuthorization, expectedCommandPackageEvidence: [] });
     expect('applyTargets' in applyOptions).toBe(false);
     expect(runtimeMocks.applyPluginConfigWrite).not.toHaveBeenCalled();
 

@@ -111,8 +111,8 @@ test('same-batch tools use explicit artifacts without any registry lookup and re
   assert.equal(f.reads.length, 0);
   const pluginRoot = path.join(f.root, 'plugins/demo/.agents-plugin');
   await fs.mkdir(pluginRoot, { recursive: true });
-  await fs.writeFile(path.join(pluginRoot, 'plugin.json'), JSON.stringify({ requires: { aw: { capabilities: ['aw.native-tools.v2'] } } }));
-  await assert.rejects(prepareCatalogToolchain('beta', { ...f.options, cliBundle }), /lacks aw.native-tools.v2/u);
+  await fs.writeFile(path.join(pluginRoot, 'plugin.json'), JSON.stringify({ requires: { aw: { capabilities: ['aw.native-tools.v3'] } } }));
+  await assert.rejects(prepareCatalogToolchain('beta', { ...f.options, cliBundle }), /lacks aw.native-tools.v3/u);
   await assert.rejects(prepareCatalogToolchain('beta', { ...f.options, cliBundle,
     loadToolchainCapabilities: async () => ({ IMPLEMENTED_AW_CAPABILITIES: [] }),
   }), /lacks aw.catalog-publication/u);

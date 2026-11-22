@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fixture, eventually, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
 import { messageBodies } from './fixtures/message-bodies.mjs';
-import { executeCommand, parseCommand } from '../skills/spawn-subagent/scripts/subagent.mjs';
+import { executeCommand, parseCommand } from '../commands/scripts/subagent.mjs';
 
 // Test Value Gate: the complete legal message must cross parent argv/file,
 // queue JSON, worker protocol, event JSON and bounded result without truncation.
@@ -46,7 +46,7 @@ test('publication is the boundary between preserving old results and retaining a
   let refused;
   try {
     refused = await executeCommand(parseCommand(['send', '--run', first.run, '--text', 'Unpublished message.']), {
-      homeRoot: f.homeRoot, readRuntimeConfig: async () => f.snapshot,
+      homeRoot: f.homeRoot, readCommandRuntimeConfig: async () => f.snapshot,
     });
   } finally { failure.mock.restore(); }
   assert.equal(refused.exitCode, 1);
@@ -90,10 +90,10 @@ test('installed commands use one configuration read and do not wait for or repor
   const scanFile = path.join(f.installed, 'scripts', 'scan-expired.mjs');
   const marker = path.join(f.directory, 'scan-started.json');
   const reads = path.join(f.directory, 'config-reads.txt');
-  const reader = path.join(f.installed, 'scripts', 'aw-runtime-config.mjs');
+  const reader = path.join(f.installed, '.aw', 'command-runtime-config.mjs');
   const originalReader = await fs.readFile(reader, 'utf8');
-  await fs.writeFile(reader, originalReader.replace("return JSON.parse", `await fs.appendFile(${JSON.stringify(reads)}, 'read\\n');return JSON.parse`));
-  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
+  await fs.writeFile(reader, originalReader.replace("const snapshot = JSON.parse", `await fs.appendFile(${JSON.stringify(reads)}, 'read\\n');const snapshot = JSON.parse`));
+  f.snapshot.values.subagentRetentionHours = 24; await f.save();
   await fs.writeFile(scanFile, `import fs from 'node:fs/promises';await fs.writeFile(${JSON.stringify(marker)}, JSON.stringify({pid:process.pid,snapshot:JSON.parse(process.argv[2])}));setTimeout(()=>process.exit(0),5000);\n`);
   const response = await f.command(['result', '--run', first.run]);
   successful(response, 'result'); assert.equal(response.stderr, '');
@@ -107,7 +107,7 @@ test('installed commands use one configuration read and do not wait for or repor
   const failedScan = await f.command(['result', '--run', first.run, '--diagnostics']);
   successful(failedScan, 'result'); assert.equal(failedScan.stderr, ''); assert.equal(failedScan.stdout, response.stdout);
   assert.equal(await fs.readFile(reads, 'utf8'), 'read\nread\n');
-  f.snapshot.effectiveValues.subagentRetentionHours = 'invalid'; await f.save();
+  f.snapshot.values.subagentRetentionHours = 'invalid'; await f.save();
   const invalid = await f.command(['result', '--run', first.run]);
   successful(invalid, 'result'); assert.equal(invalid.stderr, '');
 });
@@ -119,28 +119,32 @@ test('managed resume retains its original command host and rejects execution cha
   const cliEntry = path.join(f.directory, 'managed-host.mjs');
   const launchFile = path.join(f.directory, 'managed-launch.json');
   const invoked = path.join(f.directory, 'managed-invocations.jsonl');
-  const commandId = 'cmdp_' + 'b'.repeat(16);
-  const command = { id: commandId, name: 'First display name', owner: { kind: 'user' }, availability: 'ready', resourceRoot: f.directory,
-    launch: { runner: 'node', entry: 'fake-adapter.mjs', args: ['fixed'], env: { FIXED: 'yes' }, envFrom: {}, cwd: 'caller' }, errors: [], recoveryActions: [] };
+  const commandId = 'fixture/managed-adapter';
+  const fixed = { runner: 'node', entry: 'fake-adapter.mjs', args: ['fixed'], env: { FIXED: 'yes' }, envFrom: {}, cwd: 'caller' };
+  const command = { selector: commandId, owner: { kind: 'plugin', producer: { sourceId: 'fixture', pluginName: 'managed-adapter', sourceIdentity: 'sha256:' + 'a'.repeat(64) } },
+    pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64), availability: 'ready', resourceRoot: f.directory,
+    routes: { subcommands: [{ name: 'execute', ...fixed }], fallback: { ...fixed, args: ['fallback'] } } };
   await fs.writeFile(launchFile, JSON.stringify(command));
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';
 if(process.argv[3]==='show') console.log(JSON.stringify({schemaVersion:2,command:'command.show',status:'success',data:{commands:[JSON.parse(await fs.readFile(${JSON.stringify(launchFile)},'utf8'))],packages:[],changes:[]},diagnostics:[],nextActions:[]}));
 else {await fs.appendFile(${JSON.stringify(invoked)},JSON.stringify({argv:process.argv.slice(2),awHome:process.env.AW_HOME})+'\\n');await import(${JSON.stringify(pathToFileURL(path.join(f.directory, 'fake-adapter.mjs')).href)});}
 `);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };
-  f.snapshot.effectiveValues.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId }]; await f.save();
+  f.snapshot.values.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId, subcommand: 'execute' }]; await f.save();
   const first = await f.start({ resume: true, finishImmediately: true }, { env: { AW_COMMAND_HOST: JSON.stringify(host) } });
   await f.stopped(first.run);
-  command.name = 'Changed display name'; await fs.writeFile(launchFile, JSON.stringify(command));
+  command.resourceRoot = f.workspace; await fs.writeFile(launchFile, JSON.stringify(command));
   const resumed = await f.resume(first, 'Keep the original managed execution.', { resume: true });
   await f.initialized(resumed); await resumed.finish();
   const before = await f.stopped(first.run);
-  command.launch.args = ['different']; await fs.writeFile(launchFile, JSON.stringify(command));
+  command.routes.subcommands = []; await fs.writeFile(launchFile, JSON.stringify(command));
   const changed = await f.resume(first, 'Do not submit.', { resume: true });
   assert.equal(field(changed.stderr, 'code'), 'resumeExecutionChanged');
   assert.equal((await f.evidence(first.run)).directory, before.directory);
+  const unavailable = await f.start({}, { env: { AW_COMMAND_HOST: JSON.stringify(host) } });
+  assert.equal(field(unavailable.stderr, 'code'), 'executorInvalid');
   const launches = (await fs.readFile(invoked, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.deepEqual(launches, Array.from({ length: 2 }, () => ({ argv: ['command', 'run', commandId, '--'], awHome: f.directory })));
+  assert.deepEqual(launches, Array.from({ length: 2 }, () => ({ argv: ['command', 'run', commandId, '--no-fallback', '--', 'execute'], awHome: f.directory })));
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\ngeneration\n');
 });
 

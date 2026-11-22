@@ -6,7 +6,8 @@ import {
   NATIVE_PLATFORM_TARGETS,
   type PlatformTarget,
   supportsPlatform,
-  type ManagedCommandProducerRef,
+  getCommandPackageId,
+  type ProducerIdentity,
   getPluginConfigDependencyKeys,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -17,10 +18,7 @@ import type {
   ReceiptTargetIdentity,
   Scope,
 } from '../types.js';
-import {
-  discoverInstalledPluginManagedCommandPackages,
-  type ManagedCommandPackageDiscovery,
-} from './managed-command-materialization.js';
+import { ManagedCommandError, managedCommandDiagnostic, readManagedCommandPackage, readManagedCommandPackageView } from './managed-command-store.js';
 import {
   coercePluginConfigUpdates,
   readPluginConfigStore,
@@ -54,7 +52,24 @@ export interface PluginConfigImpactSharedNativeRenderUnit {
   renderScope: 'user';
   configKeys: string[];
   dynamicComponents: boolean;
-  commandSets: Array<{ set: string; producer: Exclude<ManagedCommandProducerRef, { kind: 'package' }> }>;
+}
+
+export interface ConfigCommandPackage {
+  producer: ProducerIdentity;
+  packageId: string;
+  refreshKeys: string[];
+  runtimeConfigKeys: string[];
+  runtimeConfigPlatforms: PlatformName[];
+  availability?: 'ready' | 'empty' | 'unavailable';
+  subcommands?: string[];
+  hasFallback?: boolean;
+  declared: boolean;
+  installed: boolean;
+}
+
+export interface ManagedCommandPackageDiscovery {
+  packages: ConfigCommandPackage[];
+  errors: Array<ReturnType<typeof managedCommandDiagnostic>>;
 }
 
 export interface PluginConfigMutationImpact {
@@ -75,7 +90,7 @@ export interface PluginConfigMutationImpact {
   referenceWarnings?: string[];
 }
 
-/** Installed producer markers and the actual platform plan define the visible package set. */
+/** Config apply can refresh a shared package even without a visible platform deployment. */
 export async function discoverPluginConfigManagedCommandPackages(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -93,14 +108,24 @@ export async function discoverPluginConfigManagedCommandPackages(options: {
     plugins = [options.plugin];
     errors.push({ code: 'commandDependencyDiscoveryFailed', message: 'The command packages of configuration consumers cannot be discovered.' });
   }
-  const discoveries = await Promise.all(plugins.map((plugin) => discoverInstalledPluginManagedCommandPackages({
-    plugin, scope: options.scope, cwd: options.cwd, env: options.env,
-    platformTargets: options.platformTargets?.filter((target) => target.pluginName === plugin.manifest.name),
-  })));
   const packages = new Map<string, ManagedCommandPackageDiscovery['packages'][number]>();
-  for (const discovery of discoveries) {
-    for (const target of discovery.packages) packages.set(target.packageId, target);
-    errors.push(...discovery.errors);
+  for (const plugin of plugins) {
+    if (!plugin.sourceId || !plugin.sourceIdentity) continue;
+    const producer = { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name };
+    const packageId = getCommandPackageId(producer);
+    try {
+      const view = await readManagedCommandPackageView(packageId, options.env);
+      const record = view.routes === null ? undefined : await readManagedCommandPackage(producer, options.env, { validateFiles: false });
+      const command = plugin.manifest.command;
+      packages.set(packageId, { producer, packageId,
+        refreshKeys: [...new Set([...(command?.mode === 'dynamic' ? command.refreshKeys : []), ...record?.record.dynamicRefreshKeys ?? []])],
+        runtimeConfigKeys: [...new Set([...command?.runtimeConfig?.keys ?? [], ...record?.record.runtimeConfigKeys ?? []])],
+        runtimeConfigPlatforms: view.runtimeConfigPlatforms, declared: command !== undefined, installed: true,
+        availability: view.availability, subcommands: view.subcommands, hasFallback: view.hasFallback });
+    } catch (error) {
+      if (error instanceof ManagedCommandError && error.code === 'commandNotFound') continue;
+      errors.push(managedCommandDiagnostic(error, `${producer.sourceId}/${producer.pluginName}`));
+    }
   }
   return { packages: [...packages.values()], errors: [...new Map(errors.map((error) => [JSON.stringify(error), error])).values()] };
 }
@@ -168,27 +193,16 @@ interface ConfigRenderConsumer {
   scope: Scope;
   configKeys: string[];
   dynamicComponents: boolean;
-  commandSet?: PluginConfigImpactSharedNativeRenderUnit['commandSets'][number];
 }
 
 function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity): ConfigRenderConsumer[] {
   if (!supportsPlatform(plugin.manifest, target.platform)) return [];
   const scopes = getProfileRenderScopes(target.platform, target.scope);
   const artifacts = plugin.manifest.artifacts;
-  const consumers: ConfigRenderConsumer[] = artifacts ? scopes
+  return artifacts ? scopes
     .filter((scope) => !artifacts.scopes || artifacts.scopes.includes(scope))
     .map((scope) => ({ pluginName: plugin.manifest.name, platform: target.platform, scope,
       configKeys: artifacts.configKeys, dynamicComponents: true })) : [];
-  // Skill producers belong to the package render scope, including shared user packages.
-  const skillScope = scopes[0]!;
-  for (const set of plugin.manifest.managedCommands?.sets ?? []) {
-    const producer = set.producer;
-    if (set.mode !== 'dynamic' || producer.kind === 'package' || producer.platform !== target.platform) continue;
-    if (producer.kind === 'artifact' && artifacts?.scopes && !artifacts.scopes.includes(skillScope)) continue;
-    consumers.push({ pluginName: plugin.manifest.name, platform: target.platform, scope: skillScope,
-      configKeys: set.refreshKeys, dynamicComponents: false, commandSet: { set: set.set, producer } });
-  }
-  return consumers;
 }
 
 /** Render scopes come from the fixed platform layout, independently of the previous component set. */
@@ -201,11 +215,9 @@ function addSharedNativeConsumer(output: Map<string, PluginConfigImpactSharedNat
     || !getProfileRenderScopes(consumer.platform, 'project').includes('user')) return;
   const key = `${consumer.pluginName}\0${consumer.platform}`;
   const previous = output.get(key);
-  const commandSets = [...(previous?.commandSets ?? [])];
-  if (consumer.commandSet && !commandSets.some((entry) => entry.set === consumer.commandSet!.set)) commandSets.push(consumer.commandSet);
   output.set(key, { pluginName: consumer.pluginName, platform: consumer.platform, renderScope: 'user',
     configKeys: [...new Set([...(previous?.configKeys ?? []), ...consumer.configKeys])],
-    dynamicComponents: previous?.dynamicComponents === true || consumer.dynamicComponents, commandSets });
+    dynamicComponents: previous?.dynamicComponents === true || consumer.dynamicComponents });
 }
 
 export function pluginSharedNativeConfigRenderUnits(plugin: PluginMeta): PluginConfigImpactSharedNativeRenderUnit[] {
@@ -304,8 +316,8 @@ export async function analyzePluginConfigMutationImpact(options: {
     : changedKeys.length > 0;
   const visibleTargets = options.visibleTargets.filter((target) => (!options.platform || target.platform === options.platform)
     && (options.scope === 'project' || target.scope === 'user'));
-  const selectedCommands = { ...commands, packages: commands.packages.filter((target) => (!options.platform || target.producer.platform === options.platform)
-    && (options.scope === 'project' || target.producer.scope === 'user')) };
+  const selectedCommands = { ...commands, packages: commands.packages.filter((target) => !options.platform
+    || target.runtimeConfigKeys.length > 0) };
   let plugins: PluginMeta[];
   let currentReferences: unknown;
   try {
@@ -372,11 +384,31 @@ export async function analyzePluginConfigMutationImpact(options: {
       if (affected) affectedTargets.push(target);
     }
     for (const target of selectedCommands.packages) {
-      const pair = await consumerPair(target.producer.pluginName, target.producer.platform ?? undefined);
       const plugin = allPlugins.get(target.producer.pluginName);
-      if (!target.declared || !pair?.before || !pair.after || !plugin?.manifest.config) { affectedCommandPackages.push(target); continue; }
-      const keys = getPluginConfigDependencyKeys(selectPluginConfigProfile(plugin.manifest.config, target.producer.platform ?? undefined), target.refreshKeys);
-      if (!rendererProjectionEqual(pair.before, pair.after, keys)) affectedCommandPackages.push(target);
+      if (!plugin?.manifest.config) continue;
+      const command = plugin.manifest.command;
+      const matches = async (keys: string[], platform?: PlatformTarget) => {
+        const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
+        const declared = keys.filter((key) => Object.hasOwn(definition.fields, key));
+        if (declared.length === 0) return false;
+        const pair = await consumerPair(target.producer.pluginName, platform);
+        if (!pair?.before || !pair.after) return false;
+        return !rendererProjectionEqual(pair.before, pair.after, getPluginConfigDependencyKeys(definition, declared));
+      };
+      const routesChanged = !options.platform && await matches(target.refreshKeys);
+      const runtimeChanged = options.platform
+        ? options.platform !== 'generic' && (command?.platforms.includes(options.platform) ?? target.runtimeConfigPlatforms.includes(options.platform)) && await matches(target.runtimeConfigKeys, options.platform)
+        : await matches(target.runtimeConfigKeys)
+          || (target.producer.pluginName === options.plugin.manifest.name && target.runtimeConfigPlatforms.some((platform) => {
+            const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
+            const keys = target.runtimeConfigKeys.filter((key) => Object.hasOwn(definition.fields, key));
+            return getPluginConfigDependencyKeys(definition, keys).some((key) => changedKeys.includes(key));
+          }))
+          || (await Promise.all(target.runtimeConfigPlatforms.map((platform) => matches(target.runtimeConfigKeys, platform)))).some(Boolean);
+      if (routesChanged || runtimeChanged) affectedCommandPackages.push(target);
+      if (routesChanged) for (const visible of visibleTargets) {
+        if (visible.pluginName === target.producer.pluginName && command?.platforms.includes(visible.platform)) affectedTargets.push(visible);
+      }
     }
     // Common edits bind every supported profile even when no installed output currently consumes it.
     for (const platform of options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS]) {
@@ -387,7 +419,7 @@ export async function analyzePluginConfigMutationImpact(options: {
       platform: options.platform ?? null, references: currentReferences, mutationReferences: referenceImpact.evidence })).digest('hex')}`;
     return { impactState: commands.errors.length || referenceWarnings.length ? 'unknown' : 'known',
       noEffectiveChange: !affectedTargets.length && !affectedCommandPackages.length && !commands.errors.length,
-      storeChanged, storeDigest, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets,
+      storeChanged, storeDigest, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets: dedupeTargets(affectedTargets),
       sharedNativeRenderUnits: [...sharedNativeRenderUnits.values()], commandPackages: selectedCommands.packages,
       affectedCommandPackages, commandDiscoveryErrors: commands.errors, referenceWarnings,
       referenceBlockers: [...referenceImpact.blockedReferences, ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };

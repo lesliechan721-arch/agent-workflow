@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { antigravityArguments, antigravityFullAccess } from '../../skills/spawn-subagent/scripts/adapters/antigravity-arguments.mjs';
-import { claudeArguments, negotiateClaude, executeClaude } from '../../skills/spawn-subagent/scripts/adapters/claude-code-v5.mjs';
-import { checkCodexArguments, negotiateCodex, codexConfiguration } from '../../skills/spawn-subagent/scripts/adapters/codex-v5.mjs';
+import { antigravityArguments, antigravityFullAccess } from '../../commands/scripts/adapters/antigravity-arguments.mjs';
+import { claudeArguments, negotiateClaude, executeClaude } from '../../commands/scripts/adapters/claude-code-v5.mjs';
+import { checkCodexArguments, negotiateCodex, codexConfiguration } from '../../commands/scripts/adapters/codex-v5.mjs';
 import { PassThrough } from 'node:stream';
-import { deferred } from '../../skills/spawn-subagent/scripts/adapters/common.mjs';
-import { negotiateAntigravity } from '../../skills/spawn-subagent/scripts/adapters/antigravity-v5.mjs';
-import { negotiateOracle } from '../../skills/spawn-subagent/scripts/adapters/oracle-v5.mjs';
-import { permissionModeFallback } from '../../skills/spawn-subagent/scripts/adapters/permission-mode.mjs';
+import { deferred } from '../../commands/scripts/adapters/common.mjs';
+import { negotiateAntigravity } from '../../commands/scripts/adapters/antigravity-v5.mjs';
+import { negotiateOracle } from '../../commands/scripts/adapters/oracle-v5.mjs';
+import { permissionModeFallback } from '../../commands/scripts/adapters/permission-mode.mjs';
 
 // Test Value Gate: selected permissions must reach the native control surface,
 // preserve profile/default values, and reject duplicate explicit controls before IO.

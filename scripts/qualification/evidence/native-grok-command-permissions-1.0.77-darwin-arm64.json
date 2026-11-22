@@ -1,0 +1,686 @@
+{
+  "client": "grok 1.0.77 (50ca579fa996)",
+  "os": "macOS 26.3.1 (25D2128) arm64",
+  "mode": "Interactive CLI with default approval settings",
+  "startedAt": "2026-11-22T13:33:32.732143+00:00",
+  "sourceReportSha256": "9ce0c0f3856ce2c2566db415edfed77611bf636786575af28f6aea57ff0f1ce1",
+  "extraction": "Selected fields from the final 29-session report and the separate public status repair check. Temporary paths, credentials, provider requests and full receipts were omitted.",
+  "awDistSha256": {
+    "index.js": "c5cd15e351fd9e0b87b7a85b8d8c805596a07ba0b3694b842b4603d418771973",
+    "src/index.js": "a94662dc3d982a9d3b57b30a41ec9186c4751836d523dc69e7509553dffd4eb2",
+    "src/commands/permission-batch.js": "26a350ab464400967a633e8e13eaebe1691f919ff15b57e74f99bb3521ad613b",
+    "src/platforms/grok-permissions.js": "59c156b6c3a820d09072223f11916f773e9968937c7749a93cf2095a341d549e",
+    "src/platforms/grok-permission-config.js": "ec8ed376f3c7701659e76dd003c44cac27854332b68099eea887e01c309b6113",
+    "src/platforms/grok-permission-document.js": "d6ad38fdc7b4c415c205f3680b7f4c63fe994ef796a982a151e1bd3f10db05c2",
+    "src/platforms/permission-ownership.js": "3b21cea71521eb9255524f95cc66e927dcae0eccc8abc5072b3b1ebcc9c9ec7e"
+  },
+  "fixture": "Fresh sessions with isolated AW and Grok configuration, two temporary Git projects, and a loopback provider issuing one harmless shell request per session.",
+  "configurations": {
+    "baseline/base-user": {
+      "provenance": "loopback provider configuration without permission rules",
+      "sha256": "71d792a80e8abd48676da0453b2e8e65e2dc10fe583b07257950b9c5f9edbbaa"
+    },
+    "user/base-user": {
+      "provenance": "loopback provider configuration without permission rules",
+      "sha256": "71d792a80e8abd48676da0453b2e8e65e2dc10fe583b07257950b9c5f9edbbaa"
+    },
+    "user/aw-user": {
+      "provenance": "user/install",
+      "sha256": "f9b397dbbd452a7d45ba2676b79b510ce5bb2ca4a824c2afb9ff425387e25cda"
+    },
+    "project/base-user": {
+      "provenance": "loopback provider configuration without permission rules",
+      "sha256": "71d792a80e8abd48676da0453b2e8e65e2dc10fe583b07257950b9c5f9edbbaa"
+    },
+    "project/aw-project": {
+      "provenance": "project/install",
+      "sha256": "c1d8a750f174d78da3107e8f7a8dc342a80edb0754aa93d2ffbb1836fdf80933"
+    }
+  },
+  "trustReadback": [
+    {
+      "fixture": "baseline",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true
+    },
+    {
+      "fixture": "baseline",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true
+    },
+    {
+      "fixture": "user",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true
+    },
+    {
+      "fixture": "user",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true
+    },
+    {
+      "fixture": "project",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true
+    },
+    {
+      "fixture": "project",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true
+    }
+  ],
+  "scopeReview": {
+    "user": {
+      "reviewExitCode": 3,
+      "reviewEffectCodes": [
+        "changeCommandRoutes",
+        "changeHostPermissions",
+        "hostPermissionAdditionalImpact"
+      ],
+      "installExitCode": 0,
+      "reportedPermissionImpactReasons": [
+        "grok-shell-text-matching"
+      ]
+    },
+    "project": {
+      "reviewExitCode": 3,
+      "reviewEffectCodes": [
+        "changeCommandRoutes",
+        "changeHostPermissions",
+        "hostPermissionAdditionalImpact"
+      ],
+      "installExitCode": 0,
+      "reportedPermissionImpactReasons": [
+        "grok-shell-text-matching"
+      ]
+    }
+  },
+  "passedSessions": 29,
+  "sessions": [
+    {
+      "case": "baseline-a-managed-allow-0-reject",
+      "scope": "baseline",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "baseline/base-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "baseline-a-ordinary-allow-0-reject",
+      "scope": "baseline",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "baseline/base-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "baseline-a-wrapped-allow-0-reject",
+      "scope": "baseline",
+      "project": "a",
+      "form": "wrapped",
+      "command": "command sample-report",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "baseline/base-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-managed-allow-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "allow",
+      "executionCount": 1
+    },
+    {
+      "case": "user-a-managed-allow-2-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show one 'two words'",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "show",
+        "one",
+        "two words"
+      ]
+    },
+    {
+      "case": "user-a-managed-ask-0-once",
+      "scope": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "ask-once",
+      "executionCount": 1
+    },
+    {
+      "case": "user-a-managed-ask-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-managed-deny-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-ordinary-allow-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "allow",
+      "executionCount": 1
+    },
+    {
+      "case": "user-a-ordinary-allow-2-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show one 'two words'",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "show",
+        "one",
+        "two words"
+      ]
+    },
+    {
+      "case": "user-a-ordinary-ask-0-once",
+      "scope": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "ask-once",
+      "executionCount": 1
+    },
+    {
+      "case": "user-a-ordinary-ask-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-ordinary-deny-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "user-b-managed-deny-0-reject",
+      "scope": "user",
+      "project": "b",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "user-b-ordinary-deny-0-reject",
+      "scope": "user",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-wrapped-allow-0-reject",
+      "scope": "user",
+      "project": "a",
+      "form": "wrapped",
+      "command": "command sample-report",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "user/aw-user"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "sample-report"
+      ]
+    },
+    {
+      "case": "project-a-managed-allow-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "allow",
+      "executionCount": 1
+    },
+    {
+      "case": "project-a-managed-allow-2-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show one 'two words'",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "show",
+        "one",
+        "two words"
+      ]
+    },
+    {
+      "case": "project-a-managed-ask-0-once",
+      "scope": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "ask-once",
+      "executionCount": 1
+    },
+    {
+      "case": "project-a-managed-ask-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-managed-deny-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-ordinary-allow-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "allow",
+      "executionCount": 1
+    },
+    {
+      "case": "project-a-ordinary-allow-2-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show one 'two words'",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "show",
+        "one",
+        "two words"
+      ]
+    },
+    {
+      "case": "project-a-ordinary-ask-0-once",
+      "scope": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "ask-once",
+      "executionCount": 1
+    },
+    {
+      "case": "project-a-ordinary-ask-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-ordinary-deny-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "deny",
+      "executionCount": 0
+    },
+    {
+      "case": "project-b-managed-deny-0-reject",
+      "scope": "project",
+      "project": "b",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "project-b-ordinary-deny-0-reject",
+      "scope": "project",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "trusted": true,
+      "approvalMenu": true,
+      "markerCountAtPrompt": 0,
+      "inputConfigs": {
+        "user": "project/base-user"
+      },
+      "observed": "ask-reject",
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-wrapped-allow-0-reject",
+      "scope": "project",
+      "project": "a",
+      "form": "wrapped",
+      "command": "command sample-report",
+      "trusted": true,
+      "approvalMenu": false,
+      "markerCountAtPrompt": null,
+      "inputConfigs": {
+        "user": "project/base-user",
+        "project": "project/aw-project"
+      },
+      "observed": "allow",
+      "executionCount": 1,
+      "executedArgv": [
+        "sample-report"
+      ]
+    }
+  ],
+  "limits": [
+    "Standard ordinary and managed command calls in User and explicitly trusted Project scope. No project trust was created by AW.",
+    "The command sample-report wrapper was tested in the baseline, User and Project. Other wrappers and inline script projections have separate source and local regression coverage.",
+    "Windows, other operating systems, Desktop, hot reload, other modes, remembered approvals, and external policy precedence are outside this run."
+  ],
+  "awBuildStamp": {
+    "generationId": "8a16a507-c508-4bb6-b040-ff7660eca3a1",
+    "inputDigest": "6db6823c91ea42c34c5ae3d11081a06f909b9c3d6577f65217cd75902d53f82b",
+    "outputDigest": "1bb8c373519b5efda88e247bc955aede7507d13573e62f8ff1f099fed3d8291e",
+    "builtAt": "2026-11-22T13:33:12.570Z",
+    "sha256": "7f1710eb5a567673fb52ffe6ad72ef4864f9fb0f022601ebc67cccfb535b8587",
+    "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540"
+  },
+  "statusRepair": {
+    "sourceReportSha256": "84ab50a68dc1ceaa5f53337bfdfbeaf65862ec6f60ce1df53e6c82a2f2ed2bb5",
+    "host": {
+      "name": "Grok CLI",
+      "version": "1.0.77",
+      "scope": "user",
+      "isolatedHome": true
+    },
+    "plugin": "fixture/probe",
+    "rule": {
+      "action": "deny",
+      "tool": "bash",
+      "pattern": "aw-repro report"
+    },
+    "statusCommand": [
+      "aw",
+      "plugin",
+      "status",
+      "fixture/probe",
+      "--context",
+      "user",
+      "--json"
+    ],
+    "before": {
+      "content": "satisfied",
+      "satisfaction": "installed",
+      "counts": {
+        "blocked": 0,
+        "pending": 0,
+        "unconfirmed": 0,
+        "ready": 1
+      },
+      "diagnosticCodes": [],
+      "nextCommands": []
+    },
+    "externalEdit": "Removed the delivered rule from the isolated Grok user configuration.",
+    "pending": {
+      "content": "drifted",
+      "satisfaction": "pending",
+      "counts": {
+        "blocked": 0,
+        "pending": 1,
+        "unconfirmed": 0,
+        "ready": 0
+      },
+      "diagnosticCodes": [
+        "componentOutputMissing"
+      ],
+      "nextCommands": [
+        [
+          "aw",
+          "plugin",
+          "sync",
+          "fixture/probe",
+          "--context",
+          "user",
+          "--target",
+          "grok"
+        ]
+      ]
+    },
+    "statusPreservedEditedConfigBytes": true,
+    "repair": {
+      "command": [
+        "aw",
+        "plugin",
+        "sync",
+        "fixture/probe",
+        "--context",
+        "user",
+        "--target",
+        "grok",
+        "--yes",
+        "--json"
+      ],
+      "status": "success",
+      "diagnosticCodes": [
+        "hostPermissionAdditionalImpact"
+      ],
+      "nativeRuleRestored": true
+    },
+    "restored": {
+      "content": "satisfied",
+      "satisfaction": "installed",
+      "counts": {
+        "blocked": 0,
+        "pending": 0,
+        "unconfirmed": 0,
+        "ready": 1
+      },
+      "diagnosticCodes": [],
+      "nextCommands": []
+    }
+  }
+}

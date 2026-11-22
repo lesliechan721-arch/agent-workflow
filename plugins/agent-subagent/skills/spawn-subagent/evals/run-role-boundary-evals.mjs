@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readWorkflowEvidence, runCodexWorkflowAdapterMain } from './codex-workflow-adapter.mjs';
-import { fixtureAssetURL as actionAssetURL, observeInstalledRuntimeConfig, observeInstalledProfiles } from './fixtures/role-boundary-actions.mjs';
+import { fixtureAssetURL as actionAssetURL, observeGuideProjection, observeInstalledProfiles } from './fixtures/role-boundary-actions.mjs';
 import { fixtureAssetURL as faultAssetURL } from './fixtures/single-write-disconnect.mjs';
 import { fixtureAssetURL as selectionAssetURL } from './fixtures/selection-observations.mjs';
 
@@ -135,12 +135,10 @@ export async function materializeRoleBoundaryFiles(workspace, workspaceFiles) {
   return paths;
 }
 
-/** Observe the installed v2 resource for Eval setup. Only the real product run validates its source. */
-export async function readInstalledBoundaryRuntime(workspace) {
+/** Preparation selects from the same published tables the coordinator sees. */
+async function readInstalledBoundaryRuntime(workspace) {
   const root = path.join(workspace, '.agents', 'skills', 'spawn-subagent');
-  await safeFile(workspace, '.agents/skills/spawn-subagent/scripts/subagent.mjs');
-  const snapshot = await observeInstalledRuntimeConfig({ workspace, resourceRoot: root, keys: ['subagentCommands'] });
-  return { root, snapshot, profiles: await observeInstalledProfiles(workspace) };
+  return { root, ...await observeGuideProjection(workspace), profiles: await observeInstalledProfiles(workspace) };
 }
 
 function selectedExecution(runtime, profileKey, access = 'read-only') {
@@ -148,12 +146,8 @@ function selectedExecution(runtime, profileKey, access = 'read-only') {
   only(profile, ['executor', 'model', 'reasoningEffort'], `installed profile ${profileKey}`);
   for (const field of ['model', 'reasoningEffort']) if (profile[field] !== undefined) nonempty(profile[field], `profile.${field}`);
   const key = profile.executor === undefined ? 'native' : nonempty(profile.executor, 'profile.executor');
-  const executor = key === 'native' ? null : runtime.snapshot.effectiveValues.subagentCommands?.find((entry) => entry.key === key);
-  if (key !== 'native' && !executor) throw new Error(`unavailable: executor ${key} is not installed.`);
-  const builtins = { codex: 'workspace', 'claude-code': 'workspace', oracle: 'bundle' };
-  if (executor && !['codex', 'claude-code', 'oracle', 'custom'].includes(executor.adapter)) throw new Error('unavailable: configure an Adapter v5 executor.');
-  const mode = executor ? builtins[executor.adapter] ?? executor.mode : 'native';
-  if (!['native', 'workspace', 'bundle'].includes(mode) || (executor?.mode !== undefined && executor.mode !== mode)) throw new Error('Installed executor mode is invalid.');
+  const mode = key === 'native' ? 'native' : runtime.modes.get(key);
+  if (!mode) throw new Error(`unavailable: executor ${key} is not installed.`);
   if (mode === 'native' && !['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile'].includes(profileKey)) {
     nonempty(profile.model, 'profile.model'); nonempty(profile.reasoningEffort, 'profile.reasoningEffort');
   }
@@ -228,8 +222,7 @@ function verifyConfiguration(configuration = {}, runtime) {
     } else {
       const mode = expected.executor === 'lab-bundle' ? 'bundle' : expected.executor === 'lab-workspace' ? 'workspace' : 'native';
       const executor = actual.executor ?? 'native';
-      const entry = runtime.snapshot.effectiveValues.subagentCommands?.find((item) => item.key === executor);
-      const actualMode = executor === 'native' ? 'native' : { codex: 'workspace', 'claude-code': 'workspace', oracle: 'bundle' }[entry?.adapter] ?? entry?.mode;
+      const actualMode = executor === 'native' ? 'native' : runtime.modes.get(executor);
       if (mode !== actualMode || (expected.model !== undefined && !expected.model.startsWith('fixture-') && expected.model !== actual.model)
         || (expected.reasoningEffort !== undefined && expected.reasoningEffort !== actual.reasoningEffort)) {
         throw new Error(`unavailable: ${key} requires a real ${mode} profile with the declared model/effort.`);
@@ -264,7 +257,7 @@ export async function prepareRoleBoundary(input) {
     evaluation: { artifacts: [...artifacts], checks: evaluationChecks(criteria, selected.id), interactions: [] },
   };
   const contract = { version: 1, caseId: selected.id, target: scenario.target ?? 'joint', consumedInputFields: Object.keys(scenario),
-    installedIdentity: runtime.snapshot.installedIdentity, resolvedConfiguration,
+    commandSelector: runtime.selector, resolvedConfiguration,
     setupRequirements: scenario.setup, workspaceFiles: artifacts, checks: request.evaluation.checks.map(({ name }) => name) };
   request.evaluation.checks.push({ name: 'scenario-setup', criterion: 'Require actual evidence for setup before the measured action. Prose and intended configuration are insufficient; missing required conditions are unknown.\n' + scenario.setup.join('\n') });
   contract.checks.push('scenario-setup');
@@ -290,7 +283,7 @@ export async function prepareRoleBoundary(input) {
       await materializeRoleBoundaryFiles(input.paths.workspace, { [taskFile]: scenario.prompt });
       request.evaluation.artifacts.push(taskFile, 'provided/executor-result.txt');
       contract.resultFile = 'provided/executor-result.txt';
-      request.prompt = `Use the installed Guide to dispatch exactly one authorized ${scenario.role} task. Use --executor ${JSON.stringify(execution.executor)}.${execution.model === undefined ? ' Omit --model.' : ` Use --model ${JSON.stringify(execution.model)}.`}${execution.reasoningEffort === undefined ? ' Omit --reasoning-effort.' : ` Use --reasoning-effort ${JSON.stringify(execution.reasoningEffort)}.`} ${instructionsPath === undefined ? 'Omit --instructions-file; the task prompt contains the assigned role constraints.' : `Use --instructions-file ${JSON.stringify(instructionsPath)}.`} Read the task through --prompt - with stdin redirected from ${JSON.stringify(path.join(input.paths.workspace, taskFile))}. Task authorization: ${execution.access}. Workspace: ${input.paths.workspace}. ${execution.mode === 'bundle' ? `Explicit --file selectors: ${JSON.stringify(artifacts)}.` : 'Workspace mode must omit every --file; describe focus paths in the task.'} Use start once, continue wait on the returned run handle across yields, then use result --export with complete stdout capture to provided/executor-result.txt. Do not call the adapter directly. The executor must directly complete this assigned task without re-entering its coordinator for the same task. Preserve actual executor tool, consumed prompt, authorization and service-terminal evidence; absent evidence is a gap.`;
+      request.prompt = `Dispatch exactly one authorized ${scenario.role} task with aw command run ${runtime.selector} -- start --platform codex. Use --executor ${JSON.stringify(execution.executor)}.${execution.model === undefined ? ' Omit --model.' : ` Use --model ${JSON.stringify(execution.model)}.`}${execution.reasoningEffort === undefined ? ' Omit --reasoning-effort.' : ` Use --reasoning-effort ${JSON.stringify(execution.reasoningEffort)}.`} ${instructionsPath === undefined ? 'Omit --instructions-file; the task prompt contains the assigned role constraints.' : `Use --instructions-file ${JSON.stringify(instructionsPath)}.`} Pass --prompt-file ${JSON.stringify(path.join(input.paths.workspace, taskFile))}. Task authorization: ${execution.access}. Workspace: ${input.paths.workspace}. ${execution.mode === 'bundle' ? `Explicit --file selectors: ${JSON.stringify(artifacts)}.` : 'Workspace mode must omit every --file; describe focus paths in the task.'} Use start once, continue wait on the returned run handle across yields, then use result --output-file provided/executor-result.txt. Do not call the adapter directly. The executor must directly complete this assigned task without re-entering its coordinator for the same task. Preserve actual executor tool, consumed prompt, authorization and service-terminal evidence; absent evidence is a gap.`;
       request.evaluation.checks.push({ name: 'external-service', criterion: 'Require actual v5 run evidence: the complete task prompt, optionally composed with the explicit instruction asset without truncation or default role additions, matching final answer and real service terminal, actual task authorization and executor tool trace. External prompt composition is not a system/developer channel or OS isolation claim. The parent may load Guide; the executor must keep this assigned role and scope. Adapter declarations and text stdout alone cannot establish real service support.' });
       contract.checks.push('external-service');
     }
@@ -327,15 +320,15 @@ export async function prepareRoleBoundary(input) {
     const fixtureOperation = { J11: 'foreground-install', J12: 'single-write-disconnect', J15: 'custom-instructions-install', J16: 'invalid-workspace-files', J17: 'instruction-update-install' }[selected.id];
     if (fixtureOperation) {
       if (['J11', 'J15', 'J17'].includes(selected.id)) {
-        const profile = runtime.profiles.advisorGeneralProfile;
-        if (!runtime.snapshot.effectiveValues.subagentCommands?.some((entry) => entry.key === profile?.executor && ['codex', 'claude-code', 'oracle', 'custom'].includes(entry.adapter))) throw new Error(`unavailable: ${selected.id} requires a real configured external advisorGeneralProfile.`);
+        const profileKey = selected.id === 'J15' ? 'generalTaskProfile' : 'advisorGeneralProfile';
+        if (!runtime.modes.has(runtime.profiles[profileKey]?.executor)) throw new Error(`unavailable: ${selected.id} requires a real configured external ${profileKey}.`);
       }
       request.evaluation.setupActions = [action({ operation: fixtureOperation,
         task: selected.id === 'J12' ? scenario.initialRun.operation : 'Read README.md and src/select.js. Give a bounded technical second opinion on tenant selection. Stay read-only.',
         materials: artifacts.filter((file) => ['README.md', 'src/select.js'].includes(file)), ...(scenario.initialRun ? { initialRun: scenario.initialRun } : {}) })];
       request.evaluation.artifacts.push('provided/fixture-state.json', '.role-boundary-fixture/state.json');
       contract.fixtureOperation = fixtureOperation;
-      request.prompt += '\nRead provided/fixture-state.json for the publicly installed isolated Guide, explicit instructions and task paths. Use the execution object in that fixture state: pass executor as --executor, pass model and reasoningEffort only when present, and use --prompt - with task stdin, then wait/result on the same run handle; --instructions-file is optional but must be valid when explicitly supplied; workspace defaults to the invocation cwd. There are no revision or permission boolean flags. The worker and its private temporary run state are internal; do not access them directly or resume across parent sessions.';
+      if (!['J12', 'J16'].includes(selected.id)) request.prompt += '\nRead provided/fixture-state.json for the isolated installation. Run aw command run <commandSelector> -- start --platform codex using the listed commandEnvironment for every start, wait and result, from this workspace. Pass execution.executor as --executor, pass model and reasoningEffort only when present, and supply the listed --prompt-file and --instructions-file. Use each listed --file selector for bundle mode and omit --file for workspace mode. Wait and read results on the same run handle. The worker and its temporary run state are private.';
       if (selected.id === 'J12') {
         request.evaluation.artifacts.push('probe/once.txt', '.role-boundary-fixture/counter.json', 'provided/original-result.json');
         request.prompt += '\nThe fixture has completed exactly one local partial-write/disconnect control. Inspect its unknown result and existing progress. Do not resubmit or recover it through a new generation.';
@@ -414,13 +407,15 @@ export function gradeRoleBoundaryEvidence(parsed, evidence, contract) {
     const observation = finalObservation('verify-foreground');
     const transition = observation?.transition;
     const complete = observation?.observation === 'captured' && transition?.before && transition.saved && transition.after
-      && observation.results?.original && observation.results?.new;
+      && observation.results?.original?.run && observation.results?.new?.run;
     const savedUnchanged = complete && JSON.stringify(transition.before) === JSON.stringify(transition.saved);
     const appliedChanged = complete && JSON.stringify(transition.before.subagentCommands) !== JSON.stringify(transition.after.subagentCommands);
     const instructionsChanged = parsed.selected.id !== 'J17' || (typeof transition?.instructionsBefore === 'string'
       && typeof transition.instructionsAfter === 'string' && transition.instructionsBefore !== transition.instructionsAfter);
+    const resultsCompleted = complete && observation.results.original.state === 'completed' && observation.results.new.state === 'completed'
+      && observation.results.original.run !== observation.results.new.run;
     checks.push({ name: 'public-input-update-observation', verdict: !complete ? 'unknown'
-      : savedUnchanged && appliedChanged && instructionsChanged ? 'pass' : 'fail',
+      : savedUnchanged && appliedChanged && instructionsChanged && resultsCompleted ? 'pass' : 'fail',
       evidence: JSON.stringify({ transition: transition ?? null, scope: 'Fixture observations only; active session, exact consumed inputs, service support and generation count require independent Engine checks.' }) });
   }
   if (parsed.selected.id === 'J12') {

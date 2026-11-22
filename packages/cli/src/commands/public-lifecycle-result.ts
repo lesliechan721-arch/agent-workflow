@@ -1,14 +1,15 @@
-import type { Scope, CommandProducerResult } from '../types.js';
+import type { Scope } from '../types.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors, userSkillProviderRepairs,
   type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryRetryDisposition, type RecoveryTarget } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
-import { commandResult, safePublicMessage } from '../output/public-result.js';
+import { commandPackageRecoveryActions, commandResult, safePublicMessage, type PublicCommandProducerResult } from '../output/public-result.js';
 import { redactString } from '../output/redact.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
-import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, isDeliveryNoticeCode, isSkippedPermissionReason, projectComponentDelivery, projectComponentGap,
-  PREVIOUS_DEPLOYMENT_RETAINED, safeComponentIdentity, safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
+import { deliveryNoticeMessage, HOST_PERMISSION_ADDITIONAL_IMPACT, hostPermissionImpactMessage,
+  INVOCATION_POLICY_NOT_APPLIED, isDeliveryNoticeCode, isSkippedPermissionReason, projectComponentDelivery, projectComponentGap,
+  PREVIOUS_DEPLOYMENT_RETAINED, publicHostPermissionResource, safeComponentIdentity, safeSkippedPermissionActions, type ComponentDelivery } from '../output/component-delivery.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
@@ -69,7 +70,7 @@ export interface LifecycleData {
   coverage: { scopes: Scope[]; currentProject: boolean; otherProjects: 'unobserved' };
   allSatisfied?: boolean | null;
   inSync?: boolean | null;
-  commandResults?: Array<Omit<CommandProducerResult, 'errors' | 'recoveryActions'> & { blockerCodes: string[] }>;
+  commandResults?: PublicCommandProducerResult[];
   nativeToolChanges?: NativeToolChange[];
 }
 
@@ -132,12 +133,25 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   let detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
   const combinedSubject: NonNullable<Diagnostic['subject']> = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
+  if (code === HOST_PERMISSION_ADDITIONAL_IMPACT && typeof value !== 'string') {
+    const action = value.detail?.permissionAction;
+    const resource = value.detail?.permissionResource;
+    if (detail && (action === 'allow' || action === 'ask' || action === 'deny')) detail.permissionAction = action;
+    if (detail && resource) detail.permissionResource = publicHostPermissionResource(resource);
+    if (combinedSubject.field && safeComponentIdentity(combinedSubject.field) !== combinedSubject.field) delete combinedSubject.field;
+    const configured = detail?.permissionAction && detail.permissionResource ? detail.permissionAction + ' ' + detail.permissionResource : undefined;
+    const message = [configured, hostPermissionImpactMessage(sourceMessage)].filter(Boolean).join(' · ');
+    return { code, severity: 'warning', message, subject: combinedSubject, ...(detail ? { detail } : {}) };
+  }
   if (isDeliveryNoticeCode(code) && code !== PREVIOUS_DEPLOYMENT_RETAINED) {
     if (detail) {
       const actions = code === INVOCATION_POLICY_NOT_APPLIED && typeof value !== 'string'
         ? safeSkippedPermissionActions(value.detail?.skippedPermissionActions) : [];
+      const relatedProjectPath = code === INVOCATION_POLICY_NOT_APPLIED && detail.reasonCode === 'permission-rule-conflict'
+        && combinedSubject.target === 'opencode' ? detail.path : undefined;
       detail = code === INVOCATION_POLICY_NOT_APPLIED && !isSkippedPermissionReason(detail.reasonCode) ? undefined
-        : { reasonCode: detail.reasonCode, ...(actions.length ? { skippedPermissionActions: actions } : {}) };
+        : { reasonCode: detail.reasonCode, ...(actions.length ? { skippedPermissionActions: actions } : {}),
+          ...(relatedProjectPath ? { path: relatedProjectPath } : {}) };
     }
     if (combinedSubject.field && safeComponentIdentity(combinedSubject.field) !== combinedSubject.field) delete combinedSubject.field;
   }
@@ -162,12 +176,20 @@ export function projectDeploymentNotices(targets: readonly RecoveryTarget[]): Di
       if (isDeliveryNoticeCode(notice.code) && !deployment.some((entry) => entry.code === notice.code
         && JSON.stringify(entry.subject ?? subject) === JSON.stringify(notice.subject ?? subject)
         && entry.detail?.reasonCode === notice.detail?.reasonCode
+        && (notice.code !== HOST_PERMISSION_ADDITIONAL_IMPACT
+          || entry.message === notice.message && JSON.stringify(entry.detail) === JSON.stringify(notice.detail))
         && JSON.stringify(entry.detail?.skippedPermissionActions) === JSON.stringify(notice.detail?.skippedPermissionActions))) {
         diagnostics.push(publicDiagnostic(notice, notice.subject ?? subject, 'warning'));
       }
     }
   }
   return [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()];
+}
+
+export function projectRelatedProjectPermissionFailures(targets: readonly RecoveryTarget[]): Diagnostic[] {
+  const failures = targets.flatMap(({ blockers }) => blockers.filter(({ code, detail }) =>
+    code === 'permissionRelatedProjectUpdateIncomplete' && detail?.path).map((entry) => publicDiagnostic(entry)));
+  return [...new Map(failures.map((entry) => [JSON.stringify(entry), entry])).values()];
 }
 
 type DeploymentRecoveryContext = { receipt: RecoveryReceipt; target: RecoveryTarget };
@@ -246,7 +268,11 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
     else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
     }
-    else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
+    else if (diagnostic.code === 'permissionRelatedProjectUpdateIncomplete' && detail.path) {
+      message = receipt?.command === 'cleanup'
+        ? `OpenCode: Review ${JSON.stringify(detail.path)}. Open the TUI from that project and select only the Project OpenCode location to keep the User outputs removed.`
+        : `OpenCode: Review ${JSON.stringify(detail.path)} and run \`aw plugin sync --context project --target opencode\` from that project.`;
+    } else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
       message = `${identity}: Check ${detail.path ? `the previous output at ${JSON.stringify(detail.path)}` : 'the previous output'} in the affected scope before preparing the retry.`;
     } else if (detail.path && ['antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict'].includes(diagnostic.code)) {
       message = `${identity}: Back up and inspect ${JSON.stringify(detail.path)}. If this copy should no longer load in the project, move that directory or link outside .agents/plugins. Run status again for the same project and plugin.`;
@@ -347,15 +373,14 @@ export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['depl
 }
 
 export function mergeProducerResults(previous: Pick<LifecycleData, 'commandResults' | 'nativeToolChanges'>, data: LifecycleData): void {
-  const commands = new Map((previous.commandResults ?? []).map((entry) => [getCommandPackageId(entry.producer), entry]));
+  const commands = new Map((previous.commandResults ?? []).map((entry) => [entry.packageId, entry]));
   for (const entry of data.commandResults ?? []) {
-    const key = getCommandPackageId(entry.producer);
+    const key = entry.packageId;
     const before = commands.get(key);
     commands.set(key, before ? { ...entry,
       state: before.state === 'completed' && entry.state === 'completed' ? 'completed'
         : before.state === 'failed' && entry.state === 'failed' ? 'failed' : 'partial',
-      commandIds: [...new Set([...before.commandIds, ...entry.commandIds])],
-      removedCommandIds: [...new Set([...before.removedCommandIds, ...entry.removedCommandIds])],
+      action: entry.action === 'unchanged' ? before.action : entry.action,
       blockerCodes: [...new Set([...before.blockerCodes, ...entry.blockerCodes])],
     } : entry);
   }
@@ -407,21 +432,26 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   data.changes.requirements = receipt.declarationChanged ? 'changed' : data.changes.requirements;
   data.changes.preferences = receipt.preferencesChanged ? 'changed' : data.changes.preferences;
   data.changes.config = receipt.configChanged ? 'changed' : data.changes.config;
-  if (receipt.outputsMayHaveChanged) data.changes.outputs = receipt.targetResults.some((target) => target.execution === 'applied' && target.observation !== 'unknown') ? 'changed' : 'unknown';
+  const commandPackageChanged = receipt.commandResults?.some(({ action, state }) => action !== 'unchanged' && state === 'completed');
+  if (data.changes.outputs !== 'changed' && (commandPackageChanged || receipt.outputsMayHaveChanged)) data.changes.outputs = commandPackageChanged
+    || receipt.targetResults.some((target) => target.execution === 'applied' && target.observation !== 'unknown') ? 'changed' : 'unknown';
   // A started backend or script may have changed external state before it failed.
   if (data.changes.outputs === 'none' && receipt.targetResults.some((target) => ['failed', 'partial'].includes(target.execution))) data.changes.outputs = 'unknown';
   if (receipt.allSatisfied !== undefined) data.allSatisfied = receipt.allSatisfied;
   if (receipt.inSync !== undefined) data.inSync = receipt.inSync;
-  if (receipt.commandResults) data.commandResults = receipt.commandResults.map(({ producer, state, commandIds, removedCommandIds, errors }) => ({ producer, state, commandIds, removedCommandIds, blockerCodes: errors.map((entry) => entry.code) }));
+  if (receipt.commandResults) data.commandResults = receipt.commandResults.map(({
+    producer, packageId, selector, action, availability, subcommands, hasFallback, state, errors,
+  }) => ({ producer, packageId, selector, action, availability, subcommands, hasFallback, state,
+    blockerCodes: errors.map((entry) => entry.code) }));
   if (receipt.nativeToolChanges) data.nativeToolChanges = receipt.nativeToolChanges.map(({ producer, before, after }) => ({ producer, before, after }));
   const diagnostics = [...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => publicDiagnostic(entry));
   const excludedProviders = new Map<string, NextAction>();
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
     diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) =>
-      publicDiagnostic(entry, entry.code === 'userSkillProviderNotReady' ? entry.subject ?? subject : subject)));
+      publicDiagnostic(entry, ['userSkillProviderNotReady', 'permissionRelatedProjectUpdateIncomplete'].includes(entry.code) ? entry.subject ?? subject : subject)));
     diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
-      .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, 'warning')));
+      .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, entry.code === 'hostPermissionRestored' ? 'info' : 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
       excludedProviders.set(`${blocker.pluginId}\0${target.agent}`, { kind: 'command',
         argv: ['aw', 'target', 'include', blocker.pluginId, '--target', target.agent],
@@ -431,7 +461,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   }
   diagnostics.push(...projectDeploymentNotices(receipt.targetResults));
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
-    { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
+    { pluginId: result.selector, scope: 'user' })));
   const changed = Object.values(data.changes).some((value) => value !== 'none');
   const completedOutput = receipt.targetResults.some((target) => ['applied', 'partial'].includes(target.execution)
     || (receipt.command === 'sync' || receipt.command === 'install') && target.execution === 'no-op'
@@ -494,6 +524,6 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       }
     }
   }
-  result.nextActions.push(...cleanupRecoveryActions(receipt));
+  result.nextActions.push(...commandPackageRecoveryActions(receipt.commandResults), ...cleanupRecoveryActions(receipt));
   return result;
 }

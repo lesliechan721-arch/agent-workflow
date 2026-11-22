@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { isPlatformTarget, normalizeStaticPluginComponents, type ComponentUnmet, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { isPlatformTarget, normalizeStaticPluginComponents, resolveInvocationPolicy, type ComponentUnmet, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { PlatformName, Scope } from '../types.js';
 import { selectAgents, type AgentId } from '../intent/deployment-preferences.js';
 import { createScopeContext, type ScopeContext } from '../intent/scope-context.js';
@@ -40,6 +40,10 @@ import { measureRecoveryPerformanceStage } from './performance.js';
 import { withNativeObservationBatch } from '../platforms/inspection-query.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { mapInstallReads } from './install-concurrency.js';
+import { selectPlatformInvocationPolicy, hostPermissionClaims } from '../generators/permissions.js';
+import { isPermissionHost } from '../platforms/host-permission-policy.js';
+import { inspectHostPermissionDelivery } from '../platforms/permission-ownership.js';
+import { readManagedCommandPackage } from '../utils/managed-command-store.js';
 
 export interface NativeObservation {
   pluginId: string;
@@ -142,6 +146,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
     selected = selectAgents({ preferences: demand.preferences, targets: options.targets }).agents
       .filter((agent): agent is PlatformName => agent !== 'generic');
   } catch { return { observations: [], existing: [], owned: [] }; }
+  const commandPackages = new Map<string, ReturnType<typeof readManagedCommandPackage>>();
   const platforms = await mapInstallReads(selected, async (platform) => {
     const observations: NativeObservation[] = [];
     const existing: NonNullable<RecoveryStatus['existingTargets']> = [];
@@ -205,6 +210,16 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           const versions: Array<string | undefined> = [];
           const deliveredIds = new Set<string>();
           const staticResourceRoot = await resolveStaticPlatformResourceRoot(plugin.rootDir, platform);
+          let commandRoutes;
+          if (plugin.sourceIdentity && plugin.manifest.command?.platforms.includes(platform)) {
+            let commandPackage = commandPackages.get(root.pluginId);
+            if (!commandPackage) {
+              commandPackage = readManagedCommandPackage({ sourceId: root.sourceId,
+                sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name }, context.env).catch(() => undefined);
+              commandPackages.set(root.pluginId, commandPackage);
+            }
+            commandRoutes = (await commandPackage)?.record.routes;
+          }
           for (const binding of resolution.bindings) {
             const subject = { pluginId: root.pluginId, target: platform, scope: binding.scope.kind };
             const warn = (code: string) => observation.reasons!.push({ ...diagnostic(code), subject });
@@ -213,6 +228,21 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             versions.push(live.packageVersion);
             options.signal?.throwIfAborted();
             observation.deploymentObservations!.push({ bindingId: binding.id, products: binding.consumers, after: live });
+            if (isPermissionHost(platform)) {
+              const { policy } = selectPlatformInvocationPolicy(resolveInvocationPolicy(plugin.manifest, platform), subject, commandRoutes ?? null);
+              const claims = hostPermissionClaims(policy.permissions, binding.plugin.pluginId);
+              const previous = inventory.some(({ ownedComponent }) => ownedComponent?.kind === 'shared-config'
+                && ownedComponent.locator.kind === 'host-permissions' && ownedComponent.identity.pluginId === root.pluginId
+                && ownedComponent.identity.sourceIdentity === binding.plugin.sourceIdentity && ownedComponent.identity.platform === platform
+                && ownedComponent.identity.scope === binding.scope.kind);
+              if (claims.length || previous) {
+                const permissions = await inspectHostPermissionDelivery(ctx, binding, claims, live.grokScopeAuthorization);
+                if (permissions) {
+                  states.push(permissions.content);
+                  observation.reasons!.push(permissions.diagnostic);
+                }
+              }
+            }
             const shared = ['codex-marketplace', 'claude-marketplace', 'copilot-marketplace'].includes(binding.route);
             const scopedNativeConsumer = shared ? live.registration === 'present'
               && live.consumers.some((consumer) => consumer.activation === 'enabled')
@@ -244,7 +274,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                   cwd: unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : context.executionCwd,
                   env: context.env, referencePlugins: demand.plugins }) });
             }
-            const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits }).catch((error: unknown) => {
+            const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits, commandRoutes }).catch((error: unknown) => {
               rethrowFatalError(error);
               options.signal?.throwIfAborted();
               const systemCode = (error as NodeJS.ErrnoException)?.code;

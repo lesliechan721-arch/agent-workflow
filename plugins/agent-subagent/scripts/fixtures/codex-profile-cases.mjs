@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProfile, convertProfile, tomlValue, parseConfigArgument, mergeConfiguration, splitConfiguration, launchArguments } from '../../skills/spawn-subagent/scripts/adapters/codex-profile.mjs';
-import { codexConfiguration } from '../../skills/spawn-subagent/scripts/adapters/codex-v5.mjs';
-import { mapHookState, sessionHookSource } from '../../skills/spawn-subagent/scripts/adapters/codex-hooks.mjs';
+import { parseProfile, convertProfile, tomlValue, parseConfigArgument, mergeConfiguration, splitConfiguration, launchArguments } from '../../commands/scripts/adapters/codex-profile.mjs';
+import { codexConfiguration } from '../../commands/scripts/adapters/codex-v5.mjs';
+import { mapHookState, sessionHookSource } from '../../commands/scripts/adapters/codex-hooks.mjs';
 
 // Test Value Gate: use the delivered parser and adapter configuration boundary
 // to protect priority, lossless values, trust provenance and secret-free errors.

@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { build } from 'esbuild';
-import { LIMITS, validateSelectors } from '../skills/spawn-subagent/scripts/file-selection/contracts.mjs';
+import { LIMITS, validateSelectors } from '../commands/scripts/file-selection/contracts.mjs';
 
 const plugin = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -18,7 +18,7 @@ const fixtures = {
   audit: require.resolve('./fixtures/file-selection/audit-reads.mjs'),
   api: require.resolve('./fixtures/file-selection/selection-api.mjs'),
 };
-const sourceScripts = path.dirname(require.resolve('../skills/spawn-subagent/scripts/resolve-files.mjs'));
+const sourceScripts = path.dirname(require.resolve('../commands/scripts/resolve-files.mjs'));
 const baseline = JSON.parse(await fs.readFile(fixtures.baseline, 'utf8'));
 let temporary; let guide; let helper; let selectionApi;
 
@@ -39,7 +39,7 @@ async function execute(entry, input, { args = [], env = {}, nodeArgs = [], keepI
 before(async () => {
   temporary = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-file-selection-'));
   const movedPlugin = path.join(temporary, 'moved-plugin');
-  guide = path.join(movedPlugin, 'skills/spawn-subagent');
+  guide = path.join(movedPlugin, 'commands');
   const materialized = process.env.AW_FILE_SELECTION_MATERIALIZED_GUIDE;
   await fs.cp(materialized ? path.join(materialized, 'scripts') : sourceScripts, path.join(guide, 'scripts'), { recursive: true });
   if (!materialized && process.env.AW_PLUGIN_EVENT !== 'test') {

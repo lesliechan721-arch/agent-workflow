@@ -127,11 +127,11 @@ Codex 使用 `$dev-workflow`（或 `$dev-design` / `$dev-build` / `$dev-review-l
 
 ## 常用 CLI
 
-常用命令汇总参见 [用户快速入门指南：命令速查](docs/guide/getting-started.md#7-常用命令速查)；底层生命周期细节见 [插件生命周期架构说明](docs/maintainers/architecture/lifecycle.md)。
+详见[命令与自动化](docs/guide/getting-started.md#7-命令与自动化)和[插件生命周期架构](docs/maintainers/architecture/lifecycle.md)。
 
 ### 托管命令
 
-托管命令提供跨平台稳定的 `cmdp_` 包装入口，声明与权限规范见 [托管命令参考合同](docs/reference/managed-commands.md)。
+插件托管命令通过 `aw command run <来源/插件> -- …` 调用。[托管命令参考合同](docs/reference/managed-commands.md) · [宿主审批验证范围](docs/reference/managed-commands.md#宿主审批验证范围)
 
 ### User 与 Project 插件恢复
 

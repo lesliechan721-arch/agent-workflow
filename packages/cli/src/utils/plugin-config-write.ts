@@ -1,3 +1,5 @@
+import { catalogGenerationErrorCode } from './catalog-generation-error.js';
+import { CatalogPluginNotFoundError } from './multi-source-catalog.js';
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
@@ -9,10 +11,11 @@ import type {
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
 import { nativeDeploymentHasVerifiedComponentWrite } from '../commands/rebuild-platform-integration.js';
-import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
-import { projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
-import { selectPluginConfigProfile, NATIVE_PLATFORM_TARGETS, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
-import { readScopedRecoveryStatus } from '../recovery/status.js';
+import { projectDeploymentNotices, projectRelatedProjectPermissionFailures } from '../commands/public-lifecycle-result.js';
+import { recoveryHostPermissionEffects } from '../commands/deployment-confirmation.js';
+import type { Confirmation } from '../output/public-result.js';
+import { projectComponentDelivery } from '../output/component-delivery.js';
+import { canonicalizeIdentityValue, selectPluginConfigProfile, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 import { syncWriteCommand } from '../commands/write-commands.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
 import {
@@ -25,14 +28,13 @@ import {
   type ConfigMutationCommand,
   type ConfigMutationReceiptBase,
   type ConfigSchemaEvidence,
-  type PlatformName,
   type PluginMeta,
   type RebuildReceiptOverallState,
   type ReceiptTargetIdentity,
   type ReceiptTargetResult,
   type Scope,
 } from '../types.js';
-import { getDefaultNativeCliRunner, prepareNativeCliExecution, type NativeCliRunner } from './native-cli.js';
+import type { NativeCliRunner } from './native-cli.js';
 import {
   assertPluginConfigMutationCandidate,
   assertSafePluginConfigSegment,
@@ -49,22 +51,18 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigValue,
 } from './plugin-config.js';
-import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigRenderUnits } from './plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginSharedNativeConfigRenderUnits, type ManagedCommandPackageDiscovery, type PluginConfigImpactMutation } from './plugin-config-impact.js';
 import { collectPluginConfigReferenceEvidence, resolvePluginConfigReferencePlugins, resolvePluginConfigReferenceConsumers } from './plugin-config-references.js';
-import { orderPluginMetasByDependencies, resolvePluginMetaDependencyClosure } from './plugin-dependencies.js';
-import {
-  assertManagedCommandPackageNativeToolsUnchanged,
-  discoverInstalledPluginManagedCommandPackages,
-  syncPluginManagedCommandPackage,
-  type ManagedCommandPackageDiscovery,
-} from './managed-command-materialization.js';
-import { captureManagedCommandPackageEvidence, listManagedCommandPackages, managedCommandDiagnostic, type ManagedCommandPackageEvidence } from './managed-command-store.js';
+import { resolvePluginMetaDependencyClosure } from './plugin-dependencies.js';
+import { publishPreparedManagedCommandPackage } from './managed-command-materialization.js';
+import { ManagedCommandError, managedCommandDiagnostic } from './managed-command-store.js';
+import { configPackageResult, inspectConfigCommandPackageReview, prepareConfigCommandPackages, type ConfigCommandApplyCandidate,
+  type ConfigCommandPackageEvidence, type ConfigCommandPackageReview } from './plugin-config-command-apply.js';
 import {
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
 } from './plugin-scripts.js';
-import { resolveClaudeProjectKey, resolveCodexProjectKey, resolveCliPackageRoot } from './paths.js';
-import { createProjectLocationKey, resolveRequiredCanonicalRepoRoot } from './state-paths.js';
+import { resolveCliPackageRoot } from './paths.js';
 import { readSafeOperationError } from './safe-operation-diagnostic.js';
 import {
   withAwHomeMutationLock,
@@ -72,7 +70,6 @@ import {
 } from './aw-home-mutation-lock.js';
 import fs from 'fs-extra';
 import path from 'node:path';
-import { parsePluginId } from './multi-source-catalog.js';
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -138,60 +135,6 @@ interface ConfigRuntimeReplayReceipt {
   otherProjectsMayRequireSync: false;
 }
 
-interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'state'>, ComponentDelivery {
-  state: ConfigApplyTargetResult['state'];
-  partialDelivery?: ConfigApplyTargetResult['partialDelivery'];
-}
-
-interface ConfigApplyDiscovery {
-  targets: ReceiptTargetIdentity[];
-  failures: ReceiptTargetResult[];
-  commandPackages?: Array<ManagedCommandPackageDiscovery['packages'][number] & { expectedPackage?: ManagedCommandPackageEvidence }>;
-  commandDiscoveryErrors?: ManagedCommandPackageDiscovery['errors'];
-  plugins?: readonly PluginMeta[];
-}
-
-type InternalConfigApplyResult =
-  | Extract<ConfigApplyResult, { state: 'skipped' }>
-  | (Omit<Extract<ConfigApplyResult, { state: 'unavailable' }>, 'targetResults'> & {
-      targetResults: InternalConfigApplyTargetResult[];
-    })
-  | (Omit<Extract<ConfigApplyResult, { state: 'succeeded' }>, 'targetResults'> & {
-      targetResults: InternalConfigApplyTargetResult[];
-    })
-  | (Omit<Extract<ConfigApplyResult, { state: 'partial' }>, 'targetResults'> & {
-      targetResults: InternalConfigApplyTargetResult[];
-    });
-
-function publicConfigApplyTargetResult(
-  result: InternalConfigApplyTargetResult | ConfigApplyTargetResult,
-): ConfigApplyTargetResult {
-  return {
-    target: {
-      pluginName: result.target.pluginName,
-      ...(result.target.pluginId ? { pluginId: result.target.pluginId } : {}),
-      platform: result.target.platform,
-      scope: result.target.scope,
-    },
-    action: result.action,
-    state: result.state,
-    ...projectComponentDelivery(result),
-    ...(result.partialDelivery ? { partialDelivery: true } : {}),
-    ...(result.message ? { message: result.message } : {}),
-    ...(result.errorCode ? { errorCode: result.errorCode } : {}),
-    ...(result.relation ? { relation: result.relation } : {}),
-    ...(result.requiredBy ? { requiredBy: result.requiredBy } : {}),
-  };
-}
-
-function publicConfigApplyResult(apply: InternalConfigApplyResult | ConfigApplyResult): ConfigApplyResult {
-  if (apply.state === 'skipped') return apply;
-  return {
-    ...apply,
-    targetResults: apply.targetResults.map(publicConfigApplyTargetResult),
-  };
-}
-
 export function configWriteStateForError(error: unknown): 'notStarted' | 'failed' {
   return (error as { configWrite?: unknown })?.configWrite === 'failed'
     ? 'failed'
@@ -209,12 +152,21 @@ function skippedApply(
   return { state: 'skipped', reason, targetResults: [] };
 }
 
+export function configActiveAvailabilityError(error: unknown): Pick<ConfigApplyError, 'code' | 'message'> | undefined {
+  if (error instanceof CatalogPluginNotFoundError) return { code: 'pluginUnavailable',
+    message: 'The plugin is absent from the active catalog. Run aw source sync and check the selector.' };
+  if (['catalogGenerationUnavailable', 'catalogGenerationSourceMissing', 'catalogGenerationIdentityMismatch',
+    'catalogGenerationStateInvalid', 'catalogGenerationMetadataInvalid'].includes(catalogGenerationErrorCode(error))) {
+    return { code: 'sourceActiveUnavailable',
+      message: 'The active catalog is unavailable. Run aw source sync, then retry configuration apply.' };
+  }
+  return undefined;
+}
+
 function unavailableApply(
   reason: Extract<ConfigApplyResult, { state: 'unavailable' }>['reason'],
   stage: ConfigApplyError['stage'],
-  targetResults: InternalConfigApplyTargetResult[] = [],
-  commandPackages: ManagedCommandPackageDiscovery['packages'] = [],
-): Extract<InternalConfigApplyResult, { state: 'unavailable' }> {
+): Extract<ConfigApplyResult, { state: 'unavailable' }> {
   const messages: Record<typeof reason, string> = {
     invalidConfig: 'The effective config is invalid for every visible target.',
     schemaUnavailable: 'The config schema is unavailable after the config commit.',
@@ -222,22 +174,7 @@ function unavailableApply(
     effectiveConfigUnavailable: 'The effective config cannot be read after the config commit.',
     targetDiscoveryFailed: 'Visible config apply targets cannot be discovered after the config commit.',
   };
-  return {
-    state: 'unavailable',
-    reason,
-    targetResults,
-    ...(commandPackages.length > 0 ? { commandResults: commandPackages.map((target) => ({
-      producer: target.producer, state: 'failed' as const, commandIds: [], removedCommandIds: [],
-      errors: [{ code: reason, message: messages[reason] }],
-      recoveryActions: [`aw command package sync ${target.producer.sourceId}/${target.producer.pluginName} ${target.packageKey} --scope ${target.producer.scope} --yes`,
-        `aw command package remove ${target.packageId} --yes`],
-    })) } : {}),
-    error: { stage, code: reason, message: messages[reason] },
-  };
-}
-
-function overallStateForApply(apply: Pick<ConfigApplyResult, 'state'>): RebuildReceiptOverallState {
-  return apply.state === 'succeeded' || apply.state === 'skipped' ? 'succeeded' : 'partial';
+  return { state: 'unavailable', reason, targetResults: [], error: { stage, code: reason, message: messages[reason] } };
 }
 
 function uniqueInOrder(values: string[]): string[] {
@@ -256,517 +193,6 @@ function dedupeTargets(targets: ReceiptTargetIdentity[]): ReceiptTargetIdentity[
   const deduped = new Map<string, ReceiptTargetIdentity>();
   for (const target of targets) deduped.set(targetKey(target), target);
   return [...deduped.values()];
-}
-
-async function resolveProjectKey(platform: PlatformName, cwd: string): Promise<string> {
-  return platform === 'codex' ? resolveCodexProjectKey(cwd)
-    : platform === 'claude' ? resolveClaudeProjectKey(cwd)
-      : createProjectLocationKey(await resolveRequiredCanonicalRepoRoot(cwd));
-}
-
-async function createCandidateTarget(options: {
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-}): Promise<ReceiptTargetIdentity> {
-  return {
-    pluginName: options.pluginName,
-    platform: options.platform,
-    scope: options.scope,
-    ...(options.scope === 'project'
-      ? { projectKey: await resolveProjectKey(options.platform, options.cwd) }
-      : {}),
-  };
-}
-
-async function discoverVisibleTargets(options: {
-  platform?: PlatformTarget;
-  plugin: PluginMeta;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  nativeCliRunner: NativeCliRunner;
-  rebuildRuntime?: RebuildCommandRuntime;
-}): Promise<{
-  targets: ReceiptTargetIdentity[];
-  failures: ReceiptTargetResult[];
-}> {
-  const targets: ReceiptTargetIdentity[] = [];
-  const failures: ReceiptTargetResult[] = [];
-  const selector = options.plugin.pluginId ?? options.pluginName;
-  const consumers = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
-    plugins: options.rebuildRuntime?.referencePlugins });
-  const selectors = consumers.map((plugin) => plugin.pluginId ?? plugin.manifest.name);
-  const status = await readScopedRecoveryStatus({ scope: options.scope,
-    cwd: options.cwd, env: options.env,
-    nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
-    catalogOperationContext: options.rebuildRuntime?.catalogOperationContext,
-    codexObservationSession: options.rebuildRuntime?.codexObservationSession,
-  });
-  for (const statusTarget of status.existingTargets ?? []) {
-    if (statusTarget.agent === 'generic' || statusTarget.scope !== options.scope) continue;
-    const identity = parsePluginId(statusTarget.pluginId);
-    if (!selectors.includes(statusTarget.pluginId) && statusTarget.pluginId !== selector
-      && !selectors.some((entry) => !entry.includes('/') && entry === identity.pluginName)) continue;
-    // Existing targets already require this scope's observed activation or owned directory.
-    const plugin = consumers.find((entry) => entry.pluginId === statusTarget.pluginId);
-    targets.push({ ...await createCandidateTarget({ pluginName: identity.pluginName,
-      platform: statusTarget.agent, scope: statusTarget.scope, cwd: options.cwd }),
-      pluginId: statusTarget.pluginId, sourceId: identity.sourceId,
-      ...(plugin?.sourceIdentity ? { sourceIdentity: plugin.sourceIdentity } : {}),
-    });
-  }
-
-  return { targets: dedupeTargets(targets), failures };
-}
-
-async function reinstallVisibleTargets(options: {
-  platform?: PlatformTarget;
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-  applyCommandPackages?: readonly string[];
-  nativeCliRunner?: NativeCliRunner;
-  reinstallCommandImpl?: ReinstallCommand;
-  rebuildRuntime?: RebuildCommandRuntime;
-  discovered?: ConfigApplyDiscovery;
-  preApplyConfirmed?: boolean;
-  changedConfigKeys?: string[];
-}): Promise<InternalConfigApplyResult> {
-  const nativeCliRunner = options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner ?? getDefaultNativeCliRunner();
-  const discovered = options.discovered ?? await resolveConfigApplyTargets(options);
-  const managedCommandProducerCache = options.rebuildRuntime?.managedCommandProducerCache
-    ?? new Map<string, Promise<CommandProducerResult>>();
-  if (discovered.targets.some((target) => target.pluginName !== options.plugin.manifest.name)
-    || discovered.commandPackages?.some((target) => target.producer.pluginName !== options.plugin.manifest.name)) {
-    const plugins = discovered.plugins ?? await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
-      sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
-      env: options.env, plugins: options.rebuildRuntime?.referencePlugins });
-    const results: InternalConfigApplyTargetResult[] = [...discovered.failures];
-    const commandResults: CommandProducerResult[] = [];
-    const failed = new Set(discovered.failures.map(({ target }) => `${target.pluginName}\0${target.platform}\0${target.scope}`));
-    const failedPackages = new Set<string>();
-    const errors: ConfigApplyError[] = (discovered.commandDiscoveryErrors ?? []).map((error) => ({
-      stage: 'targetDiscovery', code: error.code, message: error.message,
-    }));
-    let partial = discovered.failures.length > 0 || errors.length > 0;
-    for (const plugin of orderPluginMetasByDependencies(plugins)) {
-      const targets = discovered.targets.filter((target) => target.pluginName === plugin.manifest.name);
-      const packages = (discovered.commandPackages ?? []).filter((target) => target.producer.pluginName === plugin.manifest.name);
-      if (!targets.length && !packages.length) continue;
-      const dependencies = resolvePluginMetaDependencyClosure(plugins, [plugin.manifest.name])
-        .filter((entry) => entry.manifest.name !== plugin.manifest.name).map((entry) => entry.manifest.name);
-      const dependencyPackageFailed = (scope: Scope) => dependencies.some((dependency) =>
-        failedPackages.has(`${dependency}\0${scope}`) || (scope === 'project' && failedPackages.has(`${dependency}\0user`)));
-      const blocked = targets.filter((target) => dependencies.some((dependency) =>
-        failed.has(`${dependency}\0${target.platform}\0${target.scope}`)
-        || (target.scope === 'project' && failed.has(`${dependency}\0${target.platform}\0user`)))
-        || dependencyPackageFailed(target.scope));
-      if (blocked.length) {
-        partial = true;
-        for (const target of blocked) failed.add(`${plugin.manifest.name}\0${target.platform}\0${target.scope}`);
-        results.push(...blocked.map((target): InternalConfigApplyTargetResult => ({ target, action: 'skipped',
-          state: 'skipped', errorCode: 'dependencyApplyFailed',
-          message: `A required provider failed. Run aw plugin sync ${plugin.pluginId ?? plugin.manifest.name} --context ${target.scope} --target ${target.platform} --yes.` })));
-      }
-      const blockedPackages = packages.filter((target) => {
-        const platforms = plugin.manifest.managedCommands?.packages.find((entry) => entry.key === target.packageKey
-          && entry.scope === target.producer.scope)?.platforms ?? NATIVE_PLATFORM_TARGETS;
-        return dependencyPackageFailed(target.producer.scope) || dependencies.some((dependency) =>
-          platforms.some((platform) => failed.has(`${dependency}\0${platform}\0${target.producer.scope}`)
-            || (target.producer.scope === 'project' && failed.has(`${dependency}\0${platform}\0user`))));
-      });
-      for (const target of blockedPackages) {
-        partial = true;
-        failedPackages.add(`${plugin.manifest.name}\0${target.producer.scope}`);
-        commandResults.push({ producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-          errors: [{ code: 'dependencyApplyFailed', message: 'A required provider failed; the command package was not refreshed.' }],
-          recoveryActions: [`aw command package sync ${plugin.pluginId ?? plugin.manifest.name} ${target.packageKey} --scope ${target.producer.scope} --yes`] });
-      }
-      const available = targets.filter((target) => !blocked.includes(target));
-      const availablePackages = packages.filter((target) => !blockedPackages.includes(target));
-      if (!available.length && !availablePackages.length) continue;
-      const own = plugin.manifest.name === options.plugin.manifest.name;
-      const result = await reinstallVisibleTargets({ ...options, plugin,
-        changedConfigKeys: own ? options.changedConfigKeys : [],
-        rebuildRuntime: { ...options.rebuildRuntime, referencePlugins: plugins, managedCommandProducerCache },
-        discovered: { targets: available, failures: [], commandPackages: availablePackages,
-          commandDiscoveryErrors: [] } });
-      if (result.state !== 'succeeded' && result.state !== 'skipped') {
-        partial = true;
-        for (const target of available) {
-          if (!('targetResults' in result) || !result.targetResults.some((entry) =>
-            targetKey(entry.target) === targetKey(target) && entry.state === 'completed')) {
-            failed.add(`${plugin.manifest.name}\0${target.platform}\0${target.scope}`);
-          }
-        }
-      }
-      if ('targetResults' in result) results.push(...result.targetResults);
-      if ('commandResults' in result) {
-        commandResults.push(...result.commandResults ?? []);
-        for (const entry of result.commandResults ?? []) {
-          if (entry.state !== 'completed') failedPackages.add(`${plugin.manifest.name}\0${entry.producer.scope}`);
-        }
-      }
-      if ('errors' in result) errors.push(...result.errors ?? []);
-    }
-    return { state: partial ? 'partial' : 'succeeded', targetResults: results,
-      ...(commandResults.length ? { commandResults } : {}), ...(errors.length ? { errors } : {}) };
-  }
-  const contexts = new Map<Scope, Awaited<ReturnType<typeof createScopeContext>>>();
-  const demands = new Map<Scope, Awaited<ReturnType<typeof readDemand>>>();
-  const failedScopes = new Set<Scope>();
-  try {
-    const targetResults: InternalConfigApplyTargetResult[] = [...discovered.failures];
-    const commandResults = new Map<string, CommandProducerResult>();
-    let runtimeFailed = discovered.failures.length > 0
-      || (discovered.commandDiscoveryErrors?.length ?? 0) > 0;
-    let invalidTargets = 0;
-    let unavailableTargets = 0;
-    const errors: ConfigApplyError[] = [];
-    for (const scope of new Set(discovered.targets.map((target) => target.scope))) {
-      try {
-        const context = await createScopeContext({ scope, cwd: options.cwd, env: options.env });
-        contexts.set(scope, context);
-        const demand = await readDemand({ scope, cwd: context.executionCwd, env: context.env });
-        demandNativeProjection(demand);
-        demands.set(scope, demand);
-      } catch {
-        failedScopes.add(scope);
-        runtimeFailed = true;
-        for (const target of discovered.targets.filter((entry) => entry.scope === scope)) {
-          targetResults.push({ target, action: 'reinstall', state: 'failed', errorCode: 'configApplyContextUnavailable',
-            message: 'The target scope or its demand cannot be read safely.' });
-        }
-        errors.push({ stage: 'targetValidation', code: 'configApplyContextUnavailable',
-          message: 'A visible target scope or its demand cannot be read safely.' });
-      }
-    }
-    if ((discovered.commandDiscoveryErrors?.length ?? 0) > 0) {
-      errors.push(...discovered.commandDiscoveryErrors!.map((error): ConfigApplyError => ({
-        stage: 'targetDiscovery', code: error.code, message: error.message,
-      })));
-    }
-    const reinstall = options.reinstallCommandImpl ?? syncWriteCommand;
-    if (options.plugin.sourceId && !options.plugin.pluginId) {
-      throw new Error(`Plugin "${options.plugin.manifest.name}" is missing its namespaced plugin ID.`);
-    }
-    const selector = options.plugin.sourceId
-      ? options.plugin.pluginId!
-      : options.plugin.manifest.name;
-
-    const nativeFailures: CommandProducerResult[] = [];
-    for (const target of discovered.commandPackages ?? []) {
-      try {
-        await assertManagedCommandPackageNativeToolsUnchanged({ plugin: options.plugin, producer: target.producer, env: options.env });
-      } catch (error) {
-        nativeFailures.push({ producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-          errors: [managedCommandDiagnostic(error)],
-          recoveryActions: [`aw command package sync ${selector} ${target.packageKey} --scope ${target.producer.scope} --yes`] });
-      }
-    }
-    if (nativeFailures.length > 0) {
-      return { state: 'partial', commandResults: nativeFailures,
-        targetResults: [...targetResults, ...discovered.targets.map((target): InternalConfigApplyTargetResult => ({
-          target, action: 'reinstall', state: 'failed', errorCode: 'nativeToolSyncRequired',
-          message: 'Run a reviewed producer sync or package sync before configuration apply.',
-        }))] };
-    }
-
-    const sanitizeFailure = async (
-      message: string,
-      target: Pick<ReceiptTargetIdentity, 'scope' | 'projectKey'> & { platform?: PlatformName | null },
-    ): Promise<string> => {
-      let sensitiveValues: string[] = [];
-      try {
-        const effective = await resolveEffectivePluginConfig({
-          ...(options.plugin.sourceId ? {
-            sourceId: options.plugin.sourceId,
-            sourceIdentity: options.plugin.sourceIdentity,
-            logicalIdentity: options.plugin.catalogLogicalIdentity,
-          } : {}),
-          pluginName: options.plugin.manifest.name,
-          manifest: options.plugin.manifest,
-          referencePlugins: options.rebuildRuntime?.referencePlugins,
-          targetScope: target.scope,
-          platform: target.platform ?? undefined,
-          cwd: options.cwd,
-          env: options.env,
-        });
-        sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values, target.platform ?? undefined);
-      } catch {
-        // Generic credential redaction and known config paths still apply.
-      }
-      let sanitized = redactPluginScriptOutput(message, sensitiveValues);
-      for (const privatePath of [target.projectKey, options.cwd]) {
-        if (privatePath) sanitized = sanitized.split(privatePath).join('<project>');
-      }
-      for (const scope of ['user', 'project'] as const) {
-        const configPath = resolvePluginConfigStorePath({
-          sourceId: options.plugin.sourceId,
-          pluginName: options.plugin.manifest.name,
-          scope,
-          cwd: options.cwd,
-          env: options.env,
-        });
-        const safeTarget = `${scope}/plugin-config/${[
-          options.plugin.sourceId,
-          options.plugin.manifest.name,
-          'config.json',
-        ].filter(Boolean).join('/')}`;
-        sanitized = sanitized.split(configPath).join(safeTarget);
-      }
-      return sanitized;
-    };
-    const sanitizeProjection = async (
-      value: unknown,
-      target: ReceiptTargetIdentity,
-      freeText = false,
-    ): Promise<unknown> => {
-      if (typeof value === 'string') return freeText ? sanitizeFailure(value, target) : value;
-      if (value === null || typeof value !== 'object') return value;
-      if (Array.isArray(value)) {
-        return Promise.all(value.map((entry) => sanitizeProjection(entry, target, freeText)));
-      }
-      return Object.fromEntries(await Promise.all(
-        Object.entries(value as Record<string, unknown>).map(async ([key, entry]) => [
-          key,
-          await sanitizeProjection(
-            entry,
-            target,
-            typeof entry === 'string'
-              ? /^(?:message|error|stack|stdout|stderr|output|warning)$/u.test(key)
-              : Array.isArray(entry) && /^(?:messages|warnings)$/u.test(key),
-          ),
-        ]),
-      ));
-    };
-
-    const preApplyExecutionCache = new Map<string, Promise<void>>();
-    for (const target of discovered.targets) {
-      if (failedScopes.has(target.scope)) continue;
-      try {
-        const configs = await Promise.all(pluginConfigTargetRenderScopes(options.plugin, target).map((scope) => resolveEffectivePluginConfig({
-          ...(options.plugin.sourceId ? {
-            sourceId: options.plugin.sourceId,
-            sourceIdentity: options.plugin.sourceIdentity,
-            logicalIdentity: options.plugin.catalogLogicalIdentity,
-          } : {}),
-          pluginName: options.plugin.manifest.name,
-          manifest: options.plugin.manifest,
-          referencePlugins: options.rebuildRuntime?.referencePlugins,
-          targetScope: scope,
-          platform: target.platform ?? undefined,
-          cwd: options.cwd,
-          env: options.env,
-        })));
-        if (configs.some((effective) => effective.issues.length > 0)) {
-          invalidTargets += 1;
-          targetResults.push({
-            target,
-            action: 'reinstall',
-            state: 'skipped',
-            errorCode: 'invalidConfig',
-            message: 'The effective config is invalid for this target.',
-          });
-          continue;
-        }
-      } catch {
-        runtimeFailed = true;
-        unavailableTargets += 1;
-        targetResults.push({
-          target,
-          action: 'reinstall',
-          state: 'failed',
-          errorCode: 'effectiveConfigUnavailable',
-          message: 'The effective config cannot be read for this target.',
-        });
-        errors.push({
-          stage: 'targetValidation',
-          code: 'effectiveConfigUnavailable',
-          message: 'The effective config cannot be read for a visible target.',
-        });
-        continue;
-      }
-      try {
-        const debugLogger = options.rebuildRuntime?.debugLogger;
-        const reporter = options.rebuildRuntime?.reporter;
-        const result = await reinstall(
-          [selector],
-          {
-            cwd: contexts.get(target.scope)!.executionCwd,
-            platform: target.platform,
-            scope: target.scope,
-            ...(options.rebuildRuntime?.scriptTimeoutMs === undefined
-              ? {}
-              : { scriptTimeoutMs: options.rebuildRuntime.scriptTimeoutMs }),
-          },
-          {
-            ...options.rebuildRuntime,
-            env: contexts.get(target.scope)!.env,
-            nativeCliRunner,
-            executionInput: {
-              context: contexts.get(target.scope)!,
-              requirements: demandNativeProjection(demands.get(target.scope)!),
-              selectedTargets: [{ pluginId: selector, platform: target.platform, scope: target.scope }],
-              preserveOtherObservedTargets: true,
-            },
-            preApplyConfirmed: options.preApplyConfirmed === true,
-            preApplyExecutionCache,
-            managedCommandProducerCache,
-            ...(debugLogger ? {
-              debugLogger: {
-                ...debugLogger,
-                log: async (value) => debugLogger.log(await sanitizeProjection(value, target) as never),
-              },
-            } : {}),
-            ...(reporter ? {
-              reporter: {
-                event: async (value) => reporter.event(await sanitizeProjection(value, target) as never),
-                notice: async (value) => reporter.notice(await sanitizeProjection(value, target) as never),
-              },
-            } : {}),
-          },
-        );
-        options.rebuildRuntime?.operationDiagnosticSink?.(result.rebuildResults);
-        for (const producer of result.commandResults ?? []) {
-          commandResults.set(getCommandPackageId(producer.producer), producer);
-          if (producer.state !== 'completed') runtimeFailed = true;
-        }
-        if (result.overallState !== 'succeeded') runtimeFailed = true;
-        targetResults.push(...await Promise.all(result.targetResults.map(async (entry) => ({
-          ...entry,
-          state: entry.action === 'skipped' ? 'skipped' as const : entry.state,
-          ...(entry.message ? { message: await sanitizeFailure(entry.message, entry.target) } : {}),
-        }))));
-      } catch (error) {
-        runtimeFailed = true;
-        const message = await sanitizeFailure(
-          error instanceof Error ? error.message : String(error),
-          target,
-        );
-        targetResults.push({
-          target,
-          action: 'reinstall',
-          state: 'failed',
-          message,
-        });
-        errors.push({
-          stage: 'apply',
-          code: 'targetApplyFailed',
-          message: 'A visible config apply target failed.',
-        });
-      }
-    }
-
-    for (const target of discovered.commandPackages ?? []) {
-      await options.rebuildRuntime?.reporter?.event({
-        type: 'managed-command:producer',
-        source: { plugin: options.plugin.manifest.name, scope: target.producer.scope },
-        data: { packageKey: target.packageKey, phase: 'start' },
-      });
-      let result: CommandProducerResult;
-      if (!target.declared) {
-        result = {
-          producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-          errors: [{ code: 'commandPackageDeclarationMissing',
-            message: 'The installed command package is no longer declared by this plugin.' }],
-          recoveryActions: [`aw command package remove ${target.packageId} --yes`],
-        };
-      } else {
-        try {
-          result = await syncPluginManagedCommandPackage({
-            plugin: options.plugin, packageKey: target.packageKey, scope: target.producer.scope,
-            cwd: options.cwd, env: options.env, managedCommandProducerCache, expectedPackage: target.expectedPackage,
-            referencePlugins: options.rebuildRuntime?.referencePlugins,
-            event: options.changedConfigKeys?.length ? 'refresh' : 'install',
-            changedConfigKeys: options.changedConfigKeys ?? [],
-            signal: options.rebuildRuntime?.signal,
-            scriptTimeoutMs: options.rebuildRuntime?.scriptTimeoutMs,
-          });
-        } catch (error) {
-          if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal) || readSafeOperationError(error)) throw error;
-          result = {
-            producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-            errors: [{ code: 'commandPackageApplyFailed', message: 'The managed command package could not be refreshed.' }],
-            recoveryActions: [`aw command package sync ${selector} ${target.packageKey} --scope ${target.producer.scope} --yes`,
-              `aw command package remove ${target.packageId} --yes`],
-          };
-        }
-      }
-      result = { ...result, errors: await Promise.all(result.errors.map(async (error) => ({
-        ...error, message: await sanitizeFailure(error.message, { scope: target.producer.scope,
-          ...(target.producer.projectRoot ? { projectKey: target.producer.projectRoot } : {}) }),
-      }))) };
-      commandResults.set(getCommandPackageId(result.producer), result);
-      await options.rebuildRuntime?.reporter?.event({
-        type: 'managed-command:producer',
-        source: { plugin: options.plugin.manifest.name, scope: target.producer.scope },
-        data: { packageKey: target.packageKey, phase: result.state === 'completed' ? 'success' : 'failure' },
-      });
-      if (result.state !== 'completed') runtimeFailed = true;
-    }
-    const commands = commandResults.size > 0 ? { commandResults: [...commandResults.values()] } : {};
-    const commandTargetCount = (discovered.commandPackages?.length ?? 0);
-
-    if (discovered.targets.length === 0 && discovered.failures.length === 0
-      && commandTargetCount === 0 && !runtimeFailed) {
-      return skippedApply('noVisibleTarget');
-    }
-    if (discovered.targets.length > 0 && invalidTargets === discovered.targets.length && commandTargetCount === 0) {
-      return { ...unavailableApply('invalidConfig', 'targetValidation', targetResults), ...commands };
-    }
-    if (discovered.targets.length > 0 && unavailableTargets === discovered.targets.length && commandTargetCount === 0) {
-      return { ...unavailableApply('effectiveConfigUnavailable', 'targetValidation', targetResults), ...commands };
-    }
-    if (runtimeFailed
-      || invalidTargets > 0
-      || unavailableTargets > 0
-      || targetResults.some((entry) => entry.state === 'failed' || entry.state === 'skipped')) {
-      return {
-        state: 'partial',
-        targetResults,
-        ...commands,
-        ...(errors.length > 0 ? { errors } : {}),
-      };
-    }
-    return { state: 'succeeded', targetResults, ...commands };
-  } finally {
-    await Promise.all([...contexts.values()].map((context) => context.dispose()));
-  }
-}
-
-async function resolveConfigApplyTargets(options: {
-  platform?: PlatformTarget;
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-  nativeCliRunner?: NativeCliRunner;
-  rebuildRuntime?: RebuildCommandRuntime;
-}): Promise<ConfigApplyDiscovery> {
-  const platformTargets = options.applyTargets !== undefined
-    ? { targets: dedupeTargets(options.applyTargets), failures: [] }
-    : await discoverVisibleTargets({
-        pluginName: options.plugin.manifest.name,
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env: options.env,
-        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-        rebuildRuntime: options.rebuildRuntime,
-      });
-  const commands = await discoverPluginConfigManagedCommandPackages({
-    plugin: options.plugin, scope: options.scope, cwd: options.cwd, env: options.env,
-    platformTargets: platformTargets.targets,
-    referencePlugins: options.rebuildRuntime?.referencePlugins,
-  });
-  return { ...platformTargets, commandPackages: commands.packages, commandDiscoveryErrors: commands.errors };
 }
 
 async function configApplyHasValidSharedNativeTarget(options: {
@@ -807,7 +233,9 @@ export async function resolveConfigPreApplyAuthorization(options: {
   availableApplyTargets: ReceiptTargetIdentity[];
   unavailableTargetResults: ReceiptTargetResult[];
 }> {
-  const applyTargets = dedupeTargets(options.applyTargets);
+  const applyTargets = dedupeTargets(options.applyTargets).filter((target) =>
+    !options.rebuildRuntime?.configApplyPackages?.targets.some((entry) => entry.blocker
+      && entry.pluginId === (target.pluginId ?? options.plugin.pluginId) && entry.platforms.includes(target.platform)));
   if (applyTargets.some((target) => target.pluginName !== options.plugin.manifest.name)) {
     const plugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
       sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
@@ -967,140 +395,12 @@ function buildReceiptFieldEntry(options: {
   };
 }
 
-export async function replayConfigRuntimeWrites(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-  includeDynamicArtifacts?: boolean;
-  nativeCliRunner?: NativeCliRunner;
-  reinstallCommandImpl?: ReinstallCommand;
-  rebuildRuntime?: RebuildCommandRuntime;
-  awHomeMutationToken?: AwHomeMutationToken;
-  sharedNativeApplyConfirmed?: boolean;
-  preApplyConfirmed?: boolean;
-  preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
-}): Promise<ConfigRuntimeReplayReceipt> {
-  if (!options.awHomeMutationToken) {
-    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner });
-  }
-  return withAwHomeMutationLock({
-    env: options.env,
-    token: options.awHomeMutationToken,
-    action: async (awHomeMutationToken) => {
-      const env = options.env ?? process.env;
-      const rebuildRuntime = { ...options.rebuildRuntime, awHomeMutationToken };
-      let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
-      try {
-        discovered = await resolveConfigApplyTargets({
-          plugin: options.plugin,
-          scope: options.scope,
-          cwd: options.cwd,
-          env,
-          applyTargets: options.applyTargets,
-          nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
-          rebuildRuntime,
-        });
-      } catch {
-        const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
-        return {
-          configWrite: 'succeeded',
-          overallState: 'partial',
-          apply: publicConfigApplyResult(apply),
-          otherProjectsMayRequireSync: false,
-        };
-      }
-      const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-        applyTargets: discovered.targets,
-        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
-        rebuildRuntime,
-        reinstallCommandImpl: options.reinstallCommandImpl,
-      });
-      if (preApplyAuthorization.targets.length > 0 && !preApplyAuthorizationIsConfirmed({
-        required: preApplyAuthorization.targets,
-        confirmed: options.preApplyConfirmed,
-        authorizedTargets: options.preApplyAuthorizedTargets,
-      })) {
-        const apply: InternalConfigApplyResult = {
-          state: 'partial',
-          targetResults: preApplyAuthorization.targets.map((target) => ({
-            target: {
-              pluginName: target.pluginName,
-              pluginId: target.pluginId,
-              platform: target.platform as PlatformName,
-              scope: target.scope,
-            },
-            action: 'reinstall',
-            state: 'failed',
-            errorCode: 'preApplyAuthorizationRequired',
-            message: 'Running plugin preApply requires explicit authorization.',
-          })),
-        };
-        return {
-          configWrite: 'succeeded',
-          overallState: 'partial',
-          apply: publicConfigApplyResult(apply),
-          otherProjectsMayRequireSync: false,
-        };
-      }
-      discovered = {
-        ...discovered,
-        targets: preApplyAuthorization.availableApplyTargets,
-        failures: [...discovered.failures, ...preApplyAuthorization.unavailableTargetResults],
-      };
-      if (discovered.targets.length === 0
-        && preApplyAuthorization.unavailableTargetResults.length > 0
-        && (discovered.commandPackages?.length ?? 0) === 0) {
-        const apply = unavailableApply(
-          'sourceUnavailable',
-          'source',
-          preApplyAuthorization.unavailableTargetResults,
-        );
-        return {
-          configWrite: 'succeeded',
-          overallState: 'partial',
-          apply: publicConfigApplyResult(apply),
-          otherProjectsMayRequireSync: false,
-        };
-      }
-      if (
-        options.scope === 'user'
-        && options.sharedNativeApplyConfirmed !== true
-        && await configApplyHasValidSharedNativeTarget({
-          plugin: options.plugin,
-          targets: discovered.targets,
-          cwd: options.cwd,
-          env,
-          plugins: rebuildRuntime.referencePlugins,
-        })
-      ) {
-        throwSharedNativeApplyConfirmationRequired();
-      }
-      const apply = await reinstallVisibleTargets({
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-        applyTargets: options.applyTargets,
-        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
-        reinstallCommandImpl: options.reinstallCommandImpl,
-        rebuildRuntime,
-        discovered,
-        preApplyConfirmed: options.preApplyConfirmed,
-      });
-      return {
-        configWrite: 'succeeded',
-        overallState: overallStateForApply(apply),
-        apply: publicConfigApplyResult(apply),
-        otherProjectsMayRequireSync: false,
-      };
-    },
-  });
+export async function replayConfigRuntimeWrites(options: ApplyPluginConfigOptions): Promise<ConfigRuntimeReplayReceipt> {
+  if (options.scope === 'user' && options.sharedNativeApplyConfirmed !== true && await configApplyHasValidSharedNativeTarget({
+    ...options, plugins: options.rebuildRuntime?.referencePlugins, targets: options.applyTargets ?? [],
+  })) throwSharedNativeApplyConfirmationRequired();
+  const result = await applyPluginConfig(options);
+  return { ...result, configWrite: 'succeeded', otherProjectsMayRequireSync: false };
 }
 
 export interface ApplyPluginConfigOptions {
@@ -1113,6 +413,9 @@ export interface ApplyPluginConfigOptions {
   env?: NodeJS.ProcessEnv;
   cliVersion?: string;
   expectedEvidence?: unknown;
+  expectedHostPermissionEffects?: Confirmation['effects'];
+  expectedCommandPackageEvidence?: readonly ConfigCommandPackageEvidence[];
+  mutation?: PluginConfigImpactMutation;
   applyTargets?: ReceiptTargetIdentity[];
   applyCommandPackages?: readonly string[];
   nativeCliRunner?: NativeCliRunner;
@@ -1132,7 +435,11 @@ export interface PreparedPluginConfigApply {
   preApplyAuthorization: PreApplyAuthorizationTarget[];
   commandPackages: ManagedCommandPackageDiscovery['packages'];
   commandDiscoveryErrors: ManagedCommandPackageDiscovery['errors'];
+  commandPackageEvidence: ConfigCommandPackageEvidence[];
+  commandPackageReviews: ConfigCommandPackageReview[];
 }
+
+const commandCandidateCleanup = new WeakMap<RecoveryPlan, () => Promise<unknown>>();
 
 function configApplyRequestedTargets(plan: RecoveryPlan): RecoveryPlan['receipt']['requestedTargets'] {
   const targets = plan.joint
@@ -1144,111 +451,72 @@ function configApplyRequestedTargets(plan: RecoveryPlan): RecoveryPlan['receipt'
       && (result.satisfaction === 'unsupported' || result.satisfaction === 'excluded')));
 }
 
-async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plugins: readonly PluginMeta[], plan: RecoveryPlan,
-  referencePlugins: readonly PluginMeta[]): Promise<{
-  packages: ManagedCommandPackageDiscovery['packages'];
-  evidence: unknown;
-  errors: ManagedCommandPackageDiscovery['errors'];
-  hook: NonNullable<RebuildCommandRuntime['configApplyPackages']>;
-}> {
+function configApplyPackageHook(
+  options: ApplyPluginConfigOptions, entries: readonly ConfigCommandApplyCandidate[], referencePlugins: readonly PluginMeta[],
+): NonNullable<RebuildCommandRuntime['configApplyPackages']> {
   const env = options.env ?? process.env;
-  const context = options.context ?? options.scope;
-  const discoveries: ManagedCommandPackageDiscovery[] = [];
-  const scopes: Scope[] = context === 'project' ? ['user', 'project'] : ['user'];
-  const nativeTargets = configApplyRequestedTargets(plan).flatMap((target): ReceiptTargetIdentity[] => target.agent !== 'generic'
-    ? [{ pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId, platform: target.agent, scope: target.scope }] : []);
-  for (const plugin of plugins) {
-    for (const scope of scopes) {
-      discoveries.push(await discoverInstalledPluginManagedCommandPackages({ plugin, scope, cwd: options.cwd, env,
-        platformTargets: nativeTargets.filter((target) => target.pluginId === (plugin.pluginId ?? plugin.manifest.name)
-          && (scope === 'user' || target.scope === 'project')) }));
-    }
-  }
-  const packages = [...new Map(discoveries.flatMap((discovery) => discovery.packages).filter((target) => {
-    if (options.applyCommandPackages && !options.applyCommandPackages.includes(target.packageId)) return false;
-    if (options.platform) return false;
-    if (!options.targets) return true;
-    const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName);
-    const declaration = plugin?.manifest.managedCommands?.packages.find((entry) => entry.key === target.packageKey && entry.scope === target.producer.scope);
-    return declaration?.platforms.some((platform) => options.targets!.includes(platform)) ?? false;
-  }).map((target) => [target.packageId, target])).values()];
-  const inventory = await listManagedCommandPackages(env);
-  const entries = await Promise.all(packages.map(async (target) => {
-    const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName)!;
-    const installed = inventory.packages.find((entry) => entry.id === target.packageId);
-    let expectedPackage: ManagedCommandPackageEvidence | undefined;
-    let blocker: ReturnType<typeof managedCommandDiagnostic> | undefined;
-    if (!target.installed || !installed) {
-      blocker = { code: 'configApplyRequiresExistingOutput', message: 'Configuration apply requires an existing command package. Run package sync first.' };
-    } else if (!target.declared) {
-      blocker = { code: 'commandPackageDeclarationMissing', message: 'The installed command package is no longer declared by this plugin.' };
-    } else {
-      try {
-        await assertManagedCommandPackageNativeToolsUnchanged({ plugin, producer: target.producer, env });
-        expectedPackage = await captureManagedCommandPackageEvidence(installed, env);
-      } catch (error) { blocker = managedCommandDiagnostic(error); }
-    }
-    return { target, expectedPackage, blocker };
+  const targets = entries.map(({ target, plugin, evidence }) => ({
+    pluginId: plugin.pluginId ?? plugin.manifest.name,
+    scope: 'user' as const,
+    packageId: target.packageId,
+    platforms: evidence.review?.routeChanges.length || evidence.blocker
+      ? [...plugin.manifest.command?.platforms ?? target.runtimeConfigPlatforms] : [],
+    ...(evidence.blocker && ['nativeToolSyncRequired', 'configApplyVersionMismatch'].includes(evidence.blocker.code)
+      ? { blocker: evidence.blocker } : {}),
+    dependencies: resolvePluginMetaDependencyClosure(referencePlugins, [plugin.manifest.name])
+      .filter((entry) => entry.manifest.name !== plugin.manifest.name).map((entry) => entry.pluginId ?? entry.manifest.name),
   }));
-  const errors = [...new Map(discoveries.flatMap((discovery) => discovery.errors).map((error) => [JSON.stringify(error), error])).values()];
-  const evidence = { packages: entries, errors };
-  const targets = entries.map(({ target }) => {
-    const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName)!;
-    const pluginId = plugin.pluginId ?? plugin.manifest.name;
-    const dependencies = resolvePluginMetaDependencyClosure(referencePlugins, [plugin.manifest.name])
-      .filter((entry) => entry.manifest.name !== plugin.manifest.name).map((entry) => entry.pluginId ?? entry.manifest.name);
-    const declaration = plugin.manifest.managedCommands?.packages.find((item) => item.key === target.packageKey && item.scope === target.producer.scope);
-    return { pluginId, scope: target.producer.scope, packageId: target.packageId, platforms: declaration?.platforms ?? [], dependencies };
-  });
-  const cache = plan.runtime.managedCommandProducerCache ??= new Map<string, Promise<CommandProducerResult>>();
-  const hook: NonNullable<RebuildCommandRuntime['configApplyPackages']> = { targets, evidence,
-    blocked: (pluginId, scope, code, packageId) => {
-      const plugin = plugins.find((entry) => (entry.pluginId ?? entry.manifest.name) === pluginId)!;
-      return entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope
-        && (!packageId || target.packageId === packageId))
-        .map(({ target }): CommandProducerResult => ({
-          producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-          errors: [{ code, message: 'The command package refresh did not complete.' }],
-          recoveryActions: [`aw command package sync ${pluginId} ${target.packageKey} --scope ${scope} --yes`],
-        }));
-    },
-    execute: async (pluginId, scope, token, packageId) => {
-      const plugin = plugins.find((entry) => (entry.pluginId ?? entry.manifest.name) === pluginId)!;
-      const selected = entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope
-        && (!packageId || target.packageId === packageId));
+  const selected = (pluginId: string, packageId?: string) => entries.filter(({ target, plugin }) =>
+    (plugin.pluginId ?? plugin.manifest.name) === pluginId && (!packageId || target.packageId === packageId));
+  return { targets, evidence: entries.map(({ evidence }) => evidence),
+    blocked: (pluginId, _scope, code, packageId) => selected(pluginId, packageId).map(({ target, candidate, evidence }) =>
+      configPackageResult(target, [evidence.blocker ?? { code, message: 'The command package refresh did not complete.' }], candidate)),
+    execute: async (pluginId, _scope, _token, packageId) => {
       const results: CommandProducerResult[] = [];
-      let executionContext: Awaited<ReturnType<typeof createScopeContext>> | undefined;
-      try {
-        executionContext = await createScopeContext({ scope, cwd: options.cwd, env });
-        for (const { target, expectedPackage, blocker } of selected) {
-          if (blocker) {
-            const result: CommandProducerResult = { producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-              errors: [blocker], recoveryActions: [target.declared
-                ? `aw command package sync ${pluginId} ${target.packageKey} --scope ${scope} --yes`
-                : `aw command package remove ${target.packageId} --yes`] };
-            cache.set(target.packageId, Promise.resolve(result));
-            results.push(result);
-            continue;
-          }
-          const applied = await reinstallVisibleTargets({ plugin, scope, cwd: executionContext.executionCwd, env: executionContext.env,
-            changedConfigKeys: [...target.refreshKeys],
-            rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken: token, referencePlugins, managedCommandProducerCache: cache },
-            discovered: { targets: [], failures: [], commandPackages: [{ ...target, expectedPackage }], commandDiscoveryErrors: [] } });
-          results.push(...('commandResults' in applied ? applied.commandResults ?? [] : []));
+      for (const { target, plugin, candidate, evidence } of selected(pluginId, packageId)) {
+        if (evidence.blocker || !candidate) {
+          results.push(configPackageResult(target, [evidence.blocker ?? {
+            code: 'commandPackageApplyFailed', message: 'The command package could not be prepared.',
+          }]));
+          continue;
         }
-        return results;
-      } finally { await executionContext?.dispose(); }
-    } };
-  return { packages, evidence, errors, hook };
+        try {
+          options.rebuildRuntime?.signal?.throwIfAborted();
+          if (canonicalizeIdentityValue(evidence.review) !== canonicalizeIdentityValue(await inspectConfigCommandPackageReview(options, target, candidate))) {
+            throw new ManagedCommandError('operationReviewStale', 'Permissions affecting the reviewed routes changed. Prepare a new Review.');
+          }
+          const published = await publishPreparedManagedCommandPackage({ plugin, candidate, cwd: options.cwd, env, referencePlugins });
+          results.push(configPackageResult(target, [], candidate, published));
+        } catch (error) {
+          if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal) || readSafeOperationError(error)) throw error;
+          results.push(configPackageResult(target, [managedCommandDiagnostic(error)], candidate));
+        }
+      }
+      return results;
+    },
+  };
 }
 
 /** Prepare the same existing-output plan used by apply, without saving config or output. */
-export async function preparePluginConfigApply(options: ApplyPluginConfigOptions): Promise<PreparedPluginConfigApply> {
+export async function preparePluginConfigApply(
+  options: ApplyPluginConfigOptions, { inspectOnly = false } = {},
+): Promise<PreparedPluginConfigApply> {
   const { prepareRecovery, describeRecoveryPlan } = await import('../recovery/coordinator.js');
   const context = options.context ?? options.scope;
   const referencePlugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
-    env: options.env, plugins: options.rebuildRuntime?.referencePlugins });
+    env: options.env, plugins: options.rebuildRuntime?.referencePlugins,
+    operationContext: options.rebuildRuntime?.catalogOperationContext }).catch((error: unknown) => {
+    if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal)) throw error;
+    throw Object.assign(new Error('The selected source has no usable Active Catalog.'), { code: 'sourceActiveUnavailable' });
+  });
+  if (options.plugin.sourceId) {
+    const activePlugin = referencePlugins.find((entry) => entry.manifest.name === options.plugin.manifest.name);
+    if (activePlugin) options = { ...options, plugin: activePlugin };
+    else if (options.plugin.manifest.command) {
+      throw Object.assign(new Error('The plugin is unavailable in Active Catalog.'), { code: 'pluginUnavailable' });
+    }
+  }
   const plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
     plugins: referencePlugins });
   const selectors = plugins.map((plugin) => plugin.pluginId ?? plugin.manifest.name);
@@ -1277,34 +545,62 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
       return true;
     });
   }
-  const plan = await prepareRecovery('sync', selectors, {
-    scope: context,
-    context,
-    cwd: options.cwd,
-    env: options.env,
-    signal: options.rebuildRuntime?.signal,
-    cliVersion: version,
-    existingOnly: true,
-    ...(exactTargets ? { exactTargets } : {}),
-    ...(options.targets ? { targets: options.targets } : options.platform ? { targets: [options.platform] } : {}),
-  }, {
-    ...options.rebuildRuntime,
-    referencePlugins,
-    nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
-    awHomeMutationToken: options.awHomeMutationToken,
-    preApplyConfirmed: options.preApplyConfirmed,
+  const env = options.env ?? process.env;
+  const commands = await discoverPluginConfigManagedCommandPackages({ plugin: options.plugin, scope: context,
+    cwd: options.cwd, env, referencePlugins });
+  let selectedPackages = commands.packages.filter((target) => {
+    if (options.applyCommandPackages && !options.applyCommandPackages.includes(target.packageId)) return false;
+    const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName);
+    const platforms = plugin?.manifest.command?.platforms ?? target.runtimeConfigPlatforms;
+    if (options.platform) return options.platform !== 'generic' && platforms.includes(options.platform) && target.runtimeConfigKeys.length > 0;
+    return (target.refreshKeys.length > 0 || target.runtimeConfigKeys.length > 0)
+      && (!options.targets || platforms.some((platform) => options.targets!.includes(platform)));
   });
+  if (options.mutation) {
+    const impact = await analyzePluginConfigMutationImpact({ ...options, scope: context, visibleTargets: [],
+      mutation: options.mutation, commandDiscovery: { ...commands, packages: selectedPackages }, referencePlugins });
+    selectedPackages = impact.affectedCommandPackages;
+  }
+  const entries = await prepareConfigCommandPackages(options, selectedPackages, plugins, referencePlugins, { inspectOnly });
+  const cleanup = () => Promise.all(entries.map(({ candidate }) => candidate?.cleanup()));
+  const packagePreparationCache: RebuildCommandRuntime['packagePreparationCache'] = new Map();
+  for (const { target, candidate } of entries) {
+    if (candidate) packagePreparationCache.set(target.packageId, Promise.resolve(candidate));
+  }
+  let plan: RecoveryPlan | undefined;
   try {
+    plan = await prepareRecovery('sync', selectors, {
+      scope: context,
+      context,
+      cwd: options.cwd,
+      env: options.env,
+      signal: options.rebuildRuntime?.signal,
+      cliVersion: version,
+      existingOnly: true,
+      ...(exactTargets ? { exactTargets } : {}),
+      ...(options.platform ? { targets: [options.platform] } : options.targets ? { targets: options.targets } : {}),
+    }, {
+      ...options.rebuildRuntime,
+      configApply: true,
+      packagePreparationCache,
+      configApplyPackages: configApplyPackageHook(options, entries, referencePlugins),
+      referencePlugins,
+      nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
+      awHomeMutationToken: options.awHomeMutationToken,
+      preApplyConfirmed: options.preApplyConfirmed,
+    });
+    commandCandidateCleanup.set(plan, cleanup);
     plan.warnings.push(...retainedLegacyTargets.map((target) =>
       `${target.pluginId ?? target.pluginName}/${target.platform}/${target.scope}：保留已停用的历史输出；配置 apply 不创建激活。`));
-    const commands = await prepareConfigApplyPackages(options, plugins, plan, referencePlugins);
-    plan.runtime.configApplyPackages = commands.hook;
     const profiles: Array<{ pluginName: string; scope: Scope; platform?: PlatformTarget }> = configApplyRequestedTargets(plan).map((target) => ({
       pluginName: target.pluginId.split('/').at(-1)!, scope: target.scope, platform: target.agent,
     }));
-    // A package has platform=null and always consumes the public common profile.
-    profiles.push(...commands.packages.map((target) => ({ pluginName: target.producer.pluginName,
-      scope: target.producer.scope, platform: undefined })));
+    for (const { target, candidate } of entries) {
+      for (const platform of candidate?.runtimeConfigEvidence.keys() ?? []) {
+        profiles.push({ pluginName: target.producer.pluginName, scope: 'user', platform });
+      }
+      if (candidate?.routeConfigEvidence) profiles.push({ pluginName: target.producer.pluginName, scope: 'user' });
+    }
     const references = await collectPluginConfigReferenceEvidence({ plugin: options.plugin, plugins: referencePlugins,
       profiles, cwd: options.cwd, env: options.env });
     const authorization = await resolveConfigPreApplyAuthorization({
@@ -1320,17 +616,23 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
     ];
     const preApplyAuthorization = [...new Map([...authorization.targets, ...portableAuthorization(plan)]
       .map((target) => [[target.pluginId, target.platform, target.scope].join('\0'), target])).values()];
+    const commandPackageEvidence = entries.map(({ evidence }) => evidence);
     return { plan, retainedLegacyTargets, commandPackages: commands.packages, commandDiscoveryErrors: commands.errors,
+      commandPackageEvidence, commandPackageReviews: commandPackageEvidence.flatMap(({ review }) => review ? [review] : []),
       preApplyAuthorization,
-      evidence: { recovery: describeRecoveryPlan(plan), references, commands: commands.evidence,
+      evidence: { recovery: describeRecoveryPlan(plan), references, commandPackageEvidence,
         preApplyAuthorization, retainedLegacyTargets } };
   } catch (error) {
-    await disposePluginConfigApply(plan);
+    if (plan) await disposePluginConfigApply(plan);
+    else await cleanup();
     throw error;
   }
 }
 
 export async function disposePluginConfigApply(plan: RecoveryPlan): Promise<void> {
+  const cleanup = commandCandidateCleanup.get(plan);
+  commandCandidateCleanup.delete(plan);
+  await cleanup?.();
   for (const child of plan.joint?.children ?? []) await disposePluginConfigApply(child);
   await plan.context.dispose();
 }
@@ -1376,10 +678,17 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
     let prepared: PreparedPluginConfigApply | undefined;
     try {
       const { executeRecovery } = await import('../recovery/coordinator.js');
-      prepared = await preparePluginConfigApply({ ...options, awHomeMutationToken: token });
+      const expectedCommands = options.expectedCommandPackageEvidence
+        ?? (options.expectedEvidence as { commandPackageEvidence?: ConfigCommandPackageEvidence[] } | undefined)?.commandPackageEvidence;
+      prepared = await preparePluginConfigApply({ ...options, awHomeMutationToken: token,
+        expectedCommandPackageEvidence: expectedCommands });
       if (options.expectedEvidence !== undefined
         && JSON.stringify(options.expectedEvidence) !== JSON.stringify(prepared.evidence)) {
-        throw Object.assign(new Error('operationPlanStale: Configuration apply inputs changed. Prepare a new Review.'), { code: 'operationPlanStale' });
+        throw Object.assign(new Error('Configuration apply inputs changed. Prepare a new Review.'), { code: 'operationReviewStale' });
+      }
+      const authorizedEffects = new Set(options.expectedHostPermissionEffects?.map((effect) => JSON.stringify(effect)));
+      if (recoveryHostPermissionEffects(prepared.plan).some((effect) => !authorizedEffects.has(JSON.stringify(effect)))) {
+        throw Object.assign(new Error('Host permission effects changed after Review. Prepare a new Review.'), { code: 'operationReviewStale' });
       }
       const authorization = prepared.preApplyAuthorization;
       if (authorization.length && !preApplyAuthorizationIsConfirmed({ required: authorization,
@@ -1406,12 +715,11 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       const retainedLegacyTargets = prepared.retainedLegacyTargets.filter((target) => !receipt.targetResults.some((result) =>
         (target.pluginId ? result.pluginId === target.pluginId : result.pluginId.split('/').at(-1) === target.pluginName)
           && result.agent === target.platform && result.scope === target.scope));
-      prepared = undefined;
       const ok = receipt.ok && discoveryErrors.length === 0;
       const errors: ConfigApplyError[] = [...discoveryErrors, ...receipt.blockers, ...receipt.errors].map((error) => ({
         stage: 'stage' in error ? error.stage as ConfigApplyError['stage'] : 'apply', code: error.code, message: error.message,
       }));
-      const diagnostics = projectDeploymentNotices(receipt.targetResults);
+      const diagnostics = [...projectDeploymentNotices(receipt.targetResults), ...projectRelatedProjectPermissionFailures(receipt.targetResults)];
       const apply: ConfigApplyResult = {
         state: ok ? 'succeeded' : 'partial',
         targetResults: [...receipt.targetResults.filter((target) => target.satisfaction !== 'unsupported' && target.satisfaction !== 'excluded').map((target): ConfigApplyTargetResult => ({
@@ -1439,12 +747,18 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       return { configWrite: 'notStarted', overallState: ok ? 'succeeded' : 'partial', apply,
         otherProjectsMayRequireSync: true };
     } catch (error) {
-      if (options.rebuildRuntime?.signal?.aborted || error instanceof Error && error.name === 'AbortError'
+      if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal)
         || readSafeOperationError(error)) throw error;
       const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
       const code = (error as { code?: unknown })?.code;
+      if (code === 'sourceActiveUnavailable' || code === 'pluginUnavailable') {
+        return { configWrite: 'notStarted', overallState: 'partial', apply: {
+          ...unavailableApply('sourceUnavailable', 'source'),
+          error: { stage: 'source', code, message: error instanceof Error ? error.message : 'The Active Catalog plugin is unavailable.' },
+        }, otherProjectsMayRequireSync: true };
+      }
       if (typeof code === 'string') apply.error = { stage: 'apply', code,
-        message: code === 'operationPlanStale' ? 'Configuration apply inputs changed. Prepare a new Review.'
+        message: code === 'operationReviewStale' ? 'Configuration apply inputs changed. Prepare a new Review.'
           : 'The existing outputs cannot be refreshed with the current authorization.' };
       return { configWrite: 'notStarted', overallState: 'partial', apply, otherProjectsMayRequireSync: true };
     } finally {
@@ -1465,6 +779,8 @@ type ApplyPluginConfigWriteOptions = {
   env?: NodeJS.ProcessEnv;
   applyTargets?: ReceiptTargetIdentity[];
   applyCommandPackages?: readonly string[];
+  expectedCommandPackageEvidence?: readonly ConfigCommandPackageEvidence[];
+  expectedHostPermissionEffects?: Confirmation['effects'];
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
@@ -1538,26 +854,35 @@ async function prepareConfigMutationApplySelection(options: ApplyPluginConfigWri
   if (options.apply !== true || !options.plugin) return undefined;
   let prepared: PreparedPluginConfigApply | undefined;
   try {
-    prepared = await preparePluginConfigApply({ ...options, plugin: options.plugin });
+    prepared = await preparePluginConfigApply({ ...options, plugin: options.plugin }, { inspectOnly: true });
     const requestedTargets = configApplyRequestedTargets(prepared.plan);
-    if (requestedTargets.some((target) => target.agent === 'generic')) return undefined;
-    const visibleTargets: ReceiptTargetIdentity[] = requestedTargets.map((target) => ({
+    const hasGeneric = requestedTargets.some((target) => target.agent === 'generic');
+    const visibleTargets: ReceiptTargetIdentity[] = requestedTargets.flatMap((target) => target.agent === 'generic' ? [] : [{
       pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId,
-      platform: target.agent as PlatformName, scope: target.scope,
-    }));
-    if (!visibleTargets.length && !prepared.commandPackages.length && !prepared.commandDiscoveryErrors.length) {
-      if (prepared.plan.blockExecution || prepared.plan.receipt.blockers.length || prepared.plan.receipt.errors.length) return undefined;
-      return { skipReason: 'noVisibleTarget' };
-    }
+      platform: target.agent, scope: target.scope,
+    }]);
     const impact = await analyzePluginConfigMutationImpact({ plugin: options.plugin, scope: options.context ?? options.scope,
       platform: options.platform, cwd: options.cwd, env: options.env, visibleTargets,
       commandDiscovery: { packages: prepared.commandPackages, errors: prepared.commandDiscoveryErrors },
       referencePlugins: options.rebuildRuntime?.referencePlugins,
       mutation: 'request' in options ? { kind: 'patch', ...options.request } : { kind: 'reset' } });
-    return { applyTargets: impact.affectedTargets,
+    if (options.expectedCommandPackageEvidence) {
+      const referencePlugins = prepared.plan.runtime.referencePlugins ?? [];
+      const plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: referencePlugins });
+      const entries = await prepareConfigCommandPackages({ ...options, plugin: options.plugin,
+        mutation: 'request' in options ? { kind: 'patch', ...options.request } : { kind: 'reset' } },
+      impact.affectedCommandPackages, plugins, referencePlugins);
+      await Promise.all(entries.map(({ candidate }) => candidate?.cleanup()));
+    }
+    if (!hasGeneric && !visibleTargets.length && !prepared.commandPackages.length && !prepared.commandDiscoveryErrors.length) {
+      if (prepared.plan.blockExecution || prepared.plan.receipt.blockers.length || prepared.plan.receipt.errors.length) return undefined;
+      return { skipReason: 'noVisibleTarget' };
+    }
+    return { applyTargets: hasGeneric ? undefined : impact.affectedTargets,
       applyCommandPackages: impact.affectedCommandPackages.map((target) => target.packageId),
-      ...(impact.noEffectiveChange ? { skipReason: 'noEffectiveConfigChange' as const } : {}) };
-  } catch {
+      ...(!hasGeneric && impact.noEffectiveChange ? { skipReason: 'noEffectiveConfigChange' as const } : {}) };
+  } catch (error) {
+    if ((error as { code?: string })?.code === 'operationReviewStale' || recoveryInterruptionCode(error, options.rebuildRuntime?.signal)) throw error;
     // A failed output discovery must not prevent a valid configuration save.
     return undefined;
   } finally { if (prepared) await disposePluginConfigApply(prepared.plan); }
@@ -1680,6 +1005,8 @@ type ResetPluginConfigWriteOptions = {
   pluginError?: Error | null;
   applyTargets?: ReceiptTargetIdentity[];
   applyCommandPackages?: readonly string[];
+  expectedCommandPackageEvidence?: readonly ConfigCommandPackageEvidence[];
+  expectedHostPermissionEffects?: Confirmation['effects'];
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
@@ -1756,7 +1083,11 @@ export async function resetPluginConfigWithHelper(
       const saved = await resetPluginConfigWithHelperUnlocked({ ...options, scope: options.context ?? options.scope,
         apply: false, awHomeMutationToken, rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken } });
       if (options.apply !== true) return saved;
-      if (!options.plugin) return { ...saved, overallState: 'partial', apply: unavailableApply('sourceUnavailable', 'source') };
+      if (!options.plugin) {
+        const apply = unavailableApply('sourceUnavailable', 'source');
+        const cause = configActiveAvailabilityError(options.pluginError);
+        return { ...saved, overallState: 'partial', apply: cause ? { ...apply, error: { stage: 'source', ...cause } } : apply };
+      }
       if (saved.apply.state === 'skipped' && saved.apply.reason === 'noConfigChange') return saved;
       if (selection?.skipReason) return { ...saved, apply: skippedApply(selection.skipReason) };
       const applied = await applyPluginConfig({ ...options, ...selection, plugin: options.plugin, awHomeMutationToken })

@@ -18,6 +18,7 @@ import { calculateFileDigest } from '../utils/bundle-integrity.js'
 const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeSegmentPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
 const compareText = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
+export const EVAL_COMMAND_FIXTURE = '.aw-command-fixture'
 
 interface EvalFixtureFile {
   path: string
@@ -261,9 +262,14 @@ export async function resolveEvalSourceBindingInput(options: {
     options.evalRoot,
     new Set(['manifest.json', ...options.corpusPaths]),
   )
+  if (fixtureRecords.directories.includes(EVAL_COMMAND_FIXTURE)
+    || fixtureRecords.files.some(({ path }) => path === EVAL_COMMAND_FIXTURE)) {
+    throw new Error(`Eval authored fixtures cannot use the reserved ${EVAL_COMMAND_FIXTURE} path.`)
+  }
   const fixturesDigest = digestCanonical(fixtureRecords)
   if (options.preparedEvalRoot) {
-    const preparedFixtures = await collectFixtureRecords(options.preparedEvalRoot, new Set())
+    // The generated command fixture is bound by the complete Eval workspace digest.
+    const preparedFixtures = await collectFixtureRecords(options.preparedEvalRoot, new Set([EVAL_COMMAND_FIXTURE]))
     if (digestCanonical(preparedFixtures) !== fixturesDigest) {
       throw new Error('Prepared Eval fixtures do not match the current source fixtures.')
     }

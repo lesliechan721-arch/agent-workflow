@@ -80,14 +80,15 @@ aw dev eval prepare agent-subagent spawn-subagent --suite lifecycle-timeout --pr
 
 续接回归使用真实 helper 先保存一次操作再报告临时服务失败，最终检查原代理续接和 `applied=1`，而非重放 start。该用例覆盖工具执行失败后的有效进度，不证明任意 API 故障或线程损坏均能恢复。独立重审先检查旧版本的一个指定问题，再要求当前完整版本审核；grader 要求读取当前源码并发现旧清单之外的缺陷，同时确认实际使用该用例明确要求的 Astra/xhigh。新交付检查第二个代理的干净上下文、实际读取和新结果。上述用例的 Oracle 修改后须独立审核；没有运行结果时只构成候选验证资产。
 
-## 运行调度与角色边界迁移
+## 运行调度与角色边界
 
-`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。旧 `worker-instructions` 用例按职责改名，J11/J17 从后台恢复与 revision 拒绝迁移为公开 save/apply、活跃输入固定和同一运行句柄 等待。完整逐项替代、真实支持要求及未验证项见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。原生调用不经过 resolve/native reference/plan；外部使用必填 profile、prompt 的 v5 start/wait/result；支持 stdin，显式 instructions-file 可选。外部单 prompt 不证明独立指令通道或 OS 隔离。J16 验证 workspace 拒绝空 --file 和零 adapter 启动。因输入及 Oracle 已改变，必须重新进行独立 EvalAudit 和模型 Eval，旧模型成绩不能沿用。Advisor 的预算以当前任务明确要求为准，不再使用默认 policy。
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。外部任务使用 `aw command run <来源>/<插件> -- start --platform codex`，传入 `--executor` 和 `--prompt-file` 或 `--prompt`，并按需要提供 `--instructions-file`。后续用原句柄 wait/result。用例前提、输入和证据范围见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。
 
-公开 synthetic fixture 合同可用以下命令作确定性验证。它要求已编译的 CLI 和插件构建依赖；在临时 staging 准备 Guide，然后使用临时 PATH `aw`、隔离 home 和本地假 Adapter 执行 validate/build/source/install、save 后通过 sync 应用、纯文本消费、J16 输入拒绝和 J12 单次写入。该脚本不 build 全局 CLI，不调用模型，不证明 native 宿主、远端服务或打包分发资格。
+以下检查使用已编译 CLI、pnpm 的已有依赖缓存、隔离 Home 和本地 Adapter。它执行公开 Eval prepare、Catalog 构建、安装、配置应用和命令回执读取，覆盖 J11、J12、J15、J16、J17。将 `npm_config_store_dir` 指向已缓存插件构建依赖的 pnpm store 基目录。
 
 ```bash
-node plugins/agent-subagent/skills/spawn-subagent/evals/role-boundary-public-contract.mjs --cli packages/cli/dist/index.js
+npm_config_store_dir=/absolute/path/to/pnpm-store \
+  node plugins/agent-subagent/skills/spawn-subagent/evals/role-boundary-public-contract.mjs --cli packages/cli/dist/index.js
 ```
 
-外部运行材料已迁移到 v5 start/send/wait/result/stop；此次只更新确定性消费者和运行前提，不提供新的模型效果证据。修改后的用例须重新 prepare 并取得独立 EvalAudit，旧模型成绩不适用。
+真实后端、模型行为和原生 Windows 资格需要各自的实测。模型 Eval 沿用独立的 EvalAudit 与结果绑定，历史分数仅适用于其原始输入和判定规则。

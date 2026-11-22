@@ -124,13 +124,14 @@ export async function sendInput(context, request, dependencies = {}) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
+    if (context.forRun) context = await context.forRun(run);
     const touched = run.meta.terminalAt !== null;
     if (touched) await touchEntry(context, run).catch(() => {});
     run = await observeRun(context, run);
     if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (terminal(run.snapshot.state)) {
       if (!touched) await touchEntry(context, run).catch(() => {});
-      return await resumeRun(context, run, request, dependencies);
+      return await resumeRun(context, run, request, { ...dependencies, runtimeSnapshot: context.runtimeSnapshot });
     }
     if (run.snapshot.state !== 'running') fail('runClosed', 'The run no longer accepts input.');
     if (run.snapshot.initialization?.capabilities.communication?.status !== 'enabled') fail('communicationUnsupported', 'This run does not support communication.');
@@ -196,7 +197,9 @@ async function exportResult(run, events, factory, target, context) {
 export async function readResult(context, request) {
   let run;
   try {
-    run = await observeRun(context, await openRun(context, request.runs[0]));
+    run = await openRun(context, request.runs[0]);
+    if (context.forRun) context = await context.forRun(run);
+    run = await observeRun(context, run);
     if (!run.result) fail('resultNotReady', 'The run has not reached a terminal state.');
     await settleLateInputs(run);
     const events = await recordFiles(run, 'events');
@@ -279,7 +282,10 @@ export async function waitRuns(context, request) {
       try {
         const entry = opened.get(handle);
         if (entry.error) throw entry.error;
-        const run = await observeRun(context, entry.run);
+        const runContext = context.forRun ? await context.forRun(entry.run) : context;
+        const run = await observeRun(runContext, entry.run);
+        context.table = runContext.table;
+        context.tableEvidence = runContext.tableEvidence;
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
         const group = { run, handle, items: [], events, gaps: [], candidates: events.map((name) => ({ kind: 'message', name })), capability: needsInitialization(run), showDiagnostics: request.showDiagnostics };
@@ -370,6 +376,7 @@ export async function stopRun(context, request) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
+    if (context.forRun) context = await context.forRun(run);
     if (!expired(run.meta, Date.now(), context)) run = await observeRun(context, run);
     if (!run.result && !expired(run.meta, Date.now(), context)) await atomicJson(path.join(run.directory, 'stop.json'), { reason: 'requested' });
     const until = Date.now() + 30000;

@@ -73,8 +73,8 @@
     "artifacts": {
       "$ref": "#/$defs/artifacts"
     },
-    "managedCommands": {
-      "$ref": "#/$defs/managedCommands"
+    "command": {
+      "$ref": "#/$defs/pluginCommand"
     },
     "nativeTools": {
       "$ref": "#/$defs/nativeTools"
@@ -221,32 +221,54 @@
       ]
     },
     "nativeToolConsumer": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "key",
-        "tools"
-      ],
-      "properties": {
-        "kind": {
-          "enum": [
-            "managed-command-set",
-            "plugin-test"
-          ]
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "tools"
+          ],
+          "properties": {
+            "kind": {
+              "const": "plugin-command"
+            },
+            "tools": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/$defs/nativeToolBinding"
+              }
+            }
+          }
         },
-        "key": {
-          "$ref": "#/$defs/commandName"
-        },
-        "tools": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 32,
-          "items": {
-            "$ref": "#/$defs/nativeToolBinding"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "key",
+            "tools"
+          ],
+          "properties": {
+            "kind": {
+              "const": "plugin-test"
+            },
+            "key": {
+              "const": "node"
+            },
+            "tools": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/$defs/nativeToolBinding"
+              }
+            }
           }
         }
-      }
+      ]
     },
     "nativeTools": {
       "type": "object",
@@ -321,81 +343,13 @@
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       }
     },
-    "commandDefinition": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "key",
-        "runner",
-        "entry"
-      ],
-      "properties": {
-        "key": {
-          "$ref": "#/$defs/commandName"
-        },
-        "variant": {
-          "$ref": "#/$defs/commandName"
-        },
-        "runner": {
-          "enum": [
-            "node",
-            "executable"
-          ]
-        },
-        "entry": {
-          "$ref": "#/$defs/commandRelativeFile"
-        },
-        "args": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 4096
-          },
-          "maxItems": 128
-        },
-        "env": {
-          "$ref": "#/$defs/commandEnvironment"
-        },
-        "envFrom": {
-          "$ref": "#/$defs/commandEnvironmentSource"
-        },
-        "cwd": {
-          "enum": [
-            "caller",
-            "resource"
-          ]
-        }
-      }
-    },
-    "managedCommandReference": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "set",
-        "key"
-      ],
-      "properties": {
-        "set": {
-          "$ref": "#/$defs/commandName"
-        },
-        "key": {
-          "$ref": "#/$defs/commandName"
-        },
-        "variant": {
-          "$ref": "#/$defs/commandName"
-        }
-      }
-    },
     "managedCommandPermission": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "command"
+        "argsPrefix"
       ],
       "properties": {
-        "command": {
-          "$ref": "#/$defs/managedCommandReference"
-        },
         "argsPrefix": {
           "type": "array",
           "items": {
@@ -417,215 +371,6 @@
             "$ref": "#/$defs/managedCommandPermission"
           }
         ]
-      }
-    },
-    "managedCommandProducer": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "artifactId",
-            "platform"
-          ],
-          "properties": {
-            "kind": {
-              "const": "artifact"
-            },
-            "artifactId": {
-              "type": "string",
-              "minLength": 1
-            },
-            "platform": {
-              "enum": [
-                "codex",
-                "claude",
-                "antigravity",
-                "cursor",
-                "opencode",
-                "pi",
-                "copilot",
-                "grok"
-              ]
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "platform",
-            "skillKey"
-          ],
-          "properties": {
-            "kind": {
-              "const": "static-skill"
-            },
-            "platform": {
-              "enum": [
-                "codex",
-                "claude",
-                "antigravity",
-                "cursor",
-                "opencode",
-                "pi",
-                "copilot",
-                "grok"
-              ]
-            },
-            "skillKey": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "packageKey"
-          ],
-          "properties": {
-            "kind": {
-              "const": "package"
-            },
-            "packageKey": {
-              "$ref": "#/$defs/commandName"
-            }
-          }
-        }
-      ]
-    },
-    "managedCommandPackage": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "key",
-        "scope",
-        "platforms",
-        "sourceDir"
-      ],
-      "properties": {
-        "key": {
-          "$ref": "#/$defs/commandName"
-        },
-        "scope": {
-          "enum": [
-            "user",
-            "project"
-          ]
-        },
-        "platforms": {
-          "type": "array",
-          "items": {
-            "enum": [
-              "codex",
-              "claude",
-              "antigravity",
-              "cursor",
-              "opencode",
-              "pi",
-              "copilot",
-              "grok"
-            ]
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "sourceDir": {
-          "$ref": "#/$defs/pluginPath"
-        },
-        "render": {
-          "const": true
-        },
-        "refreshKeys": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true
-        }
-      }
-    },
-    "managedCommandSet": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "set",
-            "producer",
-            "mode",
-            "entries"
-          ],
-          "properties": {
-            "set": {
-              "$ref": "#/$defs/commandName"
-            },
-            "producer": {
-              "$ref": "#/$defs/managedCommandProducer"
-            },
-            "mode": {
-              "const": "static"
-            },
-            "entries": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/commandDefinition"
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "set",
-            "producer",
-            "mode",
-            "refreshKeys"
-          ],
-          "properties": {
-            "set": {
-              "$ref": "#/$defs/commandName"
-            },
-            "producer": {
-              "$ref": "#/$defs/managedCommandProducer"
-            },
-            "mode": {
-              "const": "dynamic"
-            },
-            "refreshKeys": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            }
-          }
-        }
-      ]
-    },
-    "managedCommands": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [],
-      "properties": {
-        "packages": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/managedCommandPackage"
-          }
-        },
-        "sets": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/managedCommandSet"
-          }
-        }
       }
     },
     "permissionOverrides": {
@@ -8281,6 +8026,223 @@
         }
       },
       "required": []
+    },
+    "commandLaunch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "entry"
+      ],
+      "properties": {
+        "runner": {
+          "enum": [
+            "node",
+            "executable"
+          ]
+        },
+        "entry": {
+          "$ref": "#/$defs/commandRelativeFile"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        },
+        "env": {
+          "$ref": "#/$defs/commandEnvironment"
+        },
+        "envFrom": {
+          "$ref": "#/$defs/commandEnvironmentSource"
+        },
+        "cwd": {
+          "enum": [
+            "caller",
+            "resource"
+          ]
+        }
+      }
+    },
+    "commandSubcommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "runner",
+        "entry"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/commandName"
+        },
+        "runner": {
+          "enum": [
+            "node",
+            "executable"
+          ]
+        },
+        "entry": {
+          "$ref": "#/$defs/commandRelativeFile"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 128
+        },
+        "env": {
+          "$ref": "#/$defs/commandEnvironment"
+        },
+        "envFrom": {
+          "$ref": "#/$defs/commandEnvironmentSource"
+        },
+        "cwd": {
+          "enum": [
+            "caller",
+            "resource"
+          ]
+        }
+      }
+    },
+    "commandRoutes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "subcommands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commandSubcommand"
+          }
+        },
+        "fallback": {
+          "$ref": "#/$defs/commandLaunch"
+        }
+      }
+    },
+    "pluginCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourceDir",
+            "mode",
+            "routes"
+          ],
+          "properties": {
+            "sourceDir": {
+              "$ref": "#/$defs/pluginPath"
+            },
+            "platforms": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "antigravity",
+                  "cursor",
+                  "opencode",
+                  "pi",
+                  "copilot",
+                  "grok"
+                ]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "runtimeConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "keys"
+              ],
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                }
+              }
+            },
+            "mode": {
+              "const": "static"
+            },
+            "routes": {
+              "$ref": "#/$defs/commandRoutes"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourceDir",
+            "mode",
+            "refreshKeys"
+          ],
+          "properties": {
+            "sourceDir": {
+              "$ref": "#/$defs/pluginPath"
+            },
+            "platforms": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "antigravity",
+                  "cursor",
+                  "opencode",
+                  "pi",
+                  "copilot",
+                  "grok"
+                ]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "runtimeConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "keys"
+              ],
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                }
+              }
+            },
+            "mode": {
+              "const": "dynamic"
+            },
+            "refreshKeys": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      ]
     }
   }
 }

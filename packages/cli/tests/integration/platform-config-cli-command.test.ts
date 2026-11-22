@@ -3,11 +3,13 @@ import { Readable } from 'node:stream';
 
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { COMMAND_PRODUCER_RECORD_FILE, normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { runCli } from '../../src/index.js';
 import * as platformDiscovery from '../../src/platforms/discovery.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
@@ -18,13 +20,13 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const discoverPlatforms = platformDiscovery.discoverPlatforms;
 
-async function fixture(withSkill = false) {
+async function fixture(kind: 'config' | 'skill' | 'command' = 'config') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   await git(cwd, ['init', '--quiet']);
   let nativeCliRunner: NativeCliRunner | undefined;
-  if (withSkill) {
+  if (kind === 'skill') {
     const discovery = vi.spyOn(platformDiscovery, 'discoverPlatforms').mockImplementation((ctx) => discoverPlatforms({
       ...ctx, macApplicationsDirectories: [], windowsApplicationsDirectories: [], linuxDesktopDirectories: [],
     }));
@@ -42,16 +44,33 @@ async function fixture(withSkill = false) {
     };
   }
   const sourceRoot = path.join(cwd, 'config-source');
-  if (withSkill) await fs.outputFile(path.join(sourceRoot, 'plugins/demo/render.mjs'), [
+  const rendererMarker = path.join(cwd, 'command-rendered');
+  if (kind === 'skill') await fs.outputFile(path.join(sourceRoot, 'plugins/demo/render.mjs'), [
     'import fs from "node:fs"; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,"utf8"));',
     `const files=${JSON.stringify({ 'SKILL.md': '---\nname: config-demo\ndescription: Config apply fixture.\n---\nFixture.\n', 'README.md': '# Config fixture\n' })};`,
     'const allowed=c.allowedOutputKinds.includes("skill");const enabled=c.config.values.enabled;',
     'console.log(JSON.stringify({version:3,components:allowed&&enabled?[{id:"config-demo",kind:"skill",name:"config-demo",content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:allowed&&!enabled?[{id:"config-demo",kind:"skill",reason:"config-disabled"}]:[],unmet:[]}));',
   ].join('\n'));
+  if (kind === 'command') {
+    await fs.outputFile(path.join(sourceRoot, 'plugins/demo/tools/entry.mjs'),
+      "process.exitCode = process.argv[2] === 'common-default' ? 17 : 19;\n");
+    await fs.outputFile(path.join(sourceRoot, 'plugins/demo/render.mjs'), [
+      "import fs from 'node:fs';",
+      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      `fs.writeFileSync(${JSON.stringify(rendererMarker)}, JSON.stringify({
+        event: context.event, values: context.config.values, changedConfigKeys: context.changedConfigKeys,
+      }));`,
+      "const fallback = { runner: 'node', entry: 'entry.mjs', args: [context.config.values.mode] };",
+      "console.log(JSON.stringify({ version: 2, artifacts: [{ id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes', refreshKeys: ['mode', 'region'], routes: { fallback } }] }));",
+    ].join('\n'));
+  }
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], '# Config fixture\n', (manifest) => {
     manifest.platforms = ['cursor', 'generic'];
-    if (withSkill) {
+    if (kind === 'skill') {
       manifest.artifacts = { configKeys: ['enabled'], scopes: ['project'] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    }
+    if (kind === 'command') {
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     }
     manifest.config = { schemaVersion: 5, fields: {
@@ -59,11 +78,20 @@ async function fixture(withSkill = false) {
         presets: [{ id: 'fast', title: 'Common fast', value: 'common-fast' }] } },
       enabled: { type: 'boolean', default: true },
       token: { type: 'string', sensitive: true },
+      ...(kind === 'command' ? {
+        region: { type: 'string', default: 'local', valueRef: { field: 'regions', key: 'name' } },
+        regions: { type: 'array', default: [{ name: 'local' }], validation: { uniqueBy: 'name' }, items: {
+          type: 'object', properties: { name: { type: 'string', required: true } }, additionalProperties: false,
+        } },
+      } : {}),
     }, platforms: { cursor: { fields: {
       mode: { type: 'string', default: 'cursor-default', choices: { allowCustom: true,
         presets: [{ id: 'fast', title: 'Cursor fast', value: 'cursor-fast' }] } },
       cursorOnly: { type: 'number', default: 1 },
     } } } };
+    if (kind === 'command') {
+      manifest.command = normalizePluginCommand({ sourceDir: './tools', mode: 'dynamic', refreshKeys: ['mode', 'region'] }, manifest);
+    }
   });
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({ env, expectedDigest: snapshot.digest,
@@ -78,11 +106,108 @@ async function fixture(withSkill = false) {
     });
     return { exitCode, value: JSON.parse(captured.readStdout()), stdout: captured.readStdout(), stderr: captured.readStderr() };
   };
-  return { cwd, env, file, run };
+  return { cwd, env, file, run, rendererMarker };
 }
 
 describe('platform configuration CLI', () => {
   beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true }); });
+  it.each([
+    ['team/missing', 'pluginUnavailable'],
+    ['team/demo', 'sourceActiveUnavailable'],
+  ] as const)('stops before applying %s when its Active source cannot supply it', async (selector, code) => {
+    const f = await fixture();
+    if (code === 'sourceActiveUnavailable') await fs.unlink(resolveCatalogGenerationStatePath(f.env));
+    const result = await f.run(['plugin', 'config', 'apply', selector, '--context', 'user', '--yes']);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    expect(await fs.pathExists(f.file)).toBe(false);
+    const reset = await f.run(['plugin', 'config', 'reset', selector, '--context', 'user', '--apply', '--yes']);
+    expect(reset.exitCode).not.toBe(0);
+    expect(reset.value.data.apply.error).toMatchObject({ stage: 'source', code });
+  });
+
+  // Test Value Gate: failed Active resolution must preserve the already runnable revision.
+  it('keeps the published dynamic command callable when config apply cannot resolve Active', async () => {
+    const f = await fixture('command');
+    const selector = 'team/demo';
+    const synced = await f.run(['command', 'package', 'sync', selector, '--yes']);
+    expect(synced, synced.stdout).toMatchObject({ exitCode: 0 });
+    const show = () => f.run(['command', 'show', selector]);
+    const before = await show();
+    expect(before).toMatchObject({ exitCode: 0, value: { data: {
+      commands: [expect.objectContaining({ availability: 'ready', resourceRoot: expect.any(String),
+        routes: { subcommands: [], fallback: expect.objectContaining({ entry: 'entry.mjs', args: ['common-default'] }) } })],
+    } } });
+    expect(await fs.readJson(f.rendererMarker)).toMatchObject({ values: { mode: 'common-default' } });
+    await fs.unlink(f.rendererMarker);
+    expect(await f.run(['plugin', 'config', 'set', selector, 'mode', '--context', 'user', '--value-json', '"saved"']))
+      .toMatchObject({ exitCode: 0 });
+    await fs.unlink(resolveCatalogGenerationStatePath(f.env));
+
+    const result = await f.run(['plugin', 'config', 'apply', selector, '--context', 'user', '--yes']);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'sourceActiveUnavailable' }));
+    expect((await fs.readJson(f.file)).common.mode).toBe('saved');
+    await expect(fs.pathExists(f.rendererMarker)).resolves.toBe(false);
+    expect((await show()).value.data.commands).toEqual(before.value.data.commands);
+    const capture = createCapturedCliIo();
+    expect(await runCli(['command', 'run', selector, '--'], {
+      cwd: f.cwd, env: f.env, interactive: false, io: capture.io,
+    }), capture.readStderr()).toBe(17);
+  });
+
+  // The author renderer receives changes since the published routes, limited to its common non-sensitive inputs.
+  it('reports actual route input changes for saved and immediate config apply', async () => {
+    const f = await fixture('command');
+    const selector = 'team/demo';
+    const set = (key: string, value: unknown, ...flags: string[]) =>
+      f.run(['plugin', 'config', 'set', selector, key, '--context', 'user', '--value-json', JSON.stringify(value), ...flags]);
+    const synced = await f.run(['command', 'package', 'sync', selector, '--yes']);
+    expect(synced, synced.stdout).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.rendererMarker)).toMatchObject({ changedConfigKeys: [] });
+    await fs.unlink(f.rendererMarker);
+
+    const regions = [{ name: 'local' }, { name: 'remote' }];
+    expect(await set('mode', 'saved')).toMatchObject({ exitCode: 0 });
+    expect(await set('regions', regions)).toMatchObject({ exitCode: 0 });
+    expect(await set('enabled', false)).toMatchObject({ exitCode: 0 });
+    expect(await f.run(['plugin', 'config', 'set', selector, 'token', '--context', 'user', '--value-stdin'], 'fake-test-secret'))
+      .toMatchObject({ exitCode: 0 });
+    expect(await set('mode', 'cursor-only', '--platform', 'cursor')).toMatchObject({ exitCode: 0 });
+    await expect(fs.pathExists(f.rendererMarker)).resolves.toBe(false);
+
+    const applied = await f.run(['plugin', 'config', 'apply', selector, '--context', 'user', '--yes']);
+    expect(applied, applied.stdout).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.rendererMarker)).toEqual({
+      event: 'refresh', values: { mode: 'saved', region: 'local', regions },
+      changedConfigKeys: ['mode', 'regions'],
+    });
+
+    const savedAndApplied = await set('region', 'remote', '--apply', '--yes');
+    expect(savedAndApplied, savedAndApplied.stdout).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.rendererMarker)).toEqual({
+      event: 'refresh', values: { mode: 'saved', region: 'remote', regions },
+      changedConfigKeys: ['region'],
+    });
+
+    const shown = await f.run(['command', 'show', selector]);
+    expect(shown, shown.stdout).toMatchObject({ exitCode: 0 });
+    const producerFile = path.join(shown.value.data.commands[0].resourceRoot, COMMAND_PRODUCER_RECORD_FILE);
+    const legacyRecord = await fs.readJson(producerFile);
+    delete legacyRecord.routeConfigKeyDigests;
+    await fs.writeJson(producerFile, legacyRecord);
+    const legacyApply = await set('mode', 'legacy-refresh', '--apply', '--yes');
+    expect(legacyApply, legacyApply.stdout).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.rendererMarker)).toMatchObject({
+      event: 'refresh', values: { mode: 'legacy-refresh' }, changedConfigKeys: [],
+    });
+    const nextApply = await set('mode', 'next-refresh', '--apply', '--yes');
+    expect(nextApply, nextApply.stdout).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.rendererMarker)).toMatchObject({
+      event: 'refresh', values: { mode: 'next-refresh' }, changedConfigKeys: ['mode'],
+    });
+  });
+
   it('uses common by default, compiles platform presets, and keeps project context in the user store', async () => {
     const f = await fixture();
     const initial = await f.run(['plugin', 'config', 'get', 'team/demo', 'mode']);
@@ -240,7 +365,7 @@ describe('platform configuration CLI', () => {
   });
 
   it('reports a committed save separately when joint application is blocked', async () => {
-    const f = await fixture(true);
+    const f = await fixture('skill');
     expect(await f.run(['target', 'set', 'cursor'])).toMatchObject({ exitCode: 0 });
     expect(await f.run(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']))
       .toMatchObject({

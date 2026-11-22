@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  assertAgentCommandContext, assertPlatformCapabilities, assertPlatformComponentPlan, assertPlatformRenderContext,
+  assertPlatformCapabilities, assertPlatformComponentPlan, assertPlatformRenderContext,
   COMPONENT_KINDS, getHookHandlerContract, getComponentFeatureRequirements, getUnmetFeatureRequirements, normalizeStaticPluginComponents,
   partitionStaticPluginComponents, PLATFORM_FEATURE_REGISTRY, validatePluginManifest,
   type PlatformCapabilitiesV2, type PlatformComponentPlanV3, type PlatformRenderContextV2, type PluginComponent,
@@ -56,7 +56,7 @@ describe('platform component contract', () => {
     for (const extra of [{ target: 'codex.skill' }, { platform: 'claude' }, { state: 'disabled' }, { destination: '/tmp/host' }]) expect(() => assertPlan(plan([{ ...skill, ...extra }]))).toThrow();
     expect(() => assertPlan({ ...plan([skill]), omitted: [{ id: skill.id, kind: 'skill', reason: 'not-offered' }] })).toThrow(/duplicate component ID/u);
     expect(() => assertPlatformComponentPlan(plan([hook]), { platform: 'codex', allowedOutputKinds: ['skill'], platformCapabilities: capabilities() })).toThrow(/outside allowedOutputKinds/u);
-    expect(() => assertPlan(plan([{ ...skill, id: 'command-set.check' }]))).toThrow(/component ID/u);
+    expect(() => assertPlan(plan([{ ...skill, id: 'command-routes' }]))).toThrow(/component ID/u);
     for (const requires of [[{ feature: 'future.unknown' }], [{ feature: 'hook.common.before_tool', values: ['invented'] }]]) expect(() => assertPlan(plan([{ ...hook, requires }]))).toThrow();
     const unmet = { id: 'role', kind: 'agent', requiredFeatures: [], reasonCode: 'dependency-unmet' };
     assertPlan({ ...plan([]), unmet: [unmet] });
@@ -181,12 +181,5 @@ describe('renderer input contract', () => {
     expect(() => assertPlatformRenderContext({ ...input, allowedOutputKinds: ['skill', 'agent'] })).toThrow(/separate/u);
     expect(() => assertPlatformRenderContext({ ...input, config: { ...input.config, values: { optional: 'secret' } } })).toThrow(/missing/u);
     expect(() => assertPlatformRenderContext({ ...input, previousComponents: [{ id: 'role', kind: 'agent', name: 'role' }] })).toThrow(/outside batch/u);
-  });
-  it('validates command-only context and requires every requested producer', () => {
-    const input = context(); const command = { schemaVersion: 1, surface: 'agent-commands', platform: 'codex', scope: 'user', plugin: input.plugin, config: input.config, changedConfigKeys: [], requestedArtifactIds: ['command-set.check'], previousArtifacts: [], producers: [{ set: 'check', componentId: 'skill:check', resourceRoot: '/tmp/check' }] };
-    assertAgentCommandContext(command);
-    expect(() => assertAgentCommandContext({ ...command, platform: 'generic' })).toThrow();
-    expect(() => assertAgentCommandContext({ ...command, platformCapabilities: input.platformCapabilities })).toThrow();
-    expect(() => assertAgentCommandContext({ ...command, producers: [] })).toThrow(/one producer/u);
   });
 });

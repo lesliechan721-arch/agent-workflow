@@ -1,14 +1,17 @@
-import type { Confirmation } from '../output/public-result.js';
+import { inactiveCommandPermissionEffects, type Confirmation } from '../output/public-result.js';
 import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigRenderUnits, type PluginConfigImpactMutation } from '../utils/plugin-config-impact.js';
 import { preparePluginConfigApply, disposePluginConfigApply, resolveConfigPreApplyAuthorization, type ApplyPluginConfigOptions } from '../utils/plugin-config-write.js';
 import { resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
+import { describeConfigCommandPackageReviews, type ConfigCommandPackageEvidence } from '../utils/plugin-config-command-apply.js';
 import type { ReceiptTargetIdentity } from '../types.js';
+import { recoveryHostPermissionEffects } from './deployment-confirmation.js';
 
 /** The candidate impact is computed in memory while the caller holds the existing mutation lock. */
 export async function preparePublicConfigConfirmation(options: ApplyPluginConfigOptions & {
   yes?: boolean;
   mutation?: PluginConfigImpactMutation;
-}): Promise<Confirmation> {
+}): Promise<{ confirmation: Confirmation; commandPackageEvidence: ConfigCommandPackageEvidence[]; evidence: unknown;
+  hostPermissionEffects: Confirmation['effects'] }> {
   const prepared = await preparePluginConfigApply(options);
   try {
     const referencePlugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
@@ -23,7 +26,8 @@ export async function preparePublicConfigConfirmation(options: ApplyPluginConfig
       scope: options.context ?? options.scope, platform: options.platform, cwd: options.cwd, env: options.env,
       visibleTargets: native, mutation: options.mutation, referencePlugins,
       commandDiscovery: { packages: prepared.commandPackages, errors: prepared.commandDiscoveryErrors } }) : undefined;
-    const effects: Confirmation['effects'] = [];
+    const hostPermissionEffects = recoveryHostPermissionEffects(prepared.plan);
+    const effects: Confirmation['effects'] = [...hostPermissionEffects];
     const affected = impact ? requested.filter((target) => target.agent === 'generic'
       ? impact.storeChanged : impact.affectedTargets.some((candidate) => candidate.pluginId === target.pluginId && candidate.platform === target.agent && candidate.scope === target.scope)) : requested;
     const authorization = await resolveConfigPreApplyAuthorization({
@@ -48,9 +52,23 @@ export async function preparePublicConfigConfirmation(options: ApplyPluginConfig
         effects.push({ code: 'replaceSharedOutput', message: 'Refresh the shared native output with the proposed configuration.', subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope }, impact: 'shared' });
       }
     }
-    for (const item of impact?.affectedCommandPackages ?? prepared.commandPackages) effects.push({ code: 'replaceSharedOutput', message: 'Refresh the installed command package with the proposed configuration.', subject: { pluginId: `${item.producer.sourceId}/${item.producer.pluginName}`, scope: item.producer.scope }, impact: item.producer.scope === 'user' ? 'shared' : 'selected-scope' });
-    const confirmation: Confirmation = { required: effects.length > 0, provided: options.yes === true, effects };
+    for (const review of prepared.commandPackageReviews) {
+      const subject = { pluginId: review.selector, scope: 'user' as const };
+      effects.push({ code: 'replaceSharedOutput', message: 'Refresh the installed command package with the proposed configuration.', subject, impact: 'shared' });
+      effects.push(...describeConfigCommandPackageReviews([review]).map((message) => ({
+        code: 'reviewCommandPackage', message, subject, impact: 'shared' as const,
+      })));
+    }
+    for (const child of prepared.plan.joint?.children ?? [prepared.plan]) {
+      for (const group of child.nativeGroups) {
+        for (const deployment of group.preview.operationPlan?.deploymentPlans ?? []) {
+          effects.push(...inactiveCommandPermissionEffects(deployment));
+        }
+      }
+    }
+    const confirmation: Confirmation = { required: effects.length > 0, provided: options.yes === true,
+      effects: [...new Map(effects.map((effect) => [JSON.stringify(effect), effect])).values()] };
     if (confirmation.required && !confirmation.provided) throw Object.assign(new Error('Repeat the command with --yes to confirm the listed effects.'), { code: 'confirmationRequired', confirmation });
-    return confirmation;
+    return { confirmation, commandPackageEvidence: prepared.commandPackageEvidence, evidence: prepared.evidence, hostPermissionEffects };
   } finally { await disposePluginConfigApply(prepared.plan); }
 }

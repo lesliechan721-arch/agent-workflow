@@ -95,6 +95,7 @@ Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当
 - **脱敏格式与完整保护**：敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。
 - **单文件与排除参数互斥**：`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
 - **分片覆盖要求**：非法分片参数在准备插件前拒绝。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。CI 专用 `--test-shard-profile windows-ci` 的适用范围、映射和更新规则见 [CI 插件分片](ci.md#222-windows-插件测试三路分片node-file-shard)。
+- **命令包测试**：Node 测试可经 `command.sourceDir` 中的模块使用声明所需的 AW reader，测试 runner 在隔离 bundle 中注入这些模块。测试已安装的运行配置时，用独立的命令包 revision fixture 提供快照与归属记录。
 - **Native Mode 与 Context 准备**：
   `plugin:test` 的 `--native-mode` 为 `fixture|installed|source-candidate`，默认 `fixture`。Windows fixture 和 source-candidate 必须显式传 `--native-context <JSON>`；`installed` 使用 Eval 的正常已安装依赖解析。测试入口不从 PATH、旧 AW cache 或仓库 EXE 自动发现工具，也不构建或下载。维护者使用 `node native-tools/windows-job/test-environment.mjs --candidate <directory> --context-file <file>` 从本次候选生成 context；此输入只服务测试，不构成生产路径覆盖能力。普通 build/test 不要求 Go 或真实 EXE。
 - **插件专属原生验证边界**：具体插件专属的会话恢复、TTL 扫描、Windows 原子 JSON 以及长时资格等底层验证分工，由所属插件维护入口负责（参见 [Agent Subagent 运行时验证](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md#插件专属测试与-windows-原生验证边界)）。
@@ -158,6 +159,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
 | 无认证 Native 托管资格 | 独立 qualification | build 后运行 `pnpm test:qualification:native-platforms:harness`，有精确 binary 时运行 `pnpm qualification:native-platforms`；`--public-aw` 要求受支持客户端的真实公开生命周期、v2 状态与原生作用域证据，继续使用生产 profile。远端矩阵、边界及报告见 [CI 无认证资格](ci.md#6-无认证-native-客户端资格)。Harness 不能替代真实客户端结果 |
+| 宿主命令权限 | Unit + Integration + 独立资格 | 用公开 AW 入口验证 Review、配置写入、归属和撤回。交互资格在固定客户端的新会话中先观测基线，再核对 `allow`、`ask`、`deny`、启动次数与作用域。保存版本、OS、AW 构建及配置摘要。仅能读取配置或停在登录页时记录实际范围。候选变化后重做受影响的观察。已有证据及其复用边界见[命令权限资格记录](../../scripts/qualification/evidence/README.md#命令权限资格)。 |
 | Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行两个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
 | User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，其他平台实测待补，不以实测范围建立 OS/架构门禁 |
 

@@ -1,5 +1,5 @@
 import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js';
-import type { ManagedCommands, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
+import type { PluginCommand, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
 
 export type PlatformName = 'codex' | 'claude' | 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'copilot' | 'grok';
 export type PortablePlatformTarget = 'generic';
@@ -382,8 +382,6 @@ export interface PluginExtensions {
 }
 
 export type ArtifactState = 'present' | 'disabled';
-export type ArtifactTarget = 'aw.command-set' | 'aw.command-package';
-export type DynamicArtifactKind = 'commandSet' | 'commandPackage';
 export type ManagedArtifactId = string;
 export interface ArtifactRuntimeImportDefinition extends BuildConfigImportReference {
   name: string;
@@ -408,7 +406,7 @@ export interface PluginRequirements { aw: { capabilities?: string[] } }
 export type PluginManifestSource = PluginManifestSourceV4;
 export type NormalizedPluginManifest = Omit<
   PluginManifestSourceV4,
-  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'managedCommands' | 'nativeTools'
+  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'command' | 'nativeTools'
 > & {
   requires?: PluginRequirements;
   extensions?: PluginExtensions;
@@ -416,7 +414,7 @@ export type NormalizedPluginManifest = Omit<
   buildConfig?: BuildConfig;
   scripts?: PluginScriptsConfig;
   config?: PluginConfigSchema;
-  managedCommands?: ManagedCommands;
+  command?: PluginCommand;
   nativeTools?: import('./native-tools.js').NativeTools;
 };
 export interface PluginMeta {
@@ -477,8 +475,4 @@ export interface RenderedHookGroup { event: string; matcher?: string; hooks: Cod
 export interface TrackedHookGroupIdentity { event: string; matcher?: string; command: string }
 export interface CodexSharedHookGroup {
   event: string; matcher?: string | null; hooks: Record<string, unknown>[]; rawGroup: Record<string, unknown>;
-}
-export interface ArtifactPlanArtifactBase {
-  id: string; platform?: PlatformTarget; distribution?: DistributionName; target: ArtifactTarget;
-  kind: DynamicArtifactKind; state: ArtifactState; refreshKeys: string[]; disabledReason?: string;
 }

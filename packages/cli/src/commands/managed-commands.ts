@@ -1,32 +1,38 @@
 import type { Confirmation } from '../output/public-result.js';
 import path from 'node:path';
-import * as fs from 'node:fs/promises';
 
 import type { Command } from 'commander';
-import { getCommandPackageId, isManagedCommandId, materializeNativeToolClosureFiles, type CommandLaunch } from '@lesliechan721/aw-plugin-core/manifest';
+import { canonicalizeIdentityValue, type CommandLaunch } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CliExecutionContext } from './runtime.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
-import { resolveRepoRoot } from '../utils/state-paths.js';
 import { sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
-import { managedCommandProducerIdentity, nativeToolsForCommandSets, syncPluginManagedCommandPackage } from '../utils/managed-command-materialization.js';
-import { prepareWindowsJobHelper } from '../utils/process-tree.js';
+import { prepareManagedCommandPackage, publishPreparedManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import {
+  describeManagedCommandRouteReview,
+  describeManagedCommandRuntimeConfigChanges,
+  inspectManagedCommandRouteChanges,
+  type ManagedCommandRouteReview,
+} from '../utils/managed-command-cli-review.js';
 import { runManagedCommand } from '../utils/managed-command-runtime.js';
 import {
   ManagedCommandError,
   assertUserCommandId,
+  captureManagedCommandPackageEvidence,
   inspectManagedCommand,
   installUserCommand,
-  listManagedCommandPackages,
+  isManagedCommandPackageId,
+  isUserCommandId,
   listManagedCommands,
   managedCommandDiagnostic,
   parseManagedCommandLaunch,
-  readManagedCommandPackageOwner,
-  readInstalledCommandProducer,
+  parsePluginCommandSelector,
+  readManagedCommandPackageView,
   removeManagedCommandPackage,
   removeUserCommand,
+  resolveManagedCommandPackageId,
   updateUserCommand,
   validateManagedCommandName,
   type ManagedCommandDiagnostic,
@@ -41,10 +47,14 @@ export interface CommandManagementResult {
   overallState: 'completed' | 'partial' | 'failed';
   commands: ManagedCommandView[];
   packages: ManagedCommandPackageView[];
+  orphanedPackages: ManagedCommandPackageView[];
   changes: Array<{ kind: 'command' | 'package'; id: string; action: 'created' | 'updated' | 'removed' | 'retained' }>;
   errors: ManagedCommandDiagnostic[];
   recoveryActions: string[];
   nativeToolChanges?: NativeToolChange[];
+  packageReview?: ManagedCommandRouteReview & {
+    runtimeConfigChanges?: Awaited<ReturnType<typeof prepareManagedCommandPackage>>['runtimeConfigChanges'];
+  };
   confirmation?: Confirmation | null;
 }
 
@@ -53,11 +63,11 @@ const HELP = `Usage:
   aw command update <cmdu-id> --from <directory> [--name <name>] [--runner node|executable] [--entry <relative-file>] [--args-json <json>] [--env-json <json>] [--env-from-json <json>] [--cwd caller|resource] [--yes] [--json]
   aw command remove <cmdu-id> [--force] [--yes] [--json]
   aw command list [--json]
-  aw command show <command-id> [--json]
-  aw command run <command-id> -- <args...>
-  aw command package sync <source/plugin> <package-key> --scope user|project [--yes] [--json]
-  aw command package remove <source/plugin> <package-key> --scope user|project [--force] [--yes] [--json]
-  aw command package remove <pkg-id> [--force] [--yes] [--json]
+  aw command show <source/plugin | cmdu-id> [--json]
+  aw command run <source/plugin> [--no-fallback] -- [args...]
+  aw command run <cmdu-id> -- [args...]
+  aw command package sync <source/plugin> [--yes] [--json]
+  aw command package remove <source/plugin | pkg-id> [--force] [--yes] [--json]
 `;
 
 function invalid(message: string): never { throw new ManagedCommandError('invalidArguments', message, true); }
@@ -107,33 +117,176 @@ function launchOptions(options: Record<string, string | true>, required: boolean
   return output as Partial<CommandLaunch>;
 }
 function result(command: CommandManagementResult['command']): CommandManagementResult {
-  return { schemaVersion: 1, command, ok: true, overallState: 'completed', commands: [], packages: [], changes: [], errors: [], recoveryActions: [] };
+  return { schemaVersion: 1, command, ok: true, overallState: 'completed', commands: [], packages: [], orphanedPackages: [], changes: [], errors: [], recoveryActions: [] };
 }
 function finish(receipt: CommandManagementResult): CommandManagementResult {
-  receipt.errors.push(...receipt.commands.flatMap((command) => command.errors), ...receipt.packages.flatMap((pkg) => pkg.errors));
-  receipt.recoveryActions = [...new Set([...receipt.recoveryActions, ...receipt.commands.flatMap((command) => command.recoveryActions), ...receipt.packages.flatMap((pkg) => pkg.recoveryActions)])];
-  if (receipt.errors.length > 0 && receipt.overallState === 'completed') receipt.overallState = receipt.commands.length || receipt.packages.length || receipt.changes.length ? 'partial' : 'failed';
+  const views = [...receipt.commands, ...receipt.packages, ...receipt.orphanedPackages];
+  receipt.errors.push(...views.flatMap((view) => view.errors));
+  receipt.recoveryActions = [...new Set([...receipt.recoveryActions, ...views.flatMap((view) => view.recoveryActions)])];
+  if (receipt.errors.length > 0 && receipt.overallState === 'completed') receipt.overallState = views.length || receipt.changes.length ? 'partial' : 'failed';
   receipt.ok = receipt.overallState === 'completed';
   return receipt;
 }
 function render(receipt: CommandManagementResult): string {
   const lines = [`${receipt.command}: ${receipt.overallState}`];
   for (const command of receipt.commands) {
-    const placement = command.owner.kind === 'plugin' ? command.owner.producer.placementKey : null;
-    lines.push(`${command.id}\t${command.name}\t${command.availability}${placement ? `\t${placement}` : ''}`, ...(receipt.command === 'command.show' ? [JSON.stringify({ owner: command.owner, resourceRoot: command.resourceRoot, launch: command.launch }, null, 2)] : []));
+    lines.push(`${'selector' in command ? command.selector : command.id}\t${command.availability}`);
+    if (receipt.command === 'command.show') lines.push(JSON.stringify(command, null, 2));
   }
   for (const change of receipt.nativeToolChanges ?? []) for (const phase of ['before', 'after'] as const) if (change[phase]) lines.push(...describeNativeToolClosure(change[phase]!).map((description) => `原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`));
-  for (const pkg of receipt.packages) lines.push(`${pkg.id}\t${pkg.producer.sourceId}/${pkg.producer.pluginName}/${pkg.producer.key}\t${pkg.availability}`);
+  for (const pkg of receipt.packages) lines.push(`${pkg.selector}\t${pkg.packageId}\t${pkg.availability}\t${pkg.subcommands.join(', ')}${pkg.hasFallback ? ' (+ fallback)' : ''}`);
+  for (const pkg of receipt.orphanedPackages) lines.push(`Orphaned package\t${pkg.packageId}\t${pkg.selector}`);
+  if (receipt.packageReview) lines.push(...describeManagedCommandRouteReview(receipt.packageReview),
+    ...describeManagedCommandRuntimeConfigChanges(receipt.packageReview.runtimeConfigChanges ?? []));
   for (const change of receipt.changes) lines.push(`${change.action}\t${change.id}`);
   for (const error of receipt.errors) lines.push(`${error.code}: ${error.message}`);
   for (const action of receipt.recoveryActions) lines.push(`Recovery: ${action}`);
   return `${lines.join('\n')}\n`;
 }
+
 async function confirm(context: CliExecutionContext, options: Record<string, string | true>, message: string): Promise<void> {
   if (options['--yes']) return;
   if (!context.interactive || !context.prompt.confirm) throw new ManagedCommandError('confirmationRequired', 'This operation requires --yes.');
   const response = await context.prompt.confirm({ message, defaultValue: false });
   if (response.cancelled || response.value !== true) invalid('The managed command write was not confirmed.');
+}
+
+function nativeToolChange(receipt: CommandManagementResult, change: NativeToolChange): string[] {
+  if (canonicalizeIdentityValue(change.before) === canonicalizeIdentityValue(change.after)) return [];
+  receipt.nativeToolChanges = [change];
+  return (['before', 'after'] as const).flatMap((phase) => {
+    const closure = change[phase];
+    return closure ? describeNativeToolClosure(closure).map((line) => `Native tool ${phase}: ${line}`) : [];
+  });
+}
+
+function setConfirmation(receipt: CommandManagementResult, options: Record<string, string | true>, selector: string, message: string): void {
+  const required = receipt.command !== 'command.install';
+  const packageOperation = receipt.command.startsWith('command.package.');
+  receipt.confirmation = {
+    required,
+    provided: options['--yes'] === true,
+    effects: required ? [{
+      code: receipt.command.endsWith('.remove') ? 'removeOwnedOutput' : 'replaceSharedOutput',
+      message,
+      impact: packageOperation ? 'shared' : 'user-wide',
+      ...(packageOperation && !isManagedCommandPackageId(selector) ? { subject: { pluginId: selector } } : {}),
+    }] : [],
+  };
+}
+
+async function syncPackage(options: {
+  selector: string;
+  cliVersion: string;
+  context: CliExecutionContext;
+  flags: Record<string, string | true>;
+  receipt: CommandManagementResult;
+}): Promise<void> {
+  const { selector, cliVersion, context, flags, receipt } = options;
+  const lookup = { selector, cliVersion, env: context.env, signal: context.signal };
+  await withResolvedCatalogPlugin({ ...lookup, consume: async ({ plugin }) => {
+    if (!plugin.manifest.command) {
+      receipt.recoveryActions.push(`aw command package remove ${selector} --yes`, `aw plugin sync ${selector}`);
+      throw new ManagedCommandError('commandPackageDeclarationMissing', 'The Active Catalog plugin has no command declaration. Remove its package explicitly or synchronize the plugin.');
+    }
+    const prepare = { cwd: context.cwd, env: context.env, signal: context.signal };
+    const candidate = await prepareManagedCommandPackage({ ...prepare, plugin, operation: { kind: 'explicit-sync' } });
+    try {
+      const reviewInput = { ...prepare, selector, inspectInactiveRestrictions: true, before: candidate.previous?.record.routes, after: candidate.record.routes };
+      const routeReview = await inspectManagedCommandRouteChanges(reviewInput);
+      const packageReview = { ...routeReview, runtimeConfigChanges: candidate.runtimeConfigChanges };
+      receipt.packageReview = packageReview;
+      const native = nativeToolChange(receipt, {
+        producer: candidate.record.producer,
+        before: candidate.previous?.record.nativeTools ?? null,
+        after: candidate.record.nativeTools ?? null,
+      });
+      const message = `Synchronize the shared command package for ${selector}?`;
+      setConfirmation(receipt, flags, selector, message);
+      await confirm(context, flags, [message, ...describeManagedCommandRouteReview(packageReview),
+        ...describeManagedCommandRuntimeConfigChanges(packageReview.runtimeConfigChanges), ...native].join('\n'));
+
+      await withAwHomeMutationLock({ env: context.env, signal: context.signal, action: async () => {
+        let found = false;
+        try {
+          await withResolvedCatalogPlugin({ ...lookup, consume: async ({ plugin: currentPlugin }) => {
+            found = true;
+            if (!currentPlugin.manifest.command) {
+              throw new ManagedCommandError('operationReviewStale', 'The Active Catalog plugin changed. Review the package again.');
+            }
+            if (canonicalizeIdentityValue(await inspectManagedCommandRouteChanges(reviewInput)) !== canonicalizeIdentityValue(routeReview)) {
+              throw new ManagedCommandError('operationReviewStale', 'The visible permission impact changed. Review the package again.');
+            }
+            const synced = await publishPreparedManagedCommandPackage({ ...prepare, plugin: currentPlugin, candidate });
+            const { id } = synced;
+            receipt.errors.push(...synced.errors);
+            receipt.recoveryActions.push(...synced.recoveryActions);
+            receipt.changes.push({ kind: 'package', id, action: candidate.expectedPackage ? 'updated' : 'created' });
+            receipt.packages.push(await readManagedCommandPackageView(id, context.env));
+          } });
+        } catch (error) {
+          if (found || context.signal?.aborted) throw error;
+          throw new ManagedCommandError('operationReviewStale', 'The Active Catalog plugin changed. Review the package again.');
+        }
+      } });
+    } finally {
+      await candidate.cleanup();
+    }
+  } });
+}
+
+async function removePackage(options: {
+  selector: string;
+  context: CliExecutionContext;
+  flags: Record<string, string | true>;
+  receipt: CommandManagementResult;
+}): Promise<void> {
+  const { selector, context, flags, receipt } = options;
+  const exact = isManagedCommandPackageId(selector);
+  const id = exact ? selector : await resolveManagedCommandPackageId(selector, context.env);
+  const view = await readManagedCommandPackageView(id, context.env);
+  const force = flags['--force'] === true;
+  const expectedPackage = await captureManagedCommandPackageEvidence(view, context.env, { force });
+  const currentNamedId = () => resolveManagedCommandPackageId(view.selector, context.env).catch(() => undefined);
+  const readRouteImpact = (namedId: string | undefined) => inspectManagedCommandRouteChanges({
+    selector: view.selector,
+    before: namedId === id ? view.routes ?? undefined : undefined,
+    cwd: context.cwd,
+    env: context.env,
+  });
+  const packageReview = await readRouteImpact(exact ? await currentNamedId() : id);
+  receipt.packageReview = packageReview;
+  const native = nativeToolChange(receipt, { producer: view.owner.producer, before: view.nativeTools ?? null, after: null });
+  const message = `Remove shared command package ${id} for ${view.selector}? Calls to this package will become unavailable.`;
+  setConfirmation(receipt, flags, selector, message);
+  await confirm(context, flags, [message, ...describeManagedCommandRouteReview(packageReview), ...native].join('\n'));
+
+  await withAwHomeMutationLock({ env: context.env, signal: context.signal, action: async () => {
+    const namedId = await currentNamedId();
+    if (!exact && namedId !== id) {
+      throw new ManagedCommandError('operationReviewStale', 'The Catalog source binding changed. Review the package again.');
+    }
+    if (canonicalizeIdentityValue(await readRouteImpact(namedId)) !== canonicalizeIdentityValue(packageReview)) {
+      throw new ManagedCommandError('operationReviewStale', 'The visible permission impact changed. Review the package again.');
+    }
+    await removeManagedCommandPackage(id, context.env, { force, expectedPackage });
+    receipt.changes.push({ kind: 'package', id, action: 'removed' });
+  } });
+}
+
+function parseRunArguments(args: string[]): { id: string; args: string[]; noFallback: boolean } {
+  const [selector] = args;
+  const delimiter = args.indexOf('--');
+  const noFallback = delimiter === 2 && args[1] === '--no-fallback';
+  if (!selector || (delimiter !== 1 && !noFallback)) invalid('Usage: aw command run <source/plugin> [--no-fallback] -- [args...] or aw command run <cmdu-id> -- [args...]');
+  const callArgs = args.slice(delimiter + 1);
+  if (isUserCommandId(selector)) {
+    if (noFallback) invalid('--no-fallback requires a plugin command.');
+  } else {
+    parsePluginCommandSelector(selector);
+    if (noFallback && callArgs.length === 0) invalid('--no-fallback requires a subcommand argument.');
+  }
+  return { id: selector, args: callArgs, noFallback };
 }
 
 export async function runManagedCommandCli(args: string[], context: CliExecutionContext, host: { cliEntry: string; cliVersion: string; onResult?: (receipt: CommandManagementResult) => void }): Promise<number> {
@@ -145,8 +298,7 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
   }
   if (args[0] === 'run') {
     try {
-      if (args[2] !== '--' || !args[1] || !isManagedCommandId(args[1])) invalid('Usage: aw command run <command-id> -- <args...>');
-      return await runManagedCommand({ id: args[1], args: args.slice(3), cwd: context.cwd, env: context.env, cliEntry: host.cliEntry });
+      return await runManagedCommand({ ...parseRunArguments(args.slice(1)), cwd: context.cwd, env: context.env, cliEntry: host.cliEntry });
     } catch (error) {
       const diagnostic = managedCommandDiagnostic(error);
       context.io.stderr(`aw: ${diagnostic.code}: ${diagnostic.message}\n`);
@@ -163,118 +315,52 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
     const launchFlags = ['--runner', '--entry', '--args-json', '--env-json', '--env-from-json', '--cwd'];
     const allowed = action === 'install' ? ['--name', ...launchFlags, '--yes', '--json']
       : action === 'update' ? ['--from', '--name', ...launchFlags, '--yes', '--json']
-        : action === 'remove' ? ['--force', '--yes', '--json']
-          : action.startsWith('package.') ? ['--scope', '--force', '--yes', '--json'].filter((flag) => action === 'package.remove' || flag !== '--force')
-            : ['--json'];
+        : action === 'remove' || action === 'package.remove' ? ['--force', '--yes', '--json']
+          : action === 'package.sync' ? ['--yes', '--json'] : ['--json'];
     const { positionals, options } = parseOptions(args.slice(action.startsWith('package.') ? 2 : 1), allowed);
+    const [selector] = positionals;
     if (action === 'list') {
       if (positionals.length) invalid('list does not accept positional arguments.');
       Object.assign(receipt, await listManagedCommands(context.env));
-    } else if (action === 'show') {
-      if (positionals.length !== 1 || !isManagedCommandId(positionals[0])) invalid('show requires one canonical command ID.');
-      const commandView = await inspectManagedCommand(positionals[0]!, context.env);
-      receipt.commands = [commandView];
-      if (commandView.owner.kind === 'plugin' && commandView.owner.producer.kind === 'package') {
-        const id = getCommandPackageId(commandView.owner.producer);
-        const packages = await listManagedCommandPackages(context.env);
-        receipt.packages = packages.packages.filter((pkg) => pkg.id === id);
-        receipt.errors.push(...packages.errors.filter((error) => error.subject === `commands/packages/${id}`));
-      }
     } else {
-      // Parse every argument before confirmation and before the mutation lock creates state.
-      const launch = action === 'install' || action === 'update' ? launchOptions(options, action === 'install') : undefined;
-      if (action === 'install' || action === 'update' || action === 'remove') {
-        if (positionals.length !== 1) invalid(`${action} requires exactly one positional argument.`);
-        if (action !== 'install') assertUserCommandId(positionals[0]!);
+      if (!selector || positionals.length !== 1) invalid(`${action} requires exactly one positional argument.`);
+      if (action === 'show') {
+        if (!isUserCommandId(selector)) parsePluginCommandSelector(selector);
+        receipt.commands = [await inspectManagedCommand(selector, context.env)];
+      } else if (action === 'package.sync') {
+        parsePluginCommandSelector(selector);
+        await syncPackage({ selector, cliVersion: host.cliVersion, context, flags: options, receipt });
+      } else if (action === 'package.remove') {
+        if (!isManagedCommandPackageId(selector)) parsePluginCommandSelector(selector);
+        await removePackage({ selector, context, flags: options, receipt });
+      } else {
+        const launch = action === 'install' || action === 'update' ? launchOptions(options, action === 'install') : undefined;
+        if (action !== 'install') assertUserCommandId(selector);
         if (action === 'install' || options['--name'] !== undefined) validateManagedCommandName(textOption(options, '--name', action === 'install'));
-        if (action === 'update') textOption(options, '--from', true);
-      }
-      const exactPackage = action === 'package.remove' && positionals.length === 1 && /^pkg_[0-9a-f]{64}$/u.test(positionals[0]!);
-      if (action.startsWith('package.')) {
-        if (exactPackage && options['--scope'] !== undefined) invalid('Exact package removal does not accept --scope.');
-        if (!exactPackage && (positionals.length !== 2 || positionals[0]!.split('/').length !== 2 || !['user', 'project'].includes(textOption(options, '--scope', true)!))) invalid('Package selection requires source/plugin, package-key, and --scope user|project.');
-      }
-      let nativeReview: NativeToolChange | undefined;
-      const inspectPackageNative = async (): Promise<NativeToolChange | undefined> => {
-        if (!action.startsWith('package.')) return undefined;
-        if (exactPackage) {
-          const owner = await readManagedCommandPackageOwner(positionals[0]!, context.env);
-          const record = await readInstalledCommandProducer(owner.resourceRoot).catch(() => undefined);
-          return record?.nativeTools ? { producer: owner.producer, before: record.nativeTools, after: null } : undefined;
-        }
-        return withResolvedCatalogPlugin({ selector: positionals[0]!, cliVersion: host.cliVersion, env: context.env, consume: async ({ plugin }) => {
-          const scope = textOption(options, '--scope', true)! as 'user' | 'project';
-          const producer = await managedCommandProducerIdentity({ plugin, producer: { kind: 'package', packageKey: positionals[1]! }, scope, cwd: context.cwd });
-          const owner = await readManagedCommandPackageOwner(getCommandPackageId(producer), context.env).catch(() => undefined);
-          const previous = owner ? await readInstalledCommandProducer(owner.resourceRoot).catch(() => undefined) : undefined;
-          const sets = (plugin.manifest.managedCommands?.sets ?? []).filter((set) => set.producer.kind === 'package' && set.producer.packageKey === producer.key).map((set) => ({ set: set.set, state: 'present' as const, entries: [] }));
-          const closure = action === 'package.sync' ? await nativeToolsForCommandSets(plugin, sets) : undefined;
-          const after = closure ? materializeNativeToolClosureFiles(closure).closure : null;
-          const before = previous?.nativeTools ?? null;
-          return JSON.stringify(before) === JSON.stringify(after) ? undefined : { producer, before, after };
+        const from = action === 'update' ? textOption(options, '--from', true) : undefined;
+        const message = `Apply ${command} to ${selector}?`;
+        setConfirmation(receipt, options, selector, message);
+        if (receipt.confirmation?.required) await confirm(context, options, message);
+
+        await withAwHomeMutationLock({ env: context.env, signal: context.signal, action: async () => {
+          if (action === 'install') {
+            const id = await installUserCommand({ sourceDirectory: path.resolve(context.cwd, selector),
+              name: textOption(options, '--name', true)!, launch: launch as CommandLaunch, env: context.env });
+            receipt.commands = [await inspectManagedCommand(id, context.env)];
+            receipt.changes.push({ kind: 'command', id, action: 'created' });
+          } else if (action === 'update') {
+            const updated = await updateUserCommand({ id: selector, sourceDirectory: path.resolve(context.cwd, from!),
+              name: textOption(options, '--name'), launch, env: context.env });
+            receipt.errors.push(...updated.errors);
+            receipt.recoveryActions.push(...updated.recoveryActions);
+            receipt.commands = [await inspectManagedCommand(selector, context.env)];
+            receipt.changes.push({ kind: 'command', id: selector, action: 'updated' });
+          } else {
+            await removeUserCommand(selector, context.env);
+            receipt.changes.push({ kind: 'command', id: selector, action: 'removed' });
+          }
         } });
-      };
-      nativeReview = await inspectPackageNative();
-      const execute = async (): Promise<void> => {
-        if (JSON.stringify(await inspectPackageNative()) !== JSON.stringify(nativeReview)) throw new ManagedCommandError('operationReviewStale', 'The native tool impact changed. Review the package operation again.');
-        if (nativeReview) receipt.nativeToolChanges = [nativeReview];
-        if (action === 'install') {
-          const id = await installUserCommand({ sourceDirectory: path.resolve(context.cwd, positionals[0]!), name: textOption(options, '--name', true)!, launch: launch as CommandLaunch, env: context.env });
-          receipt.commands = [await inspectManagedCommand(id, context.env)];
-          receipt.changes.push({ kind: 'command', id, action: 'created' });
-        } else if (action === 'update') {
-          const id = positionals[0]!;
-          const updated = await updateUserCommand({ id, sourceDirectory: path.resolve(context.cwd, textOption(options, '--from', true)!), name: textOption(options, '--name'), launch, env: context.env });
-          receipt.errors.push(...updated.errors);
-          receipt.recoveryActions.push(...updated.recoveryActions);
-          receipt.commands = [await inspectManagedCommand(id, context.env)];
-          receipt.changes.push({ kind: 'command', id, action: 'updated' });
-        } else if (action === 'remove') {
-          const id = positionals[0]!;
-          await removeUserCommand(id, context.env);
-          receipt.changes.push({ kind: 'command', id, action: 'removed' });
-        } else if (exactPackage) {
-          const id = positionals[0]!;
-          const removed = await removeManagedCommandPackage(id, context.env);
-          receipt.changes.push({ kind: 'package', id, action: 'removed' }, ...removed.removedCommandIds.map((commandId) => ({ kind: 'command' as const, id: commandId, action: 'removed' as const })));
-        } else {
-          await withResolvedCatalogPlugin({ selector: positionals[0]!, cliVersion: host.cliVersion, env: context.env, consume: async ({ plugin }) => {
-            const scope = textOption(options, '--scope', true)! as 'user' | 'project';
-            if (action === 'package.sync') {
-              const synced = await syncPluginManagedCommandPackage({ plugin, packageKey: positionals[1]!, scope, cwd: context.cwd, env: context.env });
-              receipt.errors.push(...synced.errors);
-              receipt.recoveryActions.push(...synced.recoveryActions);
-              if (synced.state !== 'completed') receipt.overallState = synced.state;
-              receipt.changes.push({ kind: 'package', id: getCommandPackageId(synced.producer), action: 'updated' }, ...synced.commandIds.map((id) => ({ kind: 'command' as const, id, action: 'updated' as const })), ...synced.removedCommandIds.map((id) => ({ kind: 'command' as const, id, action: 'removed' as const })));
-              for (const id of synced.commandIds) receipt.commands.push(await inspectManagedCommand(id, context.env));
-              receipt.packages = (await listManagedCommandPackages(context.env)).packages.filter((pkg) => pkg.id === getCommandPackageId(synced.producer));
-            } else {
-              let projectRoot = scope === 'project' ? path.normalize(await fs.realpath(await resolveRepoRoot(context.cwd))) : null;
-              if (projectRoot && process.platform === 'win32') projectRoot = projectRoot.replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
-              const inventory = await listManagedCommandPackages(context.env);
-              const candidates = inventory.packages.filter((pkg) => pkg.producer.sourceId === plugin.sourceId && pkg.producer.sourceIdentity === plugin.sourceIdentity && pkg.producer.pluginName === plugin.manifest.name && pkg.producer.key === positionals[1] && pkg.producer.scope === scope && pkg.producer.projectRoot === projectRoot);
-              if (candidates.length !== 1) throw new ManagedCommandError('commandIdentityConflict', `Package selection did not match exactly one owned package. Candidate IDs: ${candidates.map((pkg) => pkg.id).join(', ') || 'none'}. Use exact package remove.`);
-              const id = candidates[0]!.id;
-              const removed = await removeManagedCommandPackage(id, context.env);
-              receipt.changes.push({ kind: 'package', id, action: 'removed' }, ...removed.removedCommandIds.map((commandId) => ({ kind: 'command' as const, id: commandId, action: 'removed' as const })));
-            }
-          } });
-        }
-      };
-      let message = `Apply ${command}?`;
-      if (exactPackage) {
-        const owner = await readManagedCommandPackageOwner(positionals[0]!, context.env);
-        message += ` Producer: ${JSON.stringify(owner.producer)}. All commands in this package will become unavailable.`;
       }
-      if (nativeReview) for (const phase of ['before', 'after'] as const) if (nativeReview[phase]) message += ` Native ${nativeReview.producer.sourceId}/${nativeReview.producer.pluginName} ${phase}: ${describeNativeToolClosure(nativeReview[phase]!).join('; ')}.`;
-      const requiresConfirmation = action !== 'install';
-      receipt.confirmation = { required: requiresConfirmation, provided: options['--yes'] === true,
-        effects: requiresConfirmation ? [{ code: action.includes('remove') ? 'removeOwnedOutput' : 'replaceSharedOutput',
-          message: `Apply ${command} to ${positionals[0]}.`, impact: action.startsWith('package.') ? 'shared' : 'user-wide',
-          ...(action.startsWith('package.') && !exactPackage ? { subject: { pluginId: positionals[0]!, scope: textOption(options, '--scope') as 'user' | 'project' } } : {}) }] : [] };
-      if (requiresConfirmation) await confirm(context, options, message);
-      if (process.platform === 'win32' && action === 'package.sync') await prepareWindowsJobHelper();
-      await withAwHomeMutationLock({ env: context.env, action: execute });
     }
   } catch (error) {
     const safeError = error instanceof ManagedCommandError ? error : sanitizeCatalogSourceError(error, context.env, [context.cwd]);
@@ -300,9 +386,9 @@ export function registerManagedCommandCli(program: Command, context: (options?: 
     { parent: group, name: 'update', args: '<id>', flags: ['--from <directory>', '--name <name>', ...launch, '--yes'] },
     { parent: group, name: 'remove', args: '<id>', flags: ['--force', '--yes'] },
     { parent: group, name: 'list', args: '', flags: [] },
-    { parent: group, name: 'show', args: '<id>', flags: [] },
-    { parent: packages, name: 'sync', args: '<plugin> <key>', flags: ['--scope <scope>', '--yes'] },
-    { parent: packages, name: 'remove', args: '<id> [key]', flags: ['--scope <scope>', '--force', '--yes'] },
+    { parent: group, name: 'show', args: '<selector>', flags: [] },
+    { parent: packages, name: 'sync', args: '<source/plugin>', flags: ['--yes'] },
+    { parent: packages, name: 'remove', args: '<selector>', flags: ['--force', '--yes'] },
   ];
   for (const entry of entries) {
     const cmd = entry.parent.command(entry.name);
@@ -323,7 +409,9 @@ export function registerManagedCommandCli(program: Command, context: (options?: 
     });
   }
   group.command('run').description('Run a managed command with byte and exit-code passthrough')
-    .argument('<id>').argument('[args...]').allowUnknownOption(true)
+    .argument('<selector>', 'Source-qualified plugin name or user command ID')
+    .option('--no-fallback', 'Require a named plugin subcommand')
+    .argument('[args...]', 'Target arguments after the required -- separator').allowUnknownOption(true)
     .action(async (_id: string, _args: string[], cmd: Command) => {
       setExitCode(await runManagedCommandCli(['run', ...cmd.args], context(), host));
     });

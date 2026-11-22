@@ -64,7 +64,7 @@ custom 可直接调用公共 helper，或用自己的实现通过同一标准；
 
 ### 公共解析命令合同
 
-公共入口为 Guide 内的 `scripts/resolve-files.mjs`。它是插件分发的解析能力，不要求安装 Oracle，也不依赖开发仓库。入口、依赖与下述合同必须随同一安装产物可用。
+公共入口为 Guide 命令包内的 `scripts/resolve-files.mjs`。它是插件分发的解析能力，不要求安装 Oracle，也不依赖开发仓库。入口、依赖与下述合同必须随同一安装产物可用。
 
 bundle 请求的命令描述示例：
 

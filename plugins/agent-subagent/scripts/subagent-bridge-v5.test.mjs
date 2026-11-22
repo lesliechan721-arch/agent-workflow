@@ -7,10 +7,10 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { channel } from 'node:diagnostics_channel';
-import { createChildBridge, createChildChannel, invokeChildTool } from '../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs';
-import { protectPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
-import { runMessage } from '../skills/spawn-subagent/scripts/message.mjs';
-import { runMessageMcp } from '../skills/spawn-subagent/scripts/message-mcp.mjs';
+import { createChildBridge, createChildChannel, invokeChildTool } from '../commands/scripts/runtime/adapter-channel.mjs';
+import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
+import { runMessage } from '../commands/scripts/message.mjs';
+import { runMessageMcp } from '../commands/scripts/message-mcp.mjs';
 import { messageBodies } from './fixtures/message-bodies.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 

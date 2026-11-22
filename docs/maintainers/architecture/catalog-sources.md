@@ -89,7 +89,7 @@ stateDiagram-v2
 
 - 当 current 和 candidate manifest 均可用时，系统计算 added、removed、changed、newly incompatible 以及 dependency changed 插件。
 - **现有引用过滤（Affected References）**：generation 模式仅将 removed、newly incompatible、dependency changed 插件及其传递 consumer 在现场的**现有引用**列为 affected 影响集合（`affectedReferences = references.filter(...)`）。若来源移除了某个插件，但本地 inventory 完整且没有任何现有安装或配置引用指向该插件，不触发影响确认；但若 inventory 不完整（unknown），仍须确认。
-- 来源移除（remove）或来源 identity 变更使用该来源的全部引用作为影响集合。
+- 来源移除（remove）或来源 identity 变更使用该来源的全部引用作为影响集合。来源 identity 变化后，旧共享命令包只能凭 `pkg-id` 精确清理。随后安装新来源的同名插件时，同文字审批仍可能匹配。来源变更和同名安装的 Review 说明已检查范围及这种匹配关系。[命令权限](../../reference/managed-commands.md#skill-引用与宿主权限)
 
 ### 4.3 主来源切换机制（`primaryChange`）
 

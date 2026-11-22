@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
-import { executeCodex } from '../skills/spawn-subagent/scripts/adapters/codex-v5.mjs';
-import { claudeArguments, executeClaude, negotiateClaudeCommunication } from '../skills/spawn-subagent/scripts/adapters/claude-code-v5.mjs';
-import { deferred } from '../skills/spawn-subagent/scripts/adapters/common.mjs';
+import { executeCodex } from '../commands/scripts/adapters/codex-v5.mjs';
+import { claudeArguments, executeClaude, negotiateClaudeCommunication } from '../commands/scripts/adapters/claude-code-v5.mjs';
+import { deferred } from '../commands/scripts/adapters/common.mjs';
 
 const id = 'communication1';
 const server = `aw_parent_${id}`;

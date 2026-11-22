@@ -27,9 +27,8 @@ import {
   resolvePluginScriptTimeoutMs, summarizePluginScriptOutput,
   type PluginProcessRunner, type PluginProcessResult,
 } from './plugin-scripts.js';
-import { resolveArtifactRequest, resolvePlatformComponentBatches, selectPlatformRenderConfig, selectPlatformRenderConfigKeys } from './artifact-request.js';
-import { artifactValueDigest, mergeExpectedComponentSets, validateArtifactPlan, validatePlatformComponentPlan, type ValidatedArtifactPlan } from './artifact-plan.js';
-import { resolveCommandSourceDirectory } from './artifact-sources.js';
+import { resolvePlatformComponentBatches, selectPlatformRenderConfigKeys } from './artifact-request.js';
+import { artifactValueDigest, mergeExpectedComponentSets, validatePlatformComponentPlan } from './artifact-plan.js';
 import { resolvePlatformComponentResources, verifyPlatformComponentResources, type VerifiedResourceClosure } from './component-resources.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
 import { prepareWindowsJobHelper } from './process-tree.js';
@@ -335,73 +334,4 @@ export async function preparePlatformComponents(options: {
     const diagnostic = readSafeOperationError(error);
     throw diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
   }
-}
-
-/** The independent command-package surface retains its v2 protocol. */
-export async function runArtifactRenderer(options: {
-  referencePlugins?: readonly PluginMeta[]; event: ArtifactRenderEvent; plugin: PluginMeta;
-  platform: 'managed-commands'; scope: Scope; configScope?: Scope; cwd: string;
-  commandEnv?: NodeJS.ProcessEnv; changedConfigKeys?: string[]; previousArtifacts?: unknown[];
-  requestedArtifactIds: readonly string[]; scriptTimeoutMs?: number; signal?: AbortSignal;
-  runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
-}): Promise<{ plan: ValidatedArtifactPlan; target: ArtifactRendererTarget; context: ManagedCommandRendererContext;
-  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>; exitCode: number | null;
-  signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }> {
-  const written = await createManagedCommandRendererContext({ ...options, target: await resolveArtifactRendererTarget(options.plugin),
-    sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity, commandEnv: options.commandEnv ?? process.env });
-  try {
-    const rendered = await runPreparedArtifactRenderer({ ...options, context: written.context, sensitiveValues: written.sensitiveValues });
-    const plan = validateArtifactPlan({ ...options, manifest: options.plugin.manifest, plan: rendered.value,
-      renderConfig: written.renderConfig, manifestDigest: rendered.target.manifestDigest, rendererDigest: rendered.target.rendererDigest });
-    return { ...rendered, plan, context: written.context, runtimeConfigSnapshots: {} };
-  } finally { await written.cleanup(); }
-}
-
-export interface ManagedCommandRendererContext {
-  event: ArtifactRenderEvent;
-  surface: { kind: 'aw'; name: 'managed-commands' };
-  scope: Scope;
-  plugin: { name: string; version: string; rootDir: string };
-  config: { mode: 'artifact-render'; targetScope: Scope; schema?: PluginConfigSchema['fields'];
-    values: Record<string, PluginConfigValue>; sources: Record<string, PluginConfigSource>; issues: PluginConfigIssue[] };
-  changedConfigKeys: string[];
-  requestedArtifactIds: string[];
-  previousArtifacts: unknown[];
-  artifactSources: never[];
-  commandSources: Array<{ packageKey: string; sourceDir: string }>;
-  runtimeImports: never[];
-}
-async function createManagedCommandRendererContext(options: {
-  referencePlugins?: readonly PluginMeta[]; sourceId?: string; sourceIdentity?: string; logicalIdentity?: string;
-  target: ArtifactRendererTarget; event: ArtifactRenderEvent; platform: 'managed-commands'; scope: Scope;
-  configScope?: Scope; cwd: string; commandEnv: NodeJS.ProcessEnv; changedConfigKeys?: string[];
-  previousArtifacts?: unknown[]; requestedArtifactIds: readonly string[];
-}): Promise<{ context: ManagedCommandRendererContext; renderConfig: ResolvedArtifactRenderConfig;
-  sensitiveValues: string[]; cleanup(): Promise<void> }> {
-  if (options.platform !== 'managed-commands') throw new Error('Platform components require preparePlatformComponents and the v3 component protocol.');
-  if (!options.target.sourceManifest || !options.target.bundleRoot) throw new Error('Cannot write a command context for an unresolved target.');
-  const manifest = options.target.sourceManifest;
-  const request = resolveArtifactRequest({ manifest, platform: 'managed-commands', scope: options.scope, requestedArtifactIds: options.requestedArtifactIds });
-  const resolved = await resolveArtifactRenderConfig({ ...options, manifest, platform: undefined, scope: options.configScope ?? options.scope, env: options.commandEnv });
-  const requestedKeys = request.declarations.flatMap((entry) => entry.refreshKeys);
-  const selected = selectPlatformRenderConfig({ resolved, keys: requestedKeys, nonSensitive: true });
-  if (requestedKeys.some((key) => !Object.hasOwn(selected.sources, key))) throw new Error('managedCommandSensitiveConfigDenied: Command inputs must be non-sensitive.');
-  const keySet = new Set(Object.keys(selected.sources));
-  const renderConfig = { ...resolved, schema: selected.schema.fields,
-    values: selected.values, sources: selected.sources, issues: resolved.issues.filter((issue) => keySet.has(issue.key)) };
-  if (renderConfig.issues.length) throw new Error('Invalid AW config for managed commands.');
-  const packageKeys = new Set(request.declarations.flatMap((entry) => entry.producer.kind === 'package' ? [entry.producer.packageKey] : []));
-  const commandSources = await Promise.all((manifest.managedCommands?.packages ?? []).filter((entry) => packageKeys.has(entry.key))
-    .map(async (entry) => ({ packageKey: entry.key, sourceDir: await resolveCommandSourceDirectory({ bundleRoot: options.target.bundleRoot!, pluginRelativePath: entry.sourceDir }) })));
-  return { context: { event: options.event, surface: { kind: 'aw', name: 'managed-commands' }, scope: options.scope,
-    plugin: { name: manifest.name, version: manifest.version, rootDir: options.target.bundleRoot },
-    config: { mode: 'artifact-render', targetScope: resolved.targetScope, schema: renderConfig.schema,
-      values: renderConfig.values, sources: renderConfig.sources, issues: renderConfig.issues },
-    changedConfigKeys: (options.changedConfigKeys ?? []).filter((key) => keySet.has(key)),
-    requestedArtifactIds: request.requestedArtifactIds,
-    previousArtifacts: (options.previousArtifacts ?? []).filter((value) => isRecord(value)
-      && request.requestedArtifactIds.includes(String(value.id)) && (value.kind === 'commandSet' || value.kind === 'commandPackage')),
-    commandSources, artifactSources: [], runtimeImports: [] }, renderConfig,
-    sensitiveValues: collectSensitivePluginConfigValues(manifest, resolved.values), cleanup: async () => undefined };
 }

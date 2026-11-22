@@ -16,11 +16,10 @@ export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const handlePattern = /^aw5-([A-Za-z0-9_-]{11})-([A-Za-z0-9_-]{22})$/;
 const runKeyPattern = /^[A-Za-z0-9_-]{22}$/;
 const recordName = /^[a-z0-9-]+\.json$/;
-const identityKeys = ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform', 'scope', 'configScope', 'artifactId', 'skillKey'];
+const identityKeys = ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform'];
 
 export function sameSourceIdentity(left, right) {
-  return identityKeys.every((key) => typeof left?.[key] === 'string' && left[key].length > 0 && left[key] === right?.[key]) &&
-    left.logicalIdentity === right.logicalIdentity;
+  return identityKeys.every((key) => typeof left?.[key] === 'string' && left[key].length > 0 && left[key] === right?.[key]);
 }
 
 function retentionMilliseconds(context, meta) {

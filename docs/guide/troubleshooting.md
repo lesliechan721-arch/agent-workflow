@@ -280,70 +280,21 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
 
 ## 6. 托管命令执行失败或沙箱拦截
 
-### 可观察症状
+先核对已安装包与路由，再检查宿主审批。插件命令以 `来源/插件` 调用，手动注册命令使用 `cmdu_` ID。两种调用都需要字面分隔符 `--`。
 
-- 运行 `aw command run <cmdp-id> -- <args...>` 时报错 `commandNotFound`、参数语法错误或执行失败。
-- 在 Claude Code 终端执行托管工具时被平台沙箱拦截，提示缺少授权。
+插件同步会重新生成已安装 Skill 的调用和该部署的归属权限。手写脚本和自定义宿主审批需按新的命令前缀更新。
 
-### 保留状态
+```bash
+aw command list
+aw command show office/plugin-a
+aw command run office/plugin-a -- export report.csv
+```
 
-- 托管命令的持久注册定义（位于 `~/.aw/commands/`）完好无损。
-
-### 未完成影响
-
-- 依赖该托管命令的 Skill 或自动化脚本无法顺利调用子进程。
-
-### 恢复条件与下一步
-
-1. **检查命令注册状态与语法**：
-   - 托管命令调用**必须包含字面分隔符 `--`**：
-     ```bash
-     # 列出本机所有已注册的托管命令
-     aw command list
-     # 查看特定命令的执行入口与 runner
-     aw command show <command-id>
-     # 正确调用语法：必须带有 -- 分隔符
-     aw command run <command-id> -- <args...>
-     ```
-2. **理解参数传递与宿主权限投影边界**：
-   - AW `command run` 运行时在核验注册绑定后直接传递调用参数 argv；插件 Manifest 声明的 `argsPrefix` 属于宿主平台的权限投影与沙箱排除匹配规则，并非 AW 内部的调用 ACL。
-3. **Claude Code 沙箱排除配置**：
-   - 若插件在 Claude Code 环境下需要突破 Bash 沙箱执行特定命令，插件 Manifest 必须在 `requires.aw.capabilities` 声明 `aw.claude.sandbox-exclusions.v1`，并在 `extensions.permissions` 内部使用结构化对象声明排除（严禁使用字符串数组或顶层声明）：
-     ```json
-     {
-       "requires": {
-         "aw": {
-           "capabilities": ["aw.claude.sandbox-exclusions.v1"]
-         }
-       },
-       "extensions": {
-         "permissions": [
-           {
-             "name": "my-tools",
-             "allow": [],
-             "agentOverrides": {
-               "claude": {
-                 "sandbox": {
-                   "excludedCommands": [
-                     {
-                       "command": {
-                         "set": "my-tools",
-                         "key": "run"
-                       }
-                     }
-                   ]
-                 }
-               }
-             }
-           }
-         ]
-       }
-     }
-     ```
-   - 完整声明结构与规则见 [托管命令参考合同：引用与权限](../reference/managed-commands.md#a5-引用与权限)。更新 Manifest 后需重新构建并升级插件。
-
-> [!NOTE]
-> **技术依据**：[托管命令参考合同](../reference/managed-commands.md)。
+- **`commandNotFound`**。检查来源是否仍以同一身份配置，以及命令包是否已安装。若 `list` 将旧包列为孤立包，可用输出中的 `pkg-id` 精确移除。恢复共享包使用 `aw command package sync office/plugin-a`。需要同时修复 Skill 和权限时，使用该平台的插件同步。
+- **`commandRouteNotFound`**。用 `show` 核对区分大小写的子命令名和可用通用入口。如果调用带有 `--no-fallback`，只匹配已声明的命名路由。包内没有启用路由时，检查作者声明和已应用配置。
+- **配置未生效**。仅保存配置不刷新命令包。检查 `config apply` 回执。显示 `configApplyVersionMismatch` 或 `nativeToolSyncRequired` 时，先同步插件或共享包，再重试应用。
+- **Claude Code 审批或沙箱拦截**。先查看 `invocationPolicyNotApplied` 是否列出 `allow` 或 `sandbox`。作者应核对宿主规则匹配的调用文字与 `argsPrefix`。沙箱排除使用 `agentOverrides.claude.sandbox.excludedCommands`，每项写为 `{ "argsPrefix": ["export"] }`。Manifest 需声明 `aw.managed-commands.v2` 和 `aw.claude.sandbox-exclusions.v1`。按需分别声明 Bash 审批和沙箱排除，然后同步该宿主部署。[Skill 引用与宿主权限](../reference/managed-commands.md#skill-引用与宿主权限)
+- **OpenCode 命令规则未生效或卸载后仍存在**。检查命令是在 User 还是所选 Project 下审批，查看 `invocationPolicyNotApplied` 的动作和原因。配置目录无法确认时，设置客户端实际使用的绝对 `OPENCODE_CONFIG_DIR`。归属缺失或保存失败时先检查宿主文件，再使用同一目标及范围同步。保留的规则仍可能生效。[宿主权限恢复](../maintainers/architecture/lifecycle.md#宿主权限恢复)
 
 ---
 

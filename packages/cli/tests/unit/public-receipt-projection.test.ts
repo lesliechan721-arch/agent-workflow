@@ -41,12 +41,14 @@ describe('public domain result projection', () => {
           { target: target('later'), action: 'refresh', state: 'skipped', errorCode: 'dependencyFailed' },
         ],
         commandResults: [{
-          producer: { sourceId: 'team', pluginName: 'consumer', kind: 'package', key: 'personal', scope: 'user' },
-          state: 'failed', commandIds: [], removedCommandIds: [],
+          producer: { sourceId: 'team', pluginName: 'consumer' }, packageId: `pkg_${'1'.repeat(64)}`,
+          selector: 'team/consumer', action: 'unchanged', availability: 'unavailable', subcommands: [], hasFallback: false,
+          state: 'failed', recoveryActions: [],
           errors: [{ code: 'processCleanupUnconfirmed', message: 'Process cleanup could not be confirmed.' }],
         }, {
-          producer: { sourceId: 'team', pluginName: 'provider', kind: 'package', key: 'personal', scope: 'project' },
-          state: 'completed', commandIds: [], removedCommandIds: [], errors: [],
+          producer: { sourceId: 'team', pluginName: 'provider' }, packageId: `pkg_${'2'.repeat(64)}`,
+          selector: 'team/provider', action: 'updated', availability: 'ready', subcommands: ['publish'], hasFallback: false,
+          state: 'completed', recoveryActions: [], errors: [],
         }],
       },
     });
@@ -54,8 +56,9 @@ describe('public domain result projection', () => {
       'team/provider codex/user: completed',
       'team/consumer codex/user: failed (some outputs verified) [platformComponentsUnmet]',
       'team/later codex/user: skipped [dependencyFailed]',
-      'team/consumer package:personal user: failed [processCleanupUnconfirmed]',
-      'team/provider package:personal project: completed',
+      'Command package team/consumer: unchanged, unavailable (failed) [processCleanupUnconfirmed]',
+      'Command package team/provider: updated, ready (completed)',
+      '  aw command run team/provider -- publish',
     ]));
   });
 
@@ -138,11 +141,19 @@ describe('public domain result projection', () => {
   });
 
   it('keeps saved config and failed package refresh separate and derives a safe retry', () => {
-    const result = projectReceipt('plugin.config.set', { ok: false, overallState: 'partial', pluginId: 'team/demo', configWrite: 'succeeded', updatedKeys: ['enabled'], apply: { state: 'partial', targetResults: [], commandResults: [{ producer: { sourceId: 'team', sourceIdentity: 'identity', pluginName: 'consumer', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null }, state: 'failed', commandIds: [], removedCommandIds: [], errors: [{ code: 'nativeToolSyncRequired', message: 'Refresh native tools first.' }], recoveryActions: ['run unsafe --yes'] }] } }, { yes: true });
+    const packageId = `pkg_${'1'.repeat(64)}`;
+    const result = projectReceipt('plugin.config.set', { ok: false, overallState: 'partial', pluginId: 'team/demo', configWrite: 'succeeded', updatedKeys: ['enabled'], apply: {
+      state: 'partial', targetResults: [], commandResults: [{ producer: { sourceId: 'team', sourceIdentity: 'identity', pluginName: 'consumer' },
+        packageId, selector: 'team/consumer', action: 'unchanged', availability: 'ready', subcommands: ['publish'], hasFallback: false,
+        state: 'failed', errors: [{ code: 'nativeToolSyncRequired', message: 'Refresh native tools first.' }],
+        recoveryActions: ['run unsafe --yes', 'aw command package sync team/consumer --yes'] }],
+    } }, { yes: true });
     expect(result.status).toBe('partial');
-    expect(result.data).toMatchObject({ configWrite: 'succeeded', apply: { commandResults: [{ errors: [{ code: 'nativeToolSyncRequired' }] }] } });
+    expect(result.data).toMatchObject({ configWrite: 'succeeded', apply: { commandResults: [{ packageId, selector: 'team/consumer',
+      action: 'unchanged', availability: 'ready', subcommands: ['publish'], hasFallback: false, state: 'failed',
+      blockerCodes: ['nativeToolSyncRequired'], errors: [{ code: 'nativeToolSyncRequired' }] }] } });
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeToolSyncRequired', subject: { pluginId: 'team/consumer', scope: 'user' } }));
-    expect(result.nextActions).toContainEqual(expect.objectContaining({ argv: ['aw', 'command', 'package', 'sync', 'team/consumer', 'tools', '--scope', 'user'], requiresConfirmation: true }));
+    expect(result.nextActions).toContainEqual(expect.objectContaining({ argv: ['aw', 'command', 'package', 'sync', 'team/consumer'], requiresConfirmation: true }));
     expect(JSON.stringify(result.nextActions)).not.toContain('--yes');
     expect(JSON.stringify(result)).not.toContain('run unsafe');
   });

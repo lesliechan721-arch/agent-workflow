@@ -9,20 +9,17 @@ import { resolvePreferencesPath, writePreferences, createEmptyPreferences } from
 import { runCli } from '../../src/index.js';
 import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import fs from 'fs-extra';
-import { fileURLToPath } from 'node:url';
-import { listManagedCommands, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import { type NativeCliInvocation } from '../../src/utils/native-cli.js';
+import type { PluginManifestSource } from '../../src/types.js';
+import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
+import { type NativeCliInvocation, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
-import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 
 import {
   syncWriteCommand,
@@ -36,6 +33,42 @@ import {
   createCodexNativeTestRuntime,
   createNativeDependencyCatalog,
 } from '../helpers/write-command-fixture.js';
+
+const snapshotTool = [
+  "import fs from 'node:fs';",
+  "import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';",
+  "const [platform, ...args] = process.argv.slice(2);",
+  "const { values, installedIdentity } = await readCommandRuntimeConfig({ from: import.meta.url, platform, keys: ['mode'] });",
+  "fs.writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ mode: values.mode, version: installedIdentity.pluginVersion, args }));",
+].join('\n');
+
+function invokePublicCommand(nativeCliRunner: NativeCliRunner) {
+  const { env } = getCurrentSourceTestIsolation();
+  return async (cwd: string, args: string[]) => {
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([...args, '--json'], { cwd, env, io: captured.io, interactive: false, nativeCliRunner });
+    return { exitCode, payload: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
+  };
+}
+
+async function configureCommandCatalog(root: string) {
+  const { env } = getCurrentSourceTestIsolation();
+  const source = { id: 'team', type: 'path', primary: true, path: root } as const;
+  const before = await readCatalogSourcesConfigSnapshot(env);
+  await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [source] }, expectedDigest: before.digest, env });
+  return source;
+}
+
+async function readCommandSnapshot(cwd: string, selector: string, platform: 'codex' | 'claude', value: { mode: string; version: string }) {
+  const { env } = getCurrentSourceTestIsolation();
+  const capture = path.join(cwd, `command-${platform}.json`);
+  await fs.remove(capture);
+  const captured = createCapturedCliIo();
+  const result = await runCli(['command', 'run', selector, '--', 'check', platform, 'payload'],
+    { cwd, env: { ...env, CAPTURE_FILE: capture }, io: captured.io, interactive: false });
+  expect({ exitCode: result, stderr: captured.readStderr() }).toEqual({ exitCode: 0, stderr: '' });
+  expect(await fs.readJson(capture)).toEqual({ ...value, args: ['payload'] });
+}
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
@@ -274,238 +307,251 @@ describe('five namespaced write commands', () => {
     }
   }, 30_000);
 
-  // Test Value Gate: cross-platform writes must preserve the other platform's installed bytes and unapplied configuration.
-  it.each([
-    ['static', ['codex', 'claude']],
-    ['static', ['claude', 'codex']],
-    ['dynamic', ['both']],
-  ] as const)('preserves both native command platforms for %s Codex with install order %j', async (codexMode, order) => {
+  // Installing a portable or excluded Native target must never prepare the command package.
+  it.each(['generic', 'claude'] as const)('does not publish a Codex-only command when installing on %s', async (platform) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { fixtureCwd: cwd, awHomeDir } = isolation.layout;
+    const sourceRoot = path.join(cwd, 'filtered-command-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'filtered-command');
+    const selector = 'team/filtered-command';
+    await fs.outputFile(path.join(pluginRoot, 'tools/run.mjs'), 'export {};\n');
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), 'throw new Error("The command platform was excluded.");\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills/standalone/SKILL.md'),
+      '---\nname: standalone\ndescription: Independent Skill.\n---\nNo command dependencies.\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills/standalone/README.md'), '# Standalone\n');
+    await createCatalogSnapshotFixture(sourceRoot, 'filtered-command', [], 'Filtered command fixture\n', (manifest) => {
+      manifest.platforms = ['codex', platform];
+      manifest.skills = './skills';
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      manifest.command = normalizePluginCommand({ sourceDir: './tools', platforms: ['codex'], mode: 'dynamic',
+        refreshKeys: [] }, manifest);
+    });
+    await configureCommandCatalog(sourceRoot);
+    const { nativeCliRunner } = await createClaudeNativeTestRuntime(isolation);
+    const run = invokePublicCommand(nativeCliRunner);
+    await writePreferences({ scope: 'user', cwd, env: isolation.env }, { ...createEmptyPreferences(), targets: [platform] });
+    const installed = await run(cwd, ['plugin', 'install', selector, '--scope', 'user', '--yes']);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    expect(installed.payload.data.commandResults ?? []).toEqual([]);
+    expect(await fs.pathExists(path.join(awHomeDir, 'commands', 'packages'))).toBe(false);
+  });
+
+  // Sync keeps the other platform's installed Skill and already-applied snapshot across versions.
+  it('publishes one command package across Codex and Claude and revokes it when the plugin drops its command', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
-    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    const authoringRoot = path.join(cwd, 'dual-native-authoring');
-    const pluginRoot = path.join(authoringRoot, 'plugins', 'dual-native');
-    const trace = path.join(cwd, 'dual-native-render-requests.jsonl');
-    const tool = 'import fs from "node:fs";fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n';
-    await fs.copy(path.join(repositoryRoot, 'plugins', 'marketplace-source.json'), path.join(authoringRoot, 'plugins', 'marketplace-source.json'));
-    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 4, name: 'dual-native', version: '1.0.0', description: 'Dual native fixture.', skills: './skills',
-      platforms: ['codex', 'claude'],
-      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
-      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-      config: { schemaVersion: 5, fields: { codexValue: { type: 'string', default: 'old-codex' }, claudeValue: { type: 'string', default: 'old-claude' } } },
-      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      ...(codexMode === 'dynamic' ? { artifacts: { configKeys: ['codexValue'] } } : {}),
-      managedCommands: { sets: [
-        { set: 'codex-tools', producer: codexMode === 'dynamic' ? { kind: 'artifact', platform: 'codex', artifactId: 'codex-rendered' } : { kind: 'static-skill', platform: 'codex', skillKey: 'shared' }, mode: 'dynamic', refreshKeys: ['codexValue'] },
-        { set: 'claude-tools', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'shared' }, mode: 'dynamic', refreshKeys: ['claudeValue'] },
-      ] },
-      buildConfig: { skillRuntimeFiles: (['codex', 'claude'] as const).map((platform) => ({ skill: 'shared', source: `./${platform}-command.md`, target: `references/${platform}-command.md`, platforms: [platform] })) },
-    });
-    await fs.outputFile(path.join(pluginRoot, 'skills/shared/SKILL.md'), '---\nname: shared\ndescription: Shared native fixture.\n---\nUse the platform command reference.\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills/shared/README.md'), '# Shared native\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills/shared/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills/shared/scripts/tool.mjs'), tool);
-    for (const platform of ['codex', 'claude']) await fs.outputFile(path.join(pluginRoot, `${platform}-command.md`), `{{aw.command:${platform}-tools/run}} check\n`);
-    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
-      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-      `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({platform:c.platform,surface:c.surface})+'\\n');`,
-      `const tool=${JSON.stringify(tool)};`,
-      "if(c.surface==='agent-plugin')console.log(JSON.stringify({version:3,components:c.platform==='codex'&&c.allowedOutputKinds.includes('skill')?[{id:'codex-rendered',kind:'skill',name:'codex-rendered',content:{files:{'SKILL.md':{text:'---\\nname: codex-rendered\\ndescription: Rendered native.\\n---\\n{{aw.command:codex-tools/run}} check\\n'},'README.md':{text:'# Native\\n'},'agents/openai.yaml':{text:'policy:\\n  allow_implicit_invocation: true\\n'},'scripts/tool.mjs':{text:tool}}}}]:[],omitted:[],unmet:[]}));",
-      "else console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:c.platform,state:'present',refreshKeys:[c.platform+'Value'],entries:[{key:'run',runner:'node',entry:'scripts/tool.mjs',args:[c.config.values[c.platform+'Value']]}]}))}));",
-    ].join('\n'));
-    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
-    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), { schemaVersion: 1, kind: 'catalog', workspaceIdentity: `fixture:${sourceRoot}`, sourceIdentity: `sha256:${'c'.repeat(64)}` });
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: before.digest, env: isolation.env });
+    const selector = 'team/dual-native';
+    const sourceRoot = path.join(cwd, 'dual-native-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'dual-native');
+    const skill = path.join(pluginRoot, 'skills', 'shared');
+    const command: PluginManifestSource['command'] = { sourceDir: './tools', platforms: ['codex', 'claude'],
+      mode: 'static', runtimeConfig: { keys: ['mode'] },
+      routes: { subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs' }] } };
+    await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), snapshotTool);
+    await fs.outputFile(path.join(skill, 'README.md'), '# Shared Native Skill\n');
+    await fs.outputFile(path.join(skill, 'agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+    const writeVersion = async (version: string, withCommand = true) => {
+      await fs.outputFile(path.join(skill, 'SKILL.md'), [
+        '---', 'name: shared', 'description: Shared Native fixture.', '---',
+        withCommand ? '{{aw.command}} check codex payload' : 'Independent Skill.', '',
+      ].join('\n'));
+      await createCatalogSnapshotFixture(sourceRoot, 'dual-native', [], `Native version ${version}\n`, (manifest) => {
+        manifest.version = version;
+        manifest.platforms = ['codex', 'claude'];
+        manifest.skills = './skills';
+        manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'common' } },
+          platforms: { codex: { fields: { mode: { type: 'string', default: 'old-codex' } } },
+            claude: { fields: { mode: { type: 'string', default: 'old-claude' } } } } };
+        manifest.command = withCommand ? normalizePluginCommand(command, manifest) : undefined;
+      });
+    };
+    await writeVersion('1.0.0');
+    const source = await configureCommandCatalog(sourceRoot);
     const codex = await createCodexNativeTestRuntime(isolation, '0.167.0');
     const claude = await createClaudeNativeTestRuntime(isolation);
-    const nativeCliRunner = async (invocation: NativeCliInvocation) => claude.isClaudeInvocation(invocation) ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
-    const run = async (args: string[]) => {
-      const captured = createCapturedCliIo();
-      const exitCode = await runCli([...args, '--json'], { cwd, env: isolation.env, io: captured.io, interactive: false, nativeCliRunner });
-      return { exitCode, payload: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
-    };
-    const ids = new Map<string, string>();
-    const assertCommands = async (expected: Record<string, string>) => {
-      const commands = (await listManagedCommands(isolation.env)).commands;
-      expect(commands).toHaveLength(Object.keys(expected).length);
-      for (const [platform, value] of Object.entries(expected)) {
-        const command = commands.find((entry) => entry.owner.kind === 'plugin' && entry.owner.producer.platform === platform)!;
-        expect(command).toMatchObject({ availability: 'ready' });
-        if (ids.has(platform)) expect(command.id).toBe(ids.get(platform));
-        ids.set(platform, command.id);
-        const record = await fs.readJson(path.join(command.resourceRoot!, '.aw-command-producer.json'));
-        expect(record.producer).toMatchObject({ platform, sourceId: 'team', scope: 'user', projectRoot: null });
-        expect((await resolveManagedCommand(command.id, isolation.env)).launch.args).toEqual([value]);
-        const markdown = platform === 'codex' && codexMode === 'dynamic' ? 'SKILL.md' : `references/${platform}-command.md`;
-        expect(await fs.readFile(path.join(command.resourceRoot!, markdown), 'utf8')).toContain(`aw command run ${command.id} -- check`);
-        const capture = path.join(cwd, `${platform}-run.json`);
-        expect(await runCli(['command', 'run', command.id, '--', 'check'], { cwd, env: { ...isolation.env, CAPTURE_FILE: capture }, io: createCapturedCliIo().io, interactive: false, nativeCliRunner })).toBe(0);
-        expect(await fs.readJson(capture)).toEqual([value, 'check']);
+    const nativeCliRunner = (invocation: NativeCliInvocation) =>
+      claude.isClaudeInvocation(invocation) ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
+    const run = invokePublicCommand(nativeCliRunner);
+    const preferences = { scope: 'user' as const, cwd, env: isolation.env };
+    const show = async () => (await run(cwd, ['command', 'show', selector])).payload.data.commands[0];
+    const expectPublication = (result: Awaited<ReturnType<typeof run>>, action: string, availability: string) => {
+      expect(result, JSON.stringify(result)).toMatchObject({ exitCode: 0, stderr: '', payload: { schemaVersion: 2,
+        status: 'success', data: { commandResults: [{ selector, action, availability, state: 'completed', blockerCodes: [],
+          subcommands: availability === 'removed' ? [] : ['check'], hasFallback: false,
+          packageId: expect.stringMatching(/^pkg_[a-f0-9]{64}$/u) }] } } });
+      const commandResult = result.payload.data.commandResults[0];
+      for (const obsolete of ['commandIds', 'removedCommandIds', 'packageKey', 'scope']) {
+        expect(commandResult).not.toHaveProperty(obsolete);
       }
     };
-    const expected: Record<string, string> = {};
-    for (const platform of order) {
-      await writePreferences({ scope: 'user', cwd, env: isolation.env }, {
-        ...createEmptyPreferences(),
-        targets: [...new Set([...Object.keys(expected), ...(platform === 'both' ? ['codex', 'claude'] : [platform])])] as Array<'codex' | 'claude'>,
-      });
-      const installed = await run(['plugin', 'install', 'team/dual-native', '--scope', 'user']);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-      for (const current of platform === 'both' ? ['codex', 'claude'] : [platform]) expected[current] = `old-${current}`;
-      await assertCommands(expected);
-    }
-    for (const platform of ['codex', 'claude']) expect(await run(['plugin', 'config', 'set', 'team/dual-native', `${platform}Value`, '--context', 'user', '--platform', platform, '--value-json', JSON.stringify(`saved-${platform}`)])).toMatchObject({ exitCode: 0 });
-    const selected = order[0] === 'both' ? ['claude', 'codex'] : [order.at(-1)!];
-    for (const platform of selected) {
-      const oldTrace = (await fs.readFile(trace, 'utf8')).trim().split('\n').length;
-      const other = platform === 'codex' ? 'claude' : 'codex';
-      const otherCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === other)!;
-      const oldTree = await snapshotRegularTree(otherCommand.resourceRoot!);
-      const otherOwnerPath = path.join(path.dirname(path.dirname(otherCommand.resourceRoot!)), SKILL_OWNER_MARKER);
-      const previousOwner = await fs.readFile(otherOwnerPath);
-      const synced = await run(['plugin', 'sync', 'team/dual-native', ...(platform === 'both' ? ['--target', 'codex', '--target', 'claude'] : ['--target', platform === 'claude' ? 'claude' : platform]), '--context', 'user', '--yes']);
-      expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-      const requests = (await fs.readFile(trace, 'utf8')).trim().split('\n').slice(oldTrace).map((line) => JSON.parse(line));
-      expect(requests.length).toBeGreaterThan(0);
-      expect(requests.every((request) => request.platform === platform)).toBe(true);
-      expect(await snapshotRegularTree(otherCommand.resourceRoot!)).toEqual(oldTree);
-      expect(await fs.readFile(otherOwnerPath)).toEqual(previousOwner);
-      expect(synced.payload.data.commandResults?.flatMap((result: { removedCommandIds: string[] }) => result.removedCommandIds) ?? []).not.toContain(ids.get(other));
-      expected[platform] = `saved-${platform}`;
-      await assertCommands(expected);
-      if (platform === 'codex') {
-        const mutations = () => codex.nativeCliRunner.mock.calls.filter(([invocation]) => invocation.args[0] === 'plugin' && ['add', 'remove'].includes(invocation.args[1] ?? '')).length;
-        const beforeNoop = mutations();
-        expect(await run(['plugin', 'sync', 'team/dual-native', '--target', 'codex', '--context', 'user', '--yes'])).toMatchObject({ exitCode: 0 });
-        expect(mutations()).toBe(beforeNoop);
-      }
-    }
-    if (codexMode === 'dynamic') {
-      const codexCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === 'codex')!;
-      const recordPath = path.join(codexCommand.resourceRoot!, '.aw-command-producer.json');
-      await fs.writeFile(recordPath, '{damaged');
-      const other = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === 'claude')!;
-      const otherTree = await snapshotRegularTree(other.resourceRoot!);
-      const independent = await run(['plugin', 'sync', 'team/dual-native', '--target', 'claude', '--context', 'user', '--yes']);
-      expect(independent, JSON.stringify(independent)).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
-      expect(await snapshotRegularTree(other.resourceRoot!)).toEqual(otherTree);
-      expect(await fs.readFile(recordPath, 'utf8')).toBe('{damaged');
-      await expect(resolveManagedCommand(codexCommand.id, isolation.env)).rejects.toThrow();
-      const repaired = await run(['plugin', 'sync', '--rebuild', 'team/dual-native', '--target', 'codex', '--target', 'claude', '--context', 'user', '--yes']);
-      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-      await assertCommands({ codex: 'saved-codex', claude: 'saved-claude' });
-    }
-  }, 90000);
 
-  // Protects the shared native payload across real scoped installation, config input, recovery, and offline cleanup.
-  it('shares one Claude static command across user and two projects without scope cleanup revoking it', async () => {
-    const machine = getCurrentSourceTestIsolation();
-    await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
-      { ...createEmptyPreferences(), targets: ['claude'] });
+    await writePreferences(preferences, { ...createEmptyPreferences(), targets: ['codex'] });
+    expectPublication(await run(cwd, ['plugin', 'install', selector, '--scope', 'user', '--yes']), 'created', 'ready');
+    const first = await show();
+    expect(first).toMatchObject({ selector, runtimeConfigPlatforms: ['codex'] });
+    await readCommandSnapshot(cwd, selector, 'codex', { mode: 'old-codex', version: '1.0.0' });
+
+    await writePreferences(preferences, { ...createEmptyPreferences(), targets: ['codex', 'claude'] });
+    expectPublication(await run(cwd, ['plugin', 'sync', selector, '--target', 'claude', '--context', 'user', '--yes']), 'updated', 'ready');
+    const both = await show();
+    expect(both.packageId).toBe(first.packageId);
+    expect([...both.runtimeConfigPlatforms].sort()).toEqual(['claude', 'codex']);
+    const installed = await run(cwd, ['command', 'list']);
+    expect(installed.payload.data.packages).toEqual([expect.objectContaining({ packageId: first.packageId, selector })]);
+    const codexOutput = [...codex.packageRoots.values()][0]!;
+    const claudeOutput = [...claude.packageRoots.values()][0]!;
+    for (const root of [codexOutput, claudeOutput]) {
+      expect(await fs.readFile(path.join(root, 'skills/shared/SKILL.md'), 'utf8')).toContain(`aw command run ${selector} -- check`);
+    }
+    const untouchedClaude = await snapshotRegularTree(claudeOutput);
+    for (const platform of ['codex', 'claude']) {
+      expect(await run(cwd, ['plugin', 'config', 'set', selector, 'mode', '--platform', platform,
+        '--context', 'user', '--value-json', JSON.stringify(`saved-${platform}`)])).toMatchObject({ exitCode: 0 });
+    }
+
+    await writeVersion('2.0.0');
+    expect(await run(cwd, ['source', 'sync', source.id, '--yes'])).toMatchObject({ exitCode: 0 });
+    await readCommandSnapshot(cwd, selector, 'codex', { mode: 'old-codex', version: '1.0.0' });
+    expectPublication(await run(cwd, ['plugin', 'sync', selector, '--target', 'codex', '--context', 'user', '--yes']), 'updated', 'ready');
+    expect(await snapshotRegularTree(claudeOutput)).toEqual(untouchedClaude);
+    await readCommandSnapshot(cwd, selector, 'codex', { mode: 'saved-codex', version: '2.0.0' });
+    await readCommandSnapshot(cwd, selector, 'claude', { mode: 'old-claude', version: '2.0.0' });
+    const current = await show();
+    expect(current.packageId).toBe(first.packageId);
+    expect([...current.runtimeConfigPlatforms].sort()).toEqual(['claude', 'codex']);
+
+    await writeVersion('3.0.0', false);
+    expect(await run(cwd, ['source', 'sync', source.id, '--yes'])).toMatchObject({ exitCode: 0 });
+    const revoked = await run(cwd, ['plugin', 'sync', selector, '--target', 'codex', '--context', 'user']);
+    expect(revoked).toMatchObject({ exitCode: 3, payload: { status: 'blocked', data: {
+      confirmation: { required: true, provided: false },
+    } } });
+    expect(JSON.stringify(revoked.payload.data.confirmation.effects)).toContain(selector);
+    await readCommandSnapshot(cwd, selector, 'codex', { mode: 'saved-codex', version: '2.0.0' });
+    expectPublication(await run(cwd, ['plugin', 'sync', selector, '--target', 'codex', '--context', 'user', '--yes']), 'removed', 'removed');
+    expect(await fs.pathExists(path.dirname(path.dirname(current.resourceRoot)))).toBe(false);
+    expect(await run(cwd, ['command', 'show', selector])).toMatchObject({ payload: {
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandNotFound' })]),
+    } });
+  }, 90_000);
+
+  // Scoped output cleanup and the final uninstall leave the shared entry and its applied config usable offline.
+  it('keeps a shared Claude command callable after the last Native deployment is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'claude-shared-authoring');
-    const pluginRoot = path.join(authoringRoot, 'plugins', 'shared-claude');
-    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-    await fs.copy(path.join(repositoryRoot, 'plugins', 'marketplace-source.json'), path.join(authoringRoot, 'plugins', 'marketplace-source.json'));
-    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 4, name: 'shared-claude', version: '1.0.0', description: 'Shared Claude command fixture.', skills: './skills',
-      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
-      platforms: ['claude'],
-      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-      config: { schemaVersion: 5, fields: { revision: { type: 'string', default: 'default' } } },
-      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      managedCommands: { sets: [{ set: 'native', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'shared-native' }, mode: 'dynamic', refreshKeys: ['revision'] }] },
-      extensions: { permissions: [{ name: 'native', allow: [{ command: { set: 'native', key: 'run' }, argsPrefix: ['check'] }] }] },
-    });
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'SKILL.md'), '---\nname: shared-native\ndescription: Shared Claude native fixture.\n---\n{{aw.command:native/run}} check\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'README.md'), '# Shared native\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'shared-native', 'scripts', 'tool.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n');
+    const cwd = isolation.layout.fixtureCwd;
+    const selector = 'team/shared-claude';
+    const sourceRoot = path.join(cwd, 'shared-claude-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'shared-claude');
+    const skill = path.join(pluginRoot, 'skills', 'shared-native');
+    const trace = path.join(cwd, 'shared-command-render.jsonl');
+    await fs.outputFile(path.join(skill, 'SKILL.md'),
+      '---\nname: shared-native\ndescription: Shared Claude fixture.\n---\n{{aw.command}} check claude payload\n');
+    await fs.outputFile(path.join(skill, 'README.md'), '# Shared Claude\n');
+    await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), snapshotTool);
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
-      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-      "if(c.scope!=='user')throw new Error('Static command renderer must use user input.');",
-      "console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:'claude',state:'present',refreshKeys:['revision'],entries:[{key:'run',runner:'node',entry:'scripts/tool.mjs',args:[c.config.values.revision]}]}))}));",
+      "import fs from 'node:fs';",
+      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ surface: context.surface, scope: context.scope, targetScope: context.config.targetScope, values: context.config.values }) + '\\n');`,
+      "const launch = { name: 'check', runner: 'node', entry: 'tool.mjs' };",
+      "const artifact = { id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes', refreshKeys: ['route'], routes: { subcommands: [launch] } };",
+      "console.log(JSON.stringify({ version: 2, artifacts: [artifact] }));",
     ].join('\n'));
-    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
-    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
-      schemaVersion: 1, kind: 'catalog',
-      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
-      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+    await createCatalogSnapshotFixture(sourceRoot, 'shared-claude', [], 'Shared Claude fixture\n', (manifest) => {
+      manifest.platforms = ['claude'];
+      manifest.skills = './skills';
+      manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'configured' },
+        route: { type: 'string', default: 'common-route' } }, platforms: {
+        claude: { fields: { route: { type: 'string', default: 'platform-route' } } },
+      } };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+      manifest.command = normalizePluginCommand({ sourceDir: './tools', mode: 'dynamic', refreshKeys: ['route'],
+        runtimeConfig: { keys: ['mode'] } }, manifest);
+      manifest.extensions = { permissions: [{ name: 'native', allow: [{ argsPrefix: ['check'] }] }] };
     });
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [source] }, expectedDigest: before.digest, env: isolation.env });
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-    const projects = [path.join(isolation.layout.fixtureCwd, 'project-a'), path.join(isolation.layout.fixtureCwd, 'project-b')];
-    for (const cwd of projects) { await fs.ensureDir(cwd); await git(cwd, ['init']); }
+    await configureCommandCatalog(sourceRoot);
+    const projects = [path.join(cwd, 'project-a'), path.join(cwd, 'project-b')];
+    for (const project of projects) {
+      await fs.ensureDir(project);
+      await git(project, ['init']);
+      await fs.outputFile(path.join(project, '.agent-workflows/plugin-config/team/shared-claude/config.json'),
+        '{legacy project config');
+    }
     const { runtime, nativeCliRunner, installedPath } = await createClaudeNativeTestRuntime(isolation);
-    const config = { sourceId: 'team', sourceIdentity, logicalIdentity, pluginName: 'shared-claude', env: isolation.env };
-    await writePluginConfigStore({ ...config, scope: 'user', cwd: projects[0]!, values: { revision: 'user-value' } });
-    for (const cwd of projects) await fs.outputFile(path.join(cwd,
-      '.agent-workflows/plugin-config/team/shared-claude/config.json'), '{legacy project config');
-    const runPublic = async (cwd: string, args: string[]) => {
-      const captured = createCapturedCliIo();
-      const exitCode = await runCli([...args, '--json'], { cwd, env: isolation.env, io: captured.io, interactive: false, nativeCliRunner });
-      return { exitCode, payload: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
-    };
-    let commandId: string | undefined, resourceRoot: string | undefined;
-    for (const [scope, cwd] of [['user', projects[0]!], ['project', projects[0]!], ['project', projects[1]!]] as const) {
-      const installed = await runPublic(cwd, ['plugin', 'install', 'team/shared-claude', '--scope', scope]);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-      const commands = (await listManagedCommands(isolation.env)).commands;
-      expect(commands).toHaveLength(1);
-      commandId ??= commands[0]!.id;
-      resourceRoot ??= commands[0]!.resourceRoot!;
-      expect(commands[0]).toMatchObject({ id: commandId, resourceRoot, availability: 'ready', owner: { kind: 'plugin', producer: { scope: 'user', projectRoot: null, platform: 'claude', kind: 'static-skill' } } });
-      expect((await resolveManagedCommand(commandId, isolation.env)).launch.args).toEqual(['user-value']);
+    const run = invokePublicCommand(nativeCliRunner);
+    await writePreferences({ scope: 'user', cwd, env: isolation.env }, { ...createEmptyPreferences(), targets: ['claude'] });
+
+    const readPackage = async () => (await run(cwd, ['command', 'show', selector])).payload.data.commands[0];
+    const checkRun = (cwd: string) => readCommandSnapshot(cwd, selector, 'claude', { mode: 'configured', version: '1.0.0' });
+    const rule = `Bash(aw command run ${selector} -- check *)`;
+    let packageId: string | undefined;
+    for (const [scope, project] of [['user', cwd], ['project', projects[0]!], ['project', projects[1]!]] as const) {
+      const installed = await run(project, ['plugin', 'install', selector, '--scope', scope, '--yes']);
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+      const published = await readPackage();
+      packageId ??= published.packageId;
+      expect(published).toMatchObject({ selector, packageId, availability: 'ready', runtimeConfigPlatforms: ['claude'] });
+      await checkRun(project);
     }
     const registry = await fs.readJson(installedPath);
-    const nativeRecords = Object.values(registry.plugins).flat() as Array<{ installPath: string }>;
-    expect(nativeRecords).toHaveLength(3);
-    expect(new Set(nativeRecords.map((record) => record.installPath)).size).toBe(1);
-    expect(await fs.readFile(path.join(resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${commandId} -- check`);
-    expect((await fs.readJson(path.join(resourceRoot!, '.aw-command-producer.json'))).producer).toMatchObject({ scope: 'user', projectRoot: null, kind: 'static-skill', platform: 'claude' });
-    const userSettings = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-    const checkRun = async () => {
-      const capture = path.join(isolation.layout.fixtureCwd, 'claude-shared-capture.json');
-      const output = createCapturedCliIo();
-      expect(await runCli(['command', 'run', commandId!, '--', 'check'], { cwd: projects[1]!, env: { ...isolation.env, CAPTURE_FILE: capture }, io: output.io, interactive: false, nativeCliRunner })).toBe(0);
-      expect(await fs.readJson(capture)).toEqual(['user-value', 'check']);
+    const nativeId = Object.keys(registry.plugins)[0]!;
+    const records = Object.values(registry.plugins).flat() as Array<{ installPath: string }>;
+    expect(records).toHaveLength(3);
+    expect(new Set(records.map(({ installPath }) => installPath)).size).toBe(1);
+    expect(await fs.readFile(path.join(records[0]!.installPath, 'skills/shared-native/SKILL.md'), 'utf8'))
+      .toContain(`aw command run ${selector} -- check claude payload`);
+    const renders = (await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(renders.length).toBeGreaterThan(0);
+    const sharedInput = {
+      surface: { kind: 'aw', name: 'managed-commands' }, scope: 'user', targetScope: 'user', values: { route: 'common-route' },
     };
-    await checkRun();
-    const cleaned = await runPublic(projects[0]!, ['plugin', 'remove', '--only', 'outputs', 'team/shared-claude', '--target', 'claude', '--scope', 'project', '--yes']);
-    expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    expect((await fs.readJson(path.join(projects[0]!, '.claude', 'settings.local.json'))).permissions?.allow ?? []).not.toContain(`Bash(aw command run ${commandId} -- check *)`);
-    expect((await fs.readJson(userSettings)).permissions.allow).toContain(`Bash(aw command run ${commandId} -- check *)`);
-    await checkRun();
-    const uninstalled = await runPublic(projects[1]!, ['plugin', 'remove', 'team/shared-claude', '--scope', 'project', '--yes']);
-    expect(uninstalled, JSON.stringify(uninstalled)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    await checkRun();
-    const restoredProject = await runPublic(projects[1]!, ['plugin', 'install', 'team/shared-claude', '--scope', 'project', '--yes']);
-    expect(restoredProject, JSON.stringify(restoredProject)).toMatchObject({ exitCode: 0 });
-    const offline = await cleanupWriteCommand(['team/shared-claude'], { cwd: projects[1]!, platform: 'claude', scope: 'project', yes: true }, { ...runtime, catalogBootstrapError: new Error('Fixture Catalog offline.') });
+    expect(renders).toEqual(renders.map(() => sharedInput));
+    const applied = await readPackage();
+    expect(await run(cwd, ['plugin', 'config', 'set', selector, 'mode', '--platform', 'claude',
+      '--context', 'user', '--value-json', '"saved-unapplied"'])).toMatchObject({ exitCode: 0 });
+    const userSettings = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const projectSettings = projects.map((project) => path.join(project, '.claude', 'settings.local.json'));
+    const readSettings = (settings: string) => fs.readJson(settings).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return {};
+    });
+    const allowed = async (settings: string): Promise<string[]> => (await readSettings(settings)).permissions?.allow ?? [];
+    for (const settings of [...projectSettings, userSettings]) expect(await allowed(settings)).toContain(rule);
+
+    const offline = await cleanupWriteCommand([selector], { cwd: projects[0]!, platform: 'claude', scope: 'project', yes: true },
+      { ...runtime, catalogBootstrapError: new Error('Fixture Catalog offline.') });
     expect(offline.overallState, JSON.stringify(offline.rebuildResults)).toBe('succeeded');
-    expect(offline.commandResults?.flatMap((result) => result.removedCommandIds) ?? []).not.toContain(commandId);
-    await checkRun();
-    const mirrorConfigPath = path.join(path.dirname(path.dirname(path.dirname(path.dirname(resourceRoot!)))), 'config.json');
-    const mirrorConfig = await fs.readJson(mirrorConfigPath);
-    await fs.writeJson(mirrorConfigPath, { ...mirrorConfig, sourceIdentity: `sha256:${'b'.repeat(64)}` });
-    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
-    await fs.writeJson(mirrorConfigPath, mirrorConfig);
-    await fs.writeFile(path.join(resourceRoot!, '.aw-command-producer.json'), '{broken');
-    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
-    const repairedCommand = await runPublic(projects[0]!, ['plugin', 'sync', '--rebuild', 'team/shared-claude', '--target', 'claude', '--context', 'user', '--yes']);
-    expect(repairedCommand, JSON.stringify(repairedCommand)).toMatchObject({ exitCode: 0 });
-    expect((await listManagedCommands(isolation.env)).commands.map((entry) => entry.id)).toEqual([commandId]);
-    await checkRun();
-    await fs.remove(resourceRoot!);
-    await expect(resolveManagedCommand(commandId!, isolation.env)).rejects.toThrow();
-    const repairedMissingCommand = await runPublic(projects[0]!, ['plugin', 'sync', '--rebuild', 'team/shared-claude', '--target', 'claude', '--context', 'user', '--yes']);
-    expect(repairedMissingCommand, JSON.stringify(repairedMissingCommand)).toMatchObject({ exitCode: 0 });
-    await checkRun();
-  }, 90000);
+    expect(await allowed(projectSettings[0]!)).not.toContain(rule);
+    expect(await allowed(projectSettings[1]!)).toContain(rule);
+    expect(await allowed(userSettings)).toContain(rule);
+    for (const [scope, project] of [['project', projects[1]!], ['project', projects[0]!], ['user', cwd]] as const) {
+      const removed = await run(project, ['plugin', 'remove', selector, '--scope', scope, '--yes']);
+      expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
+      if (project !== projects[0]) {
+        expect(removed.payload).toMatchObject({
+          data: { commandResults: [{ packageId, selector, action: 'unchanged', availability: 'ready',
+            subcommands: ['check'], hasFallback: false, state: 'completed', blockerCodes: [] }] },
+        });
+        const removal = removed.payload.nextActions.find((action: { argv?: string[] }) =>
+          action.argv?.slice(0, 4).join(' ') === 'aw command package remove');
+        expect(removal).toMatchObject({ kind: 'command', requiresConfirmation: true });
+        expect(removal.argv).toHaveLength(5);
+        expect([selector, packageId]).toContain(removal.argv[4]);
+      }
+    }
+    for (const settings of [...projectSettings, userSettings]) {
+      expect(await allowed(settings)).not.toContain(rule);
+      expect((await readSettings(settings)).enabledPlugins?.[nativeId]).toBe(false);
+    }
+    await fs.remove(sourceRoot);
+    expect(await readPackage()).toMatchObject({ packageId, runtimeConfigPlatforms: ['claude'], availability: 'ready',
+      resourceRoot: applied.resourceRoot });
+    await checkRun(projects[1]!);
+    const legacy = createCapturedCliIo();
+    const legacyExit = await runCli(['command', 'run', `cmdp_${'1'.repeat(16)}`, '--', 'check'],
+      { cwd, env: isolation.env, io: legacy.io, interactive: false });
+    expect(legacyExit).toBe(2);
+    expect(legacy.readStderr()).toContain('invalidArguments');
+  }, 90_000);
 
   it('separates mixed native Skill and AW role renderer requests', async () => {
     const isolation = getCurrentSourceTestIsolation();

@@ -173,7 +173,7 @@ export async function bundlePlugins(
       },
     );
     const preservedRoots = [
-      ...(result.plugin.manifest.managedCommands?.packages ?? []).map((entry) => entry.sourceDir),
+      ...(result.plugin.manifest.command ? [result.plugin.manifest.command.sourceDir] : []),
       ...Object.values(result.platformManifests).flatMap((manifest) => manifest.skills ?? []),
       ...[...resolveSupportedPlatforms(result.plugin.manifest)]
         .filter((platform) => platform !== 'codex' && platform !== 'claude' && result.plugin.manifest.skills)

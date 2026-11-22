@@ -1,0 +1,443 @@
+{
+  "client": "opencode v2.2.6",
+  "executableSha256": "90e4d03597b03d2051b65b4d793467764e55bacd8e22bf4824479c7233ea0e15",
+  "os": {
+    "version": "26.3.1",
+    "build": "25D2128",
+    "arch": "arm64"
+  },
+  "mode": "opencode mini --standalone / interactive Build",
+  "recordedAt": "2026-11-22T13:35:59.496561+00:00",
+  "sourceReportSha256": "6cc2627cd7d648beabe7afc3162ee792773a74ee035c23c4951e15999e4f880e",
+  "extraction": "Selected fields from the 15-session report. Temporary paths, full receipts, terminal text and provider traffic were omitted.",
+  "awVersion": "0.1.0",
+  "awBaseCommit": "5feb3ffbe17e8bc2afed348fb90622076be1f50a",
+  "awBuildStamp": {
+    "generationId": "8a16a507-c508-4bb6-b040-ff7660eca3a1",
+    "inputDigest": "6db6823c91ea42c34c5ae3d11081a06f909b9c3d6577f65217cd75902d53f82b",
+    "outputDigest": "1bb8c373519b5efda88e247bc955aede7507d13573e62f8ff1f099fed3d8291e",
+    "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540"
+  },
+  "awDistSha256": {
+    "index.js": "c5cd15e351fd9e0b87b7a85b8d8c805596a07ba0b3694b842b4603d418771973",
+    "src/index.js": "a94662dc3d982a9d3b57b30a41ec9186c4751836d523dc69e7509553dffd4eb2",
+    "src/commands/permission-batch.js": "26a350ab464400967a633e8e13eaebe1691f919ff15b57e74f99bb3521ad613b",
+    "src/platforms/opencode-permissions.js": "a8e3f03c11c9e37fe26727d451a135318027bcb8707c825fe24fb64f7baa3653",
+    "src/platforms/opencode-permission-config.js": "7d3efbc9c07d2e52fea88051f232e94127349de2ba904a7619bd29fde894d4e7",
+    "src/platforms/opencode-related-permissions.js": "b1bce73bae0dc079cc5342d0ea6baa8d9866adedea1358839dd4a43e6bd3b76c",
+    "src/platforms/permission-ownership.js": "3b21cea71521eb9255524f95cc66e927dcae0eccc8abc5072b3b1ebcc9c9ec7e"
+  },
+  "fixture": "Fresh sessions with isolated HOME, two temporary Git projects, and a loopback provider issuing one harmless shell request per session.",
+  "configurations": {
+    "project-allow": {
+      "scope": "project-a",
+      "provenance": "project-allow",
+      "sha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96"
+    },
+    "user-baseline": {
+      "scope": "user",
+      "provenance": "hand-authored baseline from Build 001",
+      "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+    },
+    "project-ask": {
+      "scope": "project-a",
+      "provenance": "project-ask",
+      "sha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+    },
+    "project-deny": {
+      "scope": "project-a",
+      "provenance": "project-deny",
+      "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+    },
+    "user-deny": {
+      "scope": "user",
+      "provenance": "user-deny",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "cross-project-allow": {
+      "scope": "project-a",
+      "provenance": "cross-project-allow",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    },
+    "cross-user-start": {
+      "scope": "user",
+      "provenance": "user-deny, retained during cross-project-allow",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "cross-install-confirmed-project": {
+      "scope": "project-a",
+      "provenance": "cross-install-confirmed",
+      "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+    },
+    "cross-install-confirmed-user": {
+      "scope": "user",
+      "provenance": "cross-install-confirmed",
+      "sha256": "104d797bc6d982a0eefa60dc2d1e9e8a94ebfc95016da9f0dedde9f56c7ccd88"
+    },
+    "cross-remove-confirmed-project": {
+      "scope": "project-a",
+      "provenance": "cross-remove-confirmed",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    },
+    "cross-remove-confirmed-user": {
+      "scope": "user",
+      "provenance": "cross-remove-confirmed",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "protected-user-deny": {
+      "scope": "user",
+      "provenance": "hand-authored User deny, preserved through protected-project-install",
+      "sha256": "c8ae5d9f4f2634c77557d589409438cc038b28bfa317664c69017ed5c8006267"
+    },
+    "protected-project": {
+      "scope": "project-a",
+      "provenance": "unchanged through protected-project-install",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    }
+  },
+  "byteComparisonToEarlierReadback": {
+    "project-allow": {
+      "priorSha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96",
+      "currentSha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96",
+      "equalBytes": true,
+      "equalJSON": true
+    },
+    "user-baseline": {
+      "priorSha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+      "currentSha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+      "equalBytes": true,
+      "equalJSON": true
+    },
+    "project-ask": {
+      "priorSha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214",
+      "currentSha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214",
+      "equalBytes": true,
+      "equalJSON": true
+    },
+    "project-deny": {
+      "priorSha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2",
+      "currentSha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2",
+      "equalBytes": true,
+      "equalJSON": true
+    },
+    "user-deny": {
+      "priorSha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e",
+      "currentSha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e",
+      "equalBytes": true,
+      "equalJSON": true
+    }
+  },
+  "scopeReview": {
+    "cross-install-review": {
+      "exitCode": 3,
+      "confirmationEffectCodes": [
+        "changeHostPermissions",
+        "changeRelatedProjectPermissions",
+        "hostPermissionAdditionalImpact"
+      ]
+    },
+    "cross-install-confirmed": {
+      "exitCode": 0,
+      "confirmationEffectCodes": [
+        "changeHostPermissions",
+        "changeRelatedProjectPermissions",
+        "hostPermissionAdditionalImpact"
+      ]
+    },
+    "cross-remove-review": {
+      "exitCode": 3,
+      "confirmationEffectCodes": [
+        "changeRelatedProjectPermissions",
+        "hostPermissionAdditionalImpact",
+        "removeOwnedOutput"
+      ]
+    },
+    "cross-remove-confirmed": {
+      "exitCode": 0,
+      "confirmationEffectCodes": [
+        "changeRelatedProjectPermissions",
+        "hostPermissionAdditionalImpact",
+        "removeOwnedOutput"
+      ]
+    },
+    "protected-project-install": {
+      "exitCode": 0,
+      "confirmationEffectCodes": [
+        "invocationPolicyNotApplied"
+      ]
+    }
+  },
+  "projectBConfigCreated": false,
+  "directAwCommandExecutions": [
+    {
+      "argv": [
+        "command",
+        "run",
+        "fixture-source/probe",
+        "--",
+        "export"
+      ],
+      "exitCode": 0,
+      "stdout": []
+    },
+    {
+      "argv": [
+        "command",
+        "run",
+        "fixture-source/probe",
+        "--",
+        "export",
+        "one",
+        "two words"
+      ],
+      "exitCode": 0,
+      "stdout": [
+        "one",
+        "two words"
+      ]
+    }
+  ],
+  "passedSessions": 15,
+  "sessions": [
+    {
+      "case": "baseline",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {},
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "project-allow-zero",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "a": "project-allow"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "project-allow-extra",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "a": "project-allow"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "project-ask-once",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "ask",
+      "observed": "ask",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "once",
+      "inputConfigs": {
+        "user": "user-baseline",
+        "a": "project-ask"
+      },
+      "executionCountBeforeReply": 0,
+      "executionCount": 1
+    },
+    {
+      "case": "project-ask-reject",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "reject",
+      "observed": "reject",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "reject",
+      "inputConfigs": {
+        "user": "user-baseline",
+        "a": "project-ask"
+      },
+      "executionCountBeforeReply": 0,
+      "executionCount": 0
+    },
+    {
+      "case": "project-deny",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "user-baseline",
+        "a": "project-deny"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    },
+    {
+      "case": "project-deny-extra",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "user-baseline",
+        "a": "project-deny"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    },
+    {
+      "case": "other-project-with-project-deny",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "user-baseline",
+        "a": "project-deny"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "user-deny-in-b",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "user-deny"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    },
+    {
+      "case": "cross-allow-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "cross-user-start",
+        "a": "cross-project-allow"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "cross-deny-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "cross-install-confirmed-user",
+        "a": "cross-install-confirmed-project"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    },
+    {
+      "case": "cross-deny-in-b",
+      "project": "b",
+      "command": "aw-other report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "cross-install-confirmed-user",
+        "a": "cross-install-confirmed-project"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    },
+    {
+      "case": "cross-restored-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "cross-remove-confirmed-user",
+        "a": "cross-remove-confirmed-project"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "cross-restored-in-b",
+      "project": "b",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "cross-remove-confirmed-user",
+        "a": "cross-remove-confirmed-project"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 1
+    },
+    {
+      "case": "user-deny-preserved",
+      "project": "a",
+      "command": "aw-other protected-report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "inputConfigs": {
+        "user": "protected-user-deny",
+        "a": "protected-project"
+      },
+      "executionCountBeforeReply": null,
+      "executionCount": 0
+    }
+  ],
+  "limits": [
+    "Standard command spelling, fresh macOS Build CLI sessions and the listed User/Project interactions.",
+    "Project allow executed as in the baseline. Earlier client API readback of identical rule bytes and last-match ordering support attribution.",
+    "Windows, Linux, Desktop, hot reload, saved approvals, and other versions or modes are outside this run."
+  ],
+  "previousReplayConfigurationBytesIdentical": 13
+}

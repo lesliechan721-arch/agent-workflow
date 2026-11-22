@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
+import type { Stats } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 
 import {
   getCommandPackageId,
-  getPluginCommandId,
-  isManagedCommandId,
-  normalizeCommandIdentity,
+  isCommandPackageId as isCoreCommandPackageId,
+  isUserCommandId as isCoreUserCommandId,
+  normalizeCommandSelector,
   normalizeCommandLaunch,
   normalizeInstalledCommandProducer as normalizeCoreProducer,
   normalizeUserCommandDefinition,
@@ -14,7 +15,8 @@ import {
   COMMAND_PRODUCER_RECORD_FILE,
   validateNativeToolClosureFiles,
   type NativeToolClosure,
-  type CommandIdentity,
+  type CommandRoutes,
+  type PlatformName,
   type CommandLaunch,
   type ProducerIdentity,
   type InstalledCommandProducer,
@@ -22,7 +24,12 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { calculateFileDigest } from './bundle-integrity.js';
-import { verifyManagedCommandArtifactEvidence } from './managed-command-evidence.js';
+import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
+import { readCatalogSourcesConfig, resolveCatalogSourcesConfigPath } from './catalog-sources.js';
+import { CatalogGenerationError } from './catalog-generation-error.js';
+import { calculateManagedCommandResourceDigest } from './managed-command-closure.js';
+import { ManagedCommandError } from './managed-command-errors.js';
+import { validateManagedCommandRuntimeConfigFiles } from './managed-command-snapshots.js';
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import {
   canonicalizePathThroughExistingAncestor,
@@ -31,52 +38,37 @@ import {
 } from './state-paths.js';
 
 export const COMMAND_PRODUCER_RECORD = COMMAND_PRODUCER_RECORD_FILE;
+export { ManagedCommandError };
 export type { InstalledCommandProducer, UserCommandDefinition };
-const USER_ID = /^cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const PACKAGE_ID = /^pkg_[0-9a-f]{64}$/u;
+const REVISION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export interface ManagedCommandDiagnostic { code: string; message: string; subject?: string }
-export class ManagedCommandError extends Error {
-  constructor(public readonly code: string, message: string, public readonly argumentError = false) {
-    super(message);
-  }
+interface ManagedCommandViewBase {
+  availability: 'ready' | 'empty' | 'unavailable';
+  resourceRoot: string | null;
+  errors: ManagedCommandDiagnostic[];
+  recoveryActions: string[];
 }
-class DamagedCommandBindingError extends ManagedCommandError {
-  constructor() { super('commandBindingInvalid', 'The command binding is not valid JSON.'); }
-}
-export type InstalledCommandSet = InstalledCommandProducer['sets'][number];
-export interface ManagedCommandBinding {
-  schemaVersion: 1;
-  id: string;
-  identity: CommandIdentity;
-  resourceRoot: string;
-}
-const bindingRecoveryIdentities = Symbol('verified native command identities');
-export interface ManagedCommandBindingRecoveryEvidence {
-  readonly [bindingRecoveryIdentities]: {
-    readonly root: string;
-    readonly identities: ReadonlyMap<string, CommandIdentity>;
-  };
-}
-export interface ManagedCommandView {
+export interface UserCommandView extends ManagedCommandViewBase {
   id: string;
   name: string;
-  owner: { kind: 'user' } | { kind: 'plugin'; producer: ProducerIdentity };
+  owner: { kind: 'user' };
   availability: 'ready' | 'unavailable';
-  resourceRoot: string | null;
   launch: CommandLaunch | null;
-  errors: ManagedCommandDiagnostic[];
-  recoveryActions: string[];
 }
-export interface ManagedCommandPackageView {
-  id: string;
-  producer: ProducerIdentity;
-  resourceRoot: string;
-  availability: 'ready' | 'empty' | 'unavailable';
-  sets: Array<{ set: string; state: 'present' | 'disabled'; commandIds: string[] }>;
-  errors: ManagedCommandDiagnostic[];
-  recoveryActions: string[];
+export interface ManagedCommandPackageView extends ManagedCommandViewBase {
+  selector: string;
+  packageId: string;
+  owner: { kind: 'plugin'; producer: ProducerIdentity };
+  pluginVersion: string | null;
+  sourceContentDigest: string | null;
+  routes: CommandRoutes | null;
+  subcommands: string[];
+  hasFallback: boolean;
+  runtimeConfigPlatforms: PlatformName[];
+  nativeTools: NativeToolClosure | null;
 }
+export type ManagedCommandView = UserCommandView | ManagedCommandPackageView;
 
 function fail(code: string, message: string): never { throw new ManagedCommandError(code, message); }
 function object(value: unknown, keys: string[], code: string): Record<string, unknown> {
@@ -130,9 +122,18 @@ async function writeJson(root: string, target: string, value: unknown): Promise<
   await ensureRegularDirectoryPath(root, 'Managed commands root');
   await atomicReplaceSafeFile({ allowedRoot: root, filePath: target, content: `${JSON.stringify(value, null, 2)}\n`, label: 'Managed command record' });
 }
+export function isUserCommandId(selector: string): boolean { return isCoreUserCommandId(selector); }
+export function isManagedCommandPackageId(selector: string): boolean { return isCoreCommandPackageId(selector); }
+export function parsePluginCommandSelector(selector: string): Pick<ProducerIdentity, 'sourceId' | 'pluginName'> {
+  try { return normalizeCommandSelector(selector); }
+  catch { throw new ManagedCommandError('invalidArguments', 'A canonical source/plugin selector is required.', true); }
+}
 export function assertUserCommandId(id: string): void {
-  if (/^cmdp_[0-9a-f]{16}$/u.test(id)) fail('commandOwnerMismatch', 'Plugin commands must be maintained with their producer sync, reinstall, or package remove command.');
-  if (!USER_ID.test(id)) throw new ManagedCommandError('invalidArguments', 'A canonical user command ID is required.', true);
+  if (id.includes('/')) {
+    parsePluginCommandSelector(id);
+    fail('commandOwnerMismatch', 'Plugin commands must be maintained with plugin sync or command package sync/remove.');
+  }
+  if (!isUserCommandId(id)) throw new ManagedCommandError('invalidArguments', 'A canonical user command ID is required.', true);
 }
 export function validateManagedCommandName(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || [...value].length > 128
@@ -180,7 +181,11 @@ export async function validateManagedCommandResource(resourceRoot: string, launc
   async function visit(directory: string): Promise<void> {
     const stat = await fs.lstat(directory).catch(() => null);
     if (!stat?.isDirectory() || stat.isSymbolicLink()) fail('commandResourceInvalid', 'The command resource root must be a regular directory.');
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') fail('commandResourceInvalid', 'The command resource changed before it could be read.');
+      throw error;
+    });
+    for (const entry of entries) {
       if (entry.name === '.git' || entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
         fail('commandResourceInvalid', 'Command resources cannot contain links, special nodes, or .git directories.');
       }
@@ -188,7 +193,10 @@ export async function validateManagedCommandResource(resourceRoot: string, launc
     }
   }
   await visit(root);
-  if (!launch) return;
+  if (launch) await validateCommandLaunchFile(root, launch);
+}
+
+async function validateCommandLaunchFile(root: string, launch: CommandLaunch): Promise<void> {
   const entry = path.resolve(root, launch.entry);
   if (!contains(root, entry) || entry === root) fail('commandResourceInvalid', 'The command entry escapes its resource root.');
   await safePath(root, entry);
@@ -300,376 +308,469 @@ export async function removeUserCommand(id: string, env: NodeJS.ProcessEnv = pro
   await fs.rm(userRoot, { recursive: true, force: true });
 }
 
+async function lstatIfExists(target: string): Promise<Stats | null> {
+  try { return await fs.lstat(target); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+}
+
+async function entriesAt(directory: string): Promise<string[]> {
+  try { return await fs.readdir(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+}
+
+async function readConfiguredSources(env: NodeJS.ProcessEnv): Promise<Map<string, string>> {
+  try {
+    const sourceFile = resolveCatalogSourcesConfigPath(env);
+    const stat = await lstatIfExists(sourceFile);
+    if (stat && !stat.isFile()) fail('catalogSourcesConfigInvalid', 'Catalog sources config must be a regular file.');
+    const { sources } = await readCatalogSourcesConfig(env);
+    const identities = await Promise.all(sources.map(async (source) => [source.id, await calculateCatalogSourceIdentity(source)] as const));
+    return new Map(identities);
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) fail(error.code, error.message);
+    fail('catalogSourcesConfigInvalid', 'Catalog sources config is unreadable or invalid. Repair catalog-sources.json, then run aw source sync.');
+  }
+}
+
+async function resolvePluginCommandProducer(selector: string, env: NodeJS.ProcessEnv): Promise<ProducerIdentity> {
+  const { sourceId, pluginName } = parsePluginCommandSelector(selector);
+  const sourceIdentity = (await readConfiguredSources(env)).get(sourceId);
+  if (sourceIdentity === undefined) fail('commandNotFound', 'The command source is no longer configured. Run aw command list to find packages by ID.');
+  return { sourceId, sourceIdentity, pluginName };
+}
+
+export async function resolveManagedCommandPackageId(selector: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const producer = await resolvePluginCommandProducer(selector, env);
+  const id = getCommandPackageId(producer);
+  await assertExpectedPackage(await managedCommandRoot(env), id, producer);
+  return id;
+}
+
 export function normalizeInstalledCommandProducer(value: unknown): InstalledCommandProducer {
   try {
     const record = normalizeCoreProducer(value);
     if (!equal(value, record)) fail('commandBindingInvalid', 'The installed producer must contain all normalized fields.');
     return record;
-  } catch { fail('commandBindingInvalid', 'The installed command producer record is invalid.'); }
-}
-export async function readInstalledCommandProducer(resourceRoot: string): Promise<InstalledCommandProducer> {
-  const record = normalizeInstalledCommandProducer(await readJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), 'commandBindingInvalid'));
-  if (record.nativeTools) {
-    try { await validateNativeToolClosureFiles(resourceRoot, record.nativeTools); }
-    catch { fail('commandBindingInvalid', 'The installed native tool closure does not match its files. Run producer sync or reinstall.'); }
-  }
-  return record;
-}
-export async function writeInstalledCommandProducer(resourceRoot: string, record: InstalledCommandProducer): Promise<void> {
-  await writeJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), normalizeInstalledCommandProducer(record));
-}
-/** Capture the installed Native producer before replacing its canonical payload. */
-export async function captureManagedCommandBindingRecoveryEvidence(options: {
-  producer: ProducerIdentity; resourceRoot: string; env?: NodeJS.ProcessEnv;
-}): Promise<ManagedCommandBindingRecoveryEvidence> {
-  const producer = normalizeProducerIdentity(options.producer);
-  if (producer.kind === 'package') fail('commandOwnerMismatch', 'Binding recovery requires an installed Native Skill producer.');
-  const root = await managedCommandRoot(options.env);
-  const resourceRoot = path.resolve(options.resourceRoot);
-  const record = await readInstalledCommandProducer(resourceRoot);
-  if (!equal(record.producer, producer)) fail('commandOwnerMismatch', 'The installed producer does not match the recovery request.');
-  await assertManagedCommandProducerOwnership(producer, resourceRoot, options.env);
-  const identities = new Map<string, CommandIdentity>();
-  for (const set of record.sets) for (const entry of set.entries) {
-    await validateManagedCommandResource(resourceRoot, entry);
-    const identity: CommandIdentity = { schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant };
-    identities.set(getPluginCommandId(identity), identity);
-  }
-  return { [bindingRecoveryIdentities]: { root, identities } };
-}
-async function readBinding(root: string, id: string): Promise<ManagedCommandBinding> {
-  const bindingPath = path.join(root, 'bindings', `${id}.json`);
-  await safePath(root, bindingPath);
-  if (!(await fs.lstat(bindingPath)).isFile()) fail('commandBindingInvalid', 'The command binding must be a regular file.');
-  const content = await fs.readFile(bindingPath, 'utf8');
-  let parsed: unknown;
-  try { parsed = JSON.parse(content); }
-  catch (error) {
-    if (error instanceof SyntaxError) throw new DamagedCommandBindingError();
-    throw error;
-  }
-  const value = object(parsed, ['schemaVersion', 'id', 'identity', 'resourceRoot'], 'commandBindingInvalid');
-  let identity: CommandIdentity;
-  try { identity = normalizeCommandIdentity(value.identity); } catch { fail('commandBindingInvalid', 'The command binding identity is invalid.'); }
-  if (value.schemaVersion !== 1 || value.id !== id || getPluginCommandId(identity) !== id || typeof value.resourceRoot !== 'string' || !path.isAbsolute(value.resourceRoot)) fail('commandIdentityConflict', 'The command binding does not match its identity.');
-  return { schemaVersion: 1, id, identity, resourceRoot: value.resourceRoot };
-}
-async function entriesAt(directory: string): Promise<string[]> {
-  try { return await fs.readdir(directory); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-}
-export async function revokeManagedCommandBindings(producer: ProducerIdentity, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  producer = normalizeProducerIdentity(producer);
-  const root = await managedCommandRoot(env);
-  const removed: string[] = [];
-  await safePath(root, path.join(root, 'bindings'));
-  for (const file of await entriesAt(path.join(root, 'bindings'))) {
-    if (!/^cmdp_[0-9a-f]{16}\.json$/u.test(file)) continue;
-    const id = file.slice(0, -5);
-    try {
-      const binding = await readBinding(root, id);
-      if (!equal(binding.identity.producer, producer)) continue;
-      await fs.unlink(path.join(root, 'bindings', file));
-      removed.push(id);
-    } catch { /* Corrupt indexes cannot authorize removal of other producers. */ }
-  }
-  return removed;
-}
-async function prepareManagedCommandIdentities(
-  root: string,
-  records: InstalledCommandProducer[],
-  bindingRecoveryEvidence: readonly ManagedCommandBindingRecoveryEvidence[] = [],
-): Promise<Map<string, CommandIdentity>> {
-  const candidates = new Map<string, CommandIdentity>();
-  for (const record of records) for (const set of record.sets) for (const entry of set.entries) {
-    const identity: CommandIdentity = { schemaVersion: 2, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
-    const id = getPluginCommandId(identity);
-    const candidate = candidates.get(id);
-    if (candidate && !equal(candidate, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
-    const existingPath = path.join(root, 'bindings', `${id}.json`);
-    const stats = await fs.lstat(existingPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (stats) {
-      try {
-        const existing = await readBinding(root, id);
-        if (!equal(existing.identity, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
-      } catch (error) {
-        // Only malformed JSON can use the old canonical producer's exact identity.
-        // Path, I/O and readable identity conflicts still stop publication.
-        if (!(error instanceof DamagedCommandBindingError)
-          || !bindingRecoveryEvidence.some((evidence) => {
-            const verified = evidence[bindingRecoveryIdentities];
-            return verified?.root === root && equal(verified.identities.get(id), identity);
-          })) throw error;
-      }
-    }
-    candidates.set(id, identity);
-  }
-  return candidates;
-}
-export async function assertManagedCommandBindingIdentities(options: {
-  producers: Array<Pick<InstalledCommandProducer, 'producer' | 'sets' | 'nativeTools'>>; env?: NodeJS.ProcessEnv;
-  bindingRecoveryEvidence?: readonly ManagedCommandBindingRecoveryEvidence[];
-}): Promise<void> {
-  if (options.producers.length === 0) return;
-  const records = options.producers.map((record) => normalizeInstalledCommandProducer({ schemaVersion: 1, producer: record.producer, sets: record.sets, ...(record.nativeTools ? { nativeTools: record.nativeTools } : {}) }));
-  await prepareManagedCommandIdentities(await managedCommandRoot(options.env), records, options.bindingRecoveryEvidence);
-}
-export async function publishManagedCommandBindings(options: {
-  producer: ProducerIdentity; resourceRoot: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure; env?: NodeJS.ProcessEnv;
-  bindingRecoveryEvidence?: readonly ManagedCommandBindingRecoveryEvidence[];
-}): Promise<string[]> {
-  const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer: options.producer, sets: options.sets, ...(options.nativeTools ? { nativeTools: options.nativeTools } : {}) });
-  const root = await managedCommandRoot(options.env);
-  const resourceRoot = path.resolve(options.resourceRoot);
-  for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
-  const candidates = await prepareManagedCommandIdentities(root, [record], options.bindingRecoveryEvidence);
-  if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
-  await assertManagedCommandProducerOwnership(record.producer, resourceRoot, options.env);
-  let previous: InstalledCommandProducer | undefined;
-  const recordPath = path.join(resourceRoot, COMMAND_PRODUCER_RECORD);
-  await safePath(resourceRoot, recordPath);
-  const recordStats = await fs.lstat(recordPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
-  if (recordStats) {
-    if (!recordStats.isFile()) fail('commandBindingInvalid', 'The installed producer record must be a regular file.');
-    const content = await fs.readFile(recordPath, 'utf8');
-    try { previous = normalizeInstalledCommandProducer(JSON.parse(content)); }
-    catch (error) {
-      if (!(error instanceof SyntaxError) && (!(error instanceof ManagedCommandError) || error.code !== 'commandBindingInvalid')) throw error;
-    }
-  }
-  if (previous && !equal(previous.producer, record.producer)) fail('commandIdentityConflict', 'The resource root already contains another complete producer identity.');
-  await writeInstalledCommandProducer(resourceRoot, record);
-  await revokeManagedCommandBindings(record.producer, options.env);
-  for (const [id, identity] of candidates) await writeJson(root, path.join(root, 'bindings', `${id}.json`), { schemaVersion: 1, id, identity, resourceRoot });
-  return [...candidates.keys()];
+  } catch { fail('commandBindingInvalid', 'The installed command producer record is invalid. Run aw command package sync.'); }
 }
 
-export async function readManagedCommandPackageOwner(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ producer: ProducerIdentity; resourceRoot: string }> {
-  if (!PACKAGE_ID.test(id)) throw new ManagedCommandError('invalidArguments', 'A canonical package ID is required.', true);
-  const root = await managedCommandRoot(env);
+export async function readInstalledCommandProducer(resourceRoot: string): Promise<InstalledCommandProducer> {
+  return normalizeInstalledCommandProducer(await readJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), 'commandBindingInvalid'));
+}
+
+interface PackageOwner {
+  producer: ProducerIdentity;
+  packageRoot: string;
+}
+
+async function readPackageOwner(root: string, id: string): Promise<PackageOwner> {
+  if (!isManagedCommandPackageId(id)) throw new ManagedCommandError('invalidArguments', 'A canonical package ID is required.', true);
   const packageRoot = path.join(root, 'packages', id);
+  await safePath(root, packageRoot);
+  const stat = await lstatIfExists(packageRoot);
+  if (!stat) fail('commandNotFound', 'The command package is not installed. Run aw command package sync.');
+  if (!stat.isDirectory()) fail('commandOwnerMismatch', 'The command package root must be a regular directory.');
   const owner = object(await readJson(root, path.join(packageRoot, 'owner.json'), 'commandOwnerMismatch'), ['schemaVersion', 'owner', 'kind', 'producer'], 'commandOwnerMismatch');
   let producer: ProducerIdentity;
   try { producer = normalizeProducerIdentity(owner.producer); } catch { fail('commandOwnerMismatch', 'The package owner identity is invalid.'); }
-  if (owner.schemaVersion !== 1 || owner.owner !== 'agent-workflows' || owner.kind !== 'plugin-command-package' || producer.kind !== 'package' || getCommandPackageId(producer) !== id) fail('commandOwnerMismatch', 'The package owner marker does not match its directory.');
-  return { producer, resourceRoot: path.join(packageRoot, 'resource') };
+  if (owner.schemaVersion !== 2 || owner.owner !== 'agent-workflows' || owner.kind !== 'plugin-command-package'
+    || !equal(owner.producer, producer) || getCommandPackageId(producer) !== id) {
+    fail('commandOwnerMismatch', 'The command package owner marker does not match its directory.');
+  }
+  return { producer, packageRoot };
 }
-export async function removeManagedCommandPackage(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ producer: ProducerIdentity; removedCommandIds: string[] }> {
-  const { producer } = await readManagedCommandPackageOwner(id, env);
-  const root = await managedCommandRoot(env);
-  const removedCommandIds = await revokeManagedCommandBindings(producer, env);
-  await fs.rm(path.join(root, 'packages', id), { recursive: true, force: true });
-  return { producer, removedCommandIds };
+
+export async function readManagedCommandPackageOwner(id: string, env: NodeJS.ProcessEnv = process.env): Promise<PackageOwner> {
+  return readPackageOwner(await managedCommandRoot(env), id);
 }
-export async function syncManagedCommandPackage(options: {
-  producer: ProducerIdentity; sourceDirectory: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure; env?: NodeJS.ProcessEnv;
-  expectedPackage?: ManagedCommandPackageEvidence;
-}): Promise<{ id: string; resourceRoot: string; commandIds: string[]; removedCommandIds: string[] }> {
-  const producer = normalizeProducerIdentity(options.producer);
-  if (producer.kind !== 'package') fail('commandOwnerMismatch', 'A package producer is required.');
-  const root = await managedCommandRoot(options.env);
-  const id = getCommandPackageId(producer);
-  const packagesRoot = path.join(root, 'packages');
-  await ensureRegularDirectoryPath(packagesRoot, 'Managed command packages');
-  const packageRoot = path.join(packagesRoot, id);
-  const staging = path.join(packagesRoot, `.${id}.${crypto.randomUUID()}.tmp`);
-  if (await fs.lstat(packageRoot).catch(() => null)) await readManagedCommandPackageOwner(id, options.env);
-  await ensureRegularDirectoryPath(staging, 'Managed command package staging');
-  try {
-    const resourceRoot = path.join(staging, 'resource');
-    await copyManagedCommandDirectory(options.sourceDirectory, resourceRoot, options.env);
-    const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer, sets: options.sets, ...(options.nativeTools ? { nativeTools: options.nativeTools } : {}) });
-    for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
-    await prepareManagedCommandIdentities(root, [record]);
-    if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
-    await writeInstalledCommandProducer(resourceRoot, record);
-    await writeJson(root, path.join(staging, 'owner.json'), { schemaVersion: 1, owner: 'agent-workflows', kind: 'plugin-command-package', producer });
-    if (options.expectedPackage) {
-      const current = await fs.lstat(packageRoot).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      });
-      if (!current) fail('configApplyRequiresExistingOutput', 'The reviewed command package is no longer installed. Run package sync first.');
-      const view = await readManagedCommandPackageView(id, options.env ?? process.env);
-      const evidence = await captureManagedCommandPackageEvidence(view, options.env);
-      if (!equal(evidence, options.expectedPackage)) fail('operationReviewStale', 'The reviewed command package changed before publication.');
-    }
-    const removed = await revokeManagedCommandBindings(producer, options.env);
-    if (await fs.lstat(packageRoot).catch(() => null)) {
-      await readManagedCommandPackageOwner(id, options.env);
-      await fs.rm(packageRoot, { recursive: true, force: true });
-    }
-    await fs.rename(staging, packageRoot);
-    const installedRoot = path.join(packageRoot, 'resource');
-    const commandIds = await publishManagedCommandBindings({ producer, resourceRoot: installedRoot, sets: record.sets, nativeTools: record.nativeTools, env: options.env });
-    return { id, resourceRoot: installedRoot, commandIds, removedCommandIds: removed.filter((commandId) => !commandIds.includes(commandId)) };
-  } finally {
-    await safePath(root, staging);
-    await fs.rm(staging, { recursive: true, force: true });
+
+async function readCurrentRevision(packageRoot: string): Promise<string> {
+  const current = object(await readJson(packageRoot, path.join(packageRoot, 'current.json'), 'commandBindingInvalid'), ['schemaVersion', 'revision'], 'commandBindingInvalid');
+  if (current.schemaVersion !== 2 || typeof current.revision !== 'string' || !REVISION_ID.test(current.revision)) {
+    fail('commandBindingInvalid', 'The current command package revision is invalid. Run aw command package sync.');
+  }
+  return current.revision;
+}
+
+interface PinnedPackage {
+  resourceRoot: string;
+  record: InstalledCommandProducer;
+}
+
+async function currentResourceRoot(owner: PackageOwner): Promise<string> {
+  const revision = await readCurrentRevision(owner.packageRoot);
+  return path.join(owner.packageRoot, 'revisions', revision);
+}
+
+async function readPinnedPackage(owner: PackageOwner, resourceRoot: string): Promise<PinnedPackage> {
+  await safePath(owner.packageRoot, resourceRoot);
+  const record = await readInstalledCommandProducer(resourceRoot);
+  if (!equal(owner.producer, record.producer)) fail('commandIdentityConflict', 'The command package revision does not match its owner.');
+  return { resourceRoot, record };
+}
+
+async function validateInstalledNativeTools({ resourceRoot, record }: PinnedPackage): Promise<void> {
+  if (record.nativeTools) {
+    try { await validateNativeToolClosureFiles(resourceRoot, record.nativeTools); }
+    catch { fail('commandBindingInvalid', 'The installed native tool closure does not match its files. Run aw command package sync.'); }
   }
 }
 
-export async function assertManagedCommandProducerOwnership(producer: ProducerIdentity, resourceRoot: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  if (producer.kind === 'package') {
-    const owned = await readManagedCommandPackageOwner(getCommandPackageId(producer), env);
-    if (!equal(owned.producer, producer) || owned.resourceRoot !== resourceRoot) fail('commandOwnerMismatch', 'The command package root does not match its owner.');
-    return;
-  }
-  try { await verifyManagedCommandArtifactEvidence({ producer, resourceRoot, env }); }
-  catch { fail('commandOwnerMismatch', 'The command producer has no matching live ownership or native receipt evidence.'); }
+async function validatePackageResources({ resourceRoot, record }: PinnedPackage): Promise<void> {
+  await validateManagedCommandResource(resourceRoot);
+  for (const launch of record.routes.subcommands) await validateCommandLaunchFile(resourceRoot, launch);
+  if (record.routes.fallback) await validateCommandLaunchFile(resourceRoot, record.routes.fallback);
+  await validateInstalledNativeTools({ resourceRoot, record });
+  await validateManagedCommandRuntimeConfigFiles(resourceRoot, record);
 }
-export async function resolveManagedCommand(id: string, env: NodeJS.ProcessEnv = process.env): Promise<{ view: ManagedCommandView; launch: CommandLaunch; resourceRoot: string; producer?: InstalledCommandProducer; set?: string }> {
-  if (!isManagedCommandId(id)) throw new ManagedCommandError('invalidArguments', 'A canonical managed command ID is required.', true);
-  const root = await managedCommandRoot(env);
-  if (USER_ID.test(id)) {
-    if (!(await fs.lstat(path.join(root, 'users', id)).catch(() => null))) fail('commandNotFound', 'The command ID is not installed.');
-    const definition = await readUserCommandDefinition(id, env);
-    const resourceRoot = path.join(root, 'users', id, 'packages', definition.packageRevision);
-    await safePath(root, resourceRoot);
-    await validateManagedCommandResource(resourceRoot, definition.launch);
-    return { resourceRoot, launch: definition.launch, view: { id, name: definition.name, owner: { kind: 'user' }, availability: 'ready', resourceRoot, launch: definition.launch, errors: [], recoveryActions: [] } };
-  }
-  if (!(await fs.lstat(path.join(root, 'bindings', `${id}.json`)).catch(() => null))) fail('commandNotFound', 'The command binding is missing. Use sync, reinstall, or package sync.');
-  const binding = await readBinding(root, id);
-  await assertManagedCommandProducerOwnership(binding.identity.producer, binding.resourceRoot, env);
-  const record = await readInstalledCommandProducer(binding.resourceRoot);
-  if (!equal(record.producer, binding.identity.producer)) fail('commandIdentityConflict', 'The installed producer does not match the command binding.');
-  const set = record.sets.find((candidate) => candidate.set === binding.identity.set && candidate.state === 'present');
-  const entry = set?.entries.find((candidate) => candidate.key === binding.identity.key && candidate.variant === binding.identity.variant);
-  if (!entry) fail('commandBindingInvalid', 'The command is absent or disabled in the installed producer.');
-  const { key: _key, variant: _variant, ...launch } = entry;
-  await validateManagedCommandResource(binding.resourceRoot, launch);
-  return { resourceRoot: binding.resourceRoot, launch, producer: record, set: binding.identity.set, view: { id, name: `${binding.identity.set}/${entry.key}/${entry.variant}`, owner: { kind: 'plugin', producer: record.producer }, availability: 'ready', resourceRoot: binding.resourceRoot, launch, errors: [], recoveryActions: [] } };
+
+function assertExpectedProducer(expected: ProducerIdentity, actual: ProducerIdentity): void {
+  if (!equal(expected, actual)) fail('commandIdentityConflict', 'The command package belongs to a different source or plugin.');
 }
-export async function inspectManagedCommand(id: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandView> {
-  try { return (await resolveManagedCommand(id, env)).view; }
-  catch (error) {
-    if (error instanceof ManagedCommandError && (error.code === 'commandNotFound' || error.argumentError)) throw error;
-    const root = await managedCommandRoot(env);
-    let owner: ManagedCommandView['owner'];
-    let name = id;
-    let resourceRoot: string | null = null;
-    let launch: CommandLaunch | null = null;
-    if (USER_ID.test(id)) {
-      await assertUserOwner(root, id);
-      owner = { kind: 'user' };
-      try {
-        const definition = await readUserCommandDefinition(id, env);
-        name = definition.name;
-        launch = definition.launch;
-        resourceRoot = path.join(root, 'users', id, 'packages', definition.packageRevision);
-      } catch { /* Owner evidence still permits a diagnostic view and safe removal. */ }
-    } else {
-      const binding = await readBinding(root, id);
-      owner = { kind: 'plugin', producer: binding.identity.producer };
-      name = `${binding.identity.set}/${binding.identity.key}/${binding.identity.variant}`;
-      resourceRoot = binding.resourceRoot;
-    }
-    return { id, name, owner, availability: 'unavailable', resourceRoot, launch, errors: [managedCommandDiagnostic(error)], recoveryActions: [owner.kind === 'user' ? `aw command remove ${id} --force --yes` : 'Run producer sync, reinstall, or package sync.'] };
-  }
+
+export async function readManagedCommandPackage(
+  producer: ProducerIdentity, env: NodeJS.ProcessEnv = process.env, options: { validateFiles?: boolean } = {},
+): Promise<PinnedPackage | undefined> {
+  const id = getCommandPackageId(producer);
+  let owner: PackageOwner;
+  try { owner = await readManagedCommandPackageOwner(id, env); }
+  catch (error) { if (error instanceof ManagedCommandError && error.code === 'commandNotFound') return undefined; throw error; }
+  assertExpectedProducer(producer, owner.producer);
+  const pinned = await readPinnedPackage(owner, await currentResourceRoot(owner));
+  if (options.validateFiles !== false) await validatePackageResources(pinned);
+  return pinned;
 }
-async function readManagedCommandPackageView(id: string, env: NodeJS.ProcessEnv): Promise<ManagedCommandPackageView> {
-  const { producer, resourceRoot } = await readManagedCommandPackageOwner(id, env);
-  const view: ManagedCommandPackageView = { id, producer, resourceRoot, availability: 'unavailable', sets: [], errors: [], recoveryActions: [] };
+
+function packageView(owner: PackageOwner, packageId: string, record?: InstalledCommandProducer, resourceRoot: string | null = null): ManagedCommandPackageView {
+  const selector = `${owner.producer.sourceId}/${owner.producer.pluginName}`;
+  const routes = record?.routes ?? null;
+  return {
+    selector, packageId, owner: { kind: 'plugin', producer: owner.producer },
+    pluginVersion: record?.pluginVersion ?? null,
+    sourceContentDigest: record?.sourceContentDigest ?? null,
+    availability: routes ? (routes.subcommands.length || routes.fallback ? 'ready' : 'empty') : 'unavailable',
+    resourceRoot,
+    routes,
+    subcommands: routes?.subcommands.map((entry) => entry.name) ?? [],
+    hasFallback: routes?.fallback !== undefined,
+    runtimeConfigPlatforms: record?.runtimeConfigPlatforms ?? [],
+    nativeTools: record?.nativeTools ?? null,
+    errors: [],
+    recoveryActions: [],
+  };
+}
+
+async function inspectOwnedPackage(owner: PackageOwner, id: string): Promise<ManagedCommandPackageView> {
+  let pinned: PinnedPackage | undefined;
+  let resourceRoot: string | null = null;
   try {
-    const record = await readInstalledCommandProducer(resourceRoot);
-    if (!equal(record.producer, producer)) fail('commandIdentityConflict', 'The package content and owner identities differ.');
-    await validateManagedCommandResource(resourceRoot);
-    view.sets = record.sets.map((set) => ({ set: set.set, state: set.state, commandIds: set.entries.map((entry) => getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant })) }));
-    for (const set of view.sets) for (const commandId of set.commandIds) await resolveManagedCommand(commandId, env);
-    view.availability = view.sets.some((set) => set.commandIds.length) ? 'ready' : 'empty';
+    resourceRoot = await currentResourceRoot(owner);
+    pinned = await readPinnedPackage(owner, resourceRoot);
+    await validatePackageResources(pinned);
+    return packageView(owner, id, pinned.record, resourceRoot);
   } catch (error) {
+    const view = packageView(owner, id, pinned?.record, resourceRoot);
+    view.availability = 'unavailable';
     view.errors.push(managedCommandDiagnostic(error));
-    view.recoveryActions.push(`aw command package remove ${id} --force --yes`, 'Run package sync.');
+    view.recoveryActions.push(`aw command package sync ${view.selector}`, `aw command package remove ${id} --force --yes`);
+    return view;
   }
-  return view;
+}
+
+export async function readManagedCommandPackageView(id: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandPackageView> {
+  return inspectOwnedPackage(await readManagedCommandPackageOwner(id, env), id);
 }
 
 export interface ManagedCommandPackageEvidence {
-  availability: ManagedCommandPackageView['availability'];
   packageDigest: string;
 }
 
-export async function captureManagedCommandPackageEvidence(view: ManagedCommandPackageView, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandPackageEvidence> {
-  const packageRoot = path.dirname(view.resourceRoot);
-  const commandsRoot = await managedCommandRoot(env);
-  await safePath(commandsRoot, packageRoot);
-  const rootStat = await fs.lstat(packageRoot);
-  if (!rootStat.isDirectory()) fail('commandOwnerMismatch', 'The command package root must be a regular directory.');
-  const hash = crypto.createHash('sha256');
-  const add = (fields: unknown[]) => hash.update(JSON.stringify(fields)).update('\n');
-  // Windows chmod supports the writable bit. POSIX publication can restore all permission bits.
-  const modeMask = process.platform === 'win32' ? 0o200 : 0o777;
-  add(['directory', '', rootStat.mode & modeMask]);
-  async function visit(directory: string): Promise<void> {
-    for (const name of (await fs.readdir(directory)).sort()) {
-      const file = path.join(directory, name);
-      const relative = path.relative(packageRoot, file).split(path.sep).join('/');
-      const stat = await fs.lstat(file);
-      if (stat.isDirectory()) {
-        add(['directory', relative, stat.mode & modeMask]);
-        await visit(file);
-      } else if (stat.isFile()) {
-        add(['file', relative, stat.mode & modeMask, await calculateFileDigest(file)]);
-      } else if (stat.isSymbolicLink()) {
-        add(['symlink', relative, await fs.readlink(file)]);
-      } else fail('commandResourceInvalid', 'Command packages cannot contain special nodes.');
-    }
-  }
-  await visit(packageRoot);
-  // A single missing binding makes the whole package unavailable. Keep each installed entry distinguishable.
-  const record = await readInstalledCommandProducer(view.resourceRoot);
-  if (!equal(record.producer, view.producer)) fail('commandIdentityConflict', 'The package content and owner identities differ.');
-  for (const set of record.sets) for (const entry of set.entries) {
-    const id = getPluginCommandId({ schemaVersion: 2, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant });
-    try {
-      const binding = await readBinding(commandsRoot, id);
-      const stat = await fs.lstat(path.join(commandsRoot, 'bindings', id + '.json'));
-      add(['binding', id, binding, stat.mode & modeMask]);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') add(['missingBinding', id]);
-      else if (error instanceof ManagedCommandError) add(['invalidBinding', id, error.code]);
-      else throw error;
-    }
-  }
-  return { availability: view.availability, packageDigest: `sha256:${hash.digest('hex')}` };
+// Hash only the live pointer and its revision. Unreachable staging and old revisions are not publication evidence.
+export async function captureManagedCommandPackageEvidence(
+  view: ManagedCommandPackageView, env: NodeJS.ProcessEnv = process.env, options: { force?: boolean } = {},
+): Promise<ManagedCommandPackageEvidence> {
+  const owner = await readManagedCommandPackageOwner(view.packageId, env);
+  assertExpectedProducer(view.owner.producer, owner.producer);
+  return capturePackageEvidence(owner, { reviewedRoot: view.resourceRoot, force: options.force });
 }
 
-export async function listManagedCommandPackages(env: NodeJS.ProcessEnv = process.env): Promise<{ packages: ManagedCommandPackageView[]; errors: ManagedCommandDiagnostic[] }> {
+async function capturePackageEvidence(owner: PackageOwner, options: { reviewedRoot?: string | null; force?: boolean } = {}): Promise<ManagedCommandPackageEvidence> {
+  const { packageRoot } = owner;
+  async function observedResourceRoot(): Promise<string | null> {
+    try { return await currentResourceRoot(owner); }
+    catch (error) { if (error instanceof ManagedCommandError) return null; throw error; }
+  }
+  const resourceRoot = await observedResourceRoot();
+  if (options.reviewedRoot !== undefined && resourceRoot !== options.reviewedRoot) fail('operationReviewStale', 'The reviewed command package revision changed. Run the operation again.');
+  const hash = crypto.createHash('sha256');
+  const add = (fields: unknown[]) => hash.update(JSON.stringify(fields)).update('\n');
+  const modeMask = process.platform === 'win32' ? 0o200 : 0o777;
+  async function visit(file: string, descend: boolean): Promise<void> {
+    const relative = path.relative(packageRoot, file).split(path.sep).join('/');
+    const stat = await lstatIfExists(file);
+    if (!stat) add(['missing', relative]);
+    else if (stat.isSymbolicLink()) add(['symlink', relative, await fs.readlink(file)]);
+    else if (stat.isDirectory()) {
+      add(['directory', relative, stat.mode & modeMask, ...(descend ? [] : [stat.dev, stat.ino])]);
+      if (descend) for (const name of (await fs.readdir(file)).sort()) await visit(path.join(file, name), true);
+    } else if (stat.isFile()) {
+      try { add(['file', relative, stat.mode & modeMask, await calculateFileDigest(file)]); }
+      catch (error) {
+        if (!options.force || relative !== 'current.json') throw error;
+        // The owner still authorizes deletion if the weak pointer itself is unreadable.
+        add(['unreadable', relative, stat.mode, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]);
+      }
+    } else add(['special', relative, stat.mode, stat.ino]);
+  }
+  add([options.force ? 'owner-and-pointer' : 'revision']);
+  await visit(packageRoot, false);
+  await visit(path.join(packageRoot, 'owner.json'), false);
+  await visit(path.join(packageRoot, 'current.json'), false);
+  if (resourceRoot && !options.force) {
+    const revisions = path.dirname(resourceRoot);
+    const stat = await lstatIfExists(revisions);
+    await visit(stat?.isDirectory() ? resourceRoot : revisions, true);
+  }
+  if (await observedResourceRoot() !== resourceRoot) fail('operationReviewStale', 'The reviewed command package revision changed. Run the operation again.');
+  return { packageDigest: `sha256:${hash.digest('hex')}` };
+}
+
+async function assertExpectedPackage(
+  root: string, id: string, producer: ProducerIdentity, expected?: ManagedCommandPackageEvidence | null, force = false,
+): Promise<PackageOwner | undefined> {
+  let owner: PackageOwner | undefined;
+  try { owner = await readPackageOwner(root, id); }
+  catch (error) { if (!(error instanceof ManagedCommandError) || error.code !== 'commandNotFound') throw error; }
+  if (owner) assertExpectedProducer(producer, owner.producer);
+  if (expected === undefined) return owner;
+  const current = owner ? await capturePackageEvidence(owner, { force }) : null;
+  if (!equal(current, expected)) fail('operationReviewStale', 'The reviewed command package changed before publication or removal.');
+  return owner;
+}
+
+/** Called with the AW_HOME mutation lock held. */
+export async function removeManagedCommandPackage(
+  id: string, env: NodeJS.ProcessEnv = process.env, options: { force?: boolean; expectedPackage?: ManagedCommandPackageEvidence } = {},
+): Promise<{ producer: ProducerIdentity }> {
+  const root = await managedCommandRoot(env);
+  const owner = await readPackageOwner(root, id);
+  const verified = await assertExpectedPackage(root, id, owner.producer, options.expectedPackage, options.force);
+  if (!verified) fail('commandNotFound', 'The command package is no longer installed.');
+  if (!options.force && (await inspectOwnedPackage(verified, id)).availability === 'unavailable') {
+    fail('commandPackageUnavailable', 'The command package is damaged. Review and repeat package remove with --force.');
+  }
+  // Keep independent ownership evidence until all potentially busy revisions are gone.
+  try {
+    for (const name of await fs.readdir(verified.packageRoot)) {
+      if (name !== 'owner.json') await fs.rm(path.join(verified.packageRoot, name), { recursive: true, force: true });
+    }
+    await fs.unlink(path.join(verified.packageRoot, 'owner.json'));
+    await fs.rmdir(verified.packageRoot);
+  } catch {
+    fail('commandPackageRemovalFailed', `Could not finish removing the command package. Release its files and retry aw command package remove ${id} --force --yes.`);
+  }
+  return { producer: verified.producer };
+}
+
+/** Called with the AW_HOME mutation lock held. */
+export async function syncManagedCommandPackage(options: {
+  producer: ProducerIdentity;
+  record: InstalledCommandProducer;
+  sourceDirectory: string;
+  env?: NodeJS.ProcessEnv;
+  expectedPackage?: ManagedCommandPackageEvidence | null;
+  expectedResourceDigest?: string;
+}): Promise<{ id: string; resourceRoot: string; errors: ManagedCommandDiagnostic[]; recoveryActions: string[] }> {
+  const env = options.env ?? process.env;
+  const root = await managedCommandRoot(env);
+  const producer = normalizeProducerIdentity(options.producer);
+  const record = normalizeInstalledCommandProducer(options.record);
+  assertExpectedProducer(producer, record.producer);
+  const id = getCommandPackageId(producer);
+  const packageRoot = path.join(root, 'packages', id);
+  await ensureRegularDirectoryPath(path.dirname(packageRoot), 'Managed command packages');
+  const revision = crypto.randomUUID();
+  const staging = await fs.mkdtemp(path.join(path.dirname(packageRoot), `.${id}.`));
+  const stagedRevision = path.join(staging, 'revisions', revision);
+  const resourceRoot = path.join(packageRoot, 'revisions', revision);
+  let unpublishedRevision: string | undefined;
+  try {
+    await copyManagedCommandDirectory(options.sourceDirectory, stagedRevision, env, { trustedPluginSource: true });
+    if (options.expectedResourceDigest !== undefined
+      && await calculateManagedCommandResourceDigest(stagedRevision) !== options.expectedResourceDigest) {
+      fail('operationReviewStale', 'The prepared command package files changed after review. Run the operation again.');
+    }
+    await writeJson(stagedRevision, path.join(stagedRevision, COMMAND_PRODUCER_RECORD), record);
+    await validatePackageResources({ resourceRoot: stagedRevision, record });
+    const pointer = { schemaVersion: 2, revision };
+    const owner = await assertExpectedPackage(root, id, producer, options.expectedPackage);
+    if (owner) {
+      await ensureRegularDirectoryPath(path.dirname(resourceRoot), 'Managed command revisions');
+      await fs.rename(stagedRevision, resourceRoot);
+      unpublishedRevision = resourceRoot;
+      // Readers pin this pointer once. Earlier revisions can be removed only after the switch.
+      await writeJson(packageRoot, path.join(packageRoot, 'current.json'), pointer);
+      unpublishedRevision = undefined;
+    } else {
+      await writeJson(staging, path.join(staging, 'owner.json'), { schemaVersion: 2, owner: 'agent-workflows', kind: 'plugin-command-package', producer });
+      await writeJson(staging, path.join(staging, 'current.json'), pointer);
+      if (await lstatIfExists(packageRoot)) fail('operationReviewStale', 'The command package directory appeared before publication. Run the operation again.');
+      await fs.rename(staging, packageRoot);
+    }
+  } finally {
+    for (const directory of [staging, ...(unpublishedRevision ? [unpublishedRevision] : [])]) {
+      try {
+        await safePath(root, directory);
+        await fs.rm(directory, { recursive: true, force: true });
+      } catch { /* Best effort for a private, unpublished directory. */ }
+    }
+  }
+
+  const errors: ManagedCommandDiagnostic[] = [];
+  try {
+    for (const name of await entriesAt(path.dirname(resourceRoot))) {
+      if (name === revision || !REVISION_ID.test(name)) continue;
+      const oldRoot = path.join(path.dirname(resourceRoot), name);
+      try {
+        await safePath(root, oldRoot);
+        if ((await lstatIfExists(oldRoot))?.isDirectory()) await fs.rm(oldRoot, { recursive: true, force: true });
+      } catch (error) {
+        errors.push(managedCommandDiagnostic(error, name));
+      }
+    }
+  } catch (error) {
+    errors.push(managedCommandDiagnostic(error));
+  }
+  return { id, resourceRoot, errors, recoveryActions: errors.length ? [`aw command package sync ${producer.sourceId}/${producer.pluginName}`] : [] };
+}
+
+async function resolveUserCommand(id: string, env: NodeJS.ProcessEnv): Promise<{ view: UserCommandView; resourceRoot: string; launch: CommandLaunch }> {
+  const root = await managedCommandRoot(env);
+  const definition = await readUserCommandDefinition(id, env);
+  const resourceRoot = path.join(root, 'users', id, 'packages', definition.packageRevision);
+  await safePath(root, resourceRoot);
+  await validateManagedCommandResource(resourceRoot, definition.launch);
+  return { resourceRoot, launch: definition.launch, view: { id, name: definition.name, owner: { kind: 'user' }, availability: 'ready', resourceRoot, launch: definition.launch, errors: [], recoveryActions: [] } };
+}
+
+async function inspectUserCommand(id: string, env: NodeJS.ProcessEnv): Promise<UserCommandView> {
+  try { return (await resolveUserCommand(id, env)).view; }
+  catch (error) {
+    if (error instanceof ManagedCommandError && (error.code === 'commandNotFound' || error.argumentError)) throw error;
+    const root = await managedCommandRoot(env);
+    const userRoot = await assertUserOwner(root, id);
+    let name = id;
+    let resourceRoot: string | null = null;
+    let launch: CommandLaunch | null = null;
+    try {
+      const definition = await readUserCommandDefinition(id, env);
+      name = definition.name;
+      launch = definition.launch;
+      resourceRoot = path.join(userRoot, 'packages', definition.packageRevision);
+    } catch { /* Owner evidence still permits a diagnostic view and safe removal. */ }
+    return { id, name, owner: { kind: 'user' }, availability: 'unavailable', resourceRoot, launch, errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command remove ${id} --force --yes`] };
+  }
+}
+
+async function lookupNamedPackage(selector: string, env: NodeJS.ProcessEnv): Promise<{ packageId: string; owner: PackageOwner }> {
+  const producer = await resolvePluginCommandProducer(selector, env);
+  const packageId = getCommandPackageId(producer);
+  const owner = await readManagedCommandPackageOwner(packageId, env);
+  assertExpectedProducer(producer, owner.producer);
+  return { packageId, owner };
+}
+
+export async function resolveManagedCommand(
+  selector: string, env: NodeJS.ProcessEnv = process.env, options: { args: string[]; noFallback?: boolean } = { args: [] },
+): Promise<{ view: ManagedCommandView; launch: CommandLaunch; resourceRoot: string; producer?: InstalledCommandProducer; args: string[] }> {
+  if (isUserCommandId(selector)) {
+    if (options.noFallback) throw new ManagedCommandError('invalidArguments', '--no-fallback requires a plugin command and a subcommand argument.', true);
+    return { ...await resolveUserCommand(selector, env), args: options.args };
+  }
+  if (options.noFallback && options.args.length === 0) {
+    throw new ManagedCommandError('invalidArguments', '--no-fallback requires a subcommand argument.', true);
+  }
+  const { packageId, owner } = await lookupNamedPackage(selector, env);
+  const pinned = await readPinnedPackage(owner, await currentResourceRoot(owner));
+  const { resourceRoot, record } = pinned;
+  const subcommand = record.routes.subcommands.find((entry) => entry.name === options.args[0]);
+  const fallback = options.noFallback ? undefined : record.routes.fallback;
+  let launch: CommandLaunch;
+  if (subcommand) {
+    const { name: _name, ...selected } = subcommand;
+    launch = selected;
+  } else if (fallback) {
+    launch = fallback;
+  } else {
+    const names = record.routes.subcommands.map((entry) => entry.name);
+    const hint = names.length ? `Available subcommands: ${names.join(', ')}.` : 'There are no enabled subcommands.';
+    throw new ManagedCommandError('commandRouteNotFound', `No command route matched ${selector}. ${hint}`, true);
+  }
+  await validateManagedCommandResource(resourceRoot, launch);
+  await validateInstalledNativeTools(pinned);
+  return { view: packageView(owner, packageId, record, resourceRoot), launch, resourceRoot, producer: record, args: subcommand ? options.args.slice(1) : options.args };
+}
+
+export async function inspectManagedCommand(selector: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandView> {
+  if (isUserCommandId(selector)) return inspectUserCommand(selector, env);
+  const { packageId, owner } = await lookupNamedPackage(selector, env);
+  return inspectOwnedPackage(owner, packageId);
+}
+
+export async function listManagedCommandPackages(env: NodeJS.ProcessEnv = process.env): Promise<{
+  packages: ManagedCommandPackageView[]; orphanedPackages: ManagedCommandPackageView[]; errors: ManagedCommandDiagnostic[];
+}> {
   const root = await managedCommandRoot(env);
   const packages: ManagedCommandPackageView[] = [];
+  const orphanedPackages: ManagedCommandPackageView[] = [];
   const errors: ManagedCommandDiagnostic[] = [];
-  await safePath(root, path.join(root, 'packages'));
-  for (const id of (await entriesAt(path.join(root, 'packages'))).sort()) {
-    if (!PACKAGE_ID.test(id)) {
+  const directory = path.join(root, 'packages');
+  await safePath(root, directory);
+  const ids = (await entriesAt(directory)).sort();
+  let sources: Map<string, string> | undefined;
+  let sourceError: ManagedCommandDiagnostic | undefined;
+  if (ids.some(isManagedCommandPackageId)) {
+    try { sources = await readConfiguredSources(env); }
+    catch (error) { sourceError = managedCommandDiagnostic(error); errors.push(sourceError); }
+  }
+  for (const id of ids) {
+    if (!isManagedCommandPackageId(id)) {
       if (!id.startsWith('.')) errors.push({ code: 'commandOwnerMismatch', message: 'An unrecognized command package was retained.', subject: `commands/packages/${id}` });
       continue;
     }
     try {
-      packages.push(await readManagedCommandPackageView(id, env));
+      const owner = await readPackageOwner(root, id);
+      const view = await inspectOwnedPackage(owner, id);
+      if (sources?.get(owner.producer.sourceId) === owner.producer.sourceIdentity) {
+        packages.push(view);
+      } else {
+        const wasDamaged = view.availability === 'unavailable';
+        view.availability = 'unavailable';
+        view.errors.push(sourceError ?? { code: 'commandNotFound', message: 'This command package belongs to a source that was removed or changed.' });
+        view.recoveryActions = [`aw command package remove ${id}${wasDamaged ? ' --force' : ''} --yes`];
+        orphanedPackages.push(view);
+      }
     } catch (error) { errors.push(managedCommandDiagnostic(error, `commands/packages/${id}`)); }
   }
-  return { packages, errors };
+  return { packages, orphanedPackages, errors };
 }
-export async function listManagedCommands(env: NodeJS.ProcessEnv = process.env): Promise<{ commands: ManagedCommandView[]; packages: ManagedCommandPackageView[]; errors: ManagedCommandDiagnostic[] }> {
+
+export async function listManagedCommands(env: NodeJS.ProcessEnv = process.env): Promise<{
+  commands: UserCommandView[]; packages: ManagedCommandPackageView[]; orphanedPackages: ManagedCommandPackageView[]; errors: ManagedCommandDiagnostic[];
+}> {
   const root = await managedCommandRoot(env);
-  const commands: ManagedCommandView[] = [];
+  const commands: UserCommandView[] = [];
   const errors: ManagedCommandDiagnostic[] = [];
-  for (const kind of ['users', 'bindings']) {
-    await safePath(root, path.join(root, kind));
-    for (const file of (await entriesAt(path.join(root, kind))).sort()) {
-      const id = kind === 'bindings' ? file.replace(/\.json$/u, '') : file;
-      if (!(kind === 'users' ? USER_ID.test(id) : /^cmdp_[0-9a-f]{16}\.json$/u.test(file))) {
-        errors.push({ code: 'commandBindingInvalid', message: 'An unrecognized command record was retained.', subject: `commands/${kind}/${file}` });
-        continue;
-      }
-      try { commands.push(await inspectManagedCommand(id, env)); }
-      catch (error) { errors.push(managedCommandDiagnostic(error, `commands/${kind}/${file}`)); }
+  const usersRoot = path.join(root, 'users');
+  await safePath(root, usersRoot);
+  for (const id of (await entriesAt(usersRoot)).sort()) {
+    if (!isUserCommandId(id)) {
+      errors.push({ code: 'commandBindingInvalid', message: 'An unrecognized command record was retained.', subject: `commands/users/${id}` });
+      continue;
     }
+    try { commands.push(await inspectUserCommand(id, env)); }
+    catch (error) { errors.push(managedCommandDiagnostic(error, `commands/users/${id}`)); }
   }
-  const packageResult = await listManagedCommandPackages(env);
-  return { commands, packages: packageResult.packages, errors: [...errors, ...packageResult.errors] };
+  const packages = await listManagedCommandPackages(env);
+  return { ...packages, commands, errors: [...errors, ...packages.errors] };
 }

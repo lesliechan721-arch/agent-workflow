@@ -1,6 +1,6 @@
 import { readFiles } from './oracle-reference/files.js';
-import { publicError, validateSelectors } from '../../../skills/spawn-subagent/scripts/file-selection/contracts.mjs';
-import { assertOracleFileSelectionSupported } from '../../../skills/spawn-subagent/scripts/adapters/oracle-arguments.mjs';
+import { publicError, validateSelectors } from '../../../commands/scripts/file-selection/contracts.mjs';
+import { assertOracleFileSelectionSupported } from '../../../commands/scripts/adapters/oracle-arguments.mjs';
 import { spawn } from 'node:child_process';
 
 // Run the original published Oracle selection module without any CLI session,

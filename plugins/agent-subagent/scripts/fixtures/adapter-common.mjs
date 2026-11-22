@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { mock } from 'node:test';
-import { adapterMain, negotiateExecutable } from '../../skills/spawn-subagent/scripts/adapters/common.mjs';
+import { adapterMain, negotiateExecutable } from '../../commands/scripts/adapters/common.mjs';
 
 const realTimeout = setTimeout;
 const realClearTimeout = clearTimeout;
