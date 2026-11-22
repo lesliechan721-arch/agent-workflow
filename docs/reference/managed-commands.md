@@ -123,9 +123,11 @@ AW 以 `--` 后第一个完整 argv 元素区分大小写地匹配子命令。�
 
 Skill 与命令权限使用同一冻结路由表。非空 `argsPrefix` 的首词须命中子命令或存在通用入口才可达。空前缀只要求有至少一个路由。部署操作会跳过不可达的 `allow` 和 Claude 沙箱排除，并在本次可触达的部署中按归属撤回对应的旧规则。仍可投影的 `ask` 和 `deny` 会保留，即使当前没有处理程序，以便其他部署恢复路由时限制继续生效。跳过动作与原因见 [CLI 诊断合同](cli.md#4-业务-payload-的边界)。
 
-权限匹配调用文字。专用路由改为通用处理、新增子命令接走通用调用、入口或固定参数变化，都可能让已放行的调用执行不同代码。安装、同步、重建、命令包同步和配置应用的 Review 展示旧、新入口及可见权限影响，指出未检查的其他项目。已审阅的候选或现场证据发生变化时以 `operationReviewStale` 停止相应发布。来源 ID 改绑后，旧包不可再按名称调用。安装新来源的同名插件时，残留的同文字宿主规则仍可能匹配，Review 会提示这一点。通过相应部署的同步或卸载更新其归属规则。
+权限匹配调用文字。专用路由改为通用处理、新增子命令接走通用调用、入口或固定参数变化，都可能让已放行的调用执行不同代码。安装、同步、重建、命令包同步和配置应用的 Review 展示旧、新入口及可见权限影响，指出未检查的其他项目。OpenCode 的某个配置文件损坏时，Review 会标出该路径，并继续展示其他可读取层中的匹配规则。已审阅的候选或现场证据发生变化时以 `operationReviewStale` 停止相应发布。来源 ID 改绑后，旧包不可再按名称调用。安装新来源的同名插件时，残留的同文字宿主规则仍可能匹配，Review 会提示这一点。通过相应部署的同步或卸载更新其归属规则。
 
 Codex Review 检查 User 和当前项目的规则文件，识别单行或多行的独立顶层字面 `prefix_rule`，包括参数备选项。Review 会标明无法读取或含无法判定表达式的文件。同一文件中的可判定规则仍会展示。Codex 0.171.0 的目录规则加载器跳过符号链接，Review 将链接列为未检查项。确认后的现场复核使用规则文件原始内容和符号链接的指向。
+
+Grok Review 检查 User 的 `config.toml`、`managed_config.toml` 和已授信当前项目的 `.grok/config.toml`。Review 列出可能匹配的 Bash 规则和无法读取的配置文件。
 
 ### 宿主审批验证范围
 
@@ -134,12 +136,12 @@ AW 优先投影能覆盖声明命令的宿主规则。已知宿主匹配还会�
 | 宿主 | AW 规则投影 | 已验证的审批范围 |
 | --- | --- | --- |
 | Codex、Claude Code | Codex 命令前缀，Claude Bash 规则及独立沙箱排除。 | 按客户端的实际配置和会话结果核对。 |
-| OpenCode V2 | `shell` 规则按标准书写的命令前缀投影到 User 或 Project 的 `permissions` 数组。Windows 会折叠大小写并统一斜杠，Review 提示这些额外匹配。 | OpenCode v2.2.6，macOS 26.3.1 arm64，`opencode mini --standalone` 的 Build agent 交互新会话。15 例覆盖 Project 三动作、User `deny`、项目隔离和联动收紧与恢复。AW 写入的 User `allow` 和 `ask`、桌面端、热重载、Linux、Windows 和其他模式待验证。[会话复验](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64-replay.json) |
-| Antigravity | CLI Global 使用 `command(词前缀)`，在已知宿主需要整行匹配时追加有边界的原文规则。可识别包装的规则也会匹配内部命令的直接调用。其他范围按动作报告跳过。 | Antigravity CLI 1.5.14，macOS 26.3.1 arm64。已验证同值手工 `deny` 完全或部分阻挡声明、同步恢复、真实客户端重写文件并保留非空规则，以及公开撤回。交互会话停在登录页，三动作审批和正则或包装的实际匹配待验证。[配置冲突、读回与撤回](../../scripts/qualification/evidence/native-antigravity-command-permissions-1.5.14-darwin-arm64.json) |
-| Grok Build | 普通和托管命令按 `allow`、`ask`、`deny` 写入 User 或已授权 Project `config.toml` 的 `[permission].rules`。Review 显示实际 Bash pattern 和额外匹配范围。拼接后的文本会混合引号内和参数之间的空格。已知命令包装、词尾延长和通配符也可能匹配其他命令。 | Grok Build 1.0.77（构建 `50ca579fa996`），macOS 26.3.1 arm64，交互默认权限模式。29 例覆盖普通与托管命令的三动作、User 和已授信 Project、项目隔离，以及 `command sample-report` 的基线询问和两种范围放行。其他包装和内联脚本仍只有源码与定向回归证据。另验证 User 规则被移除后 `status` 报告待同步，`sync` 恢复该规则。[交互复验和状态修复](../../scripts/qualification/evidence/native-grok-command-permissions-1.0.77-darwin-arm64.json) · [规则手册](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md#rule-matching-reference) |
+| OpenCode V2 | `shell` 规则按标准书写的命令前缀投影到 User 或 Project 的 `permissions` 数组。Windows 会折叠大小写并统一斜杠，Review 提示这些额外匹配。 | OpenCode v2.2.6，macOS 26.3.1 arm64，`opencode mini --standalone` 的 Build agent 交互新会话。22 个会话覆盖 User 和 Project 三动作、项目隔离、确认与拒绝询问，以及跨项目收紧与恢复。桌面端、热重载、Linux、Windows 和其他模式待验证。[会话和规则读回](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64-review.json) |
+| Antigravity | CLI Global 使用 `command(词前缀)`，在已知宿主需要整行匹配时追加有边界的原文规则。可识别包装的规则也会匹配内部命令的直接调用。其他范围按动作报告跳过。 | Antigravity CLI 1.5.14，macOS 26.3.1 arm64。已验证旧安装升级、保留手工规则、冲突处理、strict 模式下的投影、原生配置读回及撤回。交互会话停在登录页，三动作审批和正则或包装的实际匹配待验证。[升级、配置读回与撤回](../../scripts/qualification/evidence/native-antigravity-command-permissions-1.5.14-darwin-arm64-review.json) |
+| Grok Build | 普通和托管命令按 `allow`、`ask`、`deny` 写入 User 或已授权 Project `config.toml` 的 `[permission].rules`。Review 显示实际 Bash pattern 和额外匹配范围。拼接后的文本会混合引号内和参数之间的空格。已知命令包装、词尾延长和通配符也可能匹配其他命令。 | Grok Build 1.0.77（构建 `50ca579fa996`），macOS 26.3.1 arm64，交互默认权限模式。58 个会话覆盖普通与托管命令、User 与已授信 Project 三动作、Claude 配置兼容与显式导入，以及按项目记住的批准。已记住的批准可满足后续 `ask`，显式 `deny` 仍会阻止执行。其他包装及内联脚本只有源码与定向回归证据。[58 个会话](../../scripts/qualification/evidence/native-grok-command-permissions-1.0.77-darwin-arm64-review.json) · [交互复验和状态修复](../../scripts/qualification/evidence/native-grok-command-permissions-1.0.77-darwin-arm64.json) · [规则手册](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md#rule-matching-reference) |
 | Cursor、Copilot CLI、Pi、`generic` | 当前没有通用命令权限投影。 | `generic` 无固定审批宿主。 |
 
-OpenCode Project `allow` 的执行结果与空白基线相同。较早的客户端 API 读回同字节规则，确认它排在默认允许之后，按该版本最后匹配的语义可推断规则命中。两个报告保留各自的观察和构建信息。[原配置读回](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64.json) · [OpenCode v2.2.6 匹配实现](https://github.com/anomalyco/opencode/blob/v2.2.6/packages/core/src/permission.ts#L84-L93)
+OpenCode Project `allow` 的执行结果与空白基线相同。客户端 API 读回 AW 写入的规则，确认其排在默认允许之后。该版本按最后匹配的规则决定动作，规则命中由这两项证据推断。[原配置读回](../../scripts/qualification/evidence/native-opencode-command-permissions-2.2.6-darwin-arm64.json) · [OpenCode v2.2.6 匹配实现](https://github.com/anomalyco/opencode/blob/v2.2.6/packages/core/src/permission.ts#L84-L93)
 
 OpenCode 匹配命令文本。标准书写使用未加引号的字面词，以单个 ASCII 空格分隔，例如 `aw command run official/demo -- export`。生成规则在前缀后加 ` *`，覆盖该写法的零个或多个附加参数。普通命令前缀中的 `?` 会匹配一个字符，包括空格。方括号、花括号和 `~` 可由 Shell 在规则匹配后展开。Review 会提示这些差异。引号、转义或不同空白写法的审批依 OpenCode 自身规则处理。OpenCode 自己保存的允许记录可满足后续 `ask`，生效的 `deny` 仍由宿主阻止。[OpenCode 匹配与审批](https://opencode.ai/docs/permissions/#approvals)
 

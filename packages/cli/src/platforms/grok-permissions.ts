@@ -29,8 +29,10 @@ export function isGrokPermission(value: unknown): value is HostPermissionRule {
 }
 
 export function grokPrefixesOverlap(a: readonly string[], b: readonly string[]): boolean {
-  const normalizedForms = (words: readonly string[]) => [words.join(' '), normalizeAllowWords(words)?.words.join(' ') ?? ''].filter(Boolean);
-  return normalizedForms(a).some((first) => normalizedForms(b).some((second) => first.startsWith(second) || second.startsWith(first)));
+  const spellings = (words: readonly string[]) => [words.join(' '), normalizeAllowWords(words)?.words.join(' ') ?? '']
+    .filter(Boolean).map(restrictionPrefix);
+  const second = spellings(b);
+  return spellings(a).some((left) => second.some((right) => grokPatternsMayOverlap(left, right)));
 }
 
 function matchesInlineShellPrefix(resource: string): boolean {
@@ -91,6 +93,40 @@ function matchesRestriction(resource: string, prefix: string): boolean {
   return minimatch(resource.replaceAll('/', '\u0001'), prefix.replaceAll('/', '\u0001'), {
     nocase: false, dot: true, noglobstar: true, noext: true, nobrace: true, nonegate: true, nocomment: true,
   });
+}
+
+function fixedGlobPrefix(pattern: string): Array<string | RegExp> {
+  const atoms = /\[(?:[A-Za-z0-9](?:-[A-Za-z0-9])?)+\]|[^*[\]\\]/guy;
+  const prefix: Array<string | RegExp> = [];
+  for (let atom = atoms.exec(pattern)?.[0]; atom; atom = atoms.exec(pattern)?.[0]) {
+    if (atom === '?') prefix.push(/[\s\S]/u);
+    else if (atom.startsWith('[')) {
+      try { prefix.push(new RegExp(atom, 'u')); } catch { break; }
+    } else prefix.push(atom);
+  }
+  return prefix;
+}
+
+const asciiClassCharacters = Array.from({ length: 75 }, (_, index) => String.fromCharCode(48 + index));
+
+function grokPatternsMayOverlap(a: string, b: string): boolean {
+  // Grok compares the written prefix as well as the glob. A difference in
+  // their fixed characters can rule out overlap before the first variable span.
+  if (a.startsWith(b) || b.startsWith(a)) return true;
+  if (!/[*?\[\\]/u.test(a + b)) return false;
+  const leftPrefixes = [[...a], fixedGlobPrefix(a)];
+  const rightPrefixes = [[...b], fixedGlobPrefix(b)];
+  return leftPrefixes.some((left) => rightPrefixes.some((right) => {
+    for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+      const first = left[index]!;
+      const second = right[index]!;
+      if (typeof first === 'string') {
+        if (typeof second === 'string' ? first !== second : !second.test(first)) return false;
+      } else if (typeof second === 'string' ? !first.test(second)
+        : !asciiClassCharacters.some((character) => first.test(character) && second.test(character))) return false;
+    }
+    return true;
+  }));
 }
 
 function envCommandIndex(tokens: readonly string[]): number | null {
@@ -179,11 +215,13 @@ function normalizeAllowWords(tokens: readonly string[]): { words: readonly strin
 export function mergeGrokPermissions(claims: PermissionClaim[], manual: unknown[], otherRules: OpenCodeLayerRule[],
   _platform?: NodeJS.Platform) {
   const skipped: Array<PermissionClaim & { reasonCode: string }> = [];
+  const skippedRestrictions: PermissionClaim[] = [];
   const supported = claims.flatMap((claim) => {
     const normalized = normalizeAllowWords(claim.tokens);
     const words = claim.effect === 'allow' ? normalized?.words : claim.tokens;
     if (!claim.tokens.length || !claim.tokens.every((word) => shellWord.test(word))) {
       skipped.push({ ...claim, reasonCode: 'grok-shell-pattern-unrepresentable' });
+      if (claim.effect !== 'allow') skippedRestrictions.push(claim);
       return [];
     }
     if (!words?.length) {
@@ -194,12 +232,17 @@ export function mergeGrokPermissions(claims: PermissionClaim[], manual: unknown[
     return [{ claim, normalized, rule }];
   });
   const rules = supported.map(({ rule }) => rule);
-  const manualRules = [...manual, ...otherRules.map(({ rule }) => rule)].flatMap(readGrokShellRule);
+  const currentRules = manual.flatMap(readGrokShellRule);
+  const configuredRules = [...currentRules, ...otherRules.flatMap(({ rule }) => readGrokShellRule(rule))];
   const effective: HostPermissionRule[] = [];
   const adjusted: HostPermissionAdjustment[] = [];
   for (const { claim, normalized, rule } of supported) {
+    if (rule.effect === 'allow' && skippedRestrictions.some((restriction) => grokPrefixesOverlap(claim.tokens, restriction.tokens))) {
+      skipped.push({ ...claim, reasonCode: 'permission-rule-conflict' });
+      continue;
+    }
     const spellings = [rule.resource, claim.tokens.join(' '), normalized?.words.join(' ') ?? ''].filter(Boolean);
-    const stronger = [...rules, ...manualRules].filter((candidate) => actions.indexOf(candidate.effect) > actions.indexOf(rule.effect))
+    const stronger = [...rules, ...configuredRules].filter((candidate) => actions.indexOf(candidate.effect) > actions.indexOf(rule.effect))
       .map((candidate) => restrictionPrefix(candidate.resource));
     const blocked = stronger.some((prefix) => spellings.some((command) => matchesRestriction(command, prefix)));
     if (blocked) {
@@ -213,9 +256,25 @@ export function mergeGrokPermissions(claims: PermissionClaim[], manual: unknown[
     if (!effective.some((entry) => entry.resource === rule.resource && entry.effect === rule.effect)) effective.push(rule);
     adjusted.push({ ...claim, reasonCode: 'grok-shell-text-matching', resource: rule.resource,
       message: describeGrokPermissionMatch(rule, claim.tokens, missingCommand) });
+    if (rule.effect === 'allow') {
+      const definite = new Set<string>();
+      const possible = new Set<string>();
+      for (const { effect, resource } of configuredRules) {
+        if (effect === 'allow') continue;
+        const prefix = restrictionPrefix(resource);
+        const description = `${effect} ${JSON.stringify(resource)}`;
+        if (spellings.some((command) => matchesRestriction(prefix, command))) definite.add(description);
+        else if (spellings.some((command) => grokPatternsMayOverlap(prefix, command))) possible.add(description);
+      }
+      const messages = [
+        definite.size ? `Existing Grok Bash restrictions ${[...definite].join(', ')} still take precedence where they match this allow.` : '',
+        possible.size ? `Existing Grok Bash restrictions ${[...possible].join(', ')} may also match commands covered by this allow.` : '',
+      ].filter(Boolean);
+      if (messages.length) adjusted.push({ ...claim, reasonCode: 'grok-manual-restriction-preserved', resource: rule.resource,
+        message: messages.join(' ') });
+    }
   }
   effective.sort((a, b) => actions.indexOf(a.effect) - actions.indexOf(b.effect) || a.resource.localeCompare(b.resource));
-  const currentRules = manual.flatMap(readGrokShellRule);
   const after = effective.filter((rule) => !currentRules.some((entry) => entry.effect === rule.effect && entry.resource === rule.resource));
   return { before: [], after, effective, skipped, adjusted };
 }

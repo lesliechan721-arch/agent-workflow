@@ -150,7 +150,7 @@ CLI 在 preApply 执行期间收到 `SIGINT` 或 `SIGTERM` 时，先清理脚本
 
 移除某个 owner 后若会恢复其他插件的权限，Review 先列出受影响的插件和恢复规则。写入成功后回执标明恢复的插件和位置。OpenCode User 限制的变更也可能恢复 AW 已知 Project 的规则，按[平台权限投影](platforms.md#opencode-v2)中的项目 Review 一并确认。
 
-`permissionRelatedProjectUpdateIncomplete` 或项目写入中断时，先检查回执列出的项目权限配置。在每个未完成的项目根运行 `aw plugin sync --context project --target opencode`，审阅本项目当前规则后重试。如果需要保持 User 输出已移除，在对应项目打开 TUI，仅选择 Project 的 OpenCode 位置同步。`--only outputs` 保留 User 需求，联合 CLI 同步可能重新部署该位置。已经完成的写入保留，失败项目仍保存用于同步的 owner 声明。
+OpenCode User 批次按已提交的 owner 推进经确认的 Project 改动。批次结束时，回执逐项目列出已写入的改动以及仍需复核的配置。若只有部分 User owner 完成，超出原 Review 的 Project 改动保留待复核。`permissionRelatedProjectUpdateIncomplete` 或项目写入中断时，先重试回执列出的失败 User 目标，再到每个未完成的项目根运行 `aw plugin sync --context project --target opencode`，审阅本项目当前规则后重试。如果需要保持 User 输出已移除，在对应项目打开 TUI，仅选择 Project 的 OpenCode 位置同步。`--only outputs` 保留 User 需求，联合 CLI 同步可能重新部署该位置。失败项目仍保存用于同步的 owner 声明。
 
 宿主文件不可解析或检查后被修改时，权限写入以 `permissionConfigurationConflict` 停止。确认或修复文件后重新准备 Review。若回执为 `permissionOwnershipWriteFailed`，宿主规则可能已经交付，先检查当前文件再同步，避免假定写入已回滚。相对 `OPENCODE_CONFIG_DIR` 导致路径无法确认时，设置客户端实际使用的绝对路径后重试。诊断含义见[CLI 回执](../../reference/cli.md#4-业务-payload-的边界)。
 

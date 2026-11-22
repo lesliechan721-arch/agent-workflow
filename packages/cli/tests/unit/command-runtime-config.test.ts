@@ -39,6 +39,25 @@ describe('installed command runtime configuration', () => {
     await expect(read({ from: import.meta.url })).rejects.toHaveProperty('code', 'commandRuntimeConfigInvalid');
   });
 
+  it('accepts an absolute caller path', async () => {
+    const { read, caller } = await fixture();
+    await expect(read({ from: caller })).resolves.toMatchObject({ values: { target: 'applied' } });
+  });
+
+  it.skipIf(process.platform !== 'win32')('accepts forward and mixed separators in Windows caller paths', async () => {
+    const { read, revision } = await fixture();
+    await expect(read({ from: `${revision.replaceAll('\\', '/')}/scripts/main.mjs` }))
+      .resolves.toMatchObject({ values: { target: 'applied' } });
+    await expect(read({ from: `${revision}/scripts\\main.mjs` }))
+      .resolves.toMatchObject({ values: { target: 'applied' } });
+  });
+
+  it('rejects repeated separators in absolute caller paths', async () => {
+    const { read, revision } = await fixture();
+    const from = `${revision.replaceAll(path.sep, '/')}/scripts//main.mjs`;
+    await expect(read({ from })).rejects.toHaveProperty('code', 'commandRuntimeConfigInvalid');
+  });
+
   it.each([
     { pluginVersion: '9.0.0' }, { sourceContentDigest: `sha256:${'e'.repeat(64)}` },
     { allowedKeys: ['target', 'other'] }, { platform: 'claude' },

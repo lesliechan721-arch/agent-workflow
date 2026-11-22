@@ -209,6 +209,56 @@ describe('native recovery dispatch', () => {
     expect(await fs.readFile(project, 'utf8')).toBe('# project settings\n');
     expect(await fs.pathExists(path.join(host, 'trusted_folders.toml'))).toBe(false);
   });
+
+  it('reviews and reports an unreadable Grok managed layer when existing manual rules satisfy the declarations', async () => {
+    const { cwd, env, aw, runner } = await grokTrustFixture({ permissionOnly: true });
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    const target = path.join(host, 'config.toml');
+    const managed = path.join(host, 'managed_config.toml');
+    const manual = '[permission]\nrules = [{ action = "deny", tool = "bash", pattern = "report shared" },'
+      + ' { action = "deny", tool = "bash", pattern = "report base" }]\n';
+    const malformed = '[permission]\nrules = [\n';
+    await fs.outputFile(target, manual);
+    await fs.outputFile(managed, malformed);
+    const install = ['plugin', 'install', 'local/base', '--scope', 'user', '--context', 'user', '--target', 'grok'];
+    const preview = async (argv: string[]) => {
+      const result = await runCliEntry([...argv, '--json'], { cwd, env, nativeCliRunner: runner, interactive: false });
+      return result.parseJsonStdout<CommandResult<LifecycleData>>();
+    };
+    const warning = expect.objectContaining({ code: 'hostPermissionAdditionalImpact',
+      subject: { pluginId: 'local/base', target: 'grok', scope: 'user' },
+      detail: { reasonCode: 'grok-additional-rules-unverified', path: managed } });
+    const effect = expect.objectContaining({ code: 'hostPermissionAdditionalImpact', message: expect.stringContaining('managed_config.toml') });
+    const review = await preview(install);
+    expect(review.status).toBe('blocked');
+    expect(review.data.confirmation?.required).toBe(true);
+    expect(review.data.confirmation?.effects).toContainEqual(effect);
+    const installed = await aw(['aw', ...install]);
+    expect(installed.status).toBe('success');
+    expect(installed.diagnostics).toContainEqual(warning);
+
+    const sync = await preview(['plugin', 'sync', 'local/base', '--context', 'user', '--target', 'grok']);
+    expect(sync.status).toBe('success');
+    expect(sync.diagnostics).toContainEqual(warning);
+
+    const remove = ['plugin', 'remove', 'local/base', '--scope', 'user', '--context', 'user', '--target', 'grok', '--only', 'outputs'];
+    expect((await preview(remove)).data.confirmation?.effects).toContainEqual(effect);
+    expect((await aw(['aw', ...remove])).diagnostics).toContainEqual(warning);
+    expect(await fs.readFile(target, 'utf8')).toBe(manual);
+    expect(await fs.readFile(managed, 'utf8')).toBe(malformed);
+  });
+
+  it('does not require confirmation for a Grok Skill-only install when the unrelated managed layer is unreadable', async () => {
+    const { cwd, env, runner } = await grokTrustFixture();
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    await fs.outputFile(path.join(host, 'managed_config.toml'), '[permission]\nrules = [\n');
+    const result = await runCliEntry(['plugin', 'install', 'local/base', '--scope', 'user', '--context', 'user', '--target', 'grok', '--json'],
+      { cwd, env, nativeCliRunner: runner, interactive: false });
+    const receipt = result.parseJsonStdout<CommandResult<LifecycleData>>();
+    expect(receipt.diagnostics.map(({ code }) => code)).not.toContain('confirmationRequired');
+    expect(receipt.diagnostics.map(({ code }) => code)).not.toContain('hostPermissionAdditionalImpact');
+  });
+
   // Grok reports just the winning package of each name in the project. The
   // first publication can hide its exact User provider while other writes stay observable.
   it.each(['unchanged', 'owned hook', 'foreign hook', 'reordered hooks', 'unmapped User hook', 'foreign registration',

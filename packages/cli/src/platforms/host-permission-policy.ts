@@ -68,6 +68,7 @@ export function hostPermissionImpactDiagnostics(adjusted: readonly OwnedPermissi
 export function hostPermissionDiagnostics(preview: {
   skipped: Array<{ name: string; effect: PermissionClaim['effect']; reasonCode: string; pluginId?: string; path?: string }>;
   adjusted?: OwnedPermissionAdjustment[];
+  layerNotices?: Diagnostic[];
   ownershipDegraded: boolean;
 }, binding: DeploymentBinding, destination: string): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
@@ -91,6 +92,7 @@ export function hostPermissionDiagnostics(preview: {
     detail: { reasonCode: 'permissionOwnershipDegraded', path: destination },
     message: 'Existing permission rules were retained because their ownership could not be verified. Review them and sync to rebuild ownership.' });
   if (isPermissionHost(binding.platform)) diagnostics.push(...hostPermissionImpactDiagnostics(preview.adjusted ?? [], binding.platform, binding.scope.kind, destination));
+  diagnostics.push(...preview.layerNotices ?? []);
   return diagnostics;
 }
 

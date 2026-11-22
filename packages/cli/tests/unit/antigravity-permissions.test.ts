@@ -3,7 +3,11 @@ import fs from 'fs-extra';
 import { expect, it } from 'vitest';
 
 import { antigravityPermissionResources, mergeAntigravityPermissions, parseAntigravityPermissionDocument } from '../../src/platforms/antigravity-permissions.js';
+import type { DeploymentBinding } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { getInvocationPolicyPath, getInvocationPolicyPhysicalKey } from '../../src/platforms/layout.js';
+import { inspectHostPermissionDelivery, permissionComponent, previewHostPermissions, updateHostPermissions } from '../../src/platforms/permission-ownership.js';
+import { commitPermissionOwnership, readPermissionHost, readPermissionSidecar } from '../../src/platforms/permission-sidecar.js';
 import { inspectManagedCommandRouteChanges } from '../../src/utils/managed-command-cli-review.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -39,6 +43,9 @@ it.each(['darwin', 'linux', 'win32'] as const)('renders plain command words with
 function rawMatcher(resource: string) {
   return new RegExp(`^(?:${resource.slice('command(regex:'.length, -1)})$`, 'u');
 }
+
+const legacyPosixRule = String.raw`command(regex:[\x20\t]*(?:probe|'probe'|"probe")[\x20\t]+(?:'report\?'|"report\?")(?:[\x20\t]+(?:[-\p{L}\p{M}\p{N}_./:@%+=,]+|'[^'\r\n]*'|"(?:[^"\\$\x60\r\n]|\\[^\r\n])*"|\\[^\r\n])+)*[\x20\t]*)`;
+const legacyWindowsRule = String.raw`command(regex:[\x20\t]*(?:probe|"probe")[\x20\t]+(?:"report\?")(?:[\x20\t]+(?:[-\p{L}\p{M}\p{N}_./:@+=,]+|"[^"\r\n%!?^&|<>]*")+)*[\x20\t]*)`;
 
 it('configures Windows command paths and punctuation without interpreting a literal word as a regex', () => {
   const { effective, skipped, adjusted } = mergeAntigravityPermissions([
@@ -108,26 +115,44 @@ it('reports an action masked by a stronger Antigravity user rule', () => {
   expect(skipped).toEqual([expect.objectContaining({ name: 'protected', effect: 'allow', reasonCode: 'permission-rule-conflict' })]);
 });
 
-it('keeps a matching form only while no stronger manual rule covers it', () => {
+const legacyRules = [['darwin', legacyPosixRule], ['win32', legacyWindowsRule]] as const;
+
+it.each(legacyRules)('recognizes both spellings of the same manual Antigravity rule on %s', (platform, legacy) => {
   const claim = { name: 'report', effect: 'allow' as const, tokens: ['probe', 'report?'] };
-  const resources = antigravityPermissionResources(claim, 'darwin');
+  const resources = antigravityPermissionResources(claim, platform);
   expect(resources).toHaveLength(2);
-  const [literal, raw] = resources;
-  const reconcile = (permissions: Record<string, Array<string | undefined>>) => {
+  const literal = resources[0]!;
+  const raw = resources[1]!;
+  expect(raw).not.toBe(legacy);
+  for (const resource of [raw, legacy]) {
+    const matches = rawMatcher(resource);
+    expect(matches.test('probe "report?"')).toBe(true);
+    expect(matches.test('"probe" "report?" --format "short name"')).toBe(true);
+    expect(matches.test('probe "report?" --name=ab"cd"')).toBe(true);
+    expect(matches.test('probe "report?" --format | other')).toBe(false);
+    expect(matches.test('probe "report?extra"')).toBe(false);
+  }
+  const reconcile = (permissions: Record<string, string[]>) => {
     const { permissions: manual } = parseAntigravityPermissionDocument(JSON.stringify({ permissions }));
-    return mergeAntigravityPermissions([claim], manual, 'darwin');
+    return mergeAntigravityPermissions([claim], manual, platform);
   };
 
-  const bothBlocked = reconcile({ deny: [literal, raw] });
-  expect(bothBlocked.effective).toEqual([]);
-  expect(bothBlocked.skipped).toEqual([{ ...claim, reasonCode: 'permission-rule-conflict' }]);
+  for (const manualResource of [raw, legacy]) {
+    const bothBlocked = reconcile({ deny: [literal, manualResource] });
+    expect(bothBlocked.effective).toEqual([]);
+    expect(bothBlocked.skipped).toEqual([{ ...claim, reasonCode: 'permission-rule-conflict' }]);
 
-  const blockedRaw = reconcile({ ask: [raw] });
-  expect(blockedRaw.effective).toEqual([{ action: 'shell', effect: 'allow', resource: literal }]);
-  expect(blockedRaw.skipped).toEqual([]);
-  expect(blockedRaw.adjusted).toContainEqual(expect.objectContaining({
-    resource: literal, reasonCode: 'antigravity-user-rule-precedence', message: expect.stringContaining('raw command form'),
-  }));
+    const blockedRaw = reconcile({ ask: [manualResource] });
+    expect(blockedRaw.effective).toEqual([{ action: 'shell', effect: 'allow', resource: literal }]);
+    expect(blockedRaw.skipped).toEqual([]);
+    expect(blockedRaw.adjusted).toContainEqual(expect.objectContaining({
+      resource: literal, reasonCode: 'antigravity-user-rule-precedence', message: expect.stringContaining('raw command form'),
+    }));
+
+    const suppliedRaw = reconcile({ allow: [manualResource] });
+    expect(suppliedRaw.after).toEqual([{ action: 'shell', effect: 'allow', resource: literal }]);
+    expect(suppliedRaw.effective).toContainEqual({ action: 'shell', effect: 'allow', resource: manualResource });
+  }
 
   const blockedLiteral = reconcile({ deny: [literal] });
   expect(blockedLiteral.effective).toEqual([{ action: 'shell', effect: 'allow', resource: raw }]);
@@ -138,6 +163,45 @@ it('keeps a matching form only while no stronger manual rule covers it', () => {
   const restored = reconcile({});
   expect(restored.skipped).toEqual([]);
   expect(restored.effective.map(({ resource }) => resource)).toEqual([...resources].sort());
+});
+
+it.each([false, true])('recognizes prior Global rules through status, sync and removal (manual: %s)', async (manualLegacy) => {
+  const { env, layout } = getCurrentSourceTestIsolation();
+  const cwd = layout.fixtureCwd;
+  const ctx = { cwd, env, platform: 'darwin' as const };
+  const binding: DeploymentBinding = { id: 'binding', platform: 'antigravity', route: 'antigravity-cli', scope: { kind: 'user' },
+    plugin: { pluginId: 'fixture/report', sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), version: '1.0.0' },
+    consumers: [{ id: 'cli', product: 'cli', version: '1.5.14', availability: 'available', reasonCodes: [],
+      entry: { kind: 'cli', executable: process.execPath, configRoot: resolvePlatformConfigRoot('antigravity', { cwd, env }) } }],
+    physicalKey: '', activationKey: '', renderUnitIds: [] };
+  const destination = await getInvocationPolicyPath(ctx, binding);
+  const { locator } = permissionComponent(binding, destination, await getInvocationPolicyPhysicalKey(ctx, binding));
+  const claims = [{ name: 'report', effect: 'ask' as const, tokens: ['probe', 'report?'] }];
+  const literal = 'command(probe report?)';
+  const initial = ['read_file(report)', ...(manualLegacy ? [legacyPosixRule] : [])];
+  await fs.outputJson(destination, { permissions: { ask: initial } });
+  const host = await readPermissionHost(destination);
+  const document = parseAntigravityPermissionDocument(host!);
+  const snapshot = await readPermissionSidecar(env, 'antigravity', destination);
+  const priorRules = [literal, legacyPosixRule].map((resource) => ({ action: 'shell', resource, effect: 'ask' }));
+  await commitPermissionOwnership({ snapshot, host, document, owners: { [locator.ownerKey]: claims },
+    manual: document.permissions, before: [], after: manualLegacy ? priorRules.slice(0, 1) : priorRules,
+    effective: priorRules, verifyChain: async () => {} });
+  const oldBytes = await fs.readFile(destination);
+  expect(await inspectHostPermissionDelivery(ctx, binding, claims)).toBeUndefined();
+  await fs.writeJson(destination, { permissions: { ask: ['read_file(report)', literal] } });
+  expect(await inspectHostPermissionDelivery(ctx, binding, claims)).toMatchObject({ content: 'drifted', diagnostic: { code: 'componentOutputMissing' } });
+  await fs.writeFile(destination, oldBytes);
+
+  const review = await previewHostPermissions(ctx, binding, destination, claims);
+  await updateHostPermissions(ctx, locator, { kind: 'antigravity-permissions', permissions: claims,
+    effective: review.effective, reviewDigest: review.reviewDigest });
+  const newRaw = antigravityPermissionResources(claims[0]!, 'darwin')[1];
+  expect((await fs.readJson(destination)).permissions.ask).toEqual(manualLegacy ? [...initial, literal] : [...initial, literal, newRaw]);
+  if (manualLegacy) expect(await fs.readFile(destination)).toEqual(oldBytes);
+  expect(await inspectHostPermissionDelivery(ctx, binding, claims)).toBeUndefined();
+  await updateHostPermissions(ctx, locator);
+  expect((await fs.readJson(destination)).permissions.ask).toEqual(initial);
 });
 
 it('merges identical words by the strongest declared action regardless of owner order', () => {

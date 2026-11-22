@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
@@ -26,7 +27,7 @@ const managedAllow = shellRule('aw command run local/probe -- show *', 'allow');
 const managedAsk = shellRule('aw command run local/probe -- confirm *', 'ask');
 const managedDeny = shellRule('aw command run local/probe -- blocked *', 'deny');
 
-async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false) {
+async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false, userBatch = false, extraPrefixes: string[] = []) {
   const { env, layout } = getCurrentSourceTestIsolation();
   const catalog = path.join(layout.fixtureCwd, 'catalog');
   const projectA = path.join(layout.fixtureCwd, 'project-a');
@@ -35,6 +36,7 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
   const userConfig = path.join(userRoot, 'opencode.json');
   const projectConfig = path.join(projectA, 'opencode.json');
   const ownershipRoot = path.join(layout.awHomeDir, 'platforms/opencode/permission-ownership');
+  const failSecondPreApply = path.join(layout.fixtureCwd, 'fail-second-preapply');
   const getAdapter = registry.getAgentPluginAdapter;
   const discovery = vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {
     const adapter = getAdapter(platform);
@@ -56,6 +58,12 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
       '---\nname: report\ndescription: Shows a harmless local report.\n---\nUse the report command.\n'),
     fs.outputFile(path.join(catalog, 'plugins/probe/skills/report/README.md'), 'Local report fixture.\n'),
   ]);
+  if (userBatch) {
+    await fs.outputFile(path.join(catalog, 'plugins/second/pre-apply.mjs'), [
+      "import fs from 'node:fs';",
+      `if (fs.existsSync(${JSON.stringify(failSecondPreApply)})) process.exit(17);`,
+    ].join('\n'));
+  }
   if (withConfig) {
     await fs.outputFile(path.join(catalog, 'plugins/second/render.mjs'), [
       "import fs from 'node:fs';",
@@ -68,14 +76,15 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
   const writeCatalog = (restriction: typeof secondRestriction, upgrade = false) => createDependencyCatalogSnapshotFixture(catalog, [{
     name: 'probe', configureManifest(manifest) {
       manifest.platforms = ['opencode'];
+      if (userBatch && upgrade) manifest.version = '1.0.1';
       manifest.skills = './skills';
       manifest.command = normalizePluginCommand({
         mode: 'static', sourceDir: './tools',
         routes: { subcommands: ['show', 'confirm', 'blocked'].map((name) => ({ name, runner: 'node', entry: 'report.mjs' })) },
       }, manifest);
       manifest.extensions = { permissions: [{
-        name: 'approval', allow: ['aw-other report', 'aw-other manual', { argsPrefix: ['show'] }],
-        ask: [{ argsPrefix: ['confirm'] }], deny: [{ argsPrefix: ['blocked'] }],
+        name: 'approval', allow: [...(userBatch ? [] : ['aw-other report']), 'aw-other manual', { argsPrefix: ['show'] }],
+        ask: [{ argsPrefix: ['confirm'] }], deny: [{ argsPrefix: ['blocked'] }, ...(userBatch && !upgrade ? ['aw-other report', ...extraPrefixes] : [])],
       }] };
     },
   }, {
@@ -87,9 +96,12 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
         manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
         manifest.artifacts = { configKeys: ['flag'], scopes: ['user'] };
       }
-      manifest.extensions = { permissions: [restriction
+      if (userBatch) manifest.scripts = { ...manifest.scripts, preApply: { path: './pre-apply.mjs' } };
+      manifest.extensions = { permissions: [userBatch && upgrade
+        ? { name: 'report', deny: ['aw-other report'], allow: ['aw-other manual', 'aw-other second'] }
+        : restriction
         ? { name: 'report', deny: [restriction === 'exact' ? 'aw-other report' : 'aw-other report #note'] }
-        : { name: 'report', allow: ['aw-other report', 'aw-other manual'] }] };
+        : { name: 'report', allow: ['aw-other report', 'aw-other manual', ...(userBatch ? ['aw-other second', ...extraPrefixes] : [])] }] };
     },
   }]);
   await writeCatalog(secondRestriction);
@@ -110,7 +122,7 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
   await success(projectA, ['source', 'add', 'local', '--path', catalog, '--primary', '--no-auto-check', '--yes']);
   await success(projectA, ['source', 'sync', 'local', '--yes']);
   await success(projectA, ['target', 'set', 'opencode', '--context', 'user', '--force']);
-  return { env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog };
+  return { env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
 }
 
 // Public lifecycle must write strict host config in the selected scope and release only the retiring owner's rules.
@@ -335,6 +347,129 @@ it.each([false, true])('reviews the strongest shared prefix for both installatio
   expect(permissions).toContainEqual(shellRule('aw-other report *', 'deny'));
   expect(permissions).not.toContainEqual(sharedAllow);
 });
+
+it.each(['none', 'preApply', 'project write', 'sidecar write'] as const)('reconciles a reviewed OpenCode User batch (%s failure)', async (failure) => {
+  const localized = './工具/report';
+  const privateLocation = '/Users/test-private-directory/report';
+  const extraPrefixes = failure === 'sidecar write' ? [localized, privateLocation] : [];
+  const { projectA, projectB, projectConfig, userConfig, ownershipRoot, cli, success, failSecondPreApply } =
+    await fixture(undefined, false, true, extraPrefixes);
+  const manual = shellRule('aw-other keep', 'ask');
+  await fs.outputJson(projectConfig, { permissions: [manual], snapshots: false });
+  await success(projectA, ['plugin', 'install', otherOwner, '--scope', 'project', '--context', 'project', '--target', 'opencode', '--yes']);
+  const original = await fs.readJson(projectConfig);
+  expect(original.permissions).toContainEqual(sharedAllow);
+  const secondProjectConfig = path.join(projectB, 'opencode.json');
+  if (failure === 'project write') {
+    await success(projectB, ['plugin', 'install', otherOwner, '--scope', 'project', '--context', 'project', '--target', 'opencode', '--yes']);
+    expect((await fs.readJson(secondProjectConfig)).permissions).toContainEqual(sharedAllow);
+  }
+
+  const args = ['plugin', 'install', owner, otherOwner, '--scope', 'user', '--context', 'user', '--target', 'opencode'];
+  const preview = await cli(projectB, args);
+  expect(preview).toMatchObject({ exitCode: 3, result: { data: { confirmation: { effects: expect.arrayContaining([
+    expect.objectContaining({ code: 'changeRelatedProjectPermissions', message: expect.stringContaining(projectConfig) }),
+    ...(failure === 'project write' ? [expect.objectContaining({
+      code: 'changeRelatedProjectPermissions', message: expect.stringContaining(secondProjectConfig),
+    })] : []),
+  ]) } } } });
+  expect(await fs.readJson(projectConfig)).toEqual(original);
+
+  if (failure !== 'none') await fs.outputFile(failSecondPreApply, '');
+  const originalReplace = safeFiles.atomicReplaceSafeFile;
+  const projectSidecar = path.join(ownershipRoot, createHash('sha256').update(projectConfig).digest('hex') + '.json');
+  const replace = vi.spyOn(safeFiles, 'atomicReplaceSafeFile').mockImplementation((options) => {
+    if (failure === 'project write' && options.filePath === projectConfig) throw new Error('Injected Project permission write failure');
+    if (failure === 'sidecar write' && options.filePath === projectSidecar) throw new Error('Injected Project ownership write failure');
+    return originalReplace(options);
+  });
+  onTestFinished(() => replace.mockRestore());
+  const applied = await cli(projectB, [...args, '--yes']);
+  expect({ exitCode: applied.exitCode, status: applied.result.status, diagnostics: applied.result.diagnostics })
+    .toMatchObject(failure === 'none' ? { exitCode: 0, status: 'success' } : { exitCode: 4, status: 'partial' });
+  const userRules = (await fs.readJson(userConfig)).permissions;
+  const secondRule = shellRule('aw-other second *', 'allow');
+  expect(userRules).toContainEqual(shellRule(sharedAllow.resource, 'deny'));
+  if (failure === 'none') expect(userRules).toContainEqual(secondRule);
+  else expect(userRules).not.toContainEqual(secondRule);
+  const linked = applied.result.diagnostics.flatMap(({ code, detail }) =>
+    code === 'permissionRelatedProjectUpdateIncomplete' && detail?.path ? [detail.path] : []);
+  const updatedProjects = applied.result.diagnostics.filter(({ code }) => code === 'permissionRelatedProjectUpdated');
+  expect(updatedProjects).toEqual([expect.objectContaining({ severity: 'info',
+    detail: expect.objectContaining({ path: failure === 'project write' ? secondProjectConfig : projectConfig,
+      permissionChanges: expect.arrayContaining([{ change: 'remove', effect: 'allow', resource: sharedAllow.resource }]) }),
+    message: expect.stringContaining(`Remove allow shell ${sharedAllow.resource}`),
+  })]);
+  const withdrawnResources = new Set([sharedAllow.resource, ...extraPrefixes.map((prefix) => prefix + ' *')]);
+  const updated = { ...original, permissions: original.permissions.filter((rule: { resource: string }) => !withdrawnResources.has(rule.resource)) };
+  if (failure === 'project write' || failure === 'sidecar write') {
+    expect(linked).toEqual([projectConfig]);
+    expect(applied.result.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual',
+      message: expect.stringContaining('Retry the failed User OpenCode targets first.') }));
+    expect(applied.result.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual',
+      message: expect.stringContaining('aw plugin sync --context project --target opencode') }));
+    expect(await fs.readJson(projectConfig)).toEqual(failure === 'project write' ? original : updated);
+    if (failure === 'project write') {
+      expect((await fs.readJson(secondProjectConfig)).permissions).not.toContainEqual(sharedAllow);
+    } else {
+      expect(updatedProjects[0]?.detail?.permissionChanges).toEqual(expect.arrayContaining([
+        { change: 'remove', effect: 'allow', resource: localized + ' *' },
+        { change: 'remove', effect: 'allow', resource: '[local path] *' },
+      ]));
+      expect(updatedProjects[0]?.message).toContain(`Remove allow shell ${localized} *`);
+      expect(updatedProjects[0]?.message).not.toContain(privateLocation);
+    }
+    replace.mockRestore();
+    await fs.remove(failSecondPreApply);
+    await success(projectB, ['plugin', 'sync', otherOwner, '--context', 'user', '--target', 'opencode', '--yes']);
+    await success(projectA, ['plugin', 'sync', otherOwner, '--context', 'project', '--target', 'opencode', '--yes']);
+  } else {
+    expect(linked).toEqual([]);
+    if (failure === 'preApply') {
+      expect(applied.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'preApplyFailed',
+        subject: expect.objectContaining({ pluginId: otherOwner, scope: 'user' }) }));
+      await fs.remove(failSecondPreApply);
+      await success(projectB, ['plugin', 'sync', otherOwner, '--context', 'user', '--target', 'opencode', '--yes']);
+      expect((await fs.readJson(userConfig)).permissions).toContainEqual(secondRule);
+    }
+  }
+  expect(await fs.readJson(projectConfig)).toEqual(updated);
+}, 30_000);
+
+it.each([false, true])('reports unsettled Project permissions when User owners replace a restriction (preApply failure %s)', async (fail) => {
+  const { projectA, projectB, projectConfig, userConfig, cli, success, writeCatalog, failSecondPreApply } = await fixture(undefined, false, true);
+  const user = ['--scope', 'user', '--context', 'user', '--target', 'opencode'];
+  await success(projectA, ['plugin', 'install', otherOwner, '--scope', 'project', '--context', 'project', '--target', 'opencode', '--yes']);
+  await success(projectB, ['plugin', 'install', owner, otherOwner, ...user, '--yes']);
+  const before = await fs.readJson(projectConfig);
+  expect(before.permissions).not.toContainEqual(sharedAllow);
+  await writeCatalog(undefined, true);
+  await success(projectB, ['source', 'sync', 'local', '--yes']);
+
+  const sync = ['plugin', 'sync', owner, otherOwner, '--context', 'user', '--target', 'opencode'];
+  const preview = await cli(projectB, sync);
+  expect(preview.exitCode).toBe(3);
+  const effects = (preview.result.data as { confirmation: { effects: { code: string }[] } }).confirmation.effects;
+  expect(effects.some(({ code }) => code === 'changeRelatedProjectPermissions')).toBe(false);
+  if (fail) await fs.outputFile(failSecondPreApply, '');
+  const applied = await cli(projectB, [...sync, '--yes']);
+  expect({ exitCode: applied.exitCode, status: applied.result.status, diagnostics: applied.result.diagnostics })
+    .toMatchObject(fail ? { exitCode: 4, status: 'partial' } : { exitCode: 0, status: 'success' });
+  expect(await fs.readJson(projectConfig)).toEqual(before);
+  const pendingPaths = applied.result.diagnostics.flatMap(({ code, detail }) =>
+    code === 'permissionRelatedProjectUpdateIncomplete' && detail?.path ? [detail.path] : []);
+  expect(pendingPaths).toEqual(fail ? [projectConfig] : []);
+  const sharedDeny = shellRule(sharedAllow.resource, 'deny');
+  if (fail) {
+    expect((await fs.readJson(userConfig)).permissions).not.toContainEqual(sharedDeny);
+    expect(applied.result.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual',
+      message: expect.stringContaining('aw plugin sync --context project --target opencode') }));
+    await fs.remove(failSecondPreApply);
+    await success(projectB, ['plugin', 'sync', otherOwner, '--context', 'user', '--target', 'opencode', '--yes']);
+  }
+  expect((await fs.readJson(userConfig)).permissions).toContainEqual(sharedDeny);
+  expect(await fs.readJson(projectConfig)).toEqual(before);
+}, 30_000);
 
 it('reports the owner whose installed grant is withdrawn for a new unrepresentable restriction', async () => {
   const { projectA, projectConfig, cli, success } = await fixture('unrepresentable');

@@ -108,7 +108,7 @@ export function effectsForPlan(plan: RecoveryPlan, pendingSourceIds: readonly st
     }
   }
   return [...new Map(effects.map((effect) => [JSON.stringify([effect.code, effect.subject, effect.impact,
-    ...(['changeCommandRoutes', 'changeCommandRuntimeConfig', 'retainInactiveCommandRestriction', 'changeHostPermissions',
+    ...(['changeCommandRoutes', 'changeCommandRuntimeConfig', 'retainInactiveCommandRestriction', 'changeHostPermissions', 'changeRelatedProjectPermissions',
       'invocationPolicyNotApplied', HOST_PERMISSION_ADDITIONAL_IMPACT].includes(effect.code) ? [effect.message] : []),
   ]), effect])).values()];
 }

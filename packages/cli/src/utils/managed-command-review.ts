@@ -84,7 +84,7 @@ export function reviewedInactivePermissions(binding: DeploymentBinding, evidence
   return evidence.inactivePermissions.filter(({ action, argsPrefix }) => {
     const tokens = ['aw', 'command', 'run', binding.plugin.pluginId, '--', ...argsPrefix];
     const prefix = tokens.join(' ');
-    const resources = binding.platform === 'antigravity' ? antigravityPermissionResources({ tokens })
+    const resources = binding.platform === 'antigravity' ? antigravityPermissionResources({ tokens }, process.platform, { includeLegacyRaw: true })
       : [binding.platform === 'grok' ? prefix : prefix + ' *'];
     return active.some((rule) => resources.includes(rule.resource) && rule.effect === action);
   });

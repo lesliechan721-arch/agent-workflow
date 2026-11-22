@@ -222,10 +222,11 @@ Antigravity 的诊断只在已确认实际读者不支持该控制（`invocation
 | `permissionOwnershipDegraded` | 无法核验规则的归属或配置路径，保留相关现有规则。 |
 | `permissionConfigurationConflict` | 宿主配置位置或内容无法安全更新，或 Review 后的规则证据发生变化。 |
 | `permissionOwnershipWriteFailed` | 宿主配置已变化，归属记录未保存成功。 |
+| `permissionRelatedProjectUpdated` | OpenCode Project 配置中已写入的变更。`detail.path` 指向配置，`detail.permissionChanges` 记录实际增删的动作、规则效果和公开匹配范围。归属记录未保存时，同一路径也会报告待恢复。 |
 | `permissionRelatedProjectUpdateIncomplete` | OpenCode 权限更新未完成。`detail.path` 指向一个未完成的项目配置。因中断暂停时，`detail.reasonCode` 为 `operationInterrupted`。 |
 | `hostPermissionRestored` | 卸载后另一 owner 的有效规则得以恢复，回执保留受影响的插件和范围。 |
 
-`hostPermissionAdditionalImpact` 表示原生规则可覆盖声明命令，同时对其他命令的匹配或决定也可能有影响。需要写入时，`data.confirmation.effects` 以该 code 展示动作、原生匹配项、配置位置和具体影响。User 规则的 `impact` 为 `user-wide`。执行结果的同名 warning 用 `subject` 标识插件、平台、作用域及 `permissions.<name>`，用 `detail.reasonCode`、`detail.path`、`detail.permissionResource` 和 `detail.permissionAction` 标明原因、宿主配置、原生匹配项和动作。跳过的动作另见 `invocationPolicyNotApplied`。
+`hostPermissionAdditionalImpact` 表示宿主权限的匹配范围或配置来源可能影响审批。需要更改权限时，`data.confirmation.effects` 以该 code 展示相关配置和影响。User 规则的 `impact` 为 `user-wide`。执行结果的同名 warning 用 `subject` 标识插件、平台和作用域。规则级提示还附带 `permissions.<name>`，用 `detail.reasonCode`、`detail.path`、`detail.permissionResource` 和 `detail.permissionAction` 标明原因、宿主配置、原生匹配项和动作。Grok 的 `grok-additional-rules-unverified` 是文件级提示，`detail.path` 指向无法读取的附加配置。Grok 的 `grok-manual-restriction-preserved` 提示授权范围中可能仍受哪些已有规则限制。跳过的动作另见 `invocationPolicyNotApplied`。
 
 若调整 OpenCode User 限制还会改动 AW 已知的 Project 权限，`data.confirmation.effects` 中的 `changeRelatedProjectPermissions` 列出每个受影响配置的路径、待增删规则及 Project 作用域。`plugin config apply` 和 `plugin config set/unset/reset --apply` 也使用此确认。配置写入已经提交而应用失败时，已保存设置仍保留。
 

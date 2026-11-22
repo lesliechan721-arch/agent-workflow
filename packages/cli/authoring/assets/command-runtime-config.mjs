@@ -23,7 +23,7 @@ function fail(code = 'commandRuntimeConfigInvalid') {
 
 async function regularFile(file) {
   const root = path.parse(file).root;
-  const parts = file.slice(root.length).split(path.sep);
+  const parts = file.slice(root.length).split(path.sep === '\\' ? /[\\/]/u : path.sep);
   let current = root;
   for (const [index, part] of parts.entries()) {
     if (!part || part === '.' || part === '..') fail();

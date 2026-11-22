@@ -42,13 +42,20 @@ function componentDeliveryLines(delivery: ComponentDelivery): string[] {
   ];
 }
 
+export interface PermissionRuleChange {
+  change: 'add' | 'remove';
+  effect: Exclude<PermissionAction, 'sandbox'>;
+  resource: string;
+}
+
 export interface Diagnostic {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
   detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[];
-    skippedPermissionActions?: PermissionAction[]; permissionResource?: string; permissionAction?: Exclude<PermissionAction, 'sandbox'> };
+    skippedPermissionActions?: PermissionAction[]; permissionResource?: string; permissionAction?: Exclude<PermissionAction, 'sandbox'>;
+    permissionChanges?: PermissionRuleChange[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }

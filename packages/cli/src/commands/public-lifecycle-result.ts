@@ -5,6 +5,7 @@ import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
 import { commandPackageRecoveryActions, commandResult, safePublicMessage, type PublicCommandProducerResult } from '../output/public-result.js';
+import { isOpenCodePermission } from '../platforms/opencode-permissions.js';
 import { redactString } from '../output/redact.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
 import { deliveryNoticeMessage, HOST_PERMISSION_ADDITIONAL_IMPACT, hostPermissionImpactMessage,
@@ -133,6 +134,17 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   let detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
   const combinedSubject: NonNullable<Diagnostic['subject']> = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
+  if (code === 'permissionRelatedProjectUpdated' && typeof value !== 'string') {
+    const permissionChanges = (value.detail?.permissionChanges ?? []).flatMap(({ change, effect, resource }) =>
+      (change === 'add' || change === 'remove') && isOpenCodePermission({ action: 'shell', effect, resource })
+        ? [{ change, effect, resource: publicHostPermissionResource(resource)
+          .replace(/(?:^|(?<=[ =]))(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])[^ ]*/gu, '[local path]') }]
+        : []);
+    const message = ['Updated OpenCode Project permissions.', ...permissionChanges.map(({ change, effect, resource }) =>
+      `${change === 'add' ? 'Add' : 'Remove'} ${effect} shell ${resource}`)].join('\n');
+    return { code, severity: 'info', message, subject: combinedSubject,
+      ...(detail ? { detail: { ...detail, permissionChanges } } : {}) };
+  }
   if (code === HOST_PERMISSION_ADDITIONAL_IMPACT && typeof value !== 'string') {
     const action = value.detail?.permissionAction;
     const resource = value.detail?.permissionResource;
@@ -269,9 +281,11 @@ function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: Rec
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
     }
     else if (diagnostic.code === 'permissionRelatedProjectUpdateIncomplete' && detail.path) {
+      const retryUserFirst = receipt?.targetResults.some((target) => target.scope === 'user' && target.agent === 'opencode'
+        && (target.execution === 'failed' || target.blockers.some(({ code }) => code === 'preApplyFailed')));
       message = receipt?.command === 'cleanup'
         ? `OpenCode: Review ${JSON.stringify(detail.path)}. Open the TUI from that project and select only the Project OpenCode location to keep the User outputs removed.`
-        : `OpenCode: Review ${JSON.stringify(detail.path)} and run \`aw plugin sync --context project --target opencode\` from that project.`;
+        : `OpenCode: ${retryUserFirst ? 'Retry the failed User OpenCode targets first. ' : ''}Review ${JSON.stringify(detail.path)} and run \`aw plugin sync --context project --target opencode\` from that project.`;
     } else if (diagnostic.code === PREVIOUS_DEPLOYMENT_RETAINED) {
       message = `${identity}: Check ${detail.path ? `the previous output at ${JSON.stringify(detail.path)}` : 'the previous output'} in the affected scope before preparing the retry.`;
     } else if (detail.path && ['antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict'].includes(diagnostic.code)) {

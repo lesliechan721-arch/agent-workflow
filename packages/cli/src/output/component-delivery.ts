@@ -57,6 +57,7 @@ export const PI_AGENT_CONSUMER_NOTICE = 'piAgentConsumerUnavailable';
 export const PREVIOUS_DEPLOYMENT_RETAINED = 'previousDeploymentRetained';
 export const INVOCATION_POLICY_NOT_APPLIED = 'invocationPolicyNotApplied';
 export const HOST_PERMISSION_ADDITIONAL_IMPACT = 'hostPermissionAdditionalImpact';
+export const GROK_ADDITIONAL_RULES_UNVERIFIED = 'grok-additional-rules-unverified';
 export const COMMAND_ROUTE_UNREACHABLE = 'command-route-unreachable';
 export const GROK_ARGUMENT_BOUNDARIES_UNAVAILABLE = 'grok-argument-boundaries-unavailable';
 export const GROK_WRAPPER_TARGET_NOT_COVERED = 'grok-wrapper-target-not-covered';

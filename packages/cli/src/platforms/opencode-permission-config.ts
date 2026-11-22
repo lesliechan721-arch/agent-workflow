@@ -139,25 +139,30 @@ async function agentFiles(root: string): Promise<string[]> {
 }
 
 export async function readOpenCodePermissionChain(ctx: ReadContext, destination: string,
-  hostConfigRoot: string | undefined, projectRoot: string | undefined, doc: Pick<PermissionDocument, 'agentRules'>,
-  globalPolicy?: OpenCodeGlobalPolicy): Promise<OpenCodeLayerRule[]> {
+  hostConfigRoot: string | undefined, projectRoot: string | undefined, doc?: Pick<PermissionDocument, 'agentRules'>,
+  globalPolicy?: OpenCodeGlobalPolicy, priorProjects?: ReadonlyMap<string, OpenCodeGlobalPolicy>): Promise<OpenCodeLayerRule[]> {
   const env = ctx.env ?? process.env;
   const platform = ctx.platform ?? process.platform;
   const environment = (key: string) => readEnvironmentValue(env, key, platform);
   const paths: string[] = [];
   const directories: string[] = [];
+  const resolveLayerPath = (file: string) => {
+    const resolved = canonicalizePathThroughExistingAncestor(file);
+    // A read-only scan can report an unreadable layer at its original path.
+    return doc ? resolved : resolved.catch(() => path.resolve(file));
+  };
   const addFiles = (dir: string, withAgents: boolean) => {
     paths.push(path.join(dir, 'opencode.json'), path.join(dir, 'opencode.jsonc'));
     if (withAgents) directories.push(path.join(dir, 'agents'));
   };
   const userRoot = getOpenCodePermissionRoot(ctx, hostConfigRoot);
-  if (userRoot) addFiles(await canonicalizePathThroughExistingAncestor(userRoot), true);
+  if (userRoot) addFiles(await resolveLayerPath(userRoot), true);
   const customFile = environment('OPENCODE_CONFIG');
   if (customFile) paths.push(path.resolve(ctx.invocationCwd ?? ctx.cwd, customFile));
   if (projectRoot) {
     const ancestors: string[] = [];
-    const scope = await canonicalizePathThroughExistingAncestor(projectRoot);
-    const working = await canonicalizePathThroughExistingAncestor(ctx.invocationCwd ?? ctx.cwd);
+    const scope = await resolveLayerPath(projectRoot);
+    const working = await resolveLayerPath(ctx.invocationCwd ?? ctx.cwd);
     const relative = path.relative(scope, working);
     const inside = !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep);
     for (let dir = inside ? working : scope; ; dir = path.dirname(dir)) {
@@ -170,7 +175,7 @@ export async function readOpenCodePermissionChain(ctx: ReadContext, destination:
   const system = platform === 'darwin' ? '/Library/Application Support/opencode'
     : platform === 'win32' ? path.join(environment('ProgramData') ?? 'C:\\ProgramData', 'opencode') : '/etc/opencode';
   addFiles(system, true);
-  const target = await canonicalizePathThroughExistingAncestor(destination);
+  const target = await resolveLayerPath(destination);
   const isTarget = (file: string) => {
     const candidate = path.resolve(file);
     return candidate === destination || candidate === target;
@@ -178,12 +183,17 @@ export async function readOpenCodePermissionChain(ctx: ReadContext, destination:
   const position = paths.findIndex(isTarget);
   const append = (file: string, rules: unknown[], layer: OpenCodeLayerRule['layer'], source?: OpenCodeLayerRule['source']): OpenCodeLayerRule[] =>
     rules.map((rule) => ({ path: file, rule, layer, ...(source ? { source } : {}) }));
-  const layers = await Promise.all(paths.map(async (file, index) => {
+  const layers = await Promise.all(paths.map(async (candidate, index) => {
     ctx.signal?.throwIfAborted();
-    if (isTarget(file)) return append(file, doc.agentRules, 'higher', 'agent');
+    const targetFile = isTarget(candidate);
+    if (targetFile && doc) return append(candidate, doc.agentRules, 'higher', 'agent');
+    if (targetFile && index !== position) return [];
+    const file = targetFile ? destination : candidate;
     const layer = index < position ? 'lower' : 'higher';
-    if (globalPolicy && path.resolve(file) === globalPolicy.path) {
-      return [...append(file, globalPolicy.permissions, layer, 'config'), ...append(file, globalPolicy.agentRules, 'higher', 'agent')];
+    const resolved = path.resolve(file);
+    const policy = globalPolicy && resolved === globalPolicy.path ? globalPolicy : priorProjects?.get(resolved);
+    if (policy) {
+      return [...append(file, policy.permissions, layer, 'config'), ...append(file, policy.agentRules, 'higher', 'agent')];
     }
     // Agent and conditional policy rules retain their precedence even when
     // their enclosing configuration document is below the target.

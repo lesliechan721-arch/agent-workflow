@@ -1,0 +1,1472 @@
+{
+  "review": "Plugin command names and permissions, Review #8",
+  "sourceBaselineCommit": "9e301a37b2b61298d014447ff7da5955dc985e81",
+  "sourceGitHeadAtRun": "9e301a37b2b61298d014447ff7da5955dc985e81",
+  "client": "grok 1.0.77 (50ca579fa996)",
+  "clientExecutableSha256": "197c66a63e5ac46e07450b0ca21d141ce665050a412180f185dadfae1c7a5b2a",
+  "os": "ProductName: macOS ProductVersion: 26.3.1 BuildVersion: 25D2128",
+  "arch": "arm64",
+  "mode": "Interactive CLI with default approval mode",
+  "startedAt": "2026-11-22T16:57:29.591763+00:00",
+  "awBuild": {
+    "generationId": "16d20cb3-afd5-4765-a292-b8b8cd56e140",
+    "inputDigest": "2b6a70ee7828f5cc6d775fc6a48b188b1ab86e60ea752aeb5dea104dbaa3719d",
+    "outputDigest": "3a42b172c614be38809fa6d1869d969ae7438f48dbd2112a05e0643ed1b29530",
+    "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540",
+    "builtAt": "2026-11-22T16:56:54.709Z",
+    "sha256": "0bd60b4809c9bd5e24259200420c6ea4a62f9388222e0cdcd7e1e650646779ee"
+  },
+  "awDistSha256": {
+    "index.js": "c5cd15e351fd9e0b87b7a85b8d8c805596a07ba0b3694b842b4603d418771973",
+    "src/index.js": "a94662dc3d982a9d3b57b30a41ec9186c4751836d523dc69e7509553dffd4eb2",
+    "src/commands/permission-batch.js": "26a350ab464400967a633e8e13eaebe1691f919ff15b57e74f99bb3521ad613b",
+    "src/platforms/grok-permissions.js": "3245918352dfcc1a429a0d8f8830bcbf39995b44c2a2d613b07e210109e11755",
+    "src/platforms/grok-permission-config.js": "92816b37725a31a338cc2ec6490a9acc33a8fbc5190d8aa50b3b141f6ab2d997",
+    "src/platforms/grok-permission-document.js": "d6ad38fdc7b4c415c205f3680b7f4c63fe994ef796a982a151e1bd3f10db05c2",
+    "src/platforms/permission-ownership.js": "fc5600b9305ae19e7b799512de7a86f3438f1ff3e67b940088d556d62b4d0d0c"
+  },
+  "rawReportSha256": "001f7a4e0faa5806996d8c51e6176b856ae19bca81c160da51c00a3bb1d3fb5c",
+  "extraction": "Public receipt details, fixture config hashes and native observations. Temporary paths, provider requests, terminal output, and full receipts are omitted.",
+  "fixture": "Isolated disposable homes and trusted Git projects. Grok's public directory consent and per-command UI were used. The local loopback provider issued one harmless report request per measured session.",
+  "externalConnectRequestsRejectedByLoopback": 116,
+  "fixtureConfigSha256": {
+    "baseline/base-user": "eb9549bfab0dfaccba0396a7af13e031ad007d7c5210e8b223a5dc66d5974904",
+    "user/base-user": "eb9549bfab0dfaccba0396a7af13e031ad007d7c5210e8b223a5dc66d5974904",
+    "user/aw-user": "e76e2e8d3774ffe5c852b76dc7de88b2408903a9e0d35c8d53a1b69c69fbf853",
+    "user/claude-import-user": "99f78e5ac58c4f6b9d03fc2f78348a56902626a3bb606587bc685b29a0ff2428",
+    "project/base-user": "eb9549bfab0dfaccba0396a7af13e031ad007d7c5210e8b223a5dc66d5974904",
+    "project/aw-project": "b8c73c39abf1fef95219cadcd4bd06b3f5498aa6c7e46cbdaa83cdb216bc33fd",
+    "project/claude-import-project": "9e896b87d7a97f93380d115179ba94fc19d5ad9cb2c56c7f4fc4216b51a91592",
+    "remember-user/base-user": "c03503be02ec1851bd4e06723a6b44130dbf2e74635c86a07c206404b1dd3d60",
+    "remember-user/aw-user": "4edd63534ad5503d3835a55734c37e4d6fec480c4bf35798834cc1789c7c27f9",
+    "remember-project/base-user": "c03503be02ec1851bd4e06723a6b44130dbf2e74635c86a07c206404b1dd3d60",
+    "remember-project/aw-project": "b8c73c39abf1fef95219cadcd4bd06b3f5498aa6c7e46cbdaa83cdb216bc33fd"
+  },
+  "trustReadback": [
+    {
+      "fixture": "baseline",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "baseline",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "user",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "user",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "project",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "project",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "remember-user",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "remember-user",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "remember-project",
+      "project": "project-a",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    },
+    {
+      "fixture": "remember-project",
+      "project": "project-b",
+      "rootVerified": true,
+      "trusted": true,
+      "provenance": "Grok interactive directory trust decision"
+    }
+  ],
+  "scopeReview": {
+    "user": {
+      "reviewExitCode": 3,
+      "reviewEffectCodes": [
+        "changeCommandRoutes",
+        "changeHostPermissions",
+        "hostPermissionAdditionalImpact"
+      ],
+      "confirmedExitCode": 0,
+      "additionalImpact": [
+        {
+          "action": "allow",
+          "pattern": "grok-report show",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "allow",
+          "pattern": "aw command run fixture-source/reports -- show",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "ask",
+          "pattern": "grok-report confirm",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "ask",
+          "pattern": "aw command run fixture-source/reports -- confirm",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "deny",
+          "pattern": "grok-report blocked",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "deny",
+          "pattern": "aw command run fixture-source/reports -- blocked",
+          "reason": "grok-shell-text-matching"
+        }
+      ]
+    },
+    "project": {
+      "reviewExitCode": 3,
+      "reviewEffectCodes": [
+        "changeCommandRoutes",
+        "changeHostPermissions",
+        "hostPermissionAdditionalImpact"
+      ],
+      "confirmedExitCode": 0,
+      "additionalImpact": [
+        {
+          "action": "allow",
+          "pattern": "grok-report show",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "allow",
+          "pattern": "aw command run fixture-source/reports -- show",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "ask",
+          "pattern": "grok-report confirm",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "ask",
+          "pattern": "aw command run fixture-source/reports -- confirm",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "deny",
+          "pattern": "grok-report blocked",
+          "reason": "grok-shell-text-matching"
+        },
+        {
+          "action": "deny",
+          "pattern": "aw command run fixture-source/reports -- blocked",
+          "reason": "grok-shell-text-matching"
+        }
+      ]
+    }
+  },
+  "claudeCompatibility": [
+    {
+      "source": "user .claude/settings.json",
+      "action": "ask",
+      "rule": "Bash(grok-report show)",
+      "sha256": "f92f121f44243cb8b2a7097d8681d897bce01b33528767b1e4f4ea7f360f413f",
+      "sessions": [
+        {
+          "case": "claude-user-ask-project-a",
+          "project": "a",
+          "observed": "ask-rejected"
+        },
+        {
+          "case": "claude-user-ask-project-b",
+          "project": "b",
+          "observed": "ask-rejected"
+        }
+      ]
+    },
+    {
+      "source": "user .claude/settings.json",
+      "action": "deny",
+      "rule": "Bash(grok-report show)",
+      "sha256": "d713cbc27904094e04369c2d69dc76b22aac2d82fee71710c9ec2ffda863ee1d",
+      "sessions": [
+        {
+          "case": "claude-user-deny-project-a",
+          "project": "a",
+          "observed": "deny"
+        },
+        {
+          "case": "claude-user-deny-project-b",
+          "project": "b",
+          "observed": "deny"
+        }
+      ]
+    },
+    {
+      "source": "project .claude/settings.json",
+      "action": "ask",
+      "rule": "Bash(grok-report show)",
+      "sha256": "f92f121f44243cb8b2a7097d8681d897bce01b33528767b1e4f4ea7f360f413f",
+      "sessions": [
+        {
+          "case": "claude-project-ask-project-a",
+          "project": "a",
+          "observed": "ask-rejected"
+        },
+        {
+          "case": "claude-project-ask-project-b",
+          "project": "b",
+          "observed": "allow"
+        }
+      ]
+    },
+    {
+      "source": "project .claude/settings.json",
+      "action": "deny",
+      "rule": "Bash(grok-report show)",
+      "sha256": "d713cbc27904094e04369c2d69dc76b22aac2d82fee71710c9ec2ffda863ee1d",
+      "sessions": [
+        {
+          "case": "claude-project-deny-project-a",
+          "project": "a",
+          "observed": "deny"
+        },
+        {
+          "case": "claude-project-deny-project-b",
+          "project": "b",
+          "observed": "allow"
+        }
+      ]
+    }
+  ],
+  "claudeImport": [
+    {
+      "choiceSent": true,
+      "menu": "Import Claude settings",
+      "confirmationSent": true,
+      "command": "/import-claude",
+      "sourceScope": "user",
+      "sourceSha256": "d713cbc27904094e04369c2d69dc76b22aac2d82fee71710c9ec2ffda863ee1d",
+      "nativeConfigChanged": true,
+      "targetScope": "user",
+      "importedDenyPresent": true,
+      "matchingNativeAllowBefore": true,
+      "matchingNativeAllowAfter": true,
+      "afterSha256": "99f78e5ac58c4f6b9d03fc2f78348a56902626a3bb606587bc685b29a0ff2428",
+      "hostSessionsAfterRemovingClaudeFixture": [
+        "claude-import-user-project-a",
+        "claude-import-user-project-b"
+      ]
+    },
+    {
+      "choiceSent": true,
+      "menu": "Import Claude settings",
+      "confirmationSent": true,
+      "command": "/import-claude",
+      "sourceScope": "project",
+      "sourceSha256": "d713cbc27904094e04369c2d69dc76b22aac2d82fee71710c9ec2ffda863ee1d",
+      "nativeConfigChanged": true,
+      "targetScope": "project",
+      "importedDenyPresent": true,
+      "matchingNativeAllowBefore": true,
+      "matchingNativeAllowAfter": true,
+      "afterSha256": "9e896b87d7a97f93380d115179ba94fc19d5ad9cb2c56c7f4fc4216b51a91592",
+      "hostSessionsAfterRemovingClaudeFixture": [
+        "claude-import-project-project-a",
+        "claude-import-project-project-b"
+      ]
+    }
+  ],
+  "measuredSessions": 58,
+  "sessions": [
+    {
+      "case": "baseline-a-managed-allow-0-reject",
+      "suite": "baseline",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "baseline-a-ordinary-allow-0-reject",
+      "suite": "baseline",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "user-a-managed-allow-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-managed-allow-2-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show one 'two words'",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show",
+          "one",
+          "two words"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-managed-ask-0-once",
+      "suite": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "once",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-managed-ask-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "user-a-managed-deny-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "user-a-ordinary-allow-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-ordinary-allow-2-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show one 'two words'",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show",
+          "one",
+          "two words"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-ordinary-ask-0-once",
+      "suite": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "once",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ]
+    },
+    {
+      "case": "user-a-ordinary-ask-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "user-a-ordinary-deny-0-reject",
+      "suite": "user",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "user-b-managed-deny-0-reject",
+      "suite": "user",
+      "project": "b",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "user-b-ordinary-deny-0-reject",
+      "suite": "user",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-user-ask-project-a",
+      "suite": "claude",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "claude-user-ask-project-b",
+      "suite": "claude",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "claude-user-deny-project-a",
+      "suite": "claude",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-user-deny-project-b",
+      "suite": "claude",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-project-ask-project-a",
+      "suite": "claude",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "claude-project-ask-project-b",
+      "suite": "claude",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "claude-project-deny-project-a",
+      "suite": "claude",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-project-deny-project-b",
+      "suite": "claude",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "claude-import-user-project-a",
+      "suite": "claude-import",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-import-user-project-b",
+      "suite": "claude-import",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-managed-allow-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-managed-allow-2-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- show one 'two words'",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show",
+          "one",
+          "two words"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-managed-ask-0-once",
+      "suite": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "once",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-managed-ask-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "project-a-managed-deny-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "project-a-ordinary-allow-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-ordinary-allow-2-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show one 'two words'",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "show",
+          "one",
+          "two words"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-ordinary-ask-0-once",
+      "suite": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "once",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ]
+    },
+    {
+      "case": "project-a-ordinary-ask-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "project-a-ordinary-deny-0-reject",
+      "suite": "project",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "project-b-managed-deny-0-reject",
+      "suite": "project",
+      "project": "b",
+      "form": "managed",
+      "command": "aw command run fixture-source/reports -- blocked",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "project-b-ordinary-deny-0-reject",
+      "suite": "project",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "claude-import-project-project-a",
+      "suite": "claude-import",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0
+    },
+    {
+      "case": "claude-import-project-project-b",
+      "suite": "claude-import",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report show",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject"
+    },
+    {
+      "case": "remember-user-fresh-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [],
+      "storedPreferencesAfter": []
+    },
+    {
+      "case": "remember-user-save-confirm-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "remember",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-user-restart-confirm-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-user-save-blocked-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "remember",
+      "observedArgv": [
+        [
+          "blocked"
+        ]
+      ],
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-user-restart-blocked-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "blocked"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-user-after-save-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-user-ask-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-user-ask-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-user-deny-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0,
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-user-deny-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0,
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-project-fresh-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [],
+      "storedPreferencesAfter": []
+    },
+    {
+      "case": "remember-project-save-confirm-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "remember",
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-project-restart-confirm-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-project-save-blocked-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "ask-approved",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 1,
+      "uiDecision": "remember",
+      "observedArgv": [
+        [
+          "blocked"
+        ]
+      ],
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "19b92c0a295db5ec929251d3ffc35e30ff3d4416970393dd931f3b2b2bfc00d2",
+          "allowedBashCommands": [
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-project-restart-blocked-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "blocked"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-project-after-save-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-project-ask-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "allow",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 1,
+      "observedArgv": [
+        [
+          "confirm"
+        ]
+      ],
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-project-ask-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report confirm",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-project-deny-project-a",
+      "suite": "preferences",
+      "project": "a",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "deny",
+      "approvalMenu": false,
+      "startedAtPrompt": null,
+      "executionCount": 0,
+      "rememberAllowOffered": null,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "remember-aw-project-deny-project-b",
+      "suite": "preferences",
+      "project": "b",
+      "form": "ordinary",
+      "command": "grok-report blocked",
+      "observed": "ask-rejected",
+      "approvalMenu": true,
+      "startedAtPrompt": 0,
+      "executionCount": 0,
+      "uiDecision": "reject",
+      "rememberAllowOffered": true,
+      "storedPreferencesBefore": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ],
+      "storedPreferencesAfter": [
+        {
+          "project": "a",
+          "sha256": "a7b9b022a8ab493789952711e070ce088ce6d337292ca998a7bd463fcabf61f2",
+          "allowedBashCommands": [
+            "grok-report blocked",
+            "grok-report confirm"
+          ]
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Coverage is limited to the recorded Grok Build version, Darwin arm64, the default interactive mode, and the displayed trusted Git scopes.",
+    "Claude automatic compatibility and explicit import use the isolated permissions files shown. The explicit import coverage uses a single deny rule per scope.",
+    "The remembered approvals are per-command allows created through the native menu. Other preference actions, other clients, and external models are outside the recorded coverage."
+  ]
+}

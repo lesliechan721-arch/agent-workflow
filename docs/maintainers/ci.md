@@ -56,6 +56,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
   **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
 - **分片 3 附加任务**：
   除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
+  同一 Windows runner 运行 `tests/unit/command-runtime-config.test.ts`，验证托管命令通过原生、正斜杠和混合路径读取已安装的配置。
 - **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
 
 #### 普通集成测试的耗时分配

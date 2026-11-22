@@ -241,7 +241,7 @@ function prefixDecisionConflict(declared: DecisionPrefix, existing: DecisionPref
   return { matching };
 }
 
-function rawPermissionResource(tokens: readonly string[], platform: NodeJS.Platform): string {
+function rawPermissionResources(tokens: readonly string[], platform: NodeJS.Platform) {
   const blank = String.raw`[\x20\t]`;
   const quotedWord = (word: string, index: number) => {
     const windowsPath = platform === 'win32' && (word.includes('\\') || index === 0 && word.includes('/'));
@@ -254,16 +254,20 @@ function rawPermissionResource(tokens: readonly string[], platform: NodeJS.Platf
   };
   // Match trailing literal arguments only. Antigravity uses this pattern for
   // a whole unparsed line and would otherwise include unrelated shell actions.
-  const plain = platform === 'win32' ? String.raw`[-\p{L}\p{M}\p{N}_./:@+=,]+` : String.raw`[-\p{L}\p{M}\p{N}_./:@%+=,]+`;
+  const plain = platform === 'win32' ? String.raw`[-\p{L}\p{M}\p{N}_./:@+=,]` : String.raw`[-\p{L}\p{M}\p{N}_./:@%+=,]`;
   const quoted = platform === 'win32' ? String.raw`"[^"\r\n%!?^&|<>]*"`
     : String.raw`'[^'\r\n]*'|"(?:[^"\\$\x60\r\n]|\\[^\r\n])*"|\\[^\r\n]`;
-  const argument = `(?:${plain}|${quoted})+`;
   const prefix = tokens.map(quotedWord).join(blank + '+');
-  return regexRulePrefix + blank + '*' + prefix + '(?:' + blank + '+' + argument + ')*' + blank + '*)';
+  const rule = (plainPart: string) =>
+    `${regexRulePrefix}${blank}*${prefix}(?:${blank}+(?:${plainPart}|${quoted})+)*${blank}*)`;
+  // The outer repetition already matches runs of plain characters. Keep the
+  // former spelling for identifying rules in existing settings and sidecars.
+  return { current: rule(plain), legacy: rule(plain + '+') };
 }
 
 function projectPermission(claim: Pick<PermissionClaim, 'tokens'>, platform: NodeJS.Platform): {
   resources: string[];
+  legacyRaw?: string;
   reasonCode?: string;
   adjustments: Array<Pick<HostPermissionAdjustment, 'reasonCode' | 'resource' | 'message'>>;
 } {
@@ -290,21 +294,23 @@ function projectPermission(claim: Pick<PermissionClaim, 'tokens'>, platform: Nod
       message: 'Antigravity can match this rule when Windows supplies literal command words. A raw line containing Windows expansion characters may still require separate review.',
     });
   } else if (needsRawMatch) {
-    const raw = rawPermissionResource(claim.tokens, platform);
+    const { current, legacy } = rawPermissionResources(claim.tokens, platform);
     adjustments.push({
-      resource: raw,
+      resource: current,
       reasonCode: 'antigravity-command-raw-match',
       message: 'Antigravity can match this command as raw text. The additional rule covers literal trailing arguments and common command spellings, including quoted words and equivalent Windows path separators where applicable.',
     });
-    return { resources: [literal, raw], adjustments };
+    return { resources: [literal, current], legacyRaw: legacy, adjustments };
   }
   return { resources: [literal], adjustments };
 }
 
 export function antigravityPermissionResources(
   claim: Pick<PermissionClaim, 'tokens'>, platform: NodeJS.Platform = process.platform,
+  { includeLegacyRaw = false } = {},
 ): string[] {
-  return projectPermission(claim, platform).resources;
+  const { resources, legacyRaw } = projectPermission(claim, platform);
+  return includeLegacyRaw && legacyRaw ? [...resources, legacyRaw] : resources;
 }
 
 export function mergeAntigravityPermissions(
@@ -336,35 +342,38 @@ export function mergeAntigravityPermissions(
     const manualConflict = prefixDecisionConflict(declared, manualPrefixes, platform);
     const activeConflict = prefixDecisionConflict(declared, active, platform);
     const blockedForms: ManualFormConflict[] = [];
-    const resources = projection.resources.filter((resource, index) => {
-      const exact = manualDecisions.find((rule) => rule.resource === resource && actions.indexOf(rule.effect) > actions.indexOf(claim.effect));
-      const blocking = exact ?? (!index ? manualConflict.covering : undefined);
+    const resources = new Map<string, string>();
+    for (const [index, resource] of projection.resources.entries()) {
+      const exact = manualDecisions.find((rule) => rule.resource === resource || index === 1 && rule.resource === projection.legacyRaw);
+      const blocking = exact && actions.indexOf(exact.effect) > actions.indexOf(claim.effect) ? exact
+        : !index ? manualConflict.covering : undefined;
       if (blocking) {
         blockedForms.push({ effect: blocking.effect, form: index ? 'raw command form' : 'parsed command words' });
-        return false;
+        continue;
       }
       const existing = strictest.get(resource);
-      return !existing || existing.effect === claim.effect;
-    });
+      if (!existing || existing.effect === claim.effect) resources.set(resource, exact?.effect === claim.effect ? exact.resource : resource);
+    }
     const maskedByWildcard = manualWildcard && actions.indexOf(manualWildcard.effect) > actions.indexOf(claim.effect);
-    if (!resources.length || maskedByWildcard || activeConflict.covering
+    if (!resources.size || maskedByWildcard || activeConflict.covering
       || claim.effect === 'allow' && skippedRestrictions.some((restriction) => antigravityPrefixesOverlap(claim.tokens, restriction.tokens, platform))) {
       skipped.push({ ...claim, reasonCode: 'permission-rule-conflict' });
       continue;
     }
-    if (activeConflict.matching) adjusted.push({ ...claim, resource: resources[0]!,
+    const firstResource = resources.keys().next().value!;
+    if (activeConflict.matching) adjusted.push({ ...claim, resource: firstResource,
       reasonCode: 'antigravity-rule-precedence',
       message: `Antigravity applies the stronger AW ${activeConflict.matching.effect} to ${activeConflict.matching.tokens.join(' ')} and its arguments. This rule applies to the rest of the declared prefix.` });
-    if (manualConflict.matching) adjusted.push({ ...claim, resource: resources[0]!,
+    if (manualConflict.matching) adjusted.push({ ...claim, resource: firstResource,
       reasonCode: 'antigravity-user-rule-precedence',
       message: `Antigravity keeps the user's ${manualConflict.matching.effect} for ${manualConflict.matching.tokens.join(' ')} and its arguments. This rule applies to the rest of the declared prefix.` });
-    for (const rule of blockedForms) adjusted.push({ ...claim, resource: resources[0]!,
+    for (const rule of blockedForms) adjusted.push({ ...claim, resource: firstResource,
       reasonCode: 'antigravity-user-rule-precedence',
       message: `Antigravity keeps the user's ${rule.effect} for the ${rule.form} of this declaration. The other matching form remains configured.` });
-    for (const adjustment of projection.adjustments) if (resources.includes(adjustment.resource)) adjusted.push({ ...claim, ...adjustment });
-    if (resources.includes(projection.resources[0]!)) active.push(declared);
-    for (const resource of resources) {
-      strictest.set(resource, { action: 'shell', resource, effect: claim.effect });
+    for (const adjustment of projection.adjustments) if (resources.has(adjustment.resource)) adjusted.push({ ...claim, ...adjustment });
+    if (resources.has(projection.resources[0]!)) active.push(declared);
+    for (const [canonical, resource] of resources) {
+      strictest.set(canonical, { action: 'shell', resource, effect: claim.effect });
     }
   }
   // The host ranks deny over ask over allow across lists. Distinct overlapping
@@ -374,5 +383,8 @@ export function mergeAntigravityPermissions(
   const after = effective.filter((rule) => !manual.some((entry) => record(entry)
     && entry.effect === rule.effect && entry.resource === rule.resource));
   return { before: [], after, effective, skipped,
-    adjusted: adjusted.filter(({ resource, effect }) => strictest.get(resource)?.effect === effect) };
+    adjusted: adjusted.flatMap((adjustment) => {
+      const rule = strictest.get(adjustment.resource);
+      return rule?.effect === adjustment.effect ? [{ ...adjustment, resource: rule.resource }] : [];
+    }) };
 }

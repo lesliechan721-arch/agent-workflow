@@ -15,6 +15,7 @@ import { permissionConflict } from './permission-sidecar.js';
 export { parseGrokPermissionDocument } from './grok-permission-document.js';
 
 const SHELL_ACTIONS = ['allow', 'ask', 'deny'] as const;
+const MANAGED_CONFIG = 'managed_config.toml';
 const MAX_CONFIG_BYTES = 1024 * 1024;
 type GrokPermissionRule = { action: typeof SHELL_ACTIONS[number]; pattern: string };
 
@@ -112,7 +113,7 @@ export async function readGrokPermissionLayers(ctx: ReadContext, destination: st
   const trust = await assertGrokPermissionPath(ctx, destination, hostConfigRoot, projectRoot);
   const rules: OpenCodeLayerRule[] = document.compactRules.map((rule) => ({ layer: 'higher', path: destination, rule }));
   if (trust) rules.push({ layer: 'higher', path: path.join(hostConfigRoot, 'trusted_folders.toml'), rule: { trust } });
-  const sources = [path.join(hostConfigRoot, 'managed_config.toml'), ...(projectRoot ? [path.join(hostConfigRoot, 'config.toml')] : [])];
+  const sources = [path.join(hostConfigRoot, MANAGED_CONFIG), ...(projectRoot ? [path.join(hostConfigRoot, 'config.toml')] : [])];
   for (const file of sources) {
     try {
       for (const rule of shellRules(await readTomlText(file) ?? '')) rules.push({ layer: 'higher', path: file, rule });
@@ -152,7 +153,10 @@ export async function inspectGrokPermissionConfig(ctx: ReadContext, argvPrefix: 
   } catch {
     result.readFailures.push('$GROK_HOME/config.toml');
   }
-  if (userFile) await inspect(userFile);
+  if (userFile) {
+    await inspect(userFile);
+    await inspect(path.join(path.dirname(userFile), MANAGED_CONFIG));
+  }
   ctx.signal?.throwIfAborted();
   if (!projectRoot) return result;
 

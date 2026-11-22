@@ -17,17 +17,24 @@ export function antigravityPermissionRule(command, args, platform = process.plat
   return `command(${[command, ...args].join(' ')})`;
 }
 
-/** Keep the token prefix and also cover quoted tokens in agy's raw matcher. */
-export function antigravityPermissionRules(command, args, platform = process.platform) {
+function projectAntigravityPermission(command, args, platform = process.platform) {
   const prefix = antigravityPermissionRule(command, args, platform);
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const entry = (value) => `(?:${escape(value)}|'${escape(value)}'|"${escape(value)}")`;
   // No literal whitespace: agy also tokenizes regex rules. The raw branch
   // accepts shell literal arguments, never expansion or extra shell actions.
   const blank = String.raw`[\x20\t]`;
-  const literal = String.raw`(?:[-A-Za-z0-9_./:@%+=,]+|'[^']*'|"(?:[^"\\$\x60]|\\[^\r\n])*"|\\[^\r\n])+`;
-  const pattern = `${blank}*${[command, ...args].map(entry).join(`${blank}+`)}(?:${blank}+${literal})*${blank}*`;
-  return [prefix, `command(regex:${pattern})`];
+  const plain = String.raw`[-A-Za-z0-9_./:@%+=,]`;
+  const quoted = String.raw`'[^']*'|"(?:[^"\\$\x60]|\\[^\r\n])*"|\\[^\r\n]`;
+  const words = [command, ...args].map(entry).join(`${blank}+`);
+  const rule = (plainPart) => `command(regex:${blank}*${words}(?:${blank}+(?:${plainPart}|${quoted})+)*${blank}*)`;
+  return { prefix, raw: rule(plain), legacyRaw: rule(plain + '+') };
+}
+
+/** Keep the token prefix and also cover quoted tokens in agy's raw matcher. */
+export function antigravityPermissionRules(command, args, platform = process.platform) {
+  const { prefix, raw } = projectAntigravityPermission(command, args, platform);
+  return [prefix, raw];
 }
 
 export function antigravitySettingsPath(environment = process.env, platform = process.platform) {
@@ -109,7 +116,7 @@ async function readSettings(target) {
 
 /** Preserve the user's allow list in a session-only override; never write it back. */
 export async function prepareAntigravityPermission({ environment = process.env, command, args, directory }) {
-  const rules = antigravityPermissionRules(command, args);
+  const { prefix, raw, legacyRaw } = projectAntigravityPermission(command, args);
   await safePath(command, 'file');
   await safePath(args[0], 'file');
   const target = antigravitySettingsPath(environment);
@@ -124,7 +131,9 @@ export async function prepareAntigravityPermission({ environment = process.env, 
   }
   // agy replaces the supplied allow leaf, but keeps omitted ask/deny and all
   // other settings. Copy only allow so policies keep their native sources.
-  const settings = { permissions: { allow: [...new Set([...(document.permissions?.allow ?? []), ...rules])] } };
+  const userAllow = document.permissions?.allow ?? [];
+  const rules = [prefix, !userAllow.includes(raw) && userAllow.includes(legacyRaw) ? legacyRaw : raw];
+  const settings = { permissions: { allow: [...new Set([...userAllow, ...rules])] } };
   const settingsFile = path.join(directory, 'antigravity-settings.json');
   try {
     await safePath(directory, 'directory');

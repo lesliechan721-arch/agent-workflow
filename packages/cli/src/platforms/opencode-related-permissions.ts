@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import type { PermissionRuleChange } from '../output/public-result.js';
 import { parseSharedOwnerToken } from '../utils/ownership.js';
 import type { Diagnostic, ReadContext } from './contracts.js';
 import { adjustedPermissionOwners, hostPermissionImpactDiagnostics } from './host-permission-policy.js';
@@ -21,7 +22,22 @@ export interface RelatedOpenCodeProject {
   additionalImpacts?: Diagnostic[];
 }
 
-type RelatedProjectWrite = Parameters<typeof commitPermissionOwnership>[0] & { review: RelatedOpenCodeProject };
+export function relatedOpenCodeProjectChanges({ removed, added }: RelatedOpenCodeProject): PermissionRuleChange[] {
+  return [
+    ...removed.map(({ effect, resource }) => ({ change: 'remove' as const, effect, resource })),
+    ...added.map(({ effect, resource }) => ({ change: 'add' as const, effect, resource })),
+  ];
+}
+
+type RelatedProjectWrite = Parameters<typeof commitPermissionOwnership>[0] & { review: RelatedOpenCodeProject; policy: OpenCodeGlobalPolicy };
+export type RelatedOpenCodeProjectWrites = Map<string, {
+  original: Pick<RelatedProjectWrite, 'snapshot' | 'host' | 'policy'>;
+  fingerprint: string;
+}>;
+export interface RelatedOpenCodeProjectBatch {
+  writes: RelatedOpenCodeProjectWrites;
+  pending: Map<string, { review: RelatedOpenCodeProject; subject: Diagnostic['subject'] }>;
+}
 interface RelatedProjectPlan {
   writes: RelatedProjectWrite[];
   conflicts: Array<{ path: string; claim: OpenCodeClaim }>;
@@ -53,13 +69,28 @@ function tokens(rule: OpenCodePermission): string[] {
 
 /** Review and prepare changes to AW-owned entries in related, recorded projects. */
 export async function prepareRelatedOpenCodeProjects(ctx: ReadContext, globalPolicy: OpenCodeGlobalPolicy,
-  restrictions: OpenCodeClaim[], affectedRestrictions: OpenCodeClaim[], reviewed: RelatedOpenCodeProject[] = []): Promise<RelatedProjectPlan> {
+  restrictions: OpenCodeClaim[], affectedRestrictions: OpenCodeClaim[], reviewed: RelatedOpenCodeProject[] = [],
+  projectWrites?: RelatedOpenCodeProjectWrites): Promise<RelatedProjectPlan> {
   const writes: RelatedProjectPlan['writes'] = [], conflicts: RelatedProjectPlan['conflicts'] = [];
   if (!affectedRestrictions.length && !reviewed.length) return { writes, conflicts };
   const recorded = await listPermissionSidecarStates(ctx.env, 'opencode');
+  const originalPolicies = new Map<string, OpenCodeGlobalPolicy>();
+  for (const [target, { original, fingerprint }] of projectWrites ?? []) {
+    const snapshot = await readPermissionSidecar(ctx.env, 'opencode', target);
+    const host = await readPermissionHost(snapshot.target).catch(() => { throw permissionConflict(); });
+    if (snapshot.target !== target || !snapshot.state || permissionFileFingerprint(host, snapshot.raw) !== fingerprint
+      || !recorded.some((state) => state.target === target && identityDigest(snapshot.state) === identityDigest(state))) {
+      throw Object.assign(permissionConflict(), { path: target });
+    }
+    // Replay the original Review only for bytes already verified by this batch.
+    // The execution plan below is built from live project files and layers.
+    originalPolicies.set(target, original.policy);
+  }
   const inspected: Array<{ path: string; manual: unknown[]; layers: OpenCodeLayerRule[]; restrictions: OpenCodeClaim[] }> = [];
-  for (const state of recorded) {
+  for (const recordedState of recorded) {
     ctx.signal?.throwIfAborted();
+    const original = projectWrites?.get(recordedState.target)?.original;
+    const state = original?.snapshot.state ?? recordedState;
     if (state.target === globalPolicy.path || path.basename(state.target) !== 'opencode.json'
       || !Object.keys(state.owners).length || !Object.keys(state.owners).every((token) => isProjectOwner(token, state.target))) continue;
     const prior = reviewed.find((entry) => entry.path === state.target);
@@ -82,9 +113,9 @@ export async function prepareRelatedOpenCodeProjects(ctx: ReadContext, globalPol
       throw conflict();
     }
 
-    const snapshot = await readPermissionSidecar(ctx.env, 'opencode', state.target);
+    const snapshot = original?.snapshot ?? await readPermissionSidecar(ctx.env, 'opencode', state.target);
     if (snapshot.target !== state.target || identityDigest(snapshot.state ?? null) !== identityDigest(state)) throw conflict();
-    const host = await readPermissionHost(snapshot.target).catch(() => { throw conflict(); });
+    const host = original ? original.host : await readPermissionHost(snapshot.target).catch(() => { throw conflict(); });
     const digest = host === null ? null : createHash('sha256').update(host).digest('hex');
     if (state.hostDigest !== digest || !state.before.every(isOpenCodePermission) || !state.after.every(isOpenCodePermission)) {
       throw conflict();
@@ -96,7 +127,7 @@ export async function prepareRelatedOpenCodeProjects(ctx: ReadContext, globalPol
 
     const scoped = { ...ctx, cwd: projectRoot, invocationCwd: projectRoot };
     const hostConfigRoot = path.dirname(globalPolicy.path);
-    const layers = await readOpenCodePermissionChain(scoped, snapshot.target, hostConfigRoot, projectRoot, document, globalPolicy);
+    const layers = await readOpenCodePermissionChain(scoped, snapshot.target, hostConfigRoot, projectRoot, document, globalPolicy, originalPolicies);
     const next = mergeOpenCodePermissions(claims, manual, layers, ctx.platform, restrictions);
     // Reconcile only prefixes affected by the User operation. Preserve other
     // AW contributions until their own project's next sync.
@@ -129,7 +160,8 @@ export async function prepareRelatedOpenCodeProjects(ctx: ReadContext, globalPol
     const review: RelatedOpenCodeProject = { path: state.target, removed, added,
       ...(additionalImpacts.length ? { additionalImpacts } : {}),
       fingerprint: identityDigest({ host: permissionFileFingerprint(host, snapshot.raw), policyDigest }) };
-    writes.push({ review, snapshot, host, document, manual, before, after, effective: next.effective, owners: state.owners,
+    const policy = { path: state.target, permissions: document.permissions, agentRules: document.agentRules };
+    writes.push({ review, snapshot, host, document, policy, manual, before, after, effective: next.effective, owners: state.owners,
       verifyChain: async () => {
         const currentLayers = await readOpenCodePermissionChain(scoped, snapshot.target, hostConfigRoot, projectRoot, document);
         const currentRestrictions = await readOpenCodeUserRestrictions(ctx, hostConfigRoot, snapshot.target);

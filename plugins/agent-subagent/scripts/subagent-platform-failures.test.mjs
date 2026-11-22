@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -629,4 +630,122 @@ test('required process identities remain mandatory through observation and expir
   await assert.rejects(stopOwnedTree(requiredPid, known, run.meta.token), { code: 'platformOperationFailed' });
   assert.ok(requests.slice(1).every((pids) => pids.includes(process.pid) && pids.includes(requiredPid)));
   assert.ok(await fs.stat(path.join(run.directory, 'owner.json')));
+});
+
+// Test Value Gate: Windows startup can track the detached worker across polls
+// and recognize its exit without repeatedly launching the native process observer.
+test('Windows initialization observes the launched worker without rescanning processes', async (t) => {
+  const homeRoot = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-start-process-'));
+  t.after(() => fs.rm(homeRoot, { recursive: true, force: true }));
+  const fixtureExecutable = path.join(homeRoot, 'node.exe');
+  await fs.writeFile(fixtureExecutable, '');
+  const executable = await fs.realpath(fixtureExecutable);
+  const actualExecutable = process.execPath;
+  process.execPath = executable;
+  t.after(() => { process.execPath = actualExecutable; });
+  const worker = Object.assign(new EventEmitter(), { pid: 424242, exitCode: null, signalCode: null, unref() {} });
+  const identity = { pid: worker.pid, ppid: process.pid, pgid: null, started: '10' };
+  const tableRequests = [];
+  windowsHostFixture(t, async (_command, _args, _options, request) => {
+    if (!request) return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
+    const { operation, input } = request;
+    if (operation === 'processTable') {
+      tableRequests.push(input.requiredPids);
+      return { result: [{ pid: process.pid, ppid: process.ppid, pgid: null, started: '9' },
+        ...(worker.exitCode === null ? [identity] : [])] };
+    }
+    if (operation === 'processIdentity') return { result: identity };
+    if (operation === 'rootPublish') await fs.rename(input.source, input.destination);
+    return { result: true };
+  });
+  t.mock.method(childProcess, 'spawn', (command, args, options) => {
+    if (command !== executable) return originalSpawn(command, args, options);
+    queueMicrotask(() => worker.emit('spawn'));
+    return worker;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const realTimeout = globalThis.setTimeout;
+  let polls = 0;
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    if (ms > 100) return realTimeout(callback, ms, ...args);
+    return realTimeout(() => {
+      if (++polls === 2) {
+        worker.exitCode = 1;
+        worker.emit('exit', 1, null);
+      }
+      callback(...args);
+    }, 0);
+  });
+  const { startRun } = await import('../commands/scripts/runtime/commands.mjs');
+  const { storeContext } = await import('../commands/scripts/runtime/store.mjs');
+  const context = await storeContext({ homeRoot, sourceIdentity });
+  const response = await startRun(context, { configuration: {}, environment: {},
+    request: { workspace: homeRoot },
+    selected: { resourceRoot: homeRoot, installedIdentity: sourceIdentity, executor: { adapter: 'custom' } },
+  }, { name: 'fixture' });
+
+  assert.equal(response.exitCode, 1);
+  assert.match(response.text, /^start_failed .* state=unknown code=workerLost\n$/);
+  assert.equal(polls, 2);
+  assert.deepEqual(tableRequests, [[process.pid]], 'Only preflight needs the full process observer.');
+});
+
+// Test Value Gate: a committed result can precede the worker's exit. Stop may
+// only return success after exit, and must retain a retry path at its deadline.
+test('stop waits for worker exit after a final result', async (t) => {
+  const { stopRun } = await import('../commands/scripts/runtime/commands.mjs');
+  for (const exits of [true, false]) {
+    await t.test(exits ? 'exits within the window' : 'remains alive at the deadline', async (t) => {
+      const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-stop-process-'));
+      t.after(() => fs.rm(root, { recursive: true, force: true }));
+      const worker = { pid: 424242, ppid: process.pid, pgid: null, started: '10' };
+      const final = { protocolVersion: 5, type: 'result', state: 'cancelled', generationStarted: true, backendExitCode: 0,
+        text: '', code: 'fixtureStopped', remoteStopConfirmed: true };
+      let workerAlive = true;
+      const api = windowsHostFixture(t, async (_command, _args, _options, request) => {
+        if (!request) return { stdout: '"fixture","S-1-5-21-123-456-789-1001"\r\n' };
+        const { operation } = request;
+        if (operation === 'processTable') return { result: [
+          { pid: process.pid, ppid: process.ppid, pgid: null, started: '9' }, ...(workerAlive ? [worker] : []),
+        ] };
+        assert.notEqual(operation, 'processStop');
+        return { result: true };
+      });
+      const owner = await api.currentUserIdentity();
+      const run = await ownedExecution(root, owner, 'a'.repeat(11), { worker, localTreeStopped: true });
+      await Promise.all([
+        fs.writeFile(path.join(run.directory, 'final.json'), JSON.stringify(final)),
+        fs.writeFile(path.join(run.directory, 'snapshot.json'), JSON.stringify({ state: 'closing', sequence: 3, ready: false, initialization: null, initializationSequence: 0 })),
+        fs.writeFile(path.join(run.directory, 'observed.json'), JSON.stringify({ sequence: 0, initializationSequence: 0, terminalConsumed: false })),
+      ]);
+      const realTimeout = globalThis.setTimeout;
+      let now = Date.now();
+      t.mock.method(Date, 'now', () => now);
+      t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+        if (ms > 100) return realTimeout(callback, ms, ...args);
+        return realTimeout(() => {
+          now += exits ? 100 : 30000;
+          if (exits) workerAlive = false;
+          callback(...args);
+        }, 0);
+      });
+      const context = { root, owner };
+      const request = { runs: [run.handle] };
+      let response = await stopRun(context, request);
+
+      if (!exits) {
+        assert.equal(response.exitCode, 1);
+        assert.match(response.text, /^stopping .* remote_stop_confirmed=true\n$/);
+        assert.match(response.diagnostic, /code="localStopUnconfirmed"/);
+        assert.ok((await fs.stat(path.join(run.directory, 'adapter'))).isDirectory());
+        assert.deepEqual(JSON.parse(await fs.readFile(path.join(run.directory, 'final.json'), 'utf8')), final);
+        workerAlive = false;
+        response = await stopRun(context, request);
+      }
+      assert.equal(workerAlive, false);
+      assert.equal(response.exitCode, 0);
+      assert.match(response.text, /^stopped .* remote_stop_confirmed=true\n$/);
+    });
+  }
 });

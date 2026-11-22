@@ -7,7 +7,8 @@ import { parseOpenCodePermissionDocument, readOpenCodePermissionChain, mergeOpen
   isOpenCodePermission, openCodePermissionConfigured, openCodePermissionResourceKey, openCodePrefixesOverlap, type OpenCodeLayerRule } from './opencode-permissions.js';
 import { commitPermissionOwnership, manualPermissionEntries, permissionConflict, permissionFailureNotice, permissionFileFingerprint, type PermissionWriteReceipt,
   readPermissionHost, readPermissionSidecar } from './permission-sidecar.js';
-import { openCodeRestrictions, prepareRelatedOpenCodeProjects, readOpenCodeUserRestrictions, type RelatedOpenCodeProject } from './opencode-related-permissions.js';
+import { openCodeRestrictions, prepareRelatedOpenCodeProjects, readOpenCodeUserRestrictions, relatedOpenCodeProjectChanges,
+  type RelatedOpenCodeProject, type RelatedOpenCodeProjectBatch, type RelatedOpenCodeProjectWrites } from './opencode-related-permissions.js';
 import type { DeploymentBinding, Diagnostic, ReadContext } from './contracts.js';
 import { canonicalizePathThroughExistingAncestorSync } from '../utils/state-paths.js';
 import { attachSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -19,6 +20,7 @@ import { adjustedPermissionOwners, hostPermissionImpactDiagnostics, isPermission
   type PermissionHost, type HostPermissionRule } from './host-permission-policy.js';
 import { resolvePlatformConfigRoot, TARGET_DISPLAY_NAMES } from './discovery.js';
 import type { HostPermissionAdjustment, PermissionClaim, PermissionDocument } from './permission-sidecar.js';
+import { GROK_ADDITIONAL_RULES_UNVERIFIED, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 
 export type PermissionLocator = Extract<OwnedSharedLocator, { kind: 'host-permissions' }>;
 
@@ -62,8 +64,17 @@ class RelatedProjectPermissionError extends Error {
 export function relatedProjectPermissionNotices(error: unknown, subject: Diagnostic['subject']): Diagnostic[] {
   if (!(error instanceof RelatedProjectPermissionError)) return [];
   const primary = error.primaryFailure && permissionFailureNotice(error.primaryFailure.code, error.primaryFailure.path, subject);
-  return [...(primary ? [primary] : []), ...error.projects.map((path): Diagnostic => ({ code: 'permissionRelatedProjectUpdateIncomplete',
-    severity: 'error', subject: { ...subject, scope: 'project' }, detail: { reasonCode: error.code, path }, message: relatedProjectRecovery }))];
+  return [...(primary ? [primary] : []), ...error.projects.map((path) => incompleteProjectNotice(path, subject, error.code))];
+}
+
+function incompleteProjectNotice(path: string, subject: Diagnostic['subject'], reasonCode: string): Diagnostic {
+  return { code: 'permissionRelatedProjectUpdateIncomplete', severity: 'error', subject: { ...subject, scope: 'project' },
+    detail: { reasonCode, path }, message: relatedProjectRecovery };
+}
+
+export function pendingRelatedProjectNotices(batch: RelatedOpenCodeProjectBatch, interrupted: boolean): Diagnostic[] {
+  return [...batch.pending].map(([path, { subject }]) => incompleteProjectNotice(path, subject,
+    interrupted ? 'operationInterrupted' : 'permissionRelatedProjectUpdateIncomplete'));
 }
 
 function replaceOwners(previous: PermissionBatchOwners, changes: PermissionBatchOwners) {
@@ -103,7 +114,9 @@ function preparePermissionDocument(ctx: ReadContext, locator: PermissionLocator,
     }
     if (locator.platform === 'antigravity') {
       const document = parseAntigravityPermissionDocument(host ?? '{}');
-      return { document: document as PermissionDocument, resources: (claim: PermissionClaim) => antigravityPermissionResources(claim, ctx.platform), isRule: isAntigravityPermission, agentRules: [],
+      return { document: document as PermissionDocument,
+        resources: (claim: PermissionClaim) => antigravityPermissionResources(claim, ctx.platform, { includeLegacyRaw: true }),
+        isRule: isAntigravityPermission, agentRules: [],
         chain: async (): Promise<OpenCodeLayerRule[]> => { await assertAntigravityGlobalPermissionPath(ctx, locator.settingsPath); return []; },
         merge: (entries: PermissionClaim[], manual: unknown[], _layers: OpenCodeLayerRule[]) =>
           mergeAntigravityPermissions(entries, manual, ctx.platform, document.strict) };
@@ -172,7 +185,7 @@ export async function inspectHostPermissionDelivery(ctx: ReadContext, binding: D
 }
 
 async function readReconciliation(ctx: ReadContext, locator: PermissionLocator, claims: PermissionClaim[] | undefined,
-  batch?: PermissionBatchOwners, reviewedProjects?: RelatedOpenCodeProject[]) {
+  batch?: PermissionBatchOwners, reviewedProjects?: RelatedOpenCodeProject[], projectWrites?: RelatedOpenCodeProjectWrites) {
   await assertScopedPermissionPath(ctx, locator);
   const snapshot = await readPermissionSidecar(ctx.env, locator.platform, locator.settingsPath);
   const host = await readPermissionHost(snapshot.target);
@@ -204,9 +217,10 @@ async function readReconciliation(ctx: ReadContext, locator: PermissionLocator, 
   const selectedOwners = new Set([locator.ownerKey, ...Object.keys(batch ?? {})]);
   const affectedRestrictions = [previous, candidates].flatMap((state) =>
     openCodeRestrictions(Object.fromEntries(Object.entries(state).filter(([owner]) => selectedOwners.has(owner)))));
-  const { writes: projectPlans, conflicts: projectConflicts } = locator.platform === 'opencode' && !locator.projectRoot
+  const openCodeUser = locator.platform === 'opencode' && !locator.projectRoot;
+  const { writes: projectPlans, conflicts: projectConflicts } = openCodeUser
     ? await prepareRelatedOpenCodeProjects(ctx, { path: snapshot.target, permissions: [...final.before, ...manual, ...final.after], agentRules: dialect.agentRules },
-      futureRestrictions, affectedRestrictions, reviewedProjects) : { writes: [], conflicts: [] };
+      futureRestrictions, affectedRestrictions, reviewedProjects, projectWrites) : { writes: [], conflicts: [] };
   const relatedProjects = projectPlans.map((plan) => plan.review);
   const installed = new Set(document.permissions.map(identityDigest));
   const oldRules = [...snapshot.state?.before ?? [], ...snapshot.state?.after ?? [], ...snapshot.state?.manualPermissions ?? []]
@@ -285,16 +299,36 @@ async function readReconciliation(ctx: ReadContext, locator: PermissionLocator, 
   const writtenAdjustments = adjustedPermissionOwners(owners, merged.adjusted, managedRules(merged), matchesResource, () => true)
     .filter((rule) => reviewedAdjustmentKeys.has(identityDigest(rule)) && !document.permissions.some((old) => dialect.isRule(old) && sameRule(old, rule)));
   const scope = locator.projectRoot ? 'project' : 'user';
-  const additionalImpacts = [...hostPermissionImpactDiagnostics(adjusted, locator.platform, scope, locator.settingsPath),
+  const layerNotices: Diagnostic[] = [];
+  if (locator.platform === 'grok' && (claims?.length || previous[locator.ownerKey]?.length)) {
+    for (const path of new Set(layerState.otherRules.filter(({ rule }) => rule === null).map(({ path }) => path))) {
+      layerNotices.push({ code: HOST_PERMISSION_ADDITIONAL_IMPACT, severity: 'warning',
+        subject: { pluginId: currentPlugin, target: locator.platform, scope },
+        detail: { reasonCode: GROK_ADDITIONAL_RULES_UNVERIFIED, path },
+        message: 'An additional Grok configuration could not be read. Its rules may affect the permission decision.' });
+    }
+  }
+  const additionalImpacts = [...hostPermissionImpactDiagnostics(adjusted, locator.platform, scope, locator.settingsPath), ...layerNotices,
     ...relatedProjects.flatMap((project) => project.additionalImpacts ?? [])];
   const reviewDigest = identityDigest({ manual, layerState, candidates, relatedProjects, projectConflicts,
     ...(final.adjusted?.length ? { adjusted: final.adjusted } : {}) });
-  const preview = { skipped, adjusted, effective, affected, additionalImpacts, restorations: restorationNotices(final), reviewDigest, relatedProjects,
+  const preview = { skipped, adjusted, effective, affected, additionalImpacts, layerNotices, restorations: restorationNotices(final), reviewDigest, relatedProjects,
     ownershipDegraded: retainedAfterDrift || !snapshot.state && (snapshot.unreadable || snapshot.raw !== null || document.permissions.length > 0) };
+  const allOwnersCommitted = identityDigest(owners) === identityDigest(candidates);
+  const liveProjectPlans = async (pending: RelatedOpenCodeProject[] = []) => {
+    if (!openCodeUser || allOwnersCommitted && !projectWrites?.size && !pending.length) return projectPlans;
+    if (!allOwnersCommitted && !projectWrites) return [];
+    const activeRestrictions = openCodeRestrictions(owners);
+    const affected = allOwnersCommitted ? affectedRestrictions
+      : [previous, owners].flatMap((state) => openCodeRestrictions({ [locator.ownerKey]: state[locator.ownerKey] ?? [] }));
+    return (await prepareRelatedOpenCodeProjects(ctx, { path: snapshot.target,
+      permissions: [...merged.before, ...manual, ...merged.after], agentRules: dialect.agentRules },
+    activeRestrictions, affected, allOwnersCommitted ? [...reviewedProjects ?? [], ...pending] : undefined)).writes;
+  };
   return { snapshot, host, document, manual, owners, merged, preview, appliedNotices: [
-    ...restorationNotices(merged), ...hostPermissionImpactDiagnostics(writtenAdjustments, locator.platform, scope, locator.settingsPath),
+    ...restorationNotices(merged), ...hostPermissionImpactDiagnostics(writtenAdjustments, locator.platform, scope, locator.settingsPath), ...layerNotices,
   ],
-    projectsToWrite: identityDigest(owners) === identityDigest(candidates) ? projectPlans : [], verifyChain: async () => {
+    allOwnersCommitted, liveProjectPlans, verifyChain: async () => {
     if (identityDigest(await chain()) !== identityDigest(layerState)) throw permissionConflict();
   } };
 }
@@ -360,18 +394,20 @@ export async function hostPermissionFingerprint(ctx: ReadContext, locator: Permi
 
 export async function updateHostPermissions(ctx: ReadContext, locator: PermissionLocator, value?: unknown,
   onWrite?: PermissionWriteReceipt, batch?: ReviewedPermissionBatch,
-  onNotices?: (notices: Diagnostic[]) => void, expectedFingerprint?: string): Promise<boolean> {
+  onNotices?: (notices: Diagnostic[]) => void, expectedFingerprint?: string,
+  projectBatch?: RelatedOpenCodeProjectBatch): Promise<boolean> {
   if (value !== undefined && !isHostPermissionMutation(value, locator.platform)) throw new Error('platformContributionUnsupported');
   if (value === undefined && !await hasPermissionOwner(ctx.env, locator)) {
     if (batch) throw permissionConflict();
     return false;
   }
-  const planned = await readReconciliation(ctx, locator, value?.permissions, batch?.owners, batch?.relatedProjects);
+  const planned = await readReconciliation(ctx, locator, value?.permissions, batch?.owners, batch?.relatedProjects, projectBatch?.writes);
   if (expectedFingerprint && expectedFingerprint !== permissionFileFingerprint(planned.host, planned.snapshot.raw)) throw permissionConflict();
   const review = batch ?? value;
   if (!batch && planned.preview.relatedProjects.length) throw permissionConflict();
   if (review && (review.reviewDigest !== planned.preview.reviewDigest
     || identityDigest(review.effective) !== identityDigest(planned.preview.effective))) throw permissionConflict();
+  const projectPlans = await planned.liveProjectPlans(projectBatch ? [...projectBatch.pending.values()].map(({ review }) => review) : []);
   let changed: boolean;
   try {
     changed = await commitPermissionOwnership({ ...planned, onWrite, before: planned.merged.before, after: planned.merged.after, effective: planned.merged.effective });
@@ -379,31 +415,62 @@ export async function updateHostPermissions(ctx: ReadContext, locator: Permissio
     if (error instanceof Error && 'code' in error && error.code === 'permissionOwnershipWriteFailed' && planned.appliedNotices.length) {
       onNotices?.(planned.appliedNotices);
     }
-    if (planned.projectsToWrite.length && error && typeof error === 'object' && 'mutation' in error && error.mutation === 'confirmed'
+    if (projectPlans.length && error && typeof error === 'object' && 'mutation' in error && error.mutation === 'confirmed'
       && 'code' in error && typeof error.code === 'string') {
-      throw new RelatedProjectPermissionError(planned.projectsToWrite.map((project) => project.review.path), 'confirmed',
+      throw new RelatedProjectPermissionError(projectPlans.map((project) => project.review.path), 'confirmed',
         ctx.signal?.aborted ?? false, error, { path: locator.settingsPath, code: error.code });
     }
     throw error;
   }
-  if (changed && planned.appliedNotices.length) onNotices?.(planned.appliedNotices);
+  const notices = changed ? planned.appliedNotices : planned.preview.layerNotices;
+  if (notices.length) onNotices?.(notices);
+  if (planned.allOwnersCommitted) projectBatch?.pending.clear();
   const incomplete: string[] = [];
   let projectFailure: unknown;
   let possibleProjectChange = false;
-  for (const project of planned.projectsToWrite) {
-    if (ctx.signal?.aborted) {
+  for (const project of projectPlans) {
+    const reviewed = batch?.relatedProjects?.find((entry) => entry.path === project.review.path);
+    // A subset of owners can produce a different Project rule. Apply only
+    // the exact rule changes from the Review and report any remaining work.
+    const approved = reviewed && (['removed', 'added', 'additionalImpacts'] as const).every((field) => {
+      const approvedEntries = new Set((reviewed[field] ?? []).map(identityDigest));
+      return (project.review[field] ?? []).every((entry) => approvedEntries.has(identityDigest(entry)));
+    });
+    if (!approved && !planned.allOwnersCommitted && !ctx.signal?.aborted && projectBatch) {
+      // A later owner may supply a replacement restriction. Until the batch
+      // settles, keep the current Project rules and remember what to recheck.
+      if (changed) projectBatch.pending.set(project.review.path, { review: project.review,
+        subject: { pluginId: parseSharedOwnerToken(locator.ownerKey)?.pluginId, target: 'opencode' } });
+      continue;
+    }
+    if (ctx.signal?.aborted || !approved) {
+      projectBatch?.pending.delete(project.review.path);
       incomplete.push(project.review.path);
       continue;
     }
+    const reportWrittenProject = () => onNotices?.([{
+      code: 'permissionRelatedProjectUpdated', severity: 'info', subject: { target: 'opencode', scope: 'project' },
+      detail: { path: project.review.path, reasonCode: 'permissionRelatedProjectUpdated',
+        permissionChanges: relatedOpenCodeProjectChanges(project.review) },
+      message: 'Updated OpenCode Project permissions.',
+    }, ...project.review.additionalImpacts ?? []]);
     try {
-      const projectChanged = await commitPermissionOwnership({ ...project, onWrite });
-      if (projectChanged && project.review.additionalImpacts?.length) onNotices?.(project.review.additionalImpacts);
+      const projectChanged = await commitPermissionOwnership({ ...project, onWrite: (previous, current, target, host) => {
+        const destination = project.review.path;
+        projectBatch?.writes.set(destination, { original: projectBatch.writes.get(destination)?.original ?? project, fingerprint: current });
+        onWrite?.(previous, current, target, host);
+      } });
+      if (projectChanged) reportWrittenProject();
+      projectBatch?.pending.delete(project.review.path);
       changed ||= projectChanged;
     } catch (error) {
       const mutation = error && typeof error === 'object' && 'mutation' in error ? error.mutation : undefined;
-      if (mutation === 'confirmed' && project.review.additionalImpacts?.length) onNotices?.(project.review.additionalImpacts);
+      if (mutation === 'confirmed' && error && typeof error === 'object' && 'code' in error && error.code === 'permissionOwnershipWriteFailed') {
+        reportWrittenProject();
+      }
       changed ||= mutation === 'confirmed';
       possibleProjectChange ||= mutation !== 'none' && !ctx.signal?.aborted;
+      projectBatch?.pending.delete(project.review.path);
       incomplete.push(project.review.path);
       projectFailure ??= error;
     }

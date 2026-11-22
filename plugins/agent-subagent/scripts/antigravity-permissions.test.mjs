@@ -59,16 +59,31 @@ test('Antigravity missing user settings stay absent while each execution gets it
   await assert.rejects(fs.access(path.join(f.home, '.gemini')), { code: 'ENOENT' });
 });
 
+function legacyRawRule(rawRule) {
+  const argument = String.raw`(?:[\x20\t]+(?:[-A-Za-z0-9_./:@%+=,]`;
+  const prefix = rawRule.slice(0, rawRule.indexOf(argument));
+  return prefix + argument + String.raw`+|'[^']*'|"(?:[^"\\$\x60]|\\[^\r\n])*"|\\[^\r\n])+)*[\x20\t]*)`;
+}
+
 test('Antigravity existing exact grants are not duplicated in the session override', options, async (t) => {
   const f = await fixture(t);
-  const rules = antigravityPermissionRules(f.command, f.args);
+  const [prefix, raw] = antigravityPermissionRules(f.command, f.args);
+  const legacy = legacyRawRule(raw);
+  assert.notEqual(legacy, raw);
+  for (const rule of [raw, legacy]) {
+    const matcher = new RegExp(`^(?:${rule.slice('command(regex:'.length, -1)})$`, 'u');
+    assert.equal(matcher.test(`"${f.command}" '${f.args[0]}' ${f.args.slice(1).join(' ')} receive --timeout-ms 0`), true);
+  }
   await fs.mkdir(f.userDirectory, { recursive: true, mode: 0o700 });
   await fs.chmod(path.dirname(f.userDirectory), 0o700);
-  const original = JSON.stringify({ permissions: { allow: rules }, preserve: true });
-  await fs.writeFile(f.target, original, { mode: 0o600 });
-  const result = await prepareAntigravityPermission(f);
-  assert.deepEqual(JSON.parse(await fs.readFile(result.settingsFile, 'utf8')), { permissions: { allow: rules } });
-  assert.equal(await fs.readFile(f.target, 'utf8'), original);
+  for (const existingRaw of [raw, legacy]) {
+    const rules = [prefix, existingRaw];
+    const original = JSON.stringify({ permissions: { allow: rules }, preserve: true });
+    await fs.writeFile(f.target, original, { mode: 0o600 });
+    const result = await prepareAntigravityPermission(f);
+    assert.deepEqual(JSON.parse(await fs.readFile(result.settingsFile, 'utf8')), { permissions: { allow: rules } });
+    assert.equal(await fs.readFile(f.target, 'utf8'), original);
+  }
 });
 
 // Permission boundary: quoted entry forms must not authorize another program,

@@ -12,7 +12,7 @@ import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory } from '../platforms/layout.js';
-import { getPhysicalKey } from '../platforms/identity.js';
+import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
 import { piAgentConsumerDiagnostic, piProjectListContainsOnly } from '../platforms/inspection-pi.js';
@@ -21,7 +21,8 @@ import { createNativeLifecycleServices } from '../platforms/lifecycle-native-ser
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
 import { grokProjectPermissionsAuthorized } from '../platforms/grok-permission-config.js';
 import { isPermissionHost } from '../platforms/host-permission-policy.js';
-import { hostPermissionFingerprint, missingPermissionOwnershipWarning, permissionComponent, permissionOwnerContentDigest, updateHostPermissions } from '../platforms/permission-ownership.js';
+import { hostPermissionFingerprint, missingPermissionOwnershipWarning, pendingRelatedProjectNotices, permissionComponent, permissionOwnerContentDigest, updateHostPermissions } from '../platforms/permission-ownership.js';
+import type { RelatedOpenCodeProjectBatch } from '../platforms/opencode-related-permissions.js';
 import { cursorHookEntryCommand, cursorHooks } from '../platforms/cursor-workspace-hook.js';
 import { gapSupplementFiles, ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
 import { projectPlatformMarketplace } from '../platforms/projection-marketplace.js';
@@ -494,6 +495,10 @@ export class PlatformRebuildSession {
   // A sibling target can update the same permission file. Only the exact pair
   // of host and sidecar bytes confirmed by our own write inherits its baseline.
   private readonly permissionWrites = new Map<string, { previous: string; current: string }>();
+  private readonly openCodeProjectBatches = new Map<string, RelatedOpenCodeProjectBatch>();
+  pendingOpenCodeProjectNotices(interrupted: boolean) {
+    return [...this.openCodeProjectBatches.values()].flatMap((batch) => pendingRelatedProjectNotices(batch, interrupted));
+  }
   private readonly grokPermissionWrites = new Map<string, { previous: string | null; current: string | null }>();
   private recordPermissionWrite(target: string, previous: string, current: string, host?: { previous: string | null; current: string | null }): void {
     const last = this.permissionWrites.get(target);
@@ -1559,6 +1564,13 @@ export class PlatformRebuildSession {
         cleanupResults.length = 0;
         const receipts: DeploymentReceipt[] = [...blockedReceipts];
         for (const prepared of deployments) {
+          const batch = prepared.plan.evidence.permissionBatch;
+          let relatedProjectBatch: RelatedOpenCodeProjectBatch | undefined;
+          if (batch && prepared.plan.binding.platform === 'opencode' && prepared.plan.binding.scope.kind === 'user') {
+            const key = identityDigest({ owners: batch.owners, projects: batch.relatedProjects });
+            relatedProjectBatch = this.openCodeProjectBatches.get(key) ?? { writes: new Map(), pending: new Map() };
+            this.openCodeProjectBatches.set(key, relatedProjectBatch);
+          }
           const supplementFiles = componentSupplementFiles(prepared.plan);
           const writtenFiles = new Map<string, { digest: string; componentIds: string[] }>();
           const appliedPermissionNotices: import('../platforms/contracts.js').Diagnostic[] = [];
@@ -1623,8 +1635,8 @@ export class PlatformRebuildSession {
               } else if (component.kind === 'shared-config' && component.locator.kind === 'host-permissions') {
                 const locator = component.locator;
                 const changed = await updateHostPermissions(ctx, locator, await jsonObject(contribution.stagingPath),
-                  (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), prepared.plan.evidence.permissionBatch,
-                  (notices) => appliedPermissionNotices.push(...notices));
+                  (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), batch,
+                  (notices) => appliedPermissionNotices.push(...notices), undefined, relatedProjectBatch);
                 return { mutation: changed ? 'confirmed' : 'none', changed };
               } else if (component.kind === 'shared-config' && component.locator.kind === 'claude-permissions') {
                 const content = await jsonObject(contribution.stagingPath);
@@ -1661,12 +1673,12 @@ export class PlatformRebuildSession {
               let permissionFailure: unknown;
               const executor = locator ? { ...this.ownership, removeShared: async () => {
                 try {
-                  await updateHostPermissions(ctx, locator, undefined, (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), prepared.plan.evidence.permissionBatch,
+                  await updateHostPermissions(ctx, locator, undefined, (previous, current, target = locator.settingsPath, host) => this.recordPermissionWrite(target, previous, current, locator.platform === 'grok' ? host : undefined), batch,
                     (notices) => {
                       for (const notice of notices) {
-                        (notice.code === HOST_PERMISSION_ADDITIONAL_IMPACT ? appliedPermissionNotices : restorations).push(notice);
+                        (notice.code === 'hostPermissionRestored' ? restorations : appliedPermissionNotices).push(notice);
                       }
-                    });
+                    }, undefined, relatedProjectBatch);
                 } catch (error) {
                   permissionFailure = error;
                   throw error;

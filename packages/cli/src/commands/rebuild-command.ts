@@ -10,7 +10,8 @@ import fs from 'fs-extra';
 import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import { nativeInstallResources } from './rebuild-platform-integration.js';
 import { isPermissionHost } from '../platforms/host-permission-policy.js';
-import { missingPermissionOwnershipWarning, relatedProjectPermissionNotices, reviewPermissionRemovals,
+import type { RelatedOpenCodeProjectBatch } from '../platforms/opencode-related-permissions.js';
+import { missingPermissionOwnershipWarning, pendingRelatedProjectNotices, relatedProjectPermissionNotices, reviewPermissionRemovals,
   updateHostPermissions, type PermissionRemovalReview } from '../platforms/permission-ownership.js';
 import { permissionConflict, permissionFailureNotice } from '../platforms/permission-sidecar.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
@@ -1591,6 +1592,7 @@ async function cleanupOfflineOwnedComponents(options: {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   const codexManager = options.codexManager;
   const advanced = new Map<string, string>();
+  const relatedProjectBatch: RelatedOpenCodeProjectBatch = { writes: new Map(), pending: new Map() };
   const permissionNotices: Diagnostic[] = [];
   let cleanupMutation: RebuildResult['cleanupMutation'];
   const context: RebuildExecutionContext = {
@@ -1601,7 +1603,8 @@ async function cleanupOfflineOwnedComponents(options: {
       try {
         await updateHostPermissions({ env: options.env, cwd: options.cwd, invocationCwd: options.nativePreparation?.invocationCwd },
           locator, undefined, (_previous, current, target = locator.settingsPath) => advanced.set(target, current), review.batch,
-          (notices) => permissionNotices.push(...notices), expected);
+          (notices) => permissionNotices.push(...notices), expected,
+          locator.platform === 'opencode' && !locator.projectRoot ? relatedProjectBatch : undefined);
       } catch (error) {
         const notices = relatedProjectPermissionNotices(error, {
           pluginId: parseSharedOwnerToken(locator.ownerKey)?.pluginId, target: locator.platform,
@@ -1879,6 +1882,11 @@ async function cleanupOfflineOwnedComponents(options: {
       if (cleanupMutation) failed.cleanupMutation = cleanupMutation;
       results.push(failed);
     }
+  }
+  for (const notice of pendingRelatedProjectNotices(relatedProjectBatch, false)) {
+    const result = results.find((entry) => entry.target.platform === 'opencode' && entry.target.scope === 'user'
+      && entry.target.pluginId === notice.subject?.pluginId);
+    if (result) (result.cleanupNotices ??= []).push(notice);
   }
   const obsoleteContracts = path.join(resolveAwHome(options.env), 'installation-contracts');
   try {
@@ -6039,6 +6047,13 @@ async function runRebuildCommandInSession(
         }
       };
       const privatePackages: Array<{ dispose(): Promise<void> }> = [];
+      const reportPendingOpenCodeProjects = (interrupted: boolean) => {
+        for (const notice of lockedPreparation.integration.pendingOpenCodeProjectNotices(interrupted)) {
+          const rebuild = results.flatMap((result) => result.rebuildResults).find((entry) => entry.target.platform === 'opencode'
+            && entry.target.scope === 'user' && entry.target.pluginId === notice.subject?.pluginId);
+          rebuild?.deploymentReceipts?.[0]?.diagnostics.push(notice);
+        }
+      };
       try {
         if (admission && options.runtime?.batchInstallPlatform) {
           const selectedKeys = new Set(executionSelections.map((selection) => executionKey(selection, lockedPlan)));
@@ -6120,10 +6135,12 @@ async function runRebuildCommandInSession(
           failCompletedCodexTarget({ identity: targetIdentity(selection, planTargetFor(lockedPlan, selection)!.resolvedScope),
             message: `${code}: Codex postcheck did not complete.` });
         }
+        reportPendingOpenCodeProjects(true);
         throw new RebuildInterruptedError(mergeRebuildCommandResults(results.filter(Boolean)), error);
       } finally {
         await Promise.all(privatePackages.map((staging) => staging.dispose()));
       }
+      reportPendingOpenCodeProjects(false);
       const merged = mergeRebuildCommandResults(results);
       if (malformedSelectedConfigPreserved) {
         merged.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);

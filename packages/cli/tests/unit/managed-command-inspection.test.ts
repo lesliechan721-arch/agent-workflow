@@ -186,9 +186,40 @@ prefix_rule(pattern = ${JSON.stringify(argv)}, decision = "allow")
     const scoped = await inspectManagedCommandRouteChanges(options);
     expect(scoped.affectedPermissions).toHaveLength(2);
     expect(scoped.affectedPermissions).toContainEqual({ platform: 'opencode', path: project, action: 'deny', argvPrefix: argv });
+    expect(scoped.permissionReadFailures).not.toContain(project);
     const unresolved = await inspectManagedCommandRouteChanges({ ...options, env: { ...env, OPENCODE_CONFIG_DIR: 'relative' } });
     expect(unresolved.affectedPermissions).toEqual([{ platform: 'opencode', path: project, action: 'deny', argvPrefix: argv }]);
     expect(unresolved.permissionReadFailures).toContain('OPENCODE_CONFIG_DIR');
+  });
+
+  it.each(['invalid JSON', 'invalid rule', 'unreadable file'] as const)('keeps inspecting OpenCode layers when the target fails with %s', async (damage) => {
+    const cwd = isolated.layout.fixtureCwd;
+    const project = path.join(cwd, 'opencode.json');
+    const alternateProject = path.join(cwd, 'opencode.jsonc');
+    const custom = path.join(cwd, 'custom.json');
+    const env = { ...isolated.env, OPENCODE_CONFIG: custom };
+    const user = path.join(resolvePlatformConfigRoot('opencode', { cwd, env }), 'opencode.json');
+    const selector = 'fixture/inspection-commands';
+    const argv = ['aw', 'command', 'run', selector, '--', 'check'];
+    const rule = (effect: string) => ({ action: 'shell', resource: argv.join(' ') + ' *', effect });
+    await fs.ensureDir(path.join(cwd, '.git'));
+    await fs.outputJson(user, { permissions: [rule('ask')] });
+    await fs.outputJson(alternateProject, { permissions: [rule('deny')] });
+    await fs.outputJson(custom, { agents: { reviewer: { permissions: [rule('allow')] } } });
+    if (damage === 'invalid JSON') await fs.outputFile(project, '{"permissions": [');
+    else if (damage === 'invalid rule') await fs.outputJson(project, { permissions: [rule('allow'), rule('unknown'), rule('deny')] });
+    else await fs.ensureDir(project);
+
+    const review = await inspectManagedCommandRouteChanges({ selector, cwd, env, after: normalizeCommandRoutes({
+      subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs' }],
+    }) });
+    const match = (file: string, action: string) => ({ platform: 'opencode', path: file, action, argvPrefix: argv });
+    expect(review.permissionReadFailures.filter((file) => file === project)).toEqual([project]);
+    expect(review.affectedPermissions).toEqual(expect.arrayContaining([
+      match(user, 'ask'), match(alternateProject, 'deny'), match(custom, 'allow'),
+    ]));
+    expect(review.affectedPermissions.filter(({ path: file }) => file === project)).toEqual(
+      damage === 'invalid rule' ? [match(project, 'allow'), match(project, 'deny')] : []);
   });
 
   it('shows configured Grok rules without treating an unread project file as a grant', async () => {

@@ -7,7 +7,7 @@ import { managedCommandRouteIsReachable } from '../generators/permissions.js';
 import { antigravityCommandTokens, readAntigravityGlobalPermissions } from '../platforms/antigravity-permissions.js';
 import { inspectGrokPermissionConfig } from '../platforms/grok-permission-config.js';
 import { getOpenCodePermissionRoot } from '../platforms/layout.js';
-import { openCodePermissionMayMatch, parseOpenCodePermissionDocument, readOpenCodePermissionChain } from '../platforms/opencode-permissions.js';
+import { openCodePermissionMayMatch, readOpenCodePermissionChain } from '../platforms/opencode-permissions.js';
 import { getClaudeHome, getCodexHome, resolveRepoRoot } from './state-paths.js';
 
 type LaunchReview = Pick<CommandLaunch, 'runner' | 'entry' | 'args' | 'cwd'> & { route: 'subcommand' | 'fallback' };
@@ -334,14 +334,8 @@ export async function inspectManagedCommandRouteChanges(options: {
   }
   const destination = path.join(destinationRoot, 'opencode.json');
   try {
-    const raw = await fs.readFile(destination, 'utf8').catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error;
-      return '{}';
-    });
-    const doc = parseOpenCodePermissionDocument(raw);
-    const layers = await readOpenCodePermissionChain(ctx, destination, hostConfigRoot, projectRoot, doc);
-    const known = [...doc.permissions.map((rule) => ({ path: destination, rule })), ...layers];
-    for (const { path: file, rule } of known) {
+    const layers = await readOpenCodePermissionChain(ctx, destination, hostConfigRoot, projectRoot);
+    for (const { path: file, rule } of layers) {
       if (!rule || typeof rule !== 'object') {
         if (!review.permissionReadFailures.includes(file)) review.permissionReadFailures.push(file);
         continue;

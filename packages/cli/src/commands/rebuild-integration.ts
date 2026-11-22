@@ -142,6 +142,7 @@ export async function disposePreparedPlatformRebuildSession(results: Map<string,
 export interface RebuildIntegration {
   resolvePlatformTargets(inputs: readonly Parameters<RebuildIntegration['buildTarget']>[0][]): Promise<void>;
   sealMarketplaceGenerations(targets: readonly DesiredTarget[]): Promise<void>;
+  pendingOpenCodeProjectNotices(interrupted: boolean): import('../platforms/contracts.js').Diagnostic[];
   driver: RebuildTargetDriver;
   setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
@@ -2148,6 +2149,7 @@ export function createRebuildIntegration(options: {
       }
     },
     sealMarketplaceGenerations: (eligible) => platformSession.sealMarketplaceGenerations(eligible),
+    pendingOpenCodeProjectNotices: (interrupted) => platformSession.pendingOpenCodeProjectNotices(interrupted),
     driver,
     setNativeMarketplaceEligibleTargets: driver.setNativeMarketplaceEligibleTargets,
     prepareNativeMarketplaceGroup: driver.prepareNativeMarketplaceGroup,

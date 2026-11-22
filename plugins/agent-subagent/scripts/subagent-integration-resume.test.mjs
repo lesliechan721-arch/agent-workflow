@@ -91,7 +91,9 @@ test('failed and cancelled executions resume and a new unsupported conclusion cl
   const running = await f.resume(first, 'Resume failed execution.', { resume: true });
   await f.initialized(running);
   successful(await f.command(['stop', '--run', first.run]), 'stop');
-  assert.equal((await f.stopped(first.run)).result.state, 'cancelled');
+  const stopped = await f.evidence(first.run);
+  assert.equal(stopped.result.state, 'cancelled');
+  assert.throws(() => process.kill(stopped.meta.worker.pid, 0), { code: 'ESRCH' });
   const unsupported = await f.resume(first, 'Resume cancelled execution.', { resume: false });
   await f.initialized(unsupported);
   assert.equal((await f.evidence(first.run)).snapshot.initialization.capabilities.resume.status, 'unsupported');

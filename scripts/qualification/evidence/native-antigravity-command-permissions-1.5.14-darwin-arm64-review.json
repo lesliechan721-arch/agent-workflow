@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "kind": "antigravity-cli-global-review-qualification",
+  "status": "local-management-and-settings-load-passed",
+  "host": {
+    "os": "macOS",
+    "version": "26.3.1",
+    "build": "25D2128",
+    "arch": "arm64"
+  },
+  "client": {
+    "name": "agy",
+    "version": "1.5.14",
+    "sha256": "e8c2959bf4744580d0e5b8f938ec2dc3918a942b620a6262e53856400f14e5fb"
+  },
+  "candidate": {
+    "awBuildStamp": {
+      "generationId": "16d20cb3-afd5-4765-a292-b8b8cd56e140",
+      "inputDigest": "2b6a70ee7828f5cc6d775fc6a48b188b1ab86e60ea752aeb5dea104dbaa3719d",
+      "outputDigest": "3a42b172c614be38809fa6d1869d969ae7438f48dbd2112a05e0643ed1b29530",
+      "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540",
+      "builtAt": "2026-11-22T16:56:54.709Z"
+    },
+    "antigravityMapperSha256": "90150fc142edd4b60e6421c93e00311e6dcb0408022e6ae4f78e769bc915f4a6",
+    "guideAntigravityRulesSha256": "654b8f0c154419b8a042773b01781b5e2eccf5a8f66d419ad62bfec38a96c284"
+  },
+  "previousCandidate": {
+    "gitRevision": "9e301a37",
+    "awBuildStamp": {
+      "generationId": "73814a85-aa6a-43aa-969b-e42b417256d7",
+      "inputDigest": "60919e635861d0966e0f8aed89e327d581be480a1961ae445622d06358351c05",
+      "outputDigest": "37071ecc3bb512b42f6a76a68e894e36913f926e3b714d48238208ba47f1871d",
+      "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540",
+      "builtAt": "2026-11-22T16:39:04.220Z"
+    },
+    "antigravityMapperSha256": "0294a9aed28d7f22dca4439fb7ce69c47ed4dd7ad8835f1cc6bccc815b0e01af",
+    "guideAntigravityRulesSha256": "16e0d2f7ba376faf3f14e4b7a3ef3f538f7a469f88ad47cd94fb06877f60bf4a"
+  },
+  "boundary": {
+    "scope": "CLI Global (AW user scope)",
+    "home": "fresh temporary HOME, AW_HOME, XDG roots and empty base environment",
+    "projects": "two independently initialized temporary Git repositories",
+    "externalNetwork": "denied by macOS sandbox; only local loopback permitted",
+    "credentials": "no credentials supplied; personal paths and Mach service lookups denied",
+    "modelPrompt": "none",
+    "outsideAllowlistReadDenied": true
+  },
+  "sourceReports": {
+    "previousInstallSha256": "63fc5df36cba4f987b0b30b12c99f288c86f039f0a21c2255f008fe90d3cbad0",
+    "currentRunSha256": "73412eae07074110a587b47fb3ec0effbba309e285407e790a4456e7e63dccb9"
+  },
+  "extraction": "Selected public AW results, native settings readback, and host identity. Paths, regex bodies, full AW receipts, and terminal output were omitted.",
+  "fixtureDeclaration": {
+    "name": "approval",
+    "allow": [
+      "echo approval-shared",
+      "echo report?",
+      {
+        "argsPrefix": [
+          "summary"
+        ]
+      }
+    ],
+    "ask": [
+      "echo approval-ask",
+      "env LANG=C echo wrapped-review"
+    ],
+    "deny": [
+      "echo approval-deny"
+    ]
+  },
+  "review": {
+    "exitCode": 3,
+    "settingsUnchanged": true,
+    "effectCodes": [
+      "hostPermissionAdditionalImpact",
+      "hostPermissionAdditionalImpact",
+      "changeHostPermissions"
+    ]
+  },
+  "installation": {
+    "exitCode": 0,
+    "nativeRegistration": [
+      {
+        "registered": true,
+        "enabled": true,
+        "version": "0.1.0",
+        "skillSha256": "a392cd590c763c60cd3c6701d3cb172d9172335e8dda2c031f7938c1b5aec221"
+      },
+      {
+        "registered": true,
+        "enabled": true,
+        "version": "0.1.0",
+        "skillSha256": "a392cd590c763c60cd3c6701d3cb172d9172335e8dda2c031f7938c1b5aec221"
+      }
+    ],
+    "literalRules": {
+      "allow": [
+        "command(echo approval-shared)",
+        "command(aw command run fixture/approval-sample -- summary)",
+        "command(echo report?)"
+      ],
+      "ask": [
+        "command(echo manual-first)",
+        "command(echo manual-second)",
+        "command(echo approval-ask)",
+        "command(echo wrapped-review)"
+      ],
+      "deny": [
+        "command(echo manual-deny)",
+        "command(echo approval-deny)"
+      ]
+    },
+    "rawRuleActions": [
+      "allow"
+    ],
+    "settingsSha256": "1ee7bb3408aba8daa0b4ca8557669d94c4050ff8f23fcc3fd22910332fceebfc"
+  },
+  "upgrade": {
+    "previousPublicInstallExitCode": 0,
+    "previousNativeRegistration": [
+      {
+        "registered": true,
+        "enabled": true,
+        "version": "0.1.0",
+        "skillSha256": "a392cd590c763c60cd3c6701d3cb172d9172335e8dda2c031f7938c1b5aec221"
+      },
+      {
+        "registered": true,
+        "enabled": true,
+        "version": "0.1.0",
+        "skillSha256": "a392cd590c763c60cd3c6701d3cb172d9172335e8dda2c031f7938c1b5aec221"
+      }
+    ],
+    "previousSettingsSha256": "79927bf6cbd4f78e96a9c52a1384c189858ec0ea1573d93d81c691a9672280a0",
+    "syncExitCode": 0,
+    "oldOwnedRawRuleWithdrawn": true,
+    "newRawRuleConfigured": true,
+    "otherRulesPreservedInOrder": true,
+    "settingsSha256": "1ee7bb3408aba8daa0b4ca8557669d94c4050ff8f23fcc3fd22910332fceebfc"
+  },
+  "nativeStartup": {
+    "sessions": {
+      "beforeUpgrade": {
+        "startMode": "interactive CLI, no input",
+        "settingsBeforeSha256": "79927bf6cbd4f78e96a9c52a1384c189858ec0ea1573d93d81c691a9672280a0",
+        "settingsAfterSha256": "866f3234fbff09b27cb3c2c13cacf2c84cbfe31e82a27844ba8cc6c5b4e59537",
+        "settingsBytesRewritten": true,
+        "rulesPreservedInOrder": true,
+        "signInRequired": true
+      },
+      "baseline": {
+        "startMode": "interactive CLI, no input",
+        "settingsBeforeSha256": "6627b4becfb5783c2b5dec6de5d3a48236b22d337afd1d45bdb0e222f513c3d6",
+        "settingsAfterSha256": "6627b4becfb5783c2b5dec6de5d3a48236b22d337afd1d45bdb0e222f513c3d6",
+        "settingsBytesRewritten": false,
+        "rulesPreservedInOrder": true,
+        "signInRequired": true
+      },
+      "installed": {
+        "startMode": "interactive CLI, no input",
+        "settingsBeforeSha256": "5244011cb95f4988429fed3413a052592672b705fdab50cd93029105977f8af0",
+        "settingsAfterSha256": "1ee7bb3408aba8daa0b4ca8557669d94c4050ff8f23fcc3fd22910332fceebfc",
+        "settingsBytesRewritten": true,
+        "rulesPreservedInOrder": true,
+        "signInRequired": true
+      },
+      "strict": {
+        "startMode": "interactive CLI, no input",
+        "settingsBeforeSha256": "de18c6637b02f08fae1c714e37f95c089bab60cced35ef0efeb339964a968c97",
+        "settingsAfterSha256": "b365a74f367c2a091df9b8870231c1ef6560161c08e05136f72baf601145c7d4",
+        "settingsBytesRewritten": true,
+        "rulesPreservedInOrder": true,
+        "signInRequired": true
+      }
+    },
+    "loginMessage": "Welcome to the Antigravity CLI. You are currently not signed in."
+  },
+  "precedence": {
+    "bothFormsDenied": {
+      "reviewExitCode": 3,
+      "installExitCode": 0,
+      "legacyRawFormDeniedByUser": true,
+      "reasonCode": "permission-rule-conflict",
+      "skippedAction": "allow"
+    },
+    "withOnlyLiteralFormDenied": {
+      "installExitCode": 0,
+      "literalDenyPreserved": true,
+      "rawAllowConfigured": true
+    },
+    "afterUserRemovesDeny": {
+      "installExitCode": 0,
+      "syncExitCode": 0,
+      "bothFormsRestored": true,
+      "syncPreservedBytes": true
+    }
+  },
+  "strict": {
+    "installExitCode": 0,
+    "removeExitCode": 0,
+    "allowSkipped": true,
+    "askAndDenyConfigured": true,
+    "nativeStrictSettingPreserved": true,
+    "manualRulesPreservedAfterRemoval": true
+  },
+  "removal": {
+    "syncExitCode": 0,
+    "removeExitCode": 0,
+    "nativeRegistration": [
+      {
+        "registered": false
+      },
+      {
+        "registered": false
+      }
+    ],
+    "manualRulesPreservedInOrder": true,
+    "settingsSha256": "6627b4becfb5783c2b5dec6de5d3a48236b22d337afd1d45bdb0e222f513c3d6"
+  },
+  "repeatedSync": {
+    "exitCode": 0,
+    "settingsBytesUnchanged": true
+  },
+  "unverified": [
+    "actual allow/ask/deny and terminal-tool launch counts",
+    "authenticated precedence, wrapper matching, and terminal sandbox decisions",
+    "Project, Shared, Desktop, Windows, and hot reload behavior"
+  ]
+}

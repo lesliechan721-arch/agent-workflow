@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { grokUserWorkspace } from '../intent/scope-context.js';
-import { COMMAND_ROUTE_UNREACHABLE, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
+import { COMMAND_ROUTE_UNREACHABLE, GROK_ADDITIONAL_RULES_UNVERIFIED, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { NativeCliError } from '../utils/native-cli.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -308,9 +308,12 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>): Promise<DeploymentReceipt> {
   const { plan, driverState: state } = prepared;
   const { binding } = plan;
+  const writesPermissions = state.contributions.some(({ component }) =>
+    component.kind === 'shared-config' && component.locator.kind === 'host-permissions');
   const receipt: DeploymentReceipt = { bindingId: binding.id, effects: [], after: state.before,
     unmet: plan.expected.unmet.map((gap) => ({ ...gap, productIds: binding.consumers.map((item) => item.id) })),
-    reload: 'none', diagnostics: plan.projections.flatMap((projection) => projection.diagnostics.filter(({ code }) => code !== HOST_PERMISSION_ADDITIONAL_IMPACT)) };
+    reload: 'none', diagnostics: plan.projections.flatMap((projection) => projection.diagnostics.filter(({ code, detail }) =>
+      code !== HOST_PERMISSION_ADDITIONAL_IMPACT || detail?.reasonCode === GROK_ADDITIONAL_RULES_UNVERIFIED && !writesPermissions)) };
   if (plan.evidence.permissionOwnershipWarning) receipt.diagnostics.push(plan.evidence.permissionOwnershipWarning);
   receipt.diagnostics.push(...[...new Set(state.retainedPaths)].map((location) => retainedOutput(binding, location)));
   let cleanupFailure: Diagnostic | undefined;

@@ -1,17 +1,16 @@
 import { isPermissionHost } from '../platforms/host-permission-policy.js';
-import { HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
+import { relatedOpenCodeProjectChanges } from '../platforms/opencode-related-permissions.js';
+import { GROK_ADDITIONAL_RULES_UNVERIFIED, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import type { Confirmation } from '../output/public-result.js';
 import type { Diagnostic, FrozenDeploymentPlan } from '../platforms/contracts.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 
 export function relatedProjectPermissionEffects(batch: FrozenDeploymentPlan['evidence']['permissionBatch']): Confirmation['effects'] {
-  return (batch?.relatedProjects ?? []).map(({ path, removed, added }) => {
-    const changes = [
-      ...removed.map((rule) => `Remove ${rule.effect} ${rule.action} ${rule.resource}`),
-      ...added.map((rule) => `Add ${rule.effect} ${rule.action} ${rule.resource}`),
-    ];
+  return (batch?.relatedProjects ?? []).map((project) => {
+    const changes = relatedOpenCodeProjectChanges(project).map(({ change, effect, resource }) =>
+      `${change === 'add' ? 'Add' : 'Remove'} ${effect} shell ${resource}`);
     return { code: 'changeRelatedProjectPermissions', impact: 'shared', subject: { target: 'opencode', scope: 'project' },
-      message: [path, ...changes].join('\n') };
+      message: [project.path, ...changes].join('\n') };
   });
 }
 
@@ -25,12 +24,13 @@ export function additionalPermissionEffects(notices: readonly Diagnostic[] = [])
 export function deploymentAdditionalPermissionImpacts(plan: FrozenDeploymentPlan): Diagnostic[] {
   const writes = (path: string | undefined) => plan.effects.some((effect) =>
     (effect.kind === 'write-supplement' || effect.kind === 'remove-owned') && effect.destination === path);
-  const writesBatch = plan.evidence.ownership.some(({ component }) =>
+  const writesPermissions = plan.evidence.ownership.some(({ component }) =>
     component.kind === 'shared-config' && component.locator.kind === 'host-permissions' && writes(component.locator.settingsPath));
   const result = [
-    ...(writesBatch ? plan.evidence.permissionBatch?.additionalImpacts ?? [] : []),
+    ...(writesPermissions ? plan.evidence.permissionBatch?.additionalImpacts ?? [] : []),
     ...plan.projections.flatMap(({ diagnostics }) => diagnostics.filter((notice) =>
-      notice.code === HOST_PERMISSION_ADDITIONAL_IMPACT && writes(notice.detail?.path))),
+      notice.code === HOST_PERMISSION_ADDITIONAL_IMPACT && (notice.detail?.reasonCode === GROK_ADDITIONAL_RULES_UNVERIFIED
+        ? writesPermissions : writes(notice.detail?.path)))),
   ];
   return [...new Map(result.map((notice) => [JSON.stringify(notice), notice])).values()];
 }
