@@ -23,7 +23,7 @@ import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
-import { disposePreparedPlatformRebuildSession, inspectNativeMarketplaceRegistrations } from '../../src/commands/rebuild-integration.js';
+import { disposePreparedPlatformRebuildSession } from '../../src/commands/rebuild-integration.js';
 import {
   cleanupWriteCommand as cleanupNativeWriteCommand,
   installWriteCommand as installNativeWriteCommand,
@@ -1704,13 +1704,16 @@ describe('phase 3B namespaced runtime stores', () => {
     }
   });
 
-  it.each(['foreign-registration', 'orphan-consumer', 'claude-orphan-consumer'] as const)(
-    'rejects a source-bound marketplace with a retained %s when primary aw is also foreign',
-    async (namespacedCollision) => {
+  it.each([
+    ['codex', 'foreign-registration'], ['claude', 'foreign-registration'],
+    ['codex', 'orphan-consumer'], ['claude', 'orphan-consumer'],
+  ] as const)(
+    'rejects a source-bound %s marketplace with a retained %s',
+    async (platform, collision) => {
       const isolation = getCurrentSourceTestIsolation();
-      const sourceRoot = path.join(isolation.layout.fixtureCwd, 'double-marketplace-collision-source');
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, 'marketplace-collision-source');
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.platforms = ['codex'];
+        manifest.platforms = [platform];
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
@@ -1721,34 +1724,30 @@ describe('phase 3B namespaced runtime stores', () => {
         expectedDigest: initial.digest,
         env: isolation.env,
       });
-      const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
-      const original = [
-        '[marketplaces.aw]',
-        `source = ${JSON.stringify(path.join(isolation.layout.rootDir, 'foreign-aw'))}`,
-        'source_type = "local"',
-        ...(namespacedCollision === 'foreign-registration' ? [
+      const configPath = platform === 'codex' ? path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')
+        : path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+      const foreignRoot = path.join(isolation.layout.rootDir, 'foreign-aw-team');
+      const original = platform === 'codex' ? [
+        ...(collision === 'foreign-registration' ? [
           '[marketplaces.aw-team]',
-          `source = ${JSON.stringify(path.join(isolation.layout.rootDir, 'foreign-aw-team'))}`,
+          `source = ${JSON.stringify(foreignRoot)}`,
           'source_type = "local"',
-        ] : namespacedCollision === 'orphan-consumer' ? [
+        ] : [
           '[plugins."foreign-owner@aw-team"]',
           'enabled = true',
-        ] : []),
+        ]),
         '',
-      ].join('\n');
+      ].join('\n') : JSON.stringify(collision === 'foreign-registration'
+        ? { extraKnownMarketplaces: { 'aw-team': { source: { source: 'directory', path: foreignRoot } } } }
+        : { enabledPlugins: { 'foreign-owner@aw-team': true } });
       await fs.outputFile(configPath, original);
-      if (namespacedCollision === 'claude-orphan-consumer') {
-        await fs.outputJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json'), {
-          enabledPlugins: { 'foreign-owner@aw-team': true },
-        });
-      }
       const nativeCliRunner = vi.fn(async () => ({
         exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
       }));
 
       const result = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
+        platform,
         scope: 'user',
       }, { env: isolation.env, nativeCliRunner });
       expect(result).toMatchObject({
@@ -1756,15 +1755,43 @@ describe('phase 3B namespaced runtime stores', () => {
         targetResults: [expect.objectContaining({ errorCode: 'externalOwnershipPresent' })],
       });
       await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(original);
-      if (namespacedCollision === 'claude-orphan-consumer') {
-        await expect(fs.readJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json')))
-          .resolves.toMatchObject({ enabledPlugins: { 'foreign-owner@aw-team': true } });
-      }
       await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'marketplaces', 'team')))
         .resolves.toBe(false);
       expect(nativeCliRunner).not.toHaveBeenCalled();
     },
   );
+
+  // Test Value Gate: another client's same-name registration cannot block a Codex install.
+  it('installs a source-bound Codex marketplace independently of the same name in Claude', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'codex-only-marketplace-source');
+    await directoryCatalog(sourceRoot, 'codex');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const foreignRoot = path.join(cwd, 'foreign-claude-marketplace');
+    const settings = JSON.stringify({
+      extraKnownMarketplaces: { 'aw-team': { source: { source: 'directory', path: foreignRoot } } },
+      enabledPlugins: { 'foreign-owner@aw-team': true },
+    });
+    await fs.outputFile(settingsPath, settings);
+    const runtime = await nativeFixtureRuntime();
+    const installed = await installWriteCommand(['team/demo'], { cwd, platform: 'codex', scope: 'user' }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    expect(config.snapshot.plugins['demo@aw-team']?.enabled).toBe(true);
+    await expect(fs.readFile(settingsPath, 'utf8')).resolves.toBe(settings);
+
+    const otherSettings = JSON.stringify({ extraKnownMarketplaces: { 'aw-team': {
+      source: { source: 'directory', path: path.join(isolation.env.AW_HOME!, 'marketplaces', 'team') },
+    } } });
+    await fs.outputFile(settingsPath, otherSettings);
+    const rebuilt = await reinstallWriteCommand(['team/demo'], { cwd, platform: 'codex', scope: 'user' }, runtime);
+    expect(rebuilt.overallState, JSON.stringify(rebuilt.rebuildResults)).toBe('succeeded');
+    await expect(fs.readFile(settingsPath, 'utf8')).resolves.toBe(otherSettings);
+  });
 
   it.each(['cleanup', 'uninstall'] as const)('%s keeps a live platform after the current bundle revokes support', async (command) => {
     const isolation = getCurrentSourceTestIsolation();

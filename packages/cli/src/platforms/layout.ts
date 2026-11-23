@@ -4,6 +4,7 @@ import { getAntigravityGlobalPermissionPath } from './antigravity-permissions.js
 import { isPermissionHost, type PermissionHost } from './host-permission-policy.js';
 import { canonicalizePathThroughExistingAncestor, readEnvironmentValue, resolveAwHome, resolveUserHome } from '../utils/state-paths.js';
 import { SKILL_OWNER_MARKER } from '../utils/ownership.js';
+import { getNamespacedMarketplaceName } from '../utils/local-marketplace.js';
 import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { canonicalNamespaceRoot, getPhysicalKey, identityDigest } from './identity.js';
 import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
@@ -60,6 +61,10 @@ function configRoot(binding: DeploymentBinding): string {
   if (!entry) throw new Error('platformNamespaceUnconfirmed');
   return entry.kind === 'generic' ? entry.root : entry.configRoot;
 }
+export function getManagedPlatformRoot(awRoot: string, platform: DeploymentBinding['platform'], route: InstallRoute, namespaceRoot: string): string {
+  const namespaceId = identityDigest({ platform, route, namespaceRoot }).slice(7);
+  return path.join(awRoot, 'platforms', platform, namespaceId);
+}
 export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentLayout> {
   const pluginName = getNativePackageName(binding.plugin);
   let resourceKey = getDeploymentResourceKey(binding.plugin);
@@ -68,8 +73,7 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
   const home = resolveUserHome(ctx.env ?? process.env, ctx.platform);
   const scopeRoot = scope.kind === 'project' ? scope.projectRoot : home;
   const awRoot = await canonicalNamespaceRoot(resolveAwHome(ctx.env));
-  const namespaceId = identityDigest({ platform: binding.platform, route: binding.route, namespaceRoot: hostRoot }).slice(7);
-  const managedRoot = path.join(awRoot, 'platforms', binding.platform, namespaceId);
+  const managedRoot = getManagedPlatformRoot(awRoot, binding.platform, binding.route, hostRoot);
   let namespaceRoot = hostRoot;
   let packageRoot = path.join(managedRoot, 'packages', binding.plugin.sourceId, pluginName);
   let activationPath = hostRoot;
@@ -83,7 +87,7 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
     case 'claude-marketplace':
     case 'copilot-marketplace':
       marketplaceRoot = path.join(managedRoot, 'marketplaces', binding.plugin.sourceId);
-      marketplaceName = `aw-${binding.plugin.sourceId.toLowerCase().replace(/[^a-z0-9.-]/gu, '-').slice(0, 47)}-${identityDigest({ namespaceId, sourceId: binding.plugin.sourceId }).slice(7, 19)}`;
+      marketplaceName = getNamespacedMarketplaceName(binding.plugin.sourceId);
       packageRoot = path.join(marketplaceRoot, 'plugins', pluginName);
       activationPath = scope.kind === 'user' ? hostRoot : path.join(scopeRoot, binding.platform === 'copilot' ? '.github/copilot' : `.${binding.platform}`);
       if (binding.platform === 'codex') {

@@ -276,7 +276,7 @@ it('uses separate immutable source roots when one AW home serves different nativ
   const secondLayout = await getDeploymentLayout(ctx, second.bindings[0]!);
   expect(first.bindings[0]!.physicalKey).not.toBe(second.bindings[0]!.physicalKey);
   expect(firstLayout.packageRoot).not.toBe(secondLayout.packageRoot);
-  expect(firstLayout.marketplaceName).not.toBe(secondLayout.marketplaceName);
+  expect(firstLayout.marketplaceName).toBe(secondLayout.marketplaceName);
 });
 // Test Value Gate: ordinary Skill delivery keeps its host/product limits,
 // exact historical evidence and independent feature qualification.

@@ -148,7 +148,7 @@ import {
   createRebuildIntegration,
   disposePreparedPlatformRebuildSession,
   executeCodexReconcileActivations,
-  inspectNativeMarketplaceRegistrations,
+  inspectNativeMarketplaceRegistration,
   isNativeActivationOnlyTarget,
   postcheckCodexReconcileActivations,
   removeForceCleanupCodexRoleRegistration,
@@ -3517,76 +3517,33 @@ async function runRebuildCommandInSession(
           );
         }
       }
-      const marketplaceNamesBySource = new Map<string, string>();
-      for (const entry of new Map(closureEntries.map((candidate) => [
-        candidate.source.sourceId,
-        candidate,
-      ] as const)).values()) {
-        const sourceNames = new Set(stateInventory.references.flatMap((reference) =>
-          (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-          && reference.sourceId === entry.source.sourceId
-          && (reference.sourceIdentity === undefined
-            || reference.sourceIdentity === entry.source.sourceIdentity)
-          && reference.marketplaceName
-            ? [reference.marketplaceName]
-            : []));
-        if (sourceNames.size > 1) {
-          throw new Error(
-            'marketplaceIdentityUnavailable: Multiple canonical native marketplace registrations match the source.',
-          );
-        }
-        const persistedName = [...sourceNames][0];
-        const marketplaceRoot = path.join(
-          resolveAwHome(runtimeEnv),
-          'marketplaces',
-          entry.source.sourceId,
-        );
-        let marketplaceName = persistedName
-          ?? (entry.source.sourceId === catalog.primarySourceId
-            ? 'aw'
-            : getNamespacedMarketplaceName(entry.source.sourceId));
-        if (options.command === 'cleanup' || options.command === 'uninstall') {
-          marketplaceNamesBySource.set(entry.source.sourceId, marketplaceName);
-          continue;
-        }
-        let registrations = await inspectNativeMarketplaceRegistrations({
-          marketplaceName,
-          marketplaceRoot,
-          cwd: options.commandOptions.cwd,
-          env: runtimeEnv,
-        });
-        if (!persistedName
-          && marketplaceName === 'aw'
-          && Object.values(registrations).includes('foreign')) {
-          marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
-          registrations = await inspectNativeMarketplaceRegistrations({
+      if (options.command !== 'cleanup' && options.command !== 'uninstall') {
+        const marketplaceSelections = new Map(executionSelections.map(({ entry, platform }) => [
+          `${entry.source.sourceId}\0${platform}`, { source: entry.source, platform },
+        ] as const));
+        for (const { source, platform } of marketplaceSelections.values()) {
+          if (platform !== 'codex' && platform !== 'claude') continue;
+          const marketplaceName = getNamespacedMarketplaceName(source.sourceId);
+          const codexPackages = platform === 'codex' ? stateInventory.references.flatMap((reference) => {
+            const candidate = reference.recoveryCandidate;
+            return reference.kind === 'namespacedOwner' && reference.scope === 'user'
+              && reference.sourceId === source.sourceId && reference.sourceIdentity === source.sourceIdentity
+              && candidate?.evidence === 'verified' && candidate.binding.route === 'codex-marketplace' && candidate.nativeIdentity
+              ? [candidate.nativeIdentity] : [];
+          }) : [];
+          const registration = await inspectNativeMarketplaceRegistration({
+            platform,
             marketplaceName,
-            marketplaceRoot,
+            sourceId: source.sourceId,
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
+            codexPackages,
           });
+          if (registration === 'foreign') {
+            throw new Error(`externalOwnershipPresent: Marketplace ${marketplaceName} is foreign on ${platform}.`);
+          }
         }
-        const foreignPlatforms = (Object.entries(registrations) as Array<[
-          PlatformName,
-          'absent' | 'canonical' | 'foreign',
-        ]>).flatMap(([platform, state]) => state === 'foreign' ? [platform] : []);
-        if (foreignPlatforms.length > 0) {
-          throw new Error(
-            `externalOwnershipPresent: Marketplace ${marketplaceName} is foreign on ${foreignPlatforms.join(', ')}.`,
-          );
-        }
-        marketplaceNamesBySource.set(entry.source.sourceId, marketplaceName);
       }
-      const marketplaceNameFor = (
-        entry: (typeof available)[number],
-        ..._placement: [PlatformName, Scope, (string | null)?]
-      ): string => {
-        const marketplaceName = marketplaceNamesBySource.get(entry.source.sourceId);
-        if (!marketplaceName) {
-          throw new Error('marketplaceIdentityUnavailable: No marketplace name was selected for the source.');
-        }
-        return marketplaceName;
-      };
       const codexObservationScopeByMarketplace = new Map<string, 'user' | 'both'>();
       const projectCodexConfig = options.commandOptions.scope === 'project'
         ? await readCodexConfigFile(
@@ -3595,11 +3552,7 @@ async function runRebuildCommandInSession(
         : undefined;
       for (const { entry, platform } of executionSelections) {
         if (platform !== 'codex') continue;
-        const marketplaceName = marketplaceNameFor(
-          entry,
-          platform,
-          options.commandOptions.scope,
-        );
+        const marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
         const codexPluginId = `${entry.plugin.manifest.name}@${marketplaceName}`;
         const requiredScope = options.commandOptions.scope === 'project'
           || (projectCodexConfig !== undefined
@@ -3713,7 +3666,7 @@ async function runRebuildCommandInSession(
           const requestedScope = selection.requestedScope ?? options.commandOptions.scope;
           const requestedMethod = selection.requestedMethod ?? options.command;
           const inspectScope = async (scope: Scope) => {
-            const marketplaceName = marketplaceNameFor(entry, platform, scope);
+            const marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
             entry.plugin.marketplaceName = marketplaceName;
             const desired = await inspection.buildTarget({
               sourceId: entry.source.sourceId,
@@ -4208,7 +4161,7 @@ async function runRebuildCommandInSession(
             || planned.action === 'keep'
             || planned.action === 'block')) continue;
           const scope = planned?.resolvedScope ?? options.commandOptions.scope;
-          const marketplaceName = marketplaceNameFor(entry, selectedPlatform, scope);
+          const marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
           entry.plugin.marketplaceName = marketplaceName;
           const marketplaceRoot = path.join(
             resolveAwHome(runtimeEnv),
@@ -4300,7 +4253,7 @@ async function runRebuildCommandInSession(
             || (plannedNative?.action === 'none' && codexNativeStillDesired)
             || options.command === 'cleanup'
             || options.command === 'uninstall';
-          const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
+          const marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
           try {
             const target = await measureCommandPerformanceStage(
               options.runtime,
@@ -5170,12 +5123,7 @@ async function runRebuildCommandInSession(
             scope: Scope;
             cwd: string;
           }): Promise<'absent' | 'live'> => {
-            const marketplaceName = marketplaceNameFor(
-              options_.entry,
-              options_.platform,
-              options_.scope,
-              options_.scope === 'project' ? options_.cwd : null,
-            );
+            const marketplaceName = getNamespacedMarketplaceName(options_.entry.source.sourceId);
             options_.entry.plugin.marketplaceName = marketplaceName;
             const consumerTarget = await inspection.buildTarget({
               sourceId: options_.entry.source.sourceId,
@@ -5664,7 +5612,7 @@ async function runRebuildCommandInSession(
           dependencyStates.set(key, 'kept');
           return;
         }
-        const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
+        const marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
         const namespacedSource = {
           sourceId: entry.source.sourceId,
           sourceIdentity: entry.source.sourceIdentity,

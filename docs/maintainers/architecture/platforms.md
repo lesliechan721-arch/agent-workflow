@@ -88,6 +88,8 @@ namespaceRoot 是稳定公开安装命名空间：CLI 注册使用实际配置�
 
 共享真实位置的 CLI/App 与多个 activation 复用同一 key，不同配置根/发现根分别生成。具有不同物理身份的原生包分别写入计算出的命名空间。插件的共享命令包在 AW_HOME 中独立维护。AW 来源目录按固定平台和 namespace 分组，writer 对计算出的精确 AW 根验证，不接收作者路径。源别名重绑定不能认领旧 sourceIdentity 的包。
 
+Codex、Claude 和 Copilot 在各自的客户端配置根中使用 `aw-<source-id>` 作为本地市场登记名，插件登记 ID 为 `<plugin>@aw-<source-id>`。市场冲突按所选客户端的配置根判断，同名市场须指向本次 AW 来源目录才能复用。
+
 activationKey 另含启用位置与需求 scope。身份字符串、路径存在或需求记录本身均不授予删除权；归属和共享检查仍由现有公共管线执行。
 
 ### 1.3 固定 render scope

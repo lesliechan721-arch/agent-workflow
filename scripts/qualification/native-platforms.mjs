@@ -179,7 +179,7 @@ export async function readSharedProviderStages(file) {
   finally { await handle?.close().catch(() => {}); }
 }
 
-// Observe only this isolated fixture's generated marketplace entries, using
+// Observe only this isolated fixture's generated marketplace entry, using
 // the same parser as ownership inspection. Never retain the complete config.
 export async function readQualificationCodexSources(home) {
   const sources = [];
@@ -191,15 +191,16 @@ export async function readQualificationCodexSources(home) {
     if (stat.size > 1024 * 1024) return { state: 'over-limit', sources };
     const { readCodexConfigFile } = await import('../../packages/cli/dist/src/utils/codex-config.js');
     const { snapshot } = await readCodexConfigFile(file);
-    const selected = Object.entries(snapshot.marketplaces).filter(([name]) => /^aw-qualification-[a-f0-9]{12}$/u.test(name));
-    for (const [name, value] of selected.slice(0, 4)) {
+    const name = 'aw-qualification';
+    const value = snapshot.marketplaces[name];
+    if (value) {
       const absolute = typeof value.source === 'string' && path.isAbsolute(value.source);
       sources.push({ name, source: absolute ? value.source.slice(0, 2048) : null,
         sourceFormat: absolute ? 'absolute' : typeof value.source === 'string' ? 'other' : 'absent',
         sourceType: typeof value.sourceType === 'string' ? value.sourceType.slice(0, 64) : null,
         sourcePointsToManifest: value.sourcePointsToManifest });
     }
-    return { state: 'captured-parser-projection', sources, omitted: Math.max(0, selected.length - 4) };
+    return { state: 'captured-parser-projection', sources, omitted: 0 };
   } catch (error) { return { state: error.code === 'ENOENT' ? 'missing' : 'unavailable', sources }; }
 }
 

@@ -106,6 +106,10 @@ import type {
   RebuildTargetIdentity,
 } from './rebuild-operations.js';
 import { hasPermissionOwner, updateHostPermissions } from '../platforms/permission-ownership.js';
+import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
+import { canonicalNamespaceRoot } from '../platforms/identity.js';
+import { getManagedPlatformRoot } from '../platforms/layout.js';
+import type { NativeIdentity } from '../platforms/contracts.js';
 import { platformOwnership, PlatformRebuildSession } from './rebuild-platform-integration.js';
 
 const MARKETPLACE_NAME = 'aw';
@@ -1350,40 +1354,46 @@ export async function assertNoClaudeUnboundNativeNameCollision(options: {
   }
 }
 
-export async function inspectNativeMarketplaceRegistrations(options: {
+export async function inspectNativeMarketplaceRegistration(options: {
+  platform: 'codex' | 'claude';
   marketplaceName: string;
-  marketplaceRoot: string;
+  sourceId: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): Promise<Record<'codex' | 'claude', 'absent' | 'canonical' | 'foreign'>> {
-  const codexConfig = await readCodexConfigFile(
-    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
-  );
-  const codexMarketplace = codexConfig.snapshot.marketplaces[options.marketplaceName];
-  const codexRegistration = codexMarketplace === undefined
-    ? 'absent'
-    : isCanonicalCodexMarketplaceRegistration(codexMarketplace, options.marketplaceRoot)
-      ? 'canonical'
-      : 'foreign';
-  const codexConsumerSuffix = `@${options.marketplaceName}`;
-  const codex = codexRegistration === 'absent'
-    && Object.keys(codexConfig.snapshot.plugins).some((pluginId) =>
-      pluginId.length > codexConsumerSuffix.length && pluginId.endsWith(codexConsumerSuffix))
-    ? 'foreign'
-    : codexRegistration;
+  codexPackages: readonly NativeIdentity[];
+}): Promise<'absent' | 'canonical' | 'foreign'> {
+  const { sourceId, platform, marketplaceName, cwd, env } = options;
+  const [awRoot, configRoot] = await Promise.all([
+    canonicalNamespaceRoot(resolveAwHome(env)),
+    canonicalNamespaceRoot(resolvePlatformConfigRoot(platform, { cwd, env })),
+  ]);
+  const marketplaceRoot = path.join(getManagedPlatformRoot(awRoot, platform, `${platform}-marketplace`, configRoot), 'marketplaces', sourceId);
+  if (platform === 'codex') {
+    const config = await readCodexConfigFile(resolveCodexPaths(cwd, 'user', env).configTomlPath);
+    const marketplace = config.snapshot.marketplaces[marketplaceName];
+    if (marketplace !== undefined) {
+      return isCanonicalCodexMarketplaceRegistration(marketplace, marketplaceRoot) ? 'canonical' : 'foreign';
+    }
+    const suffix = `@${marketplaceName}`;
+    // A repair can restore activation before the marketplace has been registered again.
+    const ownedActivations = new Set(options.codexPackages
+      .filter(({ packageId, sourceLocation }) => sourceLocation === path.join(marketplaceRoot, 'plugins', packageId))
+      .map(({ registrationId }) => registrationId));
+    return Object.keys(config.snapshot.plugins).some((id) => id.length > suffix.length && id.endsWith(suffix) && !ownedActivations.has(id))
+      ? 'foreign' : 'absent';
+  }
   const claudeState = await readClaudeNativeState({
     pluginName: '__marketplace_preflight__',
     scope: 'user',
-    cwd: options.cwd,
-    env: options.env,
-    marketplaceName: options.marketplaceName,
-    marketplaceRoot: options.marketplaceRoot,
+    cwd,
+    env,
+    marketplaceName,
+    marketplaceRoot,
   });
-  const claude = claudeState.marketplaceState === 'absent'
+  return claudeState.marketplaceState === 'absent'
     && claudeState.marketplaceConsumerEvidence
     ? 'foreign'
     : claudeState.marketplaceState;
-  return { codex, claude };
 }
 
 export async function applyPlannedOperationAction(action: OperationAction): Promise<ClaudePermissions> {

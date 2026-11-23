@@ -1042,7 +1042,7 @@ describe('pack smoke', () => {
       nativePluginId = id;
       nativePackageRoot = nativePlugin.path;
       expect(id).toBe(`packed-build@${nativePlugin.marketplaceName}`);
-      expect(nativePlugin.marketplaceName).toMatch(new RegExp(`^aw-${developmentSourceId}-[a-f0-9]{12}$`, 'u'));
+      expect(nativePlugin.marketplaceName).toBe(`aw-${developmentSourceId}`);
       expect(nativePackageRoot).toBe(path.join(nativeBeforeTrust.marketplaces[nativePlugin.marketplaceName]!, 'plugins', 'packed-build'));
       expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
         expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',

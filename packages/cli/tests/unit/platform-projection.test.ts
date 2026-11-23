@@ -89,16 +89,18 @@ describe('platform projection', () => {
   it.each([
     ['codex', '.agents/plugins/marketplace.json'], ['claude', '.claude-plugin/marketplace.json'],
     ['copilot', '.github/plugin/marketplace.json'],
-  ] as const)('builds the complete %s marketplace descriptor with its frozen namespace', async (platform, relativePath) => {
-    const { input } = await fixture(platform, [skill]);
+  ] as const)('builds the complete %s marketplace descriptor with a source-based name', async (platform, relativePath) => {
+    const { input, ctx } = await fixture(platform, [skill]);
+    const { marketplaceName, nativeIdentity } = await getDeploymentLayout(ctx, input.binding);
     const policy = { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } as const;
-    const descriptor = projectPlatformMarketplace({ binding: input.binding, marketplaceName: 'aw-source-namespace', entries: [
+    const descriptor = projectPlatformMarketplace({ binding: input.binding, marketplaceName: marketplaceName!, entries: [
       { name: 'second', source: './plugins/second', description: 'Second package.', category: 'development', strict: true, policy },
       { name: 'example', source: './plugins/example', description: 'Example package.', category: 'development', strict: true, policy },
     ] });
     expect(descriptor.relativePath).toBe(relativePath);
     const manifest = JSON.parse(descriptor.bytes.toString('utf8'));
-    expect(manifest.name).toBe('aw-source-namespace');
+    expect(manifest.name).toBe('aw-source');
+    expect(nativeIdentity.registrationId).toBe('example@aw-source');
     expect(manifest.plugins.map((entry: { name: string }) => entry.name)).toEqual(['example', 'second']);
     if (platform === 'copilot') expect(manifest.plugins[0]).not.toHaveProperty('policy');
     else expect(manifest.plugins[0].policy).toEqual({ ...policy, products: [platform === 'codex' ? 'CODEX' : 'CLAUDE'] });
