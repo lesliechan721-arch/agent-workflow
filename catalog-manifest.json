@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.78",
+  "catalogVersion": "0.1.0-beta.79",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "028d8a8718e95341ace9eee24cedb99422e41654"
+    "sourceHead": "fe602f138d9354a4807511b1f81be191881040dd"
   },
   "entries": [
     {
@@ -125,15 +125,14 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.10",
+      "version": "0.1.0-beta.11",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.cli-output.v2",
-            "aw.installed-runtime-config.v2",
-            "aw.managed-commands.v1",
-            "aw.native-tools.v2",
+            "aw.managed-commands.v2",
+            "aw.native-tools.v3",
             "aw.platform-components.v3",
             "aw.platform-render-context.v2",
             "aw.plugin-build-config.v1",
@@ -150,9 +149,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:700571a429529efac9152ff8090fcbdbd0b0d0701a784489e280b8533ca4d0f3",
-      "manifestDigest": "sha256:f97cffac4294b4b6152214892ac986ba9460b028904041e56c5e4b2784efb325",
-      "contentDigest": "sha256:1f91ce705ca66b22230f54e04572a822808e931ad92ac271c08c126f4ebcac91"
+      "artifactDigest": "sha256:bdca54ba572aeae7e0de8ef8c7165115364fd0948972252e3ee9603827978e60",
+      "manifestDigest": "sha256:55fe7d54bfd1e11fe4254c343ec702f73416438de0fe45948b378680736189a1",
+      "contentDigest": "sha256:30c5e1533244f23420207656cbae0d296778435a82ad09d262c40d56f06cd407"
     },
     {
       "name": "aw-development-toolkit",
@@ -175,7 +174,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.20",
+      "version": "0.1.0-beta.21",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -188,7 +187,8 @@
             "aw.catalog-publication.v2",
             "aw.claude.sandbox-exclusions.v1",
             "aw.cli-output.v2",
-            "aw.managed-commands.v1",
+            "aw.managed-commands.v2",
+            "aw.native-tools.v3",
             "aw.plugin-authoring.v2",
             "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
@@ -200,9 +200,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:8d4538de27f2264f66ecccb5ce29e8964f78a6ba3e33f55081cc9093dca53d86",
-      "manifestDigest": "sha256:f3fc6e6ac6db1f2a0bc7acb3805612c7d3e21095d14f2a71752a2de2204a918b",
-      "contentDigest": "sha256:76bb0265f0247140d27fb074fd2ac64c361fe06e31af5f92a992f6e9a08aad2a"
+      "artifactDigest": "sha256:82a7d1486e07250007268b8a610c4ec3aa834328217c6133412499a50fb4f43d",
+      "manifestDigest": "sha256:694460349c6573e1ff29fcb2760d4442f998318f94dffab578e8e52e2bd99f0f",
+      "contentDigest": "sha256:260a16df8b1e48874e991f4662e63e37f26e34049d66ebc372c86b15a59bd8e5"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -265,7 +265,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.6",
+      "version": "0.1.0-beta.7",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -277,9 +277,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:430a17ed71899f3e7c585d881d3950ea97bbb672b6f7121a56715cc98a7d6cb7",
-      "manifestDigest": "sha256:12acdf78a964178edd2a9c434ef73718baa086c1849469d9cf1db76830f44e78",
-      "contentDigest": "sha256:fbbeb5bd48596701f549e0fc2e3077bcce5e881ceef676abeb32e453dca42224"
+      "artifactDigest": "sha256:3bd0e43daa41148e77a575358284a61fa5ef10a5487c888bf5dda81981085629",
+      "manifestDigest": "sha256:e88b9b258790b3509952f59b58618b3a94410d587a3febbab80377b520f7f1e1",
+      "contentDigest": "sha256:a90c8de3ae40061e2effbd6c0c1d0d4bbc6a5db17693c808075aeae9bd5208d8"
     },
     {
       "name": "codex-enhance",

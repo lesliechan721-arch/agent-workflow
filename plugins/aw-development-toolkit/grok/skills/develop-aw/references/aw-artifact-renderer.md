@@ -32,8 +32,8 @@ stdout 仅 JSON，诊断写 stderr；所有输出不得泄露敏感值。stdout 
 
 ## 命令和运行配置
 
-五类组件、绑定 Skill 的 agent-commands、独立包的 managed-commands 是三种请求，命令仍返回 v2。agent-commands 只见 set 的非敏感 refreshKeys 和当前 producer 完整候选目录，并按 requestedArtifactIds 精确返回；managed-commands 不带 platform。不能为命令再次运行组件 renderer。
+同一个 renderer 可以接收单独的 `managed-commands` 请求。根据 surface 分支处理。动态路由使用 User 公共配置、无平台的请求和 ArtifactPlan v2。返回格式与替换语义见 托管命令（`references/managed-commands.md`）。
 
-准备先取得组件集合，再解析真实 Skill producer、渲染 set、校验权限/引用/nativeTools/资源，最后注入保留文件、投影并冻结。producer omitted、unmet、缺失或改类分别处理，不找旧目录补齐。
+组件准备先取得完整集合并验证身份和运行资源。Skill 的命令引用与权限按本次共享路由表一起校验，再注入保留文件并冻结。组件遗漏、能力缺口和资源错误按各自的组件规则处理。
 
 runtimeConfig 位于实际动态 Skill 组件，keys 必须在 artifacts.configKeys 的非敏感闭包并要求已核验运行能力。AW 注入 reader；不手写保留文件，不读最新全局 store 替代本产物已应用配置。

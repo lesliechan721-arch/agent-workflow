@@ -6210,11 +6210,11 @@ var require_out4 = __commonJS({
   }
 });
 
-// skills/spawn-subagent/scripts/file-selection/selection.mjs
+// commands/scripts/file-selection/selection.mjs
 var import_fast_glob = __toESM(require_out4(), 1);
 import path2 from "node:path";
 
-// skills/spawn-subagent/scripts/file-selection/contracts.mjs
+// commands/scripts/file-selection/contracts.mjs
 var LIMITS = Object.freeze({
   inputBytes: 1024 * 1024,
   outputBytes: 16 * 1024 * 1024,
@@ -6277,7 +6277,7 @@ function parseSelectors(selectors, limits = LIMITS) {
   return parts;
 }
 
-// skills/spawn-subagent/scripts/file-selection/io.mjs
+// commands/scripts/file-selection/io.mjs
 import fs from "node:fs/promises";
 import path from "node:path";
 import { constants } from "node:fs";
@@ -6390,7 +6390,7 @@ function createContext({ limits = LIMITS, filesystem = fs, isCancelled } = {}) {
   };
 }
 
-// skills/spawn-subagent/scripts/file-selection/selection.mjs
+// commands/scripts/file-selection/selection.mjs
 var defaults = /* @__PURE__ */ new Set(["node_modules", "dist", "coverage", ".git", ".turbo", ".next", "build", "tmp"]);
 var posix = (value) => value.replace(/\\/g, "/");
 function normalizePattern(value, workspace) {

@@ -3,10 +3,10 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { LIMITS, fail } from './contracts.mjs';
 import { safePath, readText, readInputFile, executablePaths } from './files.mjs';
-import { validateEnvironmentConfig } from './plan.mjs';
+import { ADAPTERS, validateEnvironmentConfig } from './plan.mjs';
 import { validateSelectors } from '../file-selection/contracts.mjs';
 import { sameSourceIdentity } from './store.mjs';
-import { validateCommandHost, managedLaunch, resolveCommunicationLaunch, communicationEnvironment } from './managed-host.mjs';
+import { validateCommandHost, managedLaunch, managedCommandInvocation, resolveCommunicationLaunch, communicationEnvironment } from './managed-host.mjs';
 
 export { validateCommandHost } from './managed-host.mjs';
 const needsCommunicationCommand = (selected) => selected.executor.adapter === 'antigravity' && selected.communication;
@@ -52,10 +52,15 @@ export async function prepareResume(configuration, text, sessionId, options = {}
   if (configuration?.schema !== 1 || !configuration.selected || !configuration.request ||
     !path.isAbsolute(configuration.selected.resourceRoot ?? '') || configuration.request.type !== 'start' ||
     configuration.request.resume !== true) fail('resumeConfigurationUnavailable', 'The saved execution configuration is unavailable.');
-  const selected = configuration.selected;
+  const saved = configuration.selected;
   const installed = options.runtimeSnapshot;
-  if (!installed || installed.resourceRoot !== selected.resourceRoot ||
-    !sameSourceIdentity(installed.installedIdentity, selected.installedIdentity)) fail('resumeExecutionChanged', 'The original installed runtime cannot be verified. Sync or reinstall the original Guide before sending input.');
+  const identity = installed?.installedIdentity;
+  if (!sameSourceIdentity(identity, saved.installedIdentity) ||
+    !['pluginVersion', 'sourceContentDigest'].every((key) => typeof identity[key] === 'string' && identity[key] && identity[key] === saved.installedIdentity[key]) ||
+    !path.isAbsolute(installed.resourceRoot ?? '')) fail('resumeExecutionChanged', 'The original Guide code or platform snapshot cannot be verified. Start a new run after sync or reinstall.');
+  const builtin = ADAPTERS[saved.executor.adapter];
+  const selected = { ...saved, resourceRoot: installed.resourceRoot,
+    ...(builtin ? { entrypoint: path.join(installed.resourceRoot, 'scripts', 'adapters', builtin.entrypoint) } : {}) };
   await safePath(selected.resourceRoot, 'directory');
   await safePath(path.join(selected.resourceRoot, 'scripts', 'worker.mjs'));
   await safePath(configuration.request.workspace, 'directory');
@@ -67,22 +72,26 @@ export async function prepareResume(configuration, text, sessionId, options = {}
   }
   const resolved = resolveAdapterEnvironment(source, selected.executor);
   if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
-  let frozenLaunch;
-  if (selected.executor.adapter === 'custom-managed') {
-    frozenLaunch = await managedLaunch(host, selected.executor.commandId, resolved.environment, configuration.request.workspace);
-    if (!isDeepStrictEqual(frozenLaunch, configuration.managedLaunch)) fail('resumeExecutionChanged', 'The original managed command launch changed. Start a new run with the intended configuration.');
+  let frozenLaunch, communicationLaunch;
+  try {
+    if (selected.executor.adapter === 'custom-managed') {
+      frozenLaunch = await managedLaunch(host, selected.executor.commandId, resolved.environment, configuration.request.workspace, selected.executor.subcommand);
+    }
+    if (needsCommunicationCommand(selected)) {
+      communicationLaunch = await resolveCommunicationLaunch(selected, host, resolved.environment, configuration.request.workspace);
+    }
+  } catch (error) {
+    if (!['managedCommandUnavailable', 'executorInvalid'].includes(error.code)) throw error;
+    fail('resumeExecutionChanged', 'The original managed command route is unavailable. Start a new run after sync or reinstall.');
   }
-  const executable = selected.executor.adapter === 'custom-managed' ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] }
-    : await executablePaths(selected.command, selected.entrypoint);
-  const communicationLaunch = needsCommunicationCommand(selected) ? await resolveCommunicationLaunch(selected, host, resolved.environment, configuration.request.workspace) : undefined;
-  if (communicationLaunch) {
-    if (!isDeepStrictEqual(communicationLaunch, configuration.communicationLaunch)) fail('resumeExecutionChanged', 'The original communication command changed. Start a new run after sync or reinstall.');
-    Object.assign(resolved.environment, communicationEnvironment(host, communicationLaunch));
-  }
+  if (!isDeepStrictEqual(frozenLaunch, configuration.managedLaunch) ||
+    !isDeepStrictEqual(communicationLaunch, configuration.communicationLaunch)) fail('resumeExecutionChanged', 'The original managed command launch changed. Start a new run with the intended configuration.');
+  const executable = frozenLaunch ? managedCommandInvocation(host, frozenLaunch) : await executablePaths(selected.command, selected.entrypoint);
+  if (communicationLaunch) Object.assign(resolved.environment, communicationEnvironment(host, communicationLaunch));
   const { fileSelectors, fileResolver, ...wire } = configuration.request;
   return { selected, executable, request: { ...wire, prompt: text, sessionId }, ...resolved,
     ...(host ? { commandHost: host } : {}), ...(frozenLaunch ? { managedLaunch: frozenLaunch } : {}),
-    ...(communicationLaunch ? { communicationLaunch } : {}), configuration };
+    ...(communicationLaunch ? { communicationLaunch } : {}), configuration: { ...configuration, selected } };
 }
 
 export async function prepareRun(selected, request, options = {}) {
@@ -105,14 +114,16 @@ export async function prepareRun(selected, request, options = {}) {
   let prompt = task;
   if (request.instructionsFile !== undefined) {
     if (typeof request.instructionsFile !== 'string' || !request.instructionsFile || request.instructionsFile === '-') fail('instructionsInvalid', 'Use a readable instruction file path.');
-    const instructions = await readText(path.resolve(callerCwd, request.instructionsFile), LIMITS.instructionBytes, 'instructionsTooLarge');
+    const instructionsFile = path.resolve(callerCwd, request.instructionsFile);
+    const instructions = await readText(instructionsFile, LIMITS.instructionBytes, 'instructionsTooLarge');
+    selected = { ...selected, instructionsFile };
     prompt = `Instructions:\n${instructions}\n\nTask:\n${task}`;
   }
   const source = { ...(options.environment ?? process.env) };
   const host = selected.executor.adapter === 'custom-managed' || needsCommunicationCommand(selected) ? await validateCommandHost(source) : undefined;
   let executable;
   try {
-    executable = selected.executor.adapter === 'custom-managed' ? { command: host.nodeExecutable, args: [host.cliEntry, 'command', 'run', selected.executor.commandId, '--'] } : selected.executor.adapter === 'custom'
+    if (selected.executor.adapter !== 'custom-managed') executable = selected.executor.adapter === 'custom'
       ? { command: selected.command, ...(selected.entrypoint ? { entrypoint: selected.entrypoint } : {}) }
       : await executablePaths(selected.command, selected.entrypoint);
   }
@@ -132,7 +143,8 @@ export async function prepareRun(selected, request, options = {}) {
   };
   const resolved = resolveAdapterEnvironment(source, selected.executor);
   if (host) Object.assign(resolved.environment, { AW_COMMAND_HOST: JSON.stringify(host), AW_HOME: host.awHome });
-  const frozenLaunch = selected.executor.adapter === 'custom-managed' ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace) : undefined;
+  const frozenLaunch = selected.executor.adapter === 'custom-managed' ? await managedLaunch(host, selected.executor.commandId, resolved.environment, workspace, selected.executor.subcommand) : undefined;
+  if (frozenLaunch) executable = managedCommandInvocation(host, frozenLaunch);
   const communicationLaunch = needsCommunicationCommand(selected) ? await resolveCommunicationLaunch(selected, host, resolved.environment, workspace) : undefined;
   if (communicationLaunch) Object.assign(resolved.environment, communicationEnvironment(host, communicationLaunch));
   return { selected, executable, originalWorkspace: workspace, request: wire, ...resolved,

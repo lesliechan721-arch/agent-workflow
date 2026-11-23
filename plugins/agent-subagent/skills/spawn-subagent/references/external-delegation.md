@@ -27,11 +27,12 @@
 - **bundle**：只附加 `--file` 选中的文件。
 
 ```text
-{{aw.command:guide/subagent}} start --executor "<key>" --instructions-file "<instructions-file>" --prompt "<text>"
+{{aw.command}} start --platform codex --executor "<key>" --instructions-file "<instructions-file>" --prompt "<text>"
 ```
 
 | 参数 | 必填或默认值 | 用途与限制 |
 | --- | --- | --- |
+| `--platform` | 必填，按上例传值 | 使用当前客户端的已应用配置。 |
 | `--executor KEY` | 必填 | 执行器 key。 |
 | `--prompt-file PATH` 或 `--prompt TEXT` | 必须且只能选一项 | 文件为非空 UTF-8 普通文件。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
@@ -55,7 +56,7 @@ start 不消费过程消息或终态通知。回执丢失或非零退出不证�
 ## wait：等待可处理事件
 
 ```text
-{{aw.command:guide/subagent}} wait --run "<run-a>" --run "<run-b>"
+{{aw.command}} wait --run "<run-a>" --run "<run-b>"
 ```
 
 默认响应式等待 600000 ms，一次按参数顺序观察 1–16 个不同句柄；`--timeout-ms N` 允许 0–1800000 ms。同一 run 的 send/wait/result/stop 串行调用。
@@ -83,7 +84,7 @@ start 不消费过程消息或终态通知。回执丢失或非零退出不证�
 ## result：读取完整结果
 
 ```text
-{{aw.command:guide/subagent}} result --run "<run>"
+{{aw.command}} result --run "<run>"
 ```
 
 完整结果太大时可导出到文件 `--output-file "<file>"`；文件路径相对 cwd 解析，父目录须已存在；不覆盖已有文件。
@@ -100,7 +101,7 @@ start 不消费过程消息或终态通知。回执丢失或非零退出不证�
 ## stop：停止任务
 
 ```text
-{{aw.command:guide/subagent}} stop --run "<run>"
+{{aw.command}} stop --run "<run>"
 ```
 
 | 输出 | 如何处理 |

@@ -1,41 +1,65 @@
 # 托管命令
 
-为插件脚本提供稳定入口、声明命令包及权限时读取。完成主 Skill 的能力检查后，查询 `aw dev plugin capabilities --surface managed-commands --json`；权限查询 extensions surface，管理操作查询 `aw command --help`。字段、默认值和校验由当前 CLI/Core 提供。
+为 Skill、用户或程序提供稳定的脚本入口时使用。完成主 Skill 的兼容检查后，运行 `aw dev plugin capabilities --surface managed-commands --json` 核对字段，用 `extensions` surface 查询宿主权限，用 `aw command --help` 核对管理入口。
 
-## 选择资源与配置
+## 声明包与路由
 
-producer 拥有资源及更新/删除生命周期；set 是一次完整替换的命令集合，key/variant 标识集合内入口。使用 `managedCommands.packages/sets` 声明，不在五类组件集合重复登记。
+在 Manifest v4 中声明 `aw.managed-commands.v2` 和顶层 `command`。同一 AW_HOME 每个来源和插件共用一个包。将依赖自包含在插件相对 `sourceDir` 中，保留 `.aw/` 给 AW 注入。默认选择插件支持的全部 Native 平台，通过 `platforms` 限定实际发布范围。仅交付角色或 Portable 内容的平台可以留在该集合之外。
 
-| 资源归属 | 选择 |
-| --- | --- |
-| 已有动态 Skill 的完整 final 目录 | artifact producer，显式指定 platform，并引用本次完整集合中唯一的动态 Skill artifactId。 |
-| 某平台的静态 Skill 目录 | static-skill producer，指定 platform 和 skillKey。 |
-| 独立工具或明确跨平台共享的目录 | package producer，声明 sourceDir、固定 scope 和触发安装的 platforms。 |
+静态命令可以直接使用以下字段片段：
 
-共享原生包中的 producer 使用 canonical user 配置，project 激活不另造身份；独立位置使用真实 RenderUnit scope。AW 将 placementKey 绑定物理实例，作者不提供它。不同位置的同名 set 不互换，共享包取消一个 activation 不撤销仍引用的绑定。独立包始终只有一份配置；两平台需要不同配置时分开声明 producer，不按内容相同推断共享。user 消费者不能引用 project 包。
+```json
+{
+  "command": {
+    "sourceDir": "./commands",
+    "platforms": ["codex", "claude"],
+    "mode": "static",
+    "routes": {
+      "subcommands": [{ "name": "export", "runner": "node", "entry": "export.mjs" }]
+    }
+  }
+}
+```
 
-目录须自包含，先 bundle 依赖，不链接回开发目录。entry 留在 producer 内，runner 使用 node 或 executable，不提供 shell runner。静态 entries 不需要 renderer；配置决定集合或包文件时声明相应 refreshKeys，采用 Artifact renderer（`references/aw-artifact-renderer.md`）。
+AW 精确匹配 `--` 后首个 argv 元素，命中后将剩余参数接在固定 `args` 后面。可选 `fallback` 收到完整 argv。只允许已选命名路由时，用 `aw command run <source/plugin> --no-fallback -- <subcommand>`，该形式需要宿主策略单独覆盖。支持 `node` 和 `executable` runner。秘密经 `envFrom` 引用宿主变量。
 
-命令需要宿主原生工具时，采用原生工具（`references/native-tools.md`）声明协议和消费者。AW 在入口启动前按已安装 producer 的声明，从当前 CLI 依赖解析工具；命令保持原业务参数和输出。插件不维护工具版本或摘要，也不增加下载器或公开 prepare 命令。
+公共配置需要选择路由时，改用 `mode: "dynamic"`、`refreshKeys` 和 `scripts.artifacts.render`。动态路由仅使用非敏感 User `common` 值和校验依赖。按 `surface.name === "managed-commands"` 分支，经 `commandSources[0].sourceDir` 取得已核验目录。返回 ArtifactPlan v2 的唯一完整路由产物：
 
-命令及生成文件只用非敏感配置，秘密通过 envFrom 引用宿主环境。独立包使用 args/env 或普通配置文件，不使用 Skill runtimeConfig reader，也不在执行时读最新 store。仅保存配置不改变运行行为；apply 后分别核对保存与 producer 刷新结果，partial 不等于全部生效。
+```json
+{
+  "version": 2,
+  "artifacts": [{
+    "id": "command-routes",
+    "target": "aw.command-routes",
+    "kind": "commandRoutes",
+    "refreshKeys": [],
+    "routes": { "subcommands": [{ "name": "export", "runner": "node", "entry": "export.mjs" }] }
+  }]
+}
+```
 
-## 引用与权限
+`refreshKeys` 与本次声明一致。空 `routes` 撤销全部路由。错误或不完整响应使发布失败，保留原有效版本。renderer 只选源目录中已有的入口。
 
-声明、结构化权限和正文引用要求 `aw.managed-commands.v1`。正文用双花括号包围 `aw.command:` 加 `set/key` 或 `set/key/variant`；AW 展开为 `aw command run <id> --`。权限使用同一 `{set,key,variant?}`，argsPrefix 限定所需子命令。不要自行计算 ID、硬编码来源或安装路径。
+## 运行配置和原生工具
 
-引用须指向同 owner、同物理部署且作用域合法的有效命令，不能按最近发布记录选择同名 set。AW 扫描 final 中全部 Markdown，包括代码块；教学示例也会展开，需拆开前缀表达。脚本、JSON 和环境值不展开。核对最终正文与权限指向同一 ID。
+运行脚本需要按平台读取已应用值时，在 `command.runtimeConfig.keys` 声明非敏感键，并核对覆盖的所有平台都能校验这些键和依赖。脚本相对命令包 revision 导入 `.aw/command-runtime-config.mjs`，调用 `await readCommandRuntimeConfig({ from: import.meta.url, platform, keys })`。从业务调用确定 `platform`。读取器核验 revision 和平台快照，返回 `values`、`platform`、`installedIdentity`、`resourceRoot`。同一 AW_HOME 内同平台共用快照。不要从运行脚本直接读取最新 Config Store 或调用方提供的配置路径。
 
-Claude 的 allow 与沙箱例外独立；需要例外时声明 `agentOverrides.claude.sandbox.excludedCommands`，另要求 `aw.claude.sandbox-exclusions.v1`。按实际需要限定命令 ID 与子命令前缀，不扩大到整个 aw 或其它 ID。生成规则正确不证明宿主实际放行。
+需要原生工具时，采用 原生工具（`references/native-tools.md`）声明 `plugin-command` consumer。命令包的发布范围决定哪些部署引入这项依赖。
 
-遇到 `invocationPolicyNotApplied`，查看作用域和 `detail.skippedPermissionActions` 中列出的动作。AW 继续安装该入口能施加的规则。对于已跳过的动作，宿主使用自身策略。需要这些动作才能安全执行的流程由作者适配或省略，最终产物继续核对精确引用和命令闭包。
+## Skill 和宿主权限
 
-## 维护与核对
+在 Skill Markdown 中用双花括号包围 `aw.command`。AW 按当前包展开为 `aw command run <source/plugin> --`。所有 Markdown 都会处理，包括代码块中的示例。讲解该语法时分开写标识与花括号。核对引用所在的平台命中 `command.platforms`，且包中实际有可用路由。Portable 包提供可独立使用的正文与资源。
 
-命令随 producer 安装、刷新和清理，不在 preApply 注册。平台卸载保留独立包；显式 package sync 刷新，package remove 删除并使全部引用失效。sync 使用本地 Active bundle，不隐式同步来源。移除集合入口后，相关平台通过普通 sync 更新消费者。
+许可声明用 `{ "argsPrefix": ["export"] }` 指定最窄的可用前缀。每词使用安全 token `[A-Za-z0-9_./:@%+=,-]+`。`[]` 允许匹配插件的所有直接调用。对平台不同的授权用 `agentOverrides`；Claude 需要沙箱排除时用 `agentOverrides.claude.sandbox.excludedCommands`，另声明 `aw.claude.sandbox-exclusions.v1`。Bash 审批和沙箱排除分别配置。生成的规则匹配调用文字，路由修改后需看 Review 列出的实际入口变化。
 
-用 command list/show 的实际身份、错误和恢复指引定位；旧项目移动或来源变化时，从 list 取 pkg-id 精确 remove，不带 --scope。损坏资源可 sync/reinstall；force 仍不得删除 foreign/shared 内容。
+没有可达路由时，部署撤回本次可触达的对应 `allow` 与沙箱例外，保留适用的 `ask`、`deny`。遇到 `invocationPolicyNotApplied`，按 `detail.skippedPermissionActions`、`detail.reasonCode` 和作用域定位缺口。遇到 `hostPermissionAdditionalImpact`，在确认前核对该原生规则对其他命令的影响。OpenCode V2 的命令前缀使用未加引号的安全词和单个空格，其他书写和已记住许可依宿主规则处理。验证时分别检查生成配置和相同客户端、产品面、模式及作用域下的实际审批。
 
-作者 prepare/验证使用隔离命令主机，不注册真实用户绑定。核对集合空数组撤销、配置 apply、正文/权限一致及共享包维护；实际宿主和跨 OS 行为单独取证。Portable 不注册本机命令，按 Portable 分发（`references/portable-skills.md`）提供独立内容。
+Antigravity 只在可用 CLI 的 User Global 写入可表达的字面前缀。用 Project 或 Shared 时，按对应作用域的宿主策略验证。Grok Build 用空格连接解析后的参数进行匹配，请在 Review 核对参数边界合并的影响。Project 写入要求该项目已获 Grok 授信。
 
-动态 producer 的 omitted 是有意关闭，unmet 保留未满足，未返回被引用 ID 或改为非 Skill 是准备失败。三种情况不能合并为空集合；组件和命令完整校验后一起发布。
+若回执报告 `permissionOwnershipDegraded` 或 `permissionOwnershipWriteFailed`，先核对宿主配置中的现有规则，再同步同一目标与范围。保留不能核验归属的规则，避免用重新生成的声明猜测旧规则归属。
+
+## 验证和维护
+
+用真实作者入口验证静态或动态路由，以及 Skill、权限和资源闭包。验证使用隔离准备。核对命名路由、通用入口、无可达路由，以及按平台应用后的值。保存配置后只有应用、安装或同步会刷新已应用快照。带 `--platform` 的 apply 只涉及目标平台快照，公共路由由无 `--platform` 的 apply 或同步刷新。
+
+用 `aw command list` 与 `aw command show <source/plugin>` 检查所选包和路由。显式 `aw command package sync <source/plugin>` 从本机 Active 更新共享包。要更新宿主 Skill 和权限，运行相关平台的插件同步。卸载部署保留共享包。要移除共享包，先结束活跃任务，查看 `aw command package remove` 的影响。来源改绑后，用 `list` 提供的 `pkg-id` 精确清理旧包。

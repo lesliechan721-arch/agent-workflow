@@ -10,7 +10,7 @@
 
 确定所选 Skill 的 source、共享文件、runtime imports 与 renderer 输出。共享资源及 capability 传播采用 构建与共享（`references/build-and-sharing.md`），surface 选择采用 平台投影（`references/platform-projection.md`）。原宿主的 Hook、配置或注入能力不能视为所有 Agent 都具备的条件；仅导出目标环境能够满足的内容，并说明其要求。
 
-导出不注册真实本机命令。命令引用只能经该入口的隔离准备与完整 producer 校验；generic 不提供 Native 托管命令。需要独立运行的标准包应提供不依赖安装态命令 ID 的内容与资源。
+导出使用隔离准备，generic 不交付 Native 托管命令。可独立运行的标准包需要自己的正文和所用资源，避免依赖某个已安装插件命令包。
 
 维护声明或内容时按 Plugin 开发（`references/plugin-development.md`） 验证受影响消费者。保留文件和 runtime requirements receipt 由 AW 注入，source 与 renderer 不自行生成。
 

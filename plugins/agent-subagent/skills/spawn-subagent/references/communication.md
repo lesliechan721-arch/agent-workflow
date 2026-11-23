@@ -3,7 +3,7 @@
 ## send：发送消息
 
 ```text
-{{aw.command:guide/subagent}} send --run "<run>" --text "<msg>"
+{{aw.command}} send --run "<run>" --text "<msg>"
 ```
 
 长消息使用文件传入 `--text-file "<file>"` ，`--text-file` 与 `--text` 必须且只能选一项；文件须为非空 UTF-8 普通文件，路径相对 cwd 解析。

@@ -12,7 +12,7 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// skills/spawn-subagent/scripts/runtime/native-tool-reader.mjs
+// commands/scripts/runtime/native-tool-reader.mjs
 var native_tool_reader_exports = {};
 __export(native_tool_reader_exports, {
   NATIVE_TOOL_CONTEXT_ENV: () => NATIVE_TOOL_CONTEXT_ENV,
@@ -50,16 +50,16 @@ function readNativeTool(key, protocol, environment = process.env) {
 }
 var NATIVE_TOOL_CONTEXT_ENV;
 var init_native_tool_reader = __esm({
-  "skills/spawn-subagent/scripts/runtime/native-tool-reader.mjs"() {
+  "commands/scripts/runtime/native-tool-reader.mjs"() {
     NATIVE_TOOL_CONTEXT_ENV = "AW_NATIVE_TOOL_CONTEXT";
   }
 });
 
-// skills/spawn-subagent/scripts/runtime/windows-native.mjs
+// commands/scripts/runtime/windows-native.mjs
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-// skills/spawn-subagent/scripts/file-selection/contracts.mjs
+// commands/scripts/file-selection/contracts.mjs
 var LIMITS = Object.freeze({
   inputBytes: 1024 * 1024,
   outputBytes: 16 * 1024 * 1024,
@@ -76,7 +76,7 @@ var LIMITS = Object.freeze({
   durationMs: 3e4
 });
 
-// skills/spawn-subagent/scripts/runtime/contracts.mjs
+// commands/scripts/runtime/contracts.mjs
 var LIMITS2 = Object.freeze({
   taskBytes: 262144,
   instructionBytes: 262144,
@@ -108,7 +108,7 @@ function fail(code, message, recoveryActions = []) {
   throw new RuntimeError(code, message, recoveryActions);
 }
 
-// skills/spawn-subagent/scripts/runtime/windows-native.mjs
+// commands/scripts/runtime/windows-native.mjs
 var spawnNative = spawn;
 var windowsJobTool;
 var inputLimit = 256 * 1024;

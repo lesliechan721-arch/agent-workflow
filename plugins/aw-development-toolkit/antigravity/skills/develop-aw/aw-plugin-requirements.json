@@ -3,7 +3,7 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "aw-development-toolkit",
-    "version": "0.1.0-beta.20"
+    "version": "0.1.0-beta.21"
   },
   "requiredCapabilities": [
     "aw.catalog-authoring.v2",
@@ -11,7 +11,8 @@
     "aw.catalog-publication.v2",
     "aw.claude.sandbox-exclusions.v1",
     "aw.cli-output.v2",
-    "aw.managed-commands.v1",
+    "aw.managed-commands.v2",
+    "aw.native-tools.v3",
     "aw.plugin-authoring.v2",
     "aw.plugin-manifest.v4",
     "aw.plugin-skills.v1",
@@ -21,5 +22,5 @@
     "aw.self-check.v2",
     "aw.skill-validation.v2"
   ],
-  "digest": "sha256:6cf570d71c4eb479b9b49edd0ad3fe183555bf5a64aa7283e263f00a1865635f"
+  "digest": "sha256:d4de341184eb5a4ac46ebb1236a3ddad980f0887e06ec192838821fd20361394"
 }

@@ -9,7 +9,7 @@
 
 支持 `--prompt-file`、`--text-file`、`--output-file`，不支持 `--prompt -`/`--text -` 读取 stdin。`--details`、`result --export` 及等价的主代理详细信息入口按未知参数拒绝。父侧各单值参数重复提供、输入形式同时提供、跨命令参数或未知参数都返回 `argumentsInvalid`、exit=2；子侧通信脚本的参数错误见 [文件输入与输出](#文件输入与输出)。
 
-`--help`/`-h` 只显示五个操作的总览、子命令帮助入口及通用输出开关；`start|send|wait|result|stop --help`（或 `-h`）显示当前操作的参数、默认值、必要约束和示例。帮助在读取安装配置、扫描运行目录或启动 worker 前返回，不要求任务必填参数。参数解析错误指向相应子命令帮助。
+`aw command show <来源>/agent-subagent` 列出包内操作。`start|send|wait|result|stop --help`（或 `-h`）显示当前操作的参数、默认值、约束和示例。Guide 的子命令帮助在读取任务配置、扫描运行目录或启动 worker 前返回。参数解析错误指向相应子命令帮助。
 
 五个操作都支持布尔参数 `--diagnostics`，不允许重复，仅作用于本次命令，不保存为任务配置。默认隐藏正常诊断：`codexExecutableSelected`、`communicationPermissionAdded`、`communicationPermissionExisting`、`communicationPermissionSession`、旧结果中的 `profileFieldIrrelevant`、`hookTrustBypassed`；启动窗口结束时，`starting` 已表达未就绪，默认不再附加 `startupNotReady`。该开关不改变执行权限、配置或退出码。
 
@@ -78,7 +78,7 @@ wait 的单个完整终态组即使独占本次预算仍放不下时输出 `defe
 
 transport 与 passiveDelivery 仅在 adapter/worker 内部使用，不转发为 communication_transport/status/passive_delivery 等主代理字段。passiveDelivery 控制自动输入调度和子代理提示词；不改变主动接收入口始终可用这一条件。内部仍可区分 disabled/unsupported，但主代理只得到 false 与必要失败原因。
 
-agy 使用同一已安装 Guide 的独立托管通信命令，固定 AW 主机与精确 ID；每次启动/恢复先校验稳定版本 >=1.4.10，需要额外授权时通过本执行私有 --settings 文件注入合并后的 allow，不写用户 settings；其它 custom 的脚本入口保持原协议。Codex/Claude 继续使用每次执行的私有 MCP server；启动和恢复时按实际模式准备两项工具的精确许可，完整权限及关闭通信时跳过额外授权。具体识别和失败边界见 [配置权限模式](configuration.md#执行器权限模式)。
+agy 通过已核验的 `CommandHost` 调用同一 Guide 命令包的 `message` 路由。启动和恢复时核对包的归属、插件版本、内容摘要及路由入口。agy 稳定版本至少为 1.4.10。需要额外授权时，将原有 allow 和仅匹配 `<node> <cliEntry> command run <来源>/agent-subagent -- message` 的规则写入本次执行的私有 `--settings` 文件。用户设置及原有 Ask、Deny 和 strict 策略继续生效。其它 custom 执行器沿用脚本通信协议。Codex 和 Claude 使用每次执行的私有 MCP server，按实际权限模式为两项工具准备精确许可。完整权限或关闭通信时跳过额外授权。具体识别和失败边界见 [配置权限模式](configuration.md#执行器权限模式)。
 
 子代理通信提示词使用 common、transport 和 passiveDelivery 对应片段；通信启用时始终包含 active-receive 方法片段，移除 no-active-receive 分支。该模板标记是内容区段，不是能力状态。MCP 总是注册 send/receive 两个工具，脚本总是提供对应的两个调用入口；需要父侧答复时，子代理按已有响应式等待方法保持任务开放。实际 receive 收到输入或关闭时提前返回，仍受 deadline 和停止规则约束，不改变消息消费和 TTL。
 
@@ -169,7 +169,9 @@ result 必须且只能指定一个句柄，不接受 timeout 或 history。尚�
 
 B 清空 final、观察位置、初始化、停止请求、未读过程消息及投递缺口；新建进程归属 token、worker 和通信桥，terminalAt 从 null 开始。run、key、名称、原配置和 session 保持；已确认恢复能力保留到本轮出现明确 disabled/unsupported 结论。旧消息不重放、旧事件不混入新结果。需保留 A 时，恢复前用 result --output-file 导出。同一用户可凭完整 run 跨父会话串行操作；不提供列表、名称查找或句柄找回，也不承诺多个父代理并发恢复。
 
-原配置绑定包括 executor key、adapter 与原入口/托管 commandId、安装来源、workspace、显式 model/effort、args、权限、Codex 配置、通信/恢复开关、env/envFrom 映射、deadlineMs 和 bundle 原选择配置。恢复不从当前 subagentCommands 重选，不接受覆盖；安装入口缺失或身份变化时失败。custom-managed 还比较同一受校验 CommandHost 和 AW_HOME 下 command show 的原 id/owner/resourceRoot 与完整 launch，执行相关差异返回 resumeExecutionChanged；展示名不参与，实际仍通过原 command run 执行，详见 [托管接入](configuration.md#托管-custom-adapter)。
+原配置绑定包括 executor key、adapter 与原入口或托管 `commandId`、workspace、显式 model/effort、args、权限、Codex 配置、通信与恢复开关、env/envFrom 映射、deadlineMs 和 bundle 原选择配置。恢复复用该配置，校验 Guide 命令包的来源身份、插件 ID、版本、内容摘要及 run 所属平台的已应用快照。仅快照换版时，使用当前已核验 revision 中的 worker、内建 adapter 和通信入口。Guide 代码版本或内容摘要变化时返回 `resumeExecutionChanged`。
+
+`custom-managed` 通过同一已核验的 `CommandHost` 和 `AW_HOME` 重新执行 `command show`，复核原命令身份、归属、所选路由和完整启动定义。用户命令额外比较资源 revision，插件命令额外比较插件版本和内容摘要。执行相关差异返回 `resumeExecutionChanged`。验证通过后以原 `command run` 路由继续。详见 [托管接入](configuration.md#托管-custom-adapter)。
 
 envFrom 保持映射，值在恢复启动时从宿主重新取得，缺失失败；不长期复制全部宿主环境或凭据。第三方配置、认证和策略仍由后端管理。显式 deadlineMs 每次计算新的 deadlineAt，省略仍无执行期限。bundle 不重新扫描、扩大或重发原文件集合，只让原 session 接收本次新消息。后端会话由后端保管，不放在终态即删的 adapter/ 临时目录。
 
@@ -205,7 +207,7 @@ envFrom 保持映射，值在恢复启动时从宿主重新取得，缺失失败
 | closing | 已停止接受新输入，正在停止/提交结果并核对本地收尾 |
 | completed/failed/cancelled/unknown | 本次结果已固定；result 可在有效期内重读，满足恢复条件后可用 send 启动下一次执行 |
 
-stop 发出本次停止意图并有界等待，最多 30 秒。未能确认停止时返回真实 closing/unknown 及已有证据；不把等待超时说成 cancelled。重复 stop 不创建新工作。worker 失联时只按保存的 PID、启动身份和归属证据处理剩余所属进程，不按进程名或共享进程组停止。
+stop 发出本次停止意图，在同一个 30 秒窗口内等待本地执行树和 worker 退出。未能确认停止时返回真实 closing/unknown 及已有证据；不把等待超时说成 cancelled。重复 stop 不创建新工作。worker 失联时只按保存的 PID、启动身份和归属证据处理剩余所属进程，不按进程名或共享进程组停止。
 
 过期记录回收由独立扫描负责，不提供公开 cleanup 或提前删除入口。损坏的消息或最终正文不阻止过期清理，删除依据与内容解析分开；归属证据无法读取时不猜测、不扩大删除范围。删除后的句柄不可恢复，不影响已复制到父对话的结果。stop 保留最后结果；过期物理回收由独立扫描尽力完成。
 
@@ -221,7 +223,7 @@ worker 消失、后端终态不明、输出超限、协议冲突或本地收尾�
 
 ## 操作系统与安装闭包
 
-Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。不能用 WSL、交叉编译、mock 或仅通过文件选择测试替代运行证据。插件与 Eval 共用原生程序源码，但保留各自的启动入口和生命周期。AW 在托管命令启动前按已安装 producer 的文本锁准备当前架构的 helper，插件只读取生成的原生工具上下文，不读取 Eval package、开发 checkout 或原生 cache。后台进程继承已准备路径；嵌套 AW 调用按自身声明只使用有效缓存。
+Windows 支持涵盖原生 Windows 进程和文件系统上的完整 start/send/wait/result/stop 闭环。验收需要真实 Windows 运行证据。插件与 Eval 共用原生程序源码，各自维护启动入口和生命周期。AW 按当前命令包 revision 的原生工具声明解析 CLI 配套的 Windows Job helper，并在启动命令前注入工具上下文。插件从该上下文读取路径，后台进程继承已准备的路径。嵌套 AW 调用按所选路由所在命令包的声明重新核验所需工具。
 
 | 边界 | 必须保持的行为 |
 | --- | --- |
@@ -232,7 +234,7 @@ Windows 支持指原生 Windows 进程和文件系统上的完整 start/send/wai
 | 文本与管道 | 任务、指令、消息和结果按 UTF-8 字节处理，保留正文原有 LF/CRLF、中文和非 BMP 字符。内部协议分隔遵守 v5，程序封套使用 LF；stdin、stdout、导出不经过控制台代码页或 shell 文本管道的隐式重编码 |
 | 私有资源 | POSIX 目录/文件分别使用 0700/0600；Windows 用当前用户的受保护目录与实际访问控制取得等效保密边界，mode 数字或 chmod 成功本身不构成证据。身份校验使用当前 OS 的用户与归属事实，不能把 Unix uid 设为通用前提 |
 | 文件提交与回收 | 私有状态仍完整写入后原子发布；Windows 的占用或访问拒绝须明确报告，不能先删除旧状态再写入。--output-file 的完整导出由调用者保留，run TTL 不删除该文件。扫描不跟随 symlink、junction 或其他重解析链接；无法证明归属或停止时保留资源，不能因为删除失败扩大清理范围 |
-| 安装闭包 | worker、adapter、工具桥接及必要的平台 helper 来自当前安装 resourceRoot 和正式依赖。按目标架构分发并校验；不要求运行时访问开发 checkout、临时下载 helper 或增加系统服务 |
+| 安装闭包 | worker、内建 adapter 和工具桥接来自当前已核验的 Guide 命令包 revision。必要的平台 helper 来自 CLI 配套的原生依赖，按宿主架构解析并校验。 |
 
 Windows 文件、ACL 和进程操作使用固定的版本化 JSON stdin/stdout 协议；输入最多 256 KiB，输出最多 8 MiB，每次调用最多 30 秒。响应必须通过 schema、结果形状及退出码检查。ACL 保护和验证继续按 18 KiB 输入分批；每个目标分别检查，下一条命令、下一轮等待和删除前重新验证。批次失败后仍逐项隔离坏目标。根目录通过无覆盖移动发布；已有文件或目录不能被替换。
 
@@ -248,9 +250,9 @@ Windows 原子 JSON 发布对 rename 的 EPERM、EACCES 和 EBUSY 最多重试�
 
 ## 升级与验证
 
-开发阶段直接更新 v5 的 start/ready/session 结构，不支持旧 ready 的顶层 communication/communicationSupported，也不支持缺少 communication/resume 或适用 permissionMode 的 start 请求，不增加版本协商或迁移。不保留旧 run/poll/v4 执行器、preview 参数或结果文件旁路。result 支持普通报告和 --output-file PATH；--export 按未知参数拒绝。Manifest v3、Config Definition v5、Store v6、Catalog v7、installed-runtime-config v2 和 Eval instruction-v2 不联动改号。新目录直接生效，不读取、迁移或自动删除旧临时目录，不兼容旧 run。通过正常 build/sync/reinstall 更新产物；升级、重装或删除前先完成或 stop 所有活跃外部任务；旧运行由原工具完成或停止，不扫描、接管或删除旧协议资源。
+Adapter 端使用 v5 的 start、ready 和 session 结构。旧 v4 执行器、preview 和 `result --export` 均须改用现行入口。旧运行由原工具完成或停止。通过正常 build、sync 或 reinstall 更新产物。升级、重装或移除 Guide 及托管 adapter 前先结束活跃任务。配置快照换版后可恢复来源及代码一致的 run，插件版本或内容摘要变化时返回 `resumeExecutionChanged`。
 
-确定性验证采用 `pnpm plugin:test agent-subagent` 和 [测试指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/maintainers/testing.md) 的最低足够真实层级。协议、helper 和 fake 后端保护本地合同及副作用；产物测试须从实际 build/materialization 的 resourceRoot 启动 worker、adapter、脚本和 MCP 工具，保留角色资源、配置表与通信模板注入点与原生角色局部边界。不得依赖开发 checkout、宿主 node_modules 或临时下载 helper。
+确定性验证采用 `pnpm plugin:test agent-subagent` 和 [测试指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/maintainers/testing.md) 的最低足够真实层级。协议、helper 和 fake 后端保护本地合同及副作用。产物测试从实际准备的命令包启动 worker、内建 adapter、脚本和 MCP 工具，并核对通信模板注入、原生角色边界、Skill 角色资源、配置表和命令引用。测试使用交付产物及其正式依赖。
 
 ### 插件专属测试与 Windows 原生验证边界
 

@@ -28,7 +28,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 import { createRequire as awCreateRequire } from 'node:module'; const require = awCreateRequire(import.meta.url);
 
-// skills/spawn-subagent/scripts/adapters/codex-profile.mjs
+// commands/scripts/adapters/codex-profile.mjs
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -1220,7 +1220,7 @@ function stringify(obj, { maxDepth = 1e3, numbersAsFloat = false, strictTemporal
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-// skills/spawn-subagent/scripts/file-selection/contracts.mjs
+// commands/scripts/file-selection/contracts.mjs
 var LIMITS = Object.freeze({
   inputBytes: 1024 * 1024,
   outputBytes: 16 * 1024 * 1024,
@@ -1237,7 +1237,7 @@ var LIMITS = Object.freeze({
   durationMs: 3e4
 });
 
-// skills/spawn-subagent/scripts/runtime/contracts.mjs
+// commands/scripts/runtime/contracts.mjs
 var LIMITS2 = Object.freeze({
   taskBytes: 262144,
   instructionBytes: 262144,
@@ -1269,7 +1269,7 @@ function fail(code, message, recoveryActions = []) {
   throw new RuntimeError(code, message, recoveryActions);
 }
 
-// skills/spawn-subagent/scripts/adapters/codex-hooks.mjs
+// commands/scripts/adapters/codex-hooks.mjs
 var hookEvents = Object.fromEntries(["PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt"].map((name) => [name, name.replace(/[A-Z]/g, (letter, index) => `${index ? "_" : ""}${letter.toLowerCase()}`)]));
 var table = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 function mergeStateRecord(base, overlay) {
@@ -1325,7 +1325,7 @@ function convertHooks(value, { invalid, unsupported }) {
   return result;
 }
 
-// skills/spawn-subagent/scripts/adapters/codex-profile.mjs
+// commands/scripts/adapters/codex-profile.mjs
 var threadFields = /* @__PURE__ */ new Set([
   "model",
   "service_tier",

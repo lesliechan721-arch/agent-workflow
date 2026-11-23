@@ -10,7 +10,7 @@
 | 平台文件集合不同 | fileRules include/exclude；核对最终引用闭包 |
 | 同一角色、指令或 Hook 的平台字段差异 | 对应 agentOverrides；数组整体替换，null 明确不提供 |
 | 配置或平台能力决定类别、名称、数量 | renderer 返回完整组件集合，采用 Artifact renderer（references/aw-artifact-renderer.md） |
-| Skill 需要稳定脚本或权限入口 | 托管命令（references/managed-commands.md）；正文、权限和真实 producer 一起校验 |
+| Skill 需要稳定脚本或权限入口 | 托管命令（references/managed-commands.md）；正文和权限按同一份共享路由表校验 |
 
 作者不透传任意宿主 Manifest，也不指定安装命令、宿主路径或注册身份。平台不执行某字段的语义时应报告缺口，不能只保留字段就称支持。
 
@@ -22,7 +22,7 @@ PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、copil
 
 用 `kinds[*].status` 和 `features` 判断宿主运行资格，用 `kinds[*].delivery` 和可选的 `deliveryFeatures` 判断 AW 能保留的声明。旧能力输入省略 `deliveryFeatures` 时沿用运行资格判断交付。类别运行前提用派生的 `component.kind.<kind>` 表达。返回完整 Skill 和作者声明的调用字段，调用及可见性资格缺口随实际交付报告。其他必要能力不足时保留具体 feature/values。需要适配通用环境时，为 `generic` 提供适用的 Skill 正文。
 
-实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
+实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、组件配置和 Skill 的 runtimeConfig 按 render scope 解释。共享命令的路由和按平台配置快照见 托管命令（`references/managed-commands.md`）。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
 
 核对安装态时，从公开原生命令/API 取得对应状态；本地配置只补充显式条目、scope、归属和内容，不能覆盖原生结果。共享包的当前项目 enabled 不证明独立项目安装；查询未提供的事实保留 unknown。字段和观察副作用通过 aw plugin status --json 查看原生事实与 configuration 补充；显式 --observe-native 可启动原生观察服务并加载插件代码。
 
