@@ -1,10 +1,10 @@
-# AW 原生工具合同 v2
+# AW 原生工具合同 v3
 
 原生工具由当前运行的 AW 或 Eval 提供。插件声明需要的宿主协议和消费者；宿主在启动消费者前，从自身已安装依赖解析适用平台的工具，并注入本地路径。当前支持 `aw.windows-job.v1`。官方平台包构建与发布流程参见[平台架构说明](../maintainers/architecture/platforms.md)与[发布流程](../maintainers/release.md)。
 
 ## 1. 作者声明与能力查询
 
-Plugin Manifest v4 的 `nativeTools` 要求 `aw.native-tools.v2`。从当前工具查询字段和限制：
+Plugin Manifest v4 的 `nativeTools` 要求 `aw.native-tools.v3`。从当前工具查询字段和限制：
 
 ```bash
 aw dev plugin capabilities --surface native-tools --json
@@ -21,8 +21,7 @@ aw dev plugin capabilities --surface native-tools --json
   ],
   "consumers": [
     {
-      "kind": "managed-command-set",
-      "key": "subagent-run",
+      "kind": "plugin-command",
       "tools": [
         {
           "key": "windows-job",
@@ -35,8 +34,8 @@ aw dev plugin capabilities --surface native-tools --json
 }
 ```
 
-- **消费者类型（`consumers[].kind`）**：仅允许 `managed-command-set`（托管命令集合）与 `plugin-test`（插件测试 runner）。
-- **消费者标识（`consumers[].key`）**：分别引用已在 Manifest 中声明的 command set 名称，或测试 runner 标识（如 `node`）。
+- 每个插件可声明一条 `{ "kind": "plugin-command", "tools": […] }`，要求顶层有 `command`。该消费者作用于共享包的所有路由，省略 `key`。发布命中 `command.platforms` 的包或显式 `command package sync` 时准备该闭包。
+- 插件 Node 测试使用 `{ "kind": "plugin-test", "key": "node", "tools": […] }`。测试工具与命令包工具分别声明。
 - **工具绑定（`tools[]`）**：
   - `key`：必须引用 `definitions` 中已声明的工具 key。所有声明的 definitions 必须被至少一个 consumer 引用，严禁悬空定义或未定义引用。
   - `platforms`：显式声明为 `["win32"]`。不适用当前平台的 binding 会自动跳过。
@@ -78,14 +77,13 @@ aw dev plugin capabilities --surface native-tools --json
 ## 3. 安装审阅与运行
 
 - **审阅闭包**：新增、删除或改变 native 声明闭包均进入现有 Review 和 Receipt，闭包只包含 `reader`、`definitions` 和 `consumers`。没有第二套 native 批准流程。
-- **已安装 Producer 保护**：已安装 producer 保存并核验声明闭包。Catalog source sync 不修改旧命令；用户确认并成功更新 producer 后，后续调用才使用新声明。producer 更新失败时保留完整旧产物，或撤下不完整绑定。
+- **命令包 revision**：当前 revision 保存并核验已安装的声明闭包。来源同步后，命令继续使用已安装闭包。用户确认并成功切换 revision 后才使用新声明，准备失败保留旧版本。
 - **更新前终止活跃任务**：更新、重装或删除 producer 前，必须先结束或停止当前活跃任务。
-- **共享 Producer 保护**：仅撤销一个 scope 的原生插件注册时，仍存在的共享静态 Skill producer 保持可用，不计作闭包删除。
-- **配置与原生解耦**：配置应用或重放不能替代 native 声明变化确认。独立命令包的当前声明与已安装闭包不同时，配置刷新保留旧 producer 并报告部分失败；先通过 `sync` 或 `command package sync` 审阅确认变化，再重试配置应用。已保存配置仍保留。
+- **共享包保留**：平台卸载保留共享命令包及其原生工具闭包。只安装到 `command.platforms` 之外的平台时，无须准备命令包的原生工具。
+- **配置应用**：Active Catalog 的原生声明与已安装闭包不同时，应用报告 `nativeToolSyncRequired`，保留旧包和已保存配置。先通过 `aw plugin sync` 或 `aw command package sync` 审阅并更新闭包，再重试应用。
 - **宿主更新与插件解耦**：仅升级 CLI 的配套原生工具不改变插件声明，**不要求插件重装、重新发布或单独 Review**。
 - **启动与上下文注入**：
-  - 宿主先校验命令、binding、协议和环境，再解析所需工具；required 成功后才启动消费者、读取任务或产生业务副作用。
-  - `start/send/wait/result/stop` 统一遵循相同的准备规则。
+  - 宿主先核验路由、启动定义、声明闭包和环境，再解析所需工具；required 成功后才启动消费者、读取任务或产生业务副作用。
   - 宿主启动消费者前，必须先清理继承的旧 native context，再按当前 producer 解析注入。
   - `AW_NATIVE_TOOL_CONTEXT` 保存 schema 1 和本次声明 key 的 ready/unavailable 结果。
   - `AW_NATIVE_*` 是受保护内部环境变量前缀，命令 env/envFrom 严禁覆盖，Windows 按大小写不敏感处理。

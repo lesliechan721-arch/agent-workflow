@@ -3,6 +3,9 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import type { DeploymentBinding, DeploymentObservation, GrokOrderEntry, ReadContext } from './contracts.js';
+import { grokProjectPermissionsAuthorized } from './grok-permission-config.js';
+import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
+import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import type { DeploymentLayout } from './layout.js';
 import { queryNativeDeployment } from './inspection-query.js';
 import { grokUserWorkspace } from '../intent/scope-context.js';
@@ -145,6 +148,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : undefined;
   const configPaths = [path.join(hostRoot, 'config.toml'), ...(projectRoot ? [path.join(projectRoot, '.grok', 'config.toml')] : [])];
   const scopedConfig = configPaths.at(-1)!;
+  const canonicalUserConfig = path.join(await canonicalizePathThroughExistingAncestor(hostRoot), 'config.toml');
+  const permissionPath = (file: string) => file === configPaths[0] ? canonicalUserConfig : file;
   // Query cwd and detected projectRoot describe the temporary observation
   // context. Stable policy, resources and sources still invalidate a plan.
   const nativeEvidence = Object.fromEntries(['grokVersion', 'projectTrusted', 'projectInstructions', 'permissions', 'loginPolicy',
@@ -152,13 +157,22 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     .map((key) => [key, inspect[key]]));
   const evidence: unknown[] = [binding.scope, list, nativeEvidence];
   result.configuration = { scope: binding.scope.kind, activation: 'absent', reasonCodes: [] };
+  const permissionConfigs: Array<{ path: string; digest: string | null }> = [];
+  const nativeRuleCounts = new Map<string, number>();
   for (const file of configPaths) {
     try {
-      const stat = await fs.stat(file);
+      const stat = await fs.lstat(file);
+      if (projectRoot && file === scopedConfig) {
+        if (result.grokScopeAuthorization !== 'granted' || !await grokProjectPermissionsAuthorized(ctx, hostRoot, projectRoot)) throw new Error('grokProjectAuthorizationUnconfirmed');
+        await assertSafeFileMutationPath({ allowedRoot: projectRoot, filePath: file, label: 'Grok configuration' });
+      }
       if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('grokConfigLimit');
       const text = await fs.readFile(file, 'utf8');
       evidence.push([file, text]);
       const config = object(getStaticTOMLValue(parseTOML(text)));
+      permissionConfigs.push({ path: permissionPath(file), digest: crypto.createHash('sha256').update(text).digest('hex') });
+      const rules = isRecord(config.permission) ? config.permission.rules : undefined;
+      nativeRuleCounts.set(file, Array.isArray(rules) ? rules.length : 0);
       const section = config.plugins === undefined ? {} : object(config.plugins);
       const enabled = section.enabled ?? []; const disabled = section.disabled ?? [];
       if (![enabled, disabled].every((values) => Array.isArray(values) && values.every((value) => typeof value === 'string'))) throw new Error('grokConfigInvalid');
@@ -169,9 +183,12 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       }
     } catch (error) {
       rethrowFatalError(error); ctx.signal?.throwIfAborted();
-      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) evidence.push([file, null]);
-      else {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        evidence.push([file, null]);
+        permissionConfigs.push({ path: permissionPath(file), digest: null });
+      } else {
         evidence.push([file, 'configurationUnreadable']);
+        if (!permissionConfigs.some((config) => config.path === permissionPath(file))) permissionConfigs.push({ path: permissionPath(file), digest: 'unreadable' });
         if (file === scopedConfig) result.configuration.activation = 'unknown';
         result.configuration.reasonCodes.push('grokConfigurationUnconfirmed');
         result.diagnostics.push({ code: 'grokConfigurationUnconfirmed', severity: 'warning',
@@ -179,7 +196,25 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       }
     }
   }
-  const configEvidence = evidence.slice(3);
+  // Native inspect reports the sources of Bash rules and a count across sources.
+  // An AW write may add a scoped TOML layer or change its count. Keep all other
+  // sources and every other native policy field bound to the original Review.
+  const nativePermissions = isRecord(inspect.permissions) ? { ...inspect.permissions } : inspect.permissions;
+  if (isRecord(nativePermissions) && Array.isArray(nativePermissions.sources)) {
+    let localRules = 0;
+    nativePermissions.sources = nativePermissions.sources.filter((source: unknown) => {
+      const file = configPaths.find((candidate) => source === candidate + ' (config)' || source === permissionPath(candidate) + ' (config)');
+      if (!file) return true;
+      localRules += nativeRuleCounts.get(file) ?? 0;
+      return false;
+    });
+    if (typeof nativePermissions.loaded === 'number') nativePermissions.loaded -= localRules;
+  }
+  const nativeConfigSources = isRecord(inspect.configSources) ? { ...inspect.configSources } : inspect.configSources;
+  if (isRecord(nativeConfigSources) && Array.isArray(nativeConfigSources.layers)) {
+    nativeConfigSources.layers = nativeConfigSources.layers.filter((layer: unknown) => !isRecord(layer) || !(Object.keys(layer).length === 2
+      && configPaths.some((file, index) => (layer.path === file || layer.path === permissionPath(file)) && layer.role === (index === 0 ? 'user' : 'project'))));
+  }
   const resourceOrderEntries = new Map<Record<string, unknown>, GrokOrderEntry>();
   const hooks: unknown[] | undefined = Array.isArray(inspect.hooks) ? inspect.hooks : undefined;
   const hookPackages = new Map<unknown, GrokOrderEntry>();
@@ -259,12 +294,15 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     ...(projectRoot && installed && !sharedRegistration && installed.path === path.join(hostRoot, 'installed-plugins', installed.repo_key as string)
       ? { userRegistrationDigest: artifactValueDigest([installed.path, installed.source]) } : {}),
     scopeDigest: evidenceDigest([binding.scope, scopedList, {
-      ...nativeEvidence, plugins: undefined,
+      ...nativeEvidence, permissions: nativePermissions, configSources: nativeConfigSources, plugins: undefined,
       hooks: hooks ? [] : nativeEvidence.hooks,
       projectInstructions: instructions ? [] : nativeEvidence.projectInstructions,
       ...Object.fromEntries(effectiveKinds.map((kind) => [kind,
         effective.filter((entry) => entry.kind === kind && !resourceOrderEntries.has(entry.row)).map(({ row }) => row)])),
-    }, ...configEvidence]),
+    }]),
+    permissionConfigs,
+    permissionInventoryDigest: evidenceDigest([isRecord(inspect.permissions) ? [inspect.permissions.sources, inspect.permissions.loaded] : null,
+      isRecord(inspect.configSources) ? inspect.configSources.layers : null]),
     sourceDigests, instructions: instructions ?? [],
     // A bound hook's full row is in its source digest. Keep hook order across packages, too.
     hookOrder: hooks?.map((hook) => hookPackages.get(hook) ?? { sourceRoot: null, key: evidenceDigest(hook) }) ?? [],

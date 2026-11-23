@@ -345,18 +345,51 @@ describe('platform projection', () => {
     expect(await fs.readFile(path.join(root, 'rules/policy.md'), 'utf8')).toContain('trigger: "glob"');
   });
 
+  it('freezes OpenCode rules and reports only actions that the host could not deliver', async () => {
+    const { root, input, ctx } = await fixture('opencode', [skill]);
+    ctx.platform = 'linux';
+    input.policy.permissions = [{ name: 'checks', allow: ['git', { argsPrefix: ['show'] }],
+      deny: ['git show #note'], ask: ['node check'] }];
+    const destination = path.join(root, 'client-home/opencode.json');
+    await fs.outputJson(destination, { permissions: [{ action: 'shell', resource: 'node check *', effect: 'deny' }] });
+    const projection = await projectPlatform(ctx, input);
+    expect(projection.supplements).toHaveLength(1);
+    const [permission] = projection.supplements;
+    expect(permission).toMatchObject({ kind: 'config-entry', destination, mergeKey: 'opencode-permissions:aw-source-example' });
+    const staged = await fs.readJson(permission!.stagingPath);
+    expect(staged.effective).toEqual([{ action: 'shell', resource: 'aw command run source/example -- show *', effect: 'allow' }]);
+    expect(projection.diagnostics.filter(({ code }) => code === 'invocationPolicyNotApplied')).toMatchObject([
+      { subject: { field: 'permissions.checks' }, detail: { reasonCode: 'permission-rule-conflict', skippedPermissionActions: ['allow', 'ask'] } },
+      { subject: { field: 'permissions.checks' }, detail: { reasonCode: 'permission-prefix-unrepresentable', skippedPermissionActions: ['deny'] } },
+    ]);
+  });
+
+  it('uses an absolute OpenCode global override and retains the Skill when a relative override cannot be located', async () => {
+    const { root, input, ctx } = await fixture('opencode', [skill]);
+    input.policy.permissions = [{ name: 'checks', allow: ['git status'] }];
+    const override = path.join(root, 'override');
+    ctx.env!.OPENCODE_CONFIG_DIR = override;
+    const absolute = await projectPlatform(ctx, input);
+    expect(absolute.supplements[0]?.destination).toBe(path.join(override, 'opencode.json'));
+    ctx.env!.OPENCODE_CONFIG_DIR = 'relative-config';
+    const relative = await projectPlatform(ctx, input);
+    expect(relative.bundle).toBeTruthy();
+    expect(relative.supplements).toEqual([]);
+    expect(relative.diagnostics).toContainEqual(expect.objectContaining({ code: 'invocationPolicyNotApplied',
+      detail: { reasonCode: 'permission-config-path-unconfirmed', skippedPermissionActions: ['allow'] } }));
+  });
+
   it('freezes Claude scope-specific permissions while preserving shared package bytes and command prefix semantics', async () => {
     const { input, ctx, root } = await fixture('claude', [skill]);
-    const permission = { command: { set: 'checks', key: 'run', variant: 'default' }, argsPrefix: ['--check'] };
+    const permission = { argsPrefix: ['--check'] };
     input.policy.permissions = [{ name: 'checks', allow: [permission], sandbox: { excludedCommands: [permission] } }];
-    ctx.commandResolver = () => 'cmdp_0123456789abcdef';
     const result = await projectPlatform(ctx, input);
     const contribution = result.supplements[0]!;
     expect(contribution.destination).toBe(path.join(root, 'client-home/settings.json'));
     expect(contribution.mergeKey).toBe('claude-permissions:aw-source-example');
     expect(await fs.readJson(contribution.stagingPath)).toEqual({ kind: 'claude-permissions', permissions: {
-      allow: ['Bash(aw command run cmdp_0123456789abcdef -- --check *)'], ask: [], deny: [],
-      excludedCommands: ['aw command run cmdp_0123456789abcdef -- --check *'],
+      allow: ['Bash(aw command run source/example -- --check *)'], ask: [], deny: [],
+      excludedCommands: ['aw command run source/example -- --check *'],
     } });
     input.binding.scope = { kind: 'project', projectRoot: path.join(root, 'project') };
     const project = await projectPlatform(ctx, input);

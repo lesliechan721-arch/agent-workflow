@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const SKILL_CONFIG_KEYS = {
   'spawn-subagent': [
     'simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile',
-    'taskCustomProfiles', 'subagentCommands', 'subagentRetentionHours',
+    'taskCustomProfiles', 'subagentCommands',
   ],
 };
 export const CONFIG_KEYS = SKILL_CONFIG_KEYS['spawn-subagent'];
@@ -123,12 +123,12 @@ function readSkillSourceRoot(context, key) {
   return resource.root;
 }
 
-async function runtimeResourceFiles(context, key, relative) {
+async function skillResourceFiles(context, key, relative) {
   const root = readSkillSourceRoot(context, key);
   const result = {};
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const name = `${relative}/${entry.name}`;
-    if (entry.isDirectory()) Object.assign(result, await runtimeResourceFiles(context, key, name));
+    if (entry.isDirectory()) Object.assign(result, await skillResourceFiles(context, key, name));
     else if (entry.isFile() && !entry.name.endsWith('.test.mjs')) {
       result[name] = { source: { kind: 'bundle', path: `skills/${key}/${name}` } };
     }
@@ -174,19 +174,22 @@ export async function readArtifactRenderContext() {
 export async function renderArtifactPlan(context) {
   validateContext(context);
   const plan = { version: 3, components: [], omitted: [], unmet: [] };
+  const hasDeliveryProfile = context.platformCapabilities.deliveryFeatures !== undefined;
   const execution = [{ feature: 'agent.execution', values: ['isolated-context'] },
     { feature: 'agent.prompt-mode', values: ['host-default'] }];
 
   if (context.allowedOutputKinds.includes('skill')) {
     const id = context.platform === 'claude' ? 'spawn-subagent-claude-skill' : 'spawn-subagent-skill';
     const key = 'spawn-subagent';
-    // The scheduling method is adapted to these hosts and needs their command
-    // bindings and installed runtime configuration.
+    // Only the scheduling hosts publish the shared Guide command package.
     if (!['codex', 'claude'].includes(context.platform)) {
       plan.omitted.push({ id, kind: 'skill', reason: 'not-offered' });
     } else {
-      const requirements = [...execution, { feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }];
-      const gap = capabilityGap(context, 'skill', requirements);
+      // Claude can deliver the Guide and its external command reference while
+      // native delegation still depends on the session's tools and role.
+      const requirements = context.platform === 'codex' ? execution : [];
+      const gap = context.platform === 'codex' || !hasDeliveryProfile
+        ? capabilityGap(context, 'skill', requirements) : null;
       if (gap) plan.unmet.push({ id, kind: 'skill', name: key, ...gap });
       else {
         const config = resolveConfigValues(context, CONFIG_KEYS);
@@ -194,32 +197,23 @@ export async function renderArtifactPlan(context) {
         const files = {
           'SKILL.md': { source: { kind: 'bundle', path: `skills/${key}/SKILL.md` } },
           'README.md': { source: { kind: 'bundle', path: `skills/${key}/README.md` } },
-          ...(await runtimeResourceFiles(context, key, 'references')),
-          ...(await runtimeResourceFiles(context, key, 'assets')),
-          ...(await runtimeResourceFiles(context, key, 'agents')),
-          ...(await runtimeResourceFiles(context, key, 'scripts')),
-          ...(await runtimeResourceFiles(context, key, 'docs')),
+          ...(await skillResourceFiles(context, key, 'references')),
+          ...(await skillResourceFiles(context, key, 'assets')),
+          ...(await skillResourceFiles(context, key, 'agents')),
+          ...(await skillResourceFiles(context, key, 'docs')),
         };
         const profilesReference = 'references/execution-profiles.md';
         files[profilesReference] = { text: renderProfiles(await readFile(path.join(sourceRoot, profilesReference), 'utf8'), config) };
         const reference = 'references/external-delegation.md';
-        files[reference] = { text: slot(await readFile(path.join(sourceRoot, reference), 'utf8'),
-          'subagent-commands', commandTable(config.subagentCommands)) };
+        const referenceSource = await readFile(path.join(sourceRoot, reference), 'utf8');
+        files[reference] = { text: slot(referenceSource.replace('{{aw.command}} start --platform codex',
+          `{{aw.command}} start --platform ${context.platform}`), 'subagent-commands', commandTable(config.subagentCommands)) };
         if (context.platform === 'codex' && context.platformCapabilities.basis === 'local') {
           const skill = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
           const roleName = `aw-${context.plugin.pluginId.replace('/', '-')}-subagent`;
           files['SKILL.md'] = { text: skill.replace('`subagent`', `\`${roleName}\``) };
         }
-        if (context.platform === 'claude') {
-          for (const name of Object.keys(files)) {
-            if (!name.endsWith('.md')) continue;
-            const body = files[name].text ?? await readFile(path.join(sourceRoot, name), 'utf8');
-            files[name] = { text: body.replaceAll('aw.command:guide/', 'aw.command:guide-claude/')
-              .replaceAll('aw.command:guide-communication/', 'aw.command:guide-communication-claude/') };
-          }
-        }
-        plan.components.push({ id, kind: 'skill', name: key, requires: requirements,
-          runtimeConfig: { keys: ['subagentCommands', 'subagentRetentionHours'] }, content: { files } });
+        plan.components.push({ id, kind: 'skill', name: key, requires: requirements, content: { files } });
       }
     }
   }
@@ -229,8 +223,7 @@ export async function renderArtifactPlan(context) {
     const requirements = context.platform === 'pi'
       ? [...execution, { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }] : execution;
     // Earlier v2 clients reject the whole plan when given a role they cannot project.
-    const legacyGap = context.platformCapabilities.deliveryFeatures === undefined
-      && capabilityGap(context, 'agent', requirements);
+    const legacyGap = !hasDeliveryProfile && capabilityGap(context, 'agent', requirements);
     for (const [id, role] of Object.entries(ROLES)) {
       if (legacyGap) plan.unmet.push({ id, kind: 'agent', name: role.key, ...legacyGap });
       else plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));

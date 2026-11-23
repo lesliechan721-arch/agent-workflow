@@ -19,7 +19,7 @@ const scripts = guideRuntimeScripts(new URL('./', import.meta.url));
 test('installed Codex profile conversion and hook provenance contracts', async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-codex-profile-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const movedScripts = path.join(root, 'skills/spawn-subagent/scripts');
+  const movedScripts = path.join(root, 'commands/scripts');
   await fs.cp(scripts, movedScripts, { recursive: true });
   const entry = path.join(movedScripts, 'adapters/codex-profile.mjs');
   if (process.env.AW_PLUGIN_EVENT !== 'test') {

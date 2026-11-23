@@ -46,7 +46,6 @@ export interface RebuildTargetIdentity {
 }
 
 export interface DesiredTarget {
-  nativeToolChanges?: import('../utils/native-tool-review.js').NativeToolChange[];
   deploymentExclusions?: import('../platforms/contracts.js').DeploymentExclusion[];
   /** Operation-local observations from the resolved physical deployments. */
   platformObservations?: readonly {
@@ -85,6 +84,8 @@ export interface RebuildFailure {
 }
 
 interface RebuildResultBase {
+  cleanupNotices?: import('../platforms/contracts.js').Diagnostic[];
+  cleanupMutation?: 'confirmed' | 'possible';
   deploymentExclusions?: import('../platforms/contracts.js').DeploymentExclusion[];
   deploymentReceipts?: DeploymentReceipt[];
   command: RebuildCommand;
@@ -940,6 +941,7 @@ export async function executeRebuildOperation(options: {
           catch { /* Keep the original failure when delivery cannot be confirmed. */ }
         }
       }
+      if (options.command === 'cleanup' || options.command === 'uninstall') await options.driver.finalizeCleanup?.(options.target);
       result.deploymentReceipts = receipts;
       return result;
     } catch (error) { return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error), rebuildFailureDiagnostic(error)); }

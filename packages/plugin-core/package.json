@@ -32,8 +32,7 @@
     "./schemas/platform-components.json": "./schemas/platform-components.json",
     "./schemas/platform-component-plan-v3.json": "./schemas/platform-component-plan-v3.json",
     "./schemas/platform-render-context-v2.json": "./schemas/platform-render-context-v2.json",
-    "./schemas/platform-capabilities-v2.json": "./schemas/platform-capabilities-v2.json",
-    "./schemas/agent-command-context-v1.json": "./schemas/agent-command-context-v1.json"
+    "./schemas/platform-capabilities-v2.json": "./schemas/platform-capabilities-v2.json"
   },
   "files": [
     "dist/",

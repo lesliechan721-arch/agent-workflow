@@ -9,11 +9,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
-import { listManagedCommands } from '../../src/utils/managed-command-store.js';
+import { listManagedCommandPackages } from '../../src/utils/managed-command-store.js';
+import { commandRuntimeConfigSnapshotPath } from '../../src/utils/managed-command-snapshots.js';
 import {
   AW_RUNTIME_CONFIG_BINDING_PATH,
   preparePluginNativeTools,
-  type RuntimeConfigBinding,
 } from '@lesliechan721/aw-plugin-core';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { readPluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -21,8 +21,14 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { SKILL_OWNER_MARKER, type SkillOwnerMarker } from '../../src/utils/ownership.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
+import { runCliEntry } from '../helpers/cli-entry.js';
+import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 
 import {
+  createCodexNativeTestRuntime,
   installWriteCommand,
   readFixtureRequirements,
   prepareCodexEnhancePublicCommandFixture,
@@ -35,25 +41,122 @@ function nativePackage(runtime: { packageRoots: Map<string, string> }, name: str
   return { registrationId, root };
 }
 
+const guideSelector = 'team/agent-subagent';
+
+async function installedGuidePackage(env: NodeJS.ProcessEnv) {
+  const { packages } = await listManagedCommandPackages(env);
+  expect(packages).toEqual([expect.objectContaining({ selector: guideSelector, availability: 'ready' })]);
+  return packages[0]!;
+}
+
+async function guidePackagePointer(env: NodeJS.ProcessEnv): Promise<string> {
+  const { resourceRoot } = await installedGuidePackage(env);
+  return path.resolve(resourceRoot!, '..', '..', 'current.json');
+}
+
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true });
+    installNativeTestQualification({ platforms: ['codex', 'claude', 'pi'], discovery: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
-  it('runs the publicly installed Guide cmdp entry through AW into a fake v5 managed adapter', async () => {
-    // Test Value Gate: one real public installation closes generated Skill/permission IDs, AW wrapping, and a live fake v5 backend.
+  it('installs the three staged toolkits and Guide together without sharing command ownership', async () => {
+    // Test Value Gate: this checks the actual staged dependency graph and public
+    // installation and ownership boundaries in one workspace.
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const catalog = path.join(cwd, 'shipped-catalog');
+    const staged = fileURLToPath(new URL('../../plugins-dist/', import.meta.url));
+    await fs.copy(staged, catalog);
+    const identity = `sha256:${'1'.repeat(64)}`;
+    await fs.outputJson(path.join(catalog, '.aw-generated.json'), {
+      schemaVersion: 1, kind: 'catalog', workspaceIdentity: identity, sourceIdentity: identity,
+    });
+    const run = async <T>(args: string[]) => {
+      const result = await runCliEntry([...args, '--json'], { cwd, env, interactive: false, nativeCliRunner: runtime.nativeCliRunner });
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      const receipt = result.parseJsonStdout<{ schemaVersion: number; status: string; data: T }>();
+      expect(receipt).toMatchObject({ schemaVersion: 2, status: 'success' });
+      return receipt.data;
+    };
+    await run(['source', 'add', 'staged', '--path', catalog, '--primary', '--no-auto-check', '--yes']);
+    await run(['source', 'sync', 'staged', '--yes']);
+    await run(['target', 'set', 'codex', '--context', 'project']);
+    const [content, skills, toolkit] = ['staged/agent-content-toolkit', 'staged/agent-skill-toolkit', 'staged/aw-development-toolkit'] as const;
+    const guide = 'staged/agent-subagent';
+    const capabilityRequirements = { requires: { aw: {
+      capabilities: expect.arrayContaining(['aw.managed-commands.v2', 'aw.native-tools.v3']),
+    } } };
+    for (const [pluginId, expected] of [
+      [content, { dependencies: [] }],
+      [skills, { dependencies: [content] }],
+      [toolkit, { dependencies: expect.arrayContaining([content, skills]), ...capabilityRequirements }],
+      [guide, capabilityRequirements],
+    ] as const) {
+      expect(await run(['plugin', 'show', pluginId])).toMatchObject({ pluginId, ...expected });
+    }
+
+    const rules = path.join(cwd, '.codex', 'rules');
+    const foreign = path.join(rules, 'local.rules');
+    await fs.outputFile(foreign, '# Existing project rules\n');
+    const install = await run<LifecycleData>(['plugin', 'install', toolkit, guide, '--scope', 'project', '--target', 'codex', '--yes']);
+    expect(install.remainingTargets).toEqual([]);
+    expect(install.targetResults).toEqual(expect.arrayContaining([content, skills, toolkit, guide].map((pluginId) =>
+      expect.objectContaining({ pluginId, target: 'codex', scope: 'project', execution: 'applied' }))));
+    expect(install.targetResults).toHaveLength(4);
+    const toolkitSkills = Object.entries({
+      'agent-content-toolkit': ['agent-content'],
+      'agent-skill-toolkit': ['agent-skill', 'audit-agent-skill-evals'],
+      'aw-development-toolkit': ['develop-aw', 'publish-aw-catalog'],
+    });
+    const toolkitFiles = new Map<string, Buffer>();
+    for (const [name, expected] of toolkitSkills) {
+      const packageRoot = nativePackage(runtime, name).root;
+      expect((await fs.readdir(path.join(packageRoot, 'skills'))).sort()).toEqual(expected);
+      for (const skill of expected) {
+        const file = path.join(packageRoot, 'skills', skill, 'SKILL.md');
+        toolkitFiles.set(file, await fs.readFile(file));
+      }
+    }
+    const list = await run<{ packages: Array<{ selector: string; packageId: string }> }>(['command', 'list']);
+    expect(list.packages).toEqual([expect.objectContaining({ selector: guide, availability: 'ready' })]);
+    const show = await run<{ commands: unknown[] }>(['command', 'show', guide]);
+    expect(show.commands).toEqual([expect.objectContaining({
+      packageId: list.packages[0]!.packageId,
+      owner: { kind: 'plugin', producer: { sourceId: 'staged', sourceIdentity: expect.any(String), pluginName: 'agent-subagent' } },
+      runtimeConfigPlatforms: ['codex'],
+    })]);
+    const guideRules = path.join(rules, 'aw-staged-agent-subagent-subagent-commands.rules');
+    const start = ['aw', 'command', 'run', guide, '--', 'start', '--platform', 'codex'];
+    expect(await fs.readFile(guideRules, 'utf8')).toContain(JSON.stringify(start));
+    expect((await fs.readdir(rules)).sort()).toEqual([path.basename(guideRules), path.basename(foreign)].sort());
+
+    await run(['plugin', 'remove', guide, '--only', 'outputs', '--scope', 'project', '--target', 'codex', '--yes']);
+    expect(await fs.readdir(rules)).toEqual([path.basename(foreign)]);
+    await expect(fs.readFile(foreign, 'utf8')).resolves.toBe('# Existing project rules\n');
+    for (const [file, bytes] of toolkitFiles) await expect(fs.readFile(file)).resolves.toEqual(bytes);
+    await expect(run(['command', 'list'])).resolves.toEqual(list);
+  }, 120_000);
+
+  it.each(['codex', 'claude'] as const)('runs the installed %s Guide command with its applied snapshot in a local v5 backend', async (platform) => {
+    // Test Value Gate: real installation connects the rendered call and permission to AW and a live fake v5 backend.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
-      { ...createEmptyPreferences(), targets: ['codex'] });
+      { ...createEmptyPreferences(), targets: ['codex', 'claude'] });
     const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const project = platform === 'claude'
+      ? path.join(isolation.layout.fixtureCwd, 'claude-backend-project') : isolation.layout.fixtureCwd;
+    await fs.ensureDir(path.join(project, '.git'));
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     const runtimeSourceRoot = path.join(isolation.layout.fixtureCwd, 'guide-runtime-source');
     await fs.copy(path.join(repositoryRoot, 'plugins/agent-subagent'), runtimeSourceRoot);
+    await stubCodexFileSelectionForNativeFixture(runtimeSourceRoot);
     await preparePluginNativeTools(runtimeSourceRoot, (await readPluginManifest(runtimeSourceRoot)).manifest);
     const helpers = await import(pathToFileURL(path.join(runtimeSourceRoot, 'scripts/fixtures/subagent-integration.mjs')).href);
     const { openRun, storeContext } = await import(pathToFileURL(path.join(
-      runtimeSourceRoot, 'skills/spawn-subagent/scripts/runtime/store.mjs',
+      runtimeSourceRoot, 'commands/scripts/runtime/store.mjs',
     )).href);
     const cleanups: Array<() => Promise<void>> = [() => fs.remove(runtimeSourceRoot)];
     const fixture = await helpers.fixture({ signal: new AbortController().signal, diagnostic: () => {}, after: (cleanup: () => Promise<void>) => { cleanups.push(cleanup); } });
@@ -61,8 +164,13 @@ describe('five namespaced write commands', () => {
     const scenario = path.join(fixture.directory, 'public-managed-scenario');
     await fs.ensureDir(scenario);
     await fs.writeJson(path.join(scenario, 'scenario.json'), { echo: true, finalText: 'Public Guide final result.', adapterLifetimeMs: 60000, backendLifetimeMs: 60000 });
+    const localEnvironmentKeys = new Set([
+      'PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PROCESSOR_ARCHITECTURE',
+      'AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+      'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'AW_TEST_PROCESS_TREE_ID',
+    ]);
     const environment = {
-      ...isolation.env,
+      ...Object.fromEntries(Object.entries(isolation.env).filter(([key]) => localEnvironmentKeys.has(key.toUpperCase()))),
       HOME: fixture.homeRoot,
       USERPROFILE: fixture.homeRoot,
       TMPDIR: fixture.temporaryRoot,
@@ -72,8 +180,8 @@ describe('five namespaced write commands', () => {
       FIXTURE_RUN_DIRECTORY: scenario,
       FIXTURE_GENERATIONS: fixture.generations,
     };
-    const invokeGuide = (id: string, args: string[]) => new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-      const child = spawn(process.execPath, [cliEntry, 'command', 'run', id, '--', ...args], { cwd: fixture.workspace, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+    const invoke = (args: string[]) => new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [cliEntry, ...args], { cwd: project, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
       const stdout: Buffer[] = [], stderr: Buffer[] = [];
       const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Public managed Guide command timed out.')); }, 30000);
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
@@ -81,7 +189,8 @@ describe('five namespaced write commands', () => {
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('close', (exitCode) => { clearTimeout(timer); resolve({ exitCode, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }); });
     });
-    let guideId: string | undefined, run: string | undefined;
+    const invokeGuide = (args: string[]) => invoke(['command', 'run', guideSelector, '--', ...args]);
+    let run: string | undefined;
     try {
       const adapterSource = path.join(isolation.layout.fixtureCwd, 'public-adapter');
       await fs.ensureDir(adapterSource);
@@ -89,47 +198,88 @@ describe('five namespaced write commands', () => {
       const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v5-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
       expect(adapter.exitCode).toBe(0);
       const adapterId = (adapter.payload.data as { commands: Array<{ id: string }> }).commands[0]!.id;
-      expect(await runPublic(['plugin', 'config', 'set', 'team/agent-subagent', 'subagentCommands', '--context', 'user', '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: ['v5-request-only'] }])])).toMatchObject({ exitCode: 0 });
-      const preview = await installWriteCommand(['team/agent-subagent'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
+      const saveRegistry = (target: 'codex' | 'claude', argument: string) => runPublic([
+        'plugin', 'config', 'set', guideSelector, 'subagentCommands', '--context', 'user', '--platform', target,
+        '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: [argument] }]),
+      ]);
+      for (const target of ['codex', 'claude'] as const) {
+        expect(await saveRegistry(target, `${target}-applied`)).toMatchObject({ exitCode: 0 });
+      }
+      const preview = await installWriteCommand([guideSelector], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/agent-subagent', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
-      expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
-      const installed = await runPublic(['plugin', 'install', 'team/agent-subagent', '--scope', 'project', '--yes']);
+      expect(review.changes).toContainEqual(expect.objectContaining({
+        title: '命令路由与审批',
+        description: expect.stringContaining(`aw command run ${guideSelector} -- start`),
+      }));
+      const installed = await runPublic(['plugin', 'install', guideSelector, '--scope', 'project', '--target', 'codex', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-      const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
-      expect(guideCommand.owner).toMatchObject({ kind: 'plugin', producer: {
-        pluginName: 'agent-subagent', kind: 'artifact', key: 'spawn-subagent-skill',
-      } });
-      guideId = guideCommand.id;
-      expect(guideId).toMatch(/^cmdp_[0-9a-f]{16}$/u);
-      expect(review.changes).toContainEqual(expect.objectContaining({ title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(guideId) }));
+      if (platform === 'claude') {
+        const result = await runCliEntry(['plugin', 'install', guideSelector, '--scope', 'project', '--target', 'claude', '--yes', '--json'], {
+          cwd: project, env: isolation.env, interactive: false, nativeCliRunner: claude.nativeCliRunner,
+        });
+        expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      }
+      const guideCommand = await installedGuidePackage(isolation.env);
+      const appliedPlatforms = platform === 'claude' ? ['claude', 'codex'] : ['codex'];
+      expect(guideCommand).toMatchObject({
+        owner: { kind: 'plugin', producer: { sourceId: 'team', pluginName: 'agent-subagent' } },
+        hasFallback: false,
+      });
+      expect([...guideCommand.runtimeConfigPlatforms].sort()).toEqual(appliedPlatforms);
+      expect([...guideCommand.subcommands].sort()).toEqual(['message', 'result', 'send', 'start', 'stop', 'wait']);
+      const allowed = ['aw', 'command', 'run', guideSelector, '--', 'start', '--platform', 'codex'];
+      expect(review.changes).toContainEqual(expect.objectContaining({
+        title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(JSON.stringify(allowed)),
+      }));
       const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-team-agent-subagent-subagent-commands.rules'), 'utf8');
-      expect(permission).toContain(JSON.stringify(['aw', 'command', 'run', guideId, '--', 'start']));
-      await fs.writeFile(path.join(fixture.workspace, 'prompt.txt'), 'Public installation task.\n');
-      const started = await invokeGuide(guideId, ['start', '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt']);
+      const prefixes = [...permission.matchAll(/prefix_rule\(pattern = (\[.*\]), decision = "allow"\)/gu)]
+        .map(([, prefix]) => JSON.parse(prefix!));
+      const command = allowed.slice(0, 5);
+      expect(prefixes).toEqual(expect.arrayContaining([
+        allowed, ...['send', 'wait', 'result', 'stop'].map((route) => [...command, route]),
+      ]));
+      expect(prefixes).toHaveLength(5);
+      const reference = path.join(nativePackage(platform === 'claude' ? claude : runtime, 'agent-subagent').root,
+        'skills/spawn-subagent/references/external-delegation.md');
+      const installedReference = await fs.readFile(reference, 'utf8');
+      const publishedStart = installedReference.match(/^aw command run [a-z0-9/-]+ -- start --platform (?:codex|claude)(?= --executor )/mu)?.[0];
+      expect(publishedStart).toBe(`aw command run ${guideSelector} -- start --platform ${platform}`);
+      if (!publishedStart) throw new Error('The installed Skill did not publish a start command.');
+      if (platform === 'claude') {
+        const settings = await fs.readJson(path.join(project, '.claude', 'settings.local.json'));
+        expect(settings.permissions.allow).toContain(`Bash(${publishedStart} *)`);
+      }
+      expect(await saveRegistry(platform, `${platform}-saved-only`)).toMatchObject({ exitCode: 0 });
+      await fs.writeFile(path.join(project, 'prompt.txt'), 'Public installation task.\n');
+      const started = await invoke([
+        ...publishedStart.split(' ').slice(1), '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt',
+      ]);
       run = helpers.field(started.stdout, 'run');
       expect(started, JSON.stringify(started)).toMatchObject({ exitCode: 0, stderr: '' });
       expect(started.stdout).toMatch(/^started \S+ communication=true resume=false\n$/u);
       const observed = await helpers.eventually(async () => fs.readJson(path.join(scenario, 'observed.json')), 'public installed Guide backend');
       process.kill(observed.pid, 0);
       expect(observed.argv).toEqual(['fixed-argv']);
-      expect(observed.request.args).toEqual(['v5-request-only']);
+      expect(observed.request.args).toEqual([`${platform}-applied`]);
       expect(observed.request.prompt).toBe('Public installation task.\n');
       expect(observed.request.resume).toBe(true);
-      const sent = await invokeGuide(guideId, ['send', '--run', run!, '--text', 'Continue.']);
+      const { meta } = await openRun(await storeContext({ homeRoot: fixture.homeRoot }), run);
+      expect(meta.installedIdentity).toMatchObject({ platform, pluginId: guideSelector });
+      const sent = await invokeGuide(['send', '--run', run!, '--text', 'Continue.']);
       expect(sent).toMatchObject({ exitCode: 0, stdout: `queued ${run}\n` });
       await helpers.eventually(async () => (await fs.readFile(path.join(scenario, 'inputs.jsonl'), 'utf8')).includes('Continue.'), 'public wrapped worker still alive after start');
       await fs.writeFile(path.join(scenario, 'finish'), '');
       const deadline = Date.now() + 10000;
       let final: Awaited<ReturnType<typeof invokeGuide>>;
       do {
-        final = await invokeGuide(guideId, ['wait', '--run', run!, '--timeout-ms', String(Math.max(0, deadline - Date.now()))]);
+        final = await invokeGuide(['wait', '--run', run!, '--timeout-ms', String(Math.max(0, deadline - Date.now()))]);
         expect(final).toMatchObject({ exitCode: 0 });
       } while (!helpers.terminalPattern.test(final.stdout) && Date.now() < deadline);
       expect(final.stdout).toContain('Public Guide final result.');
     } finally {
       try {
-        if (guideId && run) {
-          const stopped = await invokeGuide(guideId, ['stop', '--run', run]);
+        if (run) {
+          const stopped = await invokeGuide(['stop', '--run', run]);
           expect(stopped, JSON.stringify(stopped)).toMatchObject({ exitCode: 0 });
           // invokeGuide creates this run outside the fixture's tracked commands.
           const { meta } = await openRun(await storeContext({ homeRoot: fixture.homeRoot }), run);
@@ -151,7 +301,93 @@ describe('five namespaced write commands', () => {
     }
   }, 90000);
 
-  it('cleans codex-enhance project roles when its shared command binding is missing', async (test) => {
+  it('keeps one Guide package and applies only the chosen platform across independent projects', async () => {
+    // Test Value Gate: the installed Guide agrees with its manifest, rendered calls, and exact host permissions.
+    const { isolation, runtime: codex } = await prepareCodexEnhancePublicCommandFixture();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const claudeRoot = path.join(cwd, 'claude-project');
+    await fs.ensureDir(path.join(claudeRoot, '.git'));
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const piBin = path.join(cwd, 'pi-controlled-bin');
+    await fs.outputFile(path.join(piBin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'controlled client entry', { mode: 0o755 });
+    env.PATH = [piBin, env.PATH].filter(Boolean).join(path.delimiter);
+    const nativeCliRunner = async (invocation: NativeCliInvocation) => {
+      if (['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())) {
+        const piRoot = path.join(invocation.cwd!, '.pi');
+        const settings = path.join(piRoot, 'settings.json');
+        if (invocation.args[0] === 'install') {
+          expect(invocation.args).toContain('--local');
+          await fs.outputJson(settings, { packages: [invocation.args.at(-1)] });
+          return { exitCode: 0, stderr: '', stdout: '' };
+        }
+        expect(invocation.args).toEqual(['list']);
+        const packages: string[] = await fs.pathExists(settings) ? (await fs.readJson(settings)).packages : [];
+        const entries = packages.map((source) => `  ${source}\n    ${path.resolve(piRoot, source)}`);
+        return { exitCode: 0, stderr: '',
+          stdout: entries.length ? `Project packages:\n${entries.join('\n')}\n` : 'No packages installed.\n' };
+      }
+      return claude.isClaudeInvocation(invocation) ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
+    };
+    const run = async (args: string[], targetCwd = cwd) => {
+      const result = await runCliEntry([...args, '--json'], { cwd: targetCwd, env, interactive: false, nativeCliRunner });
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      return result.parseJsonStdout<{ status: string }>();
+    };
+    await writePreferences({ scope: 'user', cwd, env }, { ...createEmptyPreferences(), targets: ['pi', 'codex', 'claude'] });
+    for (const [platform, hours] of [['codex', 8], ['claude', 48]] as const) {
+      await run(['plugin', 'config', 'set', guideSelector, 'subagentRetentionHours',
+        '--context', 'user', '--platform', platform, '--value-json', String(hours)]);
+    }
+    const install = async (platform: 'pi' | 'codex' | 'claude', project = cwd) =>
+      expect(await run(['plugin', 'install', guideSelector, '--scope', 'project', '--target', platform, '--yes'], project))
+        .toMatchObject({ status: 'success' });
+    await install('pi');
+    const piSettings = await fs.readJson(path.join(cwd, '.pi', 'settings.json'));
+    expect(piSettings.packages).toHaveLength(1);
+    const piPackage = path.resolve(cwd, '.pi', piSettings.packages[0]);
+    expect(await fs.readdir(path.join(piPackage, 'agents'))).toEqual([expect.stringMatching(/-subagent\.md$/u)]);
+    await expect(fs.pathExists(path.join(piPackage, 'skills', 'spawn-subagent'))).resolves.toBe(false);
+    expect((await listManagedCommandPackages(env)).packages).toEqual([]);
+    await install('codex');
+    const codexPackage = await installedGuidePackage(env);
+    expect(codexPackage.runtimeConfigPlatforms).toEqual(['codex']);
+    await install('claude', claudeRoot);
+    const sharedPackage = await installedGuidePackage(env);
+    expect(sharedPackage.packageId).toBe(codexPackage.packageId);
+    expect([...sharedPackage.runtimeConfigPlatforms].sort()).toEqual(['claude', 'codex']);
+    const codexSkill = path.join(nativePackage(codex, 'agent-subagent').root,
+      'skills/spawn-subagent/references/external-delegation.md');
+    const claudeSkill = path.join(nativePackage(claude, 'agent-subagent').root,
+      'skills/spawn-subagent/references/external-delegation.md');
+    const launch = `aw command run ${guideSelector} --`;
+    expect(await fs.readFile(codexSkill, 'utf8')).toContain(`${launch} start --platform codex`);
+    expect(await fs.readFile(claudeSkill, 'utf8')).toContain(`${launch} start --platform claude`);
+    const claudeSettings = await fs.readJson(path.join(claudeRoot, '.claude', 'settings.local.json'));
+    const allowed: string[] = claudeSettings.permissions.allow;
+    expect(new Set(allowed)).toEqual(new Set(['start --platform claude', 'send', 'wait', 'result', 'stop']
+      .map((args) => `Bash(${launch} ${args} *)`)));
+
+    const snapshots = (resourceRoot: string) => Promise.all((['codex', 'claude'] as const).map((platform) =>
+      fs.readJson(path.join(resourceRoot, commandRuntimeConfigSnapshotPath(platform)))));
+    const before = await snapshots(sharedPackage.resourceRoot!);
+    expect(before.map((snapshot) => snapshot.effectiveValues.subagentRetentionHours)).toEqual([8, 48]);
+    for (const [platform, hours] of [['codex', 12], ['claude', 72]] as const) {
+      await run(['plugin', 'config', 'set', guideSelector, 'subagentRetentionHours',
+        '--context', 'user', '--platform', platform, '--value-json', String(hours)]);
+    }
+    expect((await installedGuidePackage(env)).resourceRoot).toBe(sharedPackage.resourceRoot);
+    await expect(snapshots(sharedPackage.resourceRoot!)).resolves.toEqual(before);
+    expect(await run(['plugin', 'config', 'apply', guideSelector, '--context', 'project', '--platform', 'claude', '--yes'], claudeRoot))
+      .toMatchObject({ status: 'success' });
+    const updatedPackage = await installedGuidePackage(env);
+    expect(updatedPackage.packageId).toBe(sharedPackage.packageId);
+    expect(updatedPackage.resourceRoot).not.toBe(sharedPackage.resourceRoot);
+    const after = await snapshots(updatedPackage.resourceRoot!);
+    expect(after[0]).toEqual(before[0]);
+    expect(after[1].effectiveValues.subagentRetentionHours).toBe(72);
+  }, 120_000);
+
+  it('cleans codex-enhance project roles when the Guide command package pointer is missing', async (test) => {
     // Missing weak command state must not block cleanup of exact scoped output.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
@@ -167,9 +403,7 @@ describe('five namespaced write commands', () => {
     expect(timing.rendererCalls).toBe(6);
     const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
     const subagentCacheRoot = nativePackage(runtime, 'agent-subagent').root;
-    const guideCommand = (await listManagedCommands(isolation.env)).commands
-      .find((command) => command.name === 'guide/subagent/default')!;
-    await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
+    await fs.remove(await guidePackagePointer(isolation.env));
     const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
     const intentBefore = await fs.readFile(intentPath);
 
@@ -189,7 +423,7 @@ describe('five namespaced write commands', () => {
   }, 30_000);
 
   it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async (test) => {
-    // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
+    // Test Value Gate: real config writes rematerialize the affected Skills while their project roles and the Guide snapshot stay intact.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex'] });
@@ -243,16 +477,20 @@ describe('five namespaced write commands', () => {
         .resolves.toBe(false);
     }
     const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
-    const guideBindingPath = path.join(
-      subagentCacheRoot, 'skills', 'spawn-subagent', AW_RUNTIME_CONFIG_BINDING_PATH,
-    );
-    const initialBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
-    expect(initialBinding).toMatchObject({
-      schemaVersion: 2,
-      installedIdentity: { pluginName: 'agent-subagent', skillKey: 'spawn-subagent', scope: 'user', configScope: 'user' },
+    const currentGuideSnapshot = async () => {
+      const pack = await installedGuidePackage(isolation.env);
+      return fs.readJson(path.join(pack.resourceRoot!, commandRuntimeConfigSnapshotPath('codex')));
+    };
+    const initialSnapshot = await currentGuideSnapshot();
+    expect(initialSnapshot).toMatchObject({
+      schemaVersion: 1,
+      platform: 'codex',
+      producer: { sourceId: 'team', pluginName: 'agent-subagent' },
       allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
+      effectiveValues: { subagentCommands: [], subagentRetentionHours: 24 },
     });
-    expect(initialBinding.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours: 24 });
+    expect(await fs.pathExists(path.join(subagentCacheRoot, 'skills', 'spawn-subagent',
+      AW_RUNTIME_CONFIG_BINDING_PATH))).toBe(false);
     for (const skill of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(cacheRoot, 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
         .resolves.toBe(false);
@@ -305,7 +543,7 @@ describe('five namespaced write commands', () => {
       exitCode: 0,
       payload: { status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested' } } },
     });
-    await expect(fs.readJson(guideBindingPath)).resolves.toEqual(initialBinding);
+    await expect(currentGuideSnapshot()).resolves.toEqual(initialSnapshot);
     for (const [index, file] of skillPaths.entries()) {
       await expect(fs.readFile(file)).resolves.toEqual(initialSkillBytes[index]);
     }
@@ -320,8 +558,7 @@ describe('five namespaced write commands', () => {
     for (const index of [1]) {
       await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
     }
-    const updatedBinding = await fs.readJson(guideBindingPath) as RuntimeConfigBinding;
-    expect(updatedBinding).toEqual(initialBinding);
+    await expect(currentGuideSnapshot()).resolves.toEqual(initialSnapshot);
     for (const [index, file] of rolePaths.entries()) {
       await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
     }
@@ -334,8 +571,7 @@ describe('five namespaced write commands', () => {
     ));
     expect(projectOnlyConfig.snapshot.plugins[enhanceRegistrationId]?.enabled).toBe(true);
     expect(projectOnlyUserConfig.snapshot.plugins[enhanceRegistrationId]?.enabled).not.toBe(true);
-    const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
-    await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
+    await fs.remove(await guidePackagePointer(isolation.env));
     expect(await runPublic([
       'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
@@ -343,7 +579,9 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(true);
     expect(await runPublic([
       'plugin', 'remove', '--only', 'outputs', 'team/agent-subagent', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
+    ])).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
+    } });
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
@@ -425,11 +663,11 @@ describe('five namespaced write commands', () => {
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     for (const [index, file] of userRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(userRoleBytes[index]);
     for (const [index, file] of projectRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(projectRoleBytes[index]);
-    const guideCommand = (await listManagedCommands(env)).commands.find((command) => command.name === 'guide/subagent/default')!;
-    await fs.writeFile(path.join(env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`), '{broken');
+    await fs.writeFile(await guidePackagePointer(env), '{broken');
     const removed = await runPublic(['plugin', 'remove', 'team/codex-enhance', '--scope', 'user', '--yes']);
-    expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, payload: {
-      status: 'success', data: { changes: { requirements: 'changed' } },
+    expect(removed).toMatchObject({ exitCode: 4, payload: {
+      status: 'partial', data: { changes: { requirements: 'changed' } },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
     } });
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     await expect(readFixtureRequirements(userLocation)).resolves.toMatchObject({ roots: [] });
@@ -440,11 +678,15 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(cacheRoot, 'skills', 'codex-explore', 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(fs.readFile(preferencesPath)).resolves.toEqual(preferencesBefore);
-    for (const pluginId of ['team/codex-enhance', 'team/agent-subagent']) {
-      const cleaned = await runPublic(['plugin', 'remove', '--only', 'outputs', pluginId, '--target', 'codex', '--scope', 'project', '--yes']);
-      expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    }
+    const cleanup = (pluginId: string) => runPublic(['plugin', 'remove', '--only', 'outputs', pluginId,
+      '--target', 'codex', '--scope', 'project', '--yes']);
+    expect(await cleanup('team/codex-enhance')).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
+    expect(await cleanup(guideSelector)).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
+    } });
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(cwd, '.codex', 'agents', 'aw-team-agent-subagent-subagent.toml')))
+      .resolves.toBe(false);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
   }, 120_000);

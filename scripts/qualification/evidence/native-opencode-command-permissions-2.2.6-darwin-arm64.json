@@ -1,0 +1,205 @@
+{
+  "client": "OpenCode v2.2.6",
+  "os": "macOS 26.3.1 (25D2128) arm64",
+  "mode": "opencode mini --standalone / interactive Build",
+  "fixture": "Fresh local sessions with an isolated HOME and projects A and B. A loopback provider supplied one harmless shell tool request. The command fixture recorded each start.",
+  "awVersion": "0.1.0",
+  "awCommandOutput": "fixture report",
+  "projectBConfigCreated": false,
+  "nativeBaseline": {
+    "project": "a",
+    "command": "aw command run fixture-source/probe -- export",
+    "observed": "allow",
+    "permissionScreenRendered": false,
+    "uiReply": null,
+    "executionsBeforeReply": null,
+    "executions": [
+      "aw command run fixture-source/probe -- export"
+    ]
+  },
+  "configurations": {
+    "user-baseline": {
+      "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+      "configuration": {
+        "permissions": [
+          {
+            "action": "shell",
+            "resource": "*",
+            "effect": "allow"
+          }
+        ]
+      }
+    },
+    "project-allow": {
+      "sha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96",
+      "configuration": {
+        "snapshots": false,
+        "permissions": [
+          {
+            "action": "shell",
+            "resource": "aw command run fixture-source/probe -- export *",
+            "effect": "allow"
+          }
+        ]
+      }
+    },
+    "project-ask": {
+      "sha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214",
+      "configuration": {
+        "snapshots": false,
+        "permissions": [
+          {
+            "action": "shell",
+            "resource": "aw command run fixture-source/probe -- export *",
+            "effect": "ask"
+          }
+        ]
+      }
+    },
+    "project-deny": {
+      "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2",
+      "configuration": {
+        "snapshots": false,
+        "permissions": [
+          {
+            "action": "shell",
+            "resource": "aw command run fixture-source/probe -- export *",
+            "effect": "deny"
+          }
+        ]
+      }
+    },
+    "user-deny": {
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e",
+      "configuration": {
+        "permissions": [
+          {
+            "action": "shell",
+            "resource": "*",
+            "effect": "allow"
+          },
+          {
+            "action": "shell",
+            "resource": "aw command run fixture-source/probe -- export *",
+            "effect": "deny"
+          }
+        ]
+      }
+    }
+  },
+  "sessions": {
+    "project-allow": {
+      "recordedAt": "2026-11-22T08:20:38.424365+00:00",
+      "inputConfigs": {
+        "a": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96"
+      },
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "allow",
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ]
+    },
+    "project-ask-once": {
+      "recordedAt": "2026-11-22T08:20:44.278148+00:00",
+      "inputConfigs": {
+        "user": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+        "a": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+      },
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "ask",
+      "permissionScreenRendered": true,
+      "uiReply": "once",
+      "executionsBeforeReply": [],
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ]
+    },
+    "project-ask-reject": {
+      "recordedAt": "2026-11-22T08:20:50.150170+00:00",
+      "inputConfigs": {
+        "user": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+        "a": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+      },
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "reject",
+      "permissionScreenRendered": true,
+      "uiReply": "reject",
+      "executionsBeforeReply": [],
+      "executions": []
+    },
+    "project-deny": {
+      "recordedAt": "2026-11-22T08:20:55.632326+00:00",
+      "inputConfigs": {
+        "user": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+        "a": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+      },
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "deny",
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": []
+    },
+    "other-project": {
+      "recordedAt": "2026-11-22T08:21:01.157099+00:00",
+      "inputConfigs": {
+        "user": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301",
+        "a": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+      },
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "allow",
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ]
+    },
+    "user-deny": {
+      "recordedAt": "2026-11-22T08:21:06.700870+00:00",
+      "inputConfigs": {
+        "user": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+      },
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "observed": "deny",
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": []
+    }
+  },
+  "clientReadback": {
+    "recordedAt": "2026-11-22T08:27:21.089277+00:00",
+    "endpoints": [
+      "/api/config",
+      "/api/agent"
+    ],
+    "agent": "build",
+    "defaultRuleIndex": 0,
+    "projectRuleIndex": 5,
+    "projectRule": {
+      "action": "shell",
+      "resource": "aw command run fixture-source/probe -- export *",
+      "effect": "allow"
+    },
+    "remainingRulesMatchBaseline": true,
+    "directObservation": "Project config is loaded and the AW rule follows the built-in allow in Build permissions.",
+    "inference": "For the single literal shell resource in the interactive replay, the v2.2.6 last-match evaluator selects the AW rule from this order.",
+    "limit": "The interactive record contains the execution result, without a matched-rule event. The standalone API commands use the same inputs in separate fresh processes."
+  },
+  "untested": [
+    "Desktop local service",
+    "hot reload",
+    "Windows",
+    "Linux"
+  ]
+}

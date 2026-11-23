@@ -65,7 +65,7 @@ const adapterFacts: Readonly<Partial<Record<
   extensions: {
     'extensions.permissions[].agentOverrides.claude.sandbox.excludedCommands': {
       profiles: 'CLAUDE',
-      requires: 'aw.claude.sandbox-exclusions.v1; a validated command reference. Independent of allow.',
+      requires: 'aw.managed-commands.v2 and aw.claude.sandbox-exclusions.v1. Structured argsPrefix entries apply independently of allow.',
       conflicts: 'Plain strings, Codex overrides, and widening to all aw commands.',
       provenance: ['CLI managed command reference resolver and Claude permission writer'],
     },
@@ -84,7 +84,7 @@ const adapterFacts: Readonly<Partial<Record<
   },
   artifacts: {
     'scripts.artifacts.render': {
-      requires: 'artifacts input permissions, dynamic command sets, or render:true command packages.',
+      requires: 'A matching artifact renderer target or a dynamic command declaration.',
     },
     'artifacts.configKeys': {
       requires: 'Fields exist in the selected platform Config v5 profile; Skill batches contain only the non-sensitive dependency closure.',
@@ -111,7 +111,7 @@ const adapterFacts: Readonly<Partial<Record<
   },
   'native-tools': {
     nativeTools: {
-      requires: 'aw.native-tools.v2. Installed protocol requirements and consumer bindings are reviewed before producer publication.',
+      requires: 'aw.native-tools.v3. Installed protocol requirements and consumer bindings are reviewed before publication.',
       provenance: ['CLI installed producer evidence and managed command host'],
     },
     'nativeTools.consumers[].kind': {
@@ -123,21 +123,25 @@ const adapterFacts: Readonly<Partial<Record<
     },
   },
   'managed-commands': {
-    managedCommands: {
-      requires: 'aw.managed-commands.v1. Bindings publish only after the producer succeeds.',
+    command: {
+      requires: 'aw.managed-commands.v2. AW publishes one shared package per source-qualified plugin.',
       provenance: ['CLI managed command materialization and resolver'],
     },
-    'managedCommands.packages[].sourceDir': {
-      requires: 'A complete runnable directory in the fixed bundle; only ordinary files and directories.',
-      conflicts: 'Links, protected trees, executable entry replacement by generated files.',
+    'command.sourceDir': {
+      requires: 'A complete runnable directory in the bundle containing ordinary files and directories.',
+      conflicts: 'Links, protected trees, and the reserved .aw directory.',
     },
-    'managedCommands.packages[].scope': {
-      requires: 'One fixed effective configuration per producer; project producers bind the canonical project location.',
-      conflicts: 'User/shared-user consumers referring to project packages.',
+    'command.platforms': {
+      requires: 'A subset of the plugin’s native platforms. Omission includes all native platforms supported by the plugin.',
+      conflicts: 'generic and platforms the plugin does not support.',
+    },
+    'command.runtimeConfig.keys': {
+      requires: 'Non-sensitive fields and validation dependencies available on every command platform.',
+      provenance: ['CLI managed command snapshot publication'],
     },
     'Skill Markdown placeholder': {
-      requires: 'A validated candidate or healthy installed producer in the same source/plugin and legal scope.',
-      conflicts: 'Generic export profiles and unresolved, disabled, foreign, or other-placement commands.',
+      requires: 'A reachable route in the plugin’s command package and a supported command platform.',
+      conflicts: 'Generic export profiles and unavailable or empty command packages.',
     },
   },
 }

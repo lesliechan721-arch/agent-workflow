@@ -1,13 +1,13 @@
 import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import { fixture, eventually, terminalPattern, testTimeoutMs, blocks, field, records, bounded, successful } from './fixtures/subagent-integration.mjs';
-import { validateFrame } from '../skills/spawn-subagent/scripts/runtime/protocol.mjs';
+import { validateFrame } from '../commands/scripts/runtime/protocol.mjs';
 
 // Test Value Gate: referenced environment values must remain redacted in final
 // output and diagnostics, including their JSON-escaped representation.
 test('referenced environment secrets stay redacted in actual parent output', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'SOURCE' }; await f.save();
+  f.snapshot.values.subagentCommands[0].envFrom = { SERVICE_DATA: 'SOURCE' }; await f.save();
   const secret = 'fixture\n"quoted"\\path.[x]+';
   const started = await f.start({ secretOutput: true, state: 'failed' }, { env: { SOURCE: secret } });
   await f.initialized(started); await started.finish();
@@ -30,7 +30,7 @@ test('diagnostic redaction expansion preserves completed output and readable exp
   validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: 'unsupported' } } }, diagnostics: [diagnostic] }, 'adapter');
   validateFrame({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
   const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
+  f.snapshot.values.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
   const started = await f.start({ diagnostics: [diagnostic], resultDiagnostics, finalText }, { env: { REFERENCED_VALUE: 'base' } });
   await f.initialized(started); bounded(started);
   const initialized = started.code === 0 ? started : await f.command(['wait', '--run', started.run, '--timeout-ms', '0']);

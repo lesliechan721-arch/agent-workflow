@@ -2,15 +2,16 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   assertFeatureRequirement, COMPONENT_KINDS, getComponentFeatureRequirements, getPlatformCapabilityFact, normalizeStaticPluginComponents, partitionStaticPluginComponents, resolveInvocationPolicy,
-  type ComponentUnmet, type PlatformCapabilitiesV2, type PluginComponent,
+  type CommandRoutes, type ComponentUnmet, type PlatformCapabilitiesV2, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
 import type { DeploymentBinding, ProjectionResult, RenderUnit } from '../platforms/contracts.js';
 import { toPlatformCapabilitiesView } from '../platforms/capabilities.js';
+import { managedCommandRouteIsReachable } from '../generators/permissions.js';
 import { isDeliveryCapabilityGap } from './component-gap.js';
 import { artifactValueDigest } from './artifact-plan.js';
-import { resolvePlatformComponentBatches, selectPlatformRenderConfig } from './artifact-request.js';
+import { resolvePlatformComponentBatches } from './artifact-request.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { calculatePluginBundleFingerprint } from './bundle-integrity.js';
 import { readStaticComponentResourceInputs, resolvePlatformComponentResources, resolveStaticPlatformResourceRoot } from './component-resources.js';
@@ -59,6 +60,7 @@ export function platformPermissionNotices(diagnostics: readonly Diagnostic[]): P
 export interface PlatformInputEvidenceOptions {
   plugin: PluginMeta;
   binding: DeploymentBinding;
+  commandRoutes?: CommandRoutes;
   units: Array<{
     renderUnit: RenderUnit;
     capabilities: PlatformCapabilitiesV2;
@@ -101,6 +103,8 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
     || binding.renderUnitIds.some((id) => !input.units.some(({ renderUnit }) => renderUnit.id === id))) {
     throw new Error('platformEmptyStateIdentityInvalid');
   }
+  const commandApplies = manifest.command?.platforms.includes(platform);
+  const commandRoutes = input.commandRoutes ?? null;
   const staticResourceRoot = await resolveStaticPlatformResourceRoot(plugin.rootDir, platform);
   const prepared = await Promise.all(input.units.map(async ({ renderUnit, capabilities, config }) => {
     if (capabilities.platform !== platform || capabilities.scope !== renderUnit.renderScope.kind
@@ -111,20 +115,14 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
     const declared = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform,
       capabilities: capabilityView, allowedOutputKinds: kinds, deferPartition: true });
     const expected = partitionStaticPluginComponents(declared.components, capabilityView);
-    const skillRender = batches.some((batch) => batch.allowedOutputKinds.includes('skill'));
-    const commandSets = kinds.includes('skill') ? (manifest.managedCommands?.sets ?? []).filter(({ producer }) =>
-      producer.kind !== 'package' && producer.platform === platform && (producer.kind === 'static-skill' || skillRender)) : [];
-    const commandKeys = [...new Set(commandSets.flatMap((set) => set.mode === 'dynamic' ? set.refreshKeys : []))].sort();
-    const commandConfig = commandKeys.length ? selectPlatformRenderConfig({ resolved: config, keys: commandKeys, nonSensitive: true }) : undefined;
-    if (batches.some((batch) => batch.config.issues.length) || commandConfig?.issues.length) throw new Error('platformEmptyStateConfigInvalid');
-    return { renderUnit, capabilityView, declared, expected, batches, commandSets, commandConfig };
+    if (batches.some((batch) => batch.config.issues.length)) throw new Error('platformEmptyStateConfigInvalid');
+    return { renderUnit, capabilityView, declared, expected, batches };
   }));
   // A running renderer can read its bundle via AW_PLUGIN_ROOT, in addition to the declared resource roots.
-  const sourceDigest = prepared.some(({ batches, commandSets }) => batches.length || commandSets.some((set) => set.mode === 'dynamic'))
-    ? await calculatePluginBundleFingerprint(plugin.rootDir) : undefined;
+  const sourceDigest = prepared.some(({ batches }) => batches.length) ? await calculatePluginBundleFingerprint(plugin.rootDir) : undefined;
   const resources = prepared.some(({ batches }) => batches.length)
     ? (await resolvePlatformComponentResources(plugin)).map(({ kind, name, digest }) => ({ kind, name, digest })) : undefined;
-  const units = await Promise.all(prepared.map(async ({ renderUnit, capabilityView, declared, expected, batches, commandSets, commandConfig }) => {
+  const units = await Promise.all(prepared.map(async ({ renderUnit, capabilityView, declared, expected, batches }) => {
     const { id, physicalKey, renderScope, output, kinds } = renderUnit;
     const dynamic = batches.length ? { sourceDigest, manifest, batches, capabilities: capabilityView, resources } : undefined;
     const staticResources = await readStaticComponentResourceInputs({ plugin, expected: declared, staticResourceRoot, capabilities: capabilityView });
@@ -138,12 +136,17 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
       batches: instructionUnit.batches, capabilities: instructionUnit.capabilityView } : undefined;
     const policy = output === 'package' ? resolveInvocationPolicy(manifest, platform).permissions : undefined;
     const hasSkills = expected.components.some((component) => component.kind === 'skill');
+    // Host delivery depends on the applied reachability, even when the declarations have stayed the same.
+    const commandSkillAvailable = commandApplies && (hasSkills || batches.some((batch) => batch.allowedOutputKinds.includes('skill')))
+      ? managedCommandRouteIsReachable(commandRoutes, []) : undefined;
+    const commandPermissions = commandApplies ? policy?.flatMap(({ allow, sandbox }) =>
+      [...(allow ?? []), ...(sandbox?.excludedCommands ?? [])].flatMap((rule) =>
+        typeof rule === 'string' ? [] : [managedCommandRouteIsReachable(commandRoutes, rule.argsPrefix)])) : undefined;
     return { id, physicalKey, renderScope, output, kinds: [...kinds],
       inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, route: binding.route, renderScope, dynamic, declared, expected,
         capabilities: staticCapabilityInputs(declared.components, capabilityView), staticResources, instructions, instructionRenderer, policy,
         ...(hasSkills ? { requires: manifest.requires?.aw, nativeTools: manifest.nativeTools } : {}),
-        ...(commandSets.length ? { commandSets, commandConfig,
-          commandRendererSource: commandSets.some((set) => set.mode === 'dynamic') ? sourceDigest : undefined } : {}) }) };
+        commandSkillAvailable, commandPermissions }) };
   }));
   units.sort((left, right) => left.id.localeCompare(right.id));
   return { schemaVersion: 1, kind: 'aw-platform-input', plugin: { ...binding.plugin }, platform: binding.platform,

@@ -43,9 +43,9 @@ try {
   childProcess.spawn = (...args) => nativeHost ? originalSpawn(...args) : simulatedNative(...args);
   syncBuiltinESMExports();
   [store, files, processes] = await Promise.all([
-    import('../../skills/spawn-subagent/scripts/runtime/store.mjs'),
-    import('../../skills/spawn-subagent/scripts/runtime/files.mjs'),
-    import('../../skills/spawn-subagent/scripts/runtime/processes.mjs'),
+    import('../../commands/scripts/runtime/store.mjs'),
+    import('../../commands/scripts/runtime/files.mjs'),
+    import('../../commands/scripts/runtime/processes.mjs'),
   ]);
 } finally {
   childProcess.execFile = originalExecFile;

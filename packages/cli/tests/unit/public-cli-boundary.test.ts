@@ -31,7 +31,12 @@ describe('public CLI result boundary', () => {
       ...(state === 'failed' ? { errorCode: 'preApplyExited' } : {}),
     });
     const project = row('team/demo', 'generic', 'project', 'failed');
-    const packageProducer = { kind: 'package', sourceId: 'team', sourceIdentity: 'fixture', pluginName: 'demo', key: 'tools' };
+    const completedPackage = { producer: { sourceId: 'team', sourceIdentity: 'fixture', pluginName: 'published' },
+      packageId: `pkg_${'1'.repeat(64)}`, selector: 'team/published', action: 'updated', availability: 'ready',
+      state: 'completed', subcommands: ['run'], hasFallback: false, errors: [], recoveryActions: [] };
+    const failedPackage = { producer: { sourceId: 'team', sourceIdentity: 'fixture', pluginName: 'demo' },
+      packageId: `pkg_${'2'.repeat(64)}`, selector: 'team/demo', action: 'unchanged', availability: 'ready',
+      state: 'failed', subcommands: ['run'], hasFallback: false, errors: [], recoveryActions: ['aw command package sync team/demo'] };
     const result = projectReceipt('plugin.config.apply', { configWrite: 'notStarted', overallState: 'partial',
       apply: { state: 'partial', targetResults: [
         userDelivery === 'partial' ? { ...row('team/demo', 'generic', 'user', 'failed'), partialDelivery: true }
@@ -40,16 +45,13 @@ describe('public CLI result boundary', () => {
         row('team/demo', 'pi', 'project', 'failed'),
         row('other/demo', 'generic', 'project', 'failed'),
         row('team/both', 'generic', 'user', 'failed'), row('team/both', 'generic', 'project', 'failed'),
-      ], commandResults: [
-        { producer: { ...packageProducer, scope: 'user' }, state: 'completed', commandIds: [], removedCommandIds: [], errors: [] },
-        { producer: { ...packageProducer, scope: 'project' }, state: 'failed', commandIds: [], removedCommandIds: [], errors: [] },
-      ] },
+      ], commandResults: [completedPackage, failedPackage] },
     });
     const commands = result.nextActions.flatMap((action) => action.kind === 'command' ? [action.argv] : []);
     expect(commands).not.toContainEqual(['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'generic']);
     expect(commands).toHaveLength(4);
     expect(commands).toEqual(expect.arrayContaining([
-      ['aw', 'command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'project'],
+      ['aw', 'command', 'package', 'sync', 'team/demo'],
       ['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'pi'],
       ['aw', 'plugin', 'sync', 'other/demo', '--context', 'project', '--target', 'generic'],
       ['aw', 'plugin', 'sync', 'team/both', '--context', 'project', '--target', 'generic'],

@@ -170,7 +170,7 @@ describe('TuiController session retirement', () => {
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
         sharedNativeRenderUnits: [{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
-          configKeys: ['mode'], dynamicComponents: false, commandSets: [] }] } },
+          configKeys: ['mode'], dynamicComponents: false }] } },
     });
     expect(review.requiresConfirmation).toBe(apply);
     expect(review.changes).toContainEqual(expect.objectContaining({
@@ -185,7 +185,7 @@ describe('TuiController session retirement', () => {
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
         sharedNativeRenderUnits: [{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
-          configKeys: ['mode'], dynamicComponents: false, commandSets: [] }] } },
+          configKeys: ['mode'], dynamicComponents: false }] } },
     });
     expect(review.requiresConfirmation).toBe(true);
     expect(review.changes).toContainEqual(expect.objectContaining({ title: '重新生成 demo · Claude Code 共享组件集合',
@@ -195,39 +195,46 @@ describe('TuiController session retirement', () => {
     const packageId = `pkg_${'2'.repeat(64)}`;
     const recoveryAction = `aw command package remove ${packageId} --yes`;
     const action = { kind: 'retainManagedCommandPackage' as const, pluginId: 'official/demo', scope: 'user' as const,
-      producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-        kind: 'package' as const, key: 'tools', platform: null, placementKey: null, scope: 'user' as const, projectRoot: null },
-      packageId, commandIds: ['installed-command'], availability: 'ready' as const, recoveryAction };
+      producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo' },
+      packageId, selector: 'official/demo', subcommands: ['run'], hasFallback: false,
+      availability: 'ready' as const, errors: [], recoveryActions: [recoveryAction] };
     const review = buildOperationReviewProjection({
       intent: { kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo', platform: 'codex', scope: 'project' },
       evidence: { ...baseEvidence, operationPlan: createOperationPlan({ intentChanges: [], changes: [], warnings: [],
         evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] }, actions: [action, action] }) },
     });
-    const retained = review.changes.filter((entry) => entry.title === '保留命令包 tools');
+    const retained = review.changes.filter((entry) => entry.title === '保留命令包 official/demo');
     expect(retained).toHaveLength(1);
     expect(retained[0]).toMatchObject({ kind: 'keep', group: 'preserved', description: expect.stringContaining('所有项目共用') });
     expect(retained[0]!.description).toContain(packageId);
     expect(retained[0]!.description).toContain(recoveryAction);
   });
-  it('shows the prepared command package launch and disabled sets in install Review', () => {
+  it('shows a changed command launch, affected approval and applied snapshot in install Review', () => {
+    const producer = { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo' };
+    const launch = { runner: 'node' as const, entry: 'runtime.mjs', args: ['--fixed', 'value'], env: {}, envFrom: {}, cwd: 'resource' as const };
+    const argv = ['aw', 'command', 'run', 'official/demo', '--', 'subagent'];
     const review = buildOperationReviewProjection({
       intent: { kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'claude', scope: 'user' },
       evidence: { ...baseEvidence, operationPlan: createOperationPlan({
         intentChanges: [], changes: [], warnings: [],
         evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
         actions: [{ kind: 'syncManagedCommandPackage', pluginId: 'official/demo', scope: 'user',
-          producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-            kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null },
-          sets: [{ set: 'guide', state: 'present', entries: [{ key: 'subagent', variant: 'default',
-            runner: 'node', entry: 'runtime.mjs', args: ['--fixed', 'value'], env: {}, envFrom: {}, cwd: 'resource' }] },
-          { set: 'optional', state: 'disabled', entries: [] }], files: [], contentDigest: 'sha256:prepared',
+          producer, record: { schemaVersion: 2, producer, pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'f'.repeat(64)}`,
+            runtimeConfigPlatforms: ['claude'], routes: { subcommands: [{ name: 'subagent', ...launch }] } },
+          expectedPackage: null, contentDigest: 'sha256:prepared',
+          routeReview: { routeChanges: [{ argv, before: { ...launch, route: 'fallback', entry: 'main.mjs' }, after: { ...launch, route: 'subcommand' } }],
+            affectedPermissions: [{ platform: 'claude', action: 'allow', path: '/fixture/settings.json', argvPrefix: argv }],
+            permissionReadFailures: [], otherProjects: 'unobserved', existingApprovalsMayMatch: false },
+          runtimeConfigChanges: [{ platform: 'claude', before: { mode: 'safe' }, after: { mode: 'fast' } }],
         }],
       }) },
     });
     expect(review.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: '命令包 tools', description: expect.stringContaining('全部引用者') }),
-      expect.objectContaining({ title: 'guide/subagent/default', description: 'node · runtime.mjs · 固定参数 ["--fixed","value"] · cwd=resource' }),
-      expect.objectContaining({ title: '命令集合 optional', description: '已禁用；本集合命令失效' }),
+      expect.objectContaining({ title: '刷新命令包 official/demo' }),
+      expect.objectContaining({ title: '命令路由与审批', description: expect.stringMatching(/aw command run official\/demo -- subagent.*main\.mjs.*runtime\.mjs.*--fixed/u) }),
+      expect.objectContaining({ title: '命令路由与审批', description: expect.stringContaining('claude allow') }),
+      expect.objectContaining({ title: '命令路由与审批', description: expect.stringContaining('Other projects may carry matching approvals') }),
+      expect.objectContaining({ title: '命令运行配置', description: expect.stringMatching(/claude.*safe.*fast/u) }),
     ]));
   });
   it('records only successful status read time and keeps it when returning home', async () => {
@@ -6855,7 +6862,7 @@ describe('TUI v4 Review safety', () => {
           { platform: 'codex', scope: 'project' },
         ],
         sharedNativeRenderUnits: [{ pluginName: 'enhance', platform: 'codex', renderScope: 'user',
-          configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true, commandSets: [] }],
+          configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true }],
       },
     };
     const controller = new TuiController(dependencies({
@@ -6892,7 +6899,7 @@ describe('TUI v4 Review safety', () => {
           storeDigest: 'sha256:store',
           affectedTargets: [],
           sharedNativeRenderUnits: [{ pluginName: 'enhance', platform: 'codex', renderScope: 'user',
-            configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true, commandSets: [] }],
+            configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true }],
         },
       };
       const controller = new TuiController(dependencies({

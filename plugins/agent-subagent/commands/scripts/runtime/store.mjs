@@ -16,11 +16,10 @@ export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const handlePattern = /^aw5-([A-Za-z0-9_-]{11})-([A-Za-z0-9_-]{22})$/;
 const runKeyPattern = /^[A-Za-z0-9_-]{22}$/;
 const recordName = /^[a-z0-9-]+\.json$/;
-const identityKeys = ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform', 'scope', 'configScope', 'artifactId', 'skillKey'];
+const identityKeys = ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform'];
 
 export function sameSourceIdentity(left, right) {
-  return identityKeys.every((key) => typeof left?.[key] === 'string' && left[key].length > 0 && left[key] === right?.[key]) &&
-    left.logicalIdentity === right.logicalIdentity;
+  return identityKeys.every((key) => typeof left?.[key] === 'string' && left[key].length > 0 && left[key] === right?.[key]);
 }
 
 function retentionMilliseconds(context, meta) {
@@ -297,18 +296,28 @@ export async function workerAlive(context, meta) {
   return (await getTable(context, [meta.worker])).some((row) => row.pid === meta.worker.pid && row.started === meta.worker.started);
 }
 
+export async function confirmedTreeStopped(context, meta) {
+  // The worker must have confirmed the tree stopped, and all recorded
+  // process identities must still be absent from the current process table.
+  if (!meta.localTreeStopped) return false;
+  const identities = [meta.worker, ...meta.processes];
+  const table = await getTable(context, identities);
+  return identities.every((identity) => Number.isSafeInteger(identity?.pid) && identity.pid > 0 &&
+    typeof identity.started === 'string' && identity.started.length > 0 &&
+    !table.some((row) => row.pid === identity.pid && row.started === identity.started));
+}
+
 async function fixLostTime(context, run) {
-  if (run.meta.terminalAt !== null || await workerAlive(context, run.meta)) return false;
+  if (run.meta.terminalAt !== null) return;
   // The worker can commit its clock while the parent observes its exit. Its
   // last owner record is authoritative once that worker is no longer alive.
   const latest = await readExecution(context, run.directory);
   if (latest.meta.key !== run.meta.key || latest.meta.token !== run.meta.token) fail('runUnavailable', 'The run ownership changed.');
   run.meta = latest.meta;
-  if (run.meta.terminalAt !== null) return false;
+  if (run.meta.terminalAt !== null) return;
   run.meta.terminalAt = Date.now();
   try { await atomicJson(path.join(run.directory, 'owner.json'), run.meta); }
   catch { fail('runStateUnavailable', 'The fixed terminal time could not be saved.'); }
-  return true;
 }
 
 export async function recordFiles(run, part) {
@@ -333,8 +342,13 @@ export async function saveGap(run, name, input, status, code, message) {
   return gap;
 }
 
-export async function observeRun(context, run, { allowExpired = false } = {}) {
+export async function observeRun(context, run, { allowExpired = false, workerChild } = {}) {
   if (!allowExpired) checkExpiry(run.meta, context);
+  // Startup still owns the exact child whose identity was written to owner.json.
+  // Its handle can establish this worker's liveness for initialization polls.
+  const isWorkerAlive = () => workerChild?.processIdentity && workerChild.processIdentity === run.meta.worker
+    ? workerChild.exitCode === null && workerChild.signalCode === null
+    : workerAlive(context, run.meta);
   let result;
   try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
   catch {
@@ -343,10 +357,10 @@ export async function observeRun(context, run, { allowExpired = false } = {}) {
       // Atomic publication can occur after the first missing-file read. Check
       // the now-visible result before classifying it as damaged.
       try { result = validateResult(await readJson(path.join(run.directory, 'final.json'))); }
-      catch { if (await workerAlive(context, run.meta)) fail('runStateUnavailable', 'The final result is unreadable.'); }
+      catch { if (await isWorkerAlive()) fail('runStateUnavailable', 'The final result is unreadable.'); }
     }
   }
-  if (!result && !expired(run.meta, Date.now(), context) && !await workerAlive(context, run.meta)) {
+  if (!result && !expired(run.meta, Date.now(), context) && !await isWorkerAlive()) {
     await fixLostTime(context, run);
     if (!allowExpired) checkExpiry(run.meta, context);
     if (!expired(run.meta, Date.now(), context)) {
@@ -421,12 +435,7 @@ export async function removeExpired(context, run) {
     latest.meta.terminalAt !== run.meta.terminalAt || latest.meta.localTreeStopped !== run.meta.localTreeStopped ||
     JSON.stringify(latest.meta.worker) !== JSON.stringify(run.meta.worker) ||
     JSON.stringify(latest.meta.processes) !== JSON.stringify(run.meta.processes) || !expired(latest.meta, Date.now(), context)) return false;
-  const identities = [latest.meta.worker, ...latest.meta.processes];
-  const table = await getTable(context, identities);
-  if (identities.some((identity) => !Number.isSafeInteger(identity?.pid) || identity.pid <= 0 || typeof identity.started !== 'string' || !identity.started ||
-    table.some((row) => row.pid === identity.pid && row.started === identity.started))) return false;
-  // A recorded stopped tree is required: a missing root alone does not prove its descendants stopped.
-  if (!latest.meta.localTreeStopped) return false;
+  if (!await confirmedTreeStopped(context, latest.meta)) return false;
   await removeExecution(context, latest);
   return true;
 }

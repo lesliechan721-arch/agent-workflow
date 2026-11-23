@@ -8,9 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { qualificationAdapter, waitForCommunication, checkQualificationResult, checkQualificationExport } from './fixtures/windows-qualification.mjs';
-import { textBlock } from '../skills/spawn-subagent/scripts/runtime/output.mjs';
-import { createFrameDecoder, createFrameWriter, createProtocolState, validateFrame } from '../skills/spawn-subagent/scripts/runtime/protocol.mjs';
-import { LIMITS, validateRequest } from '../skills/spawn-subagent/scripts/runtime/contracts.mjs';
+import { textBlock } from '../commands/scripts/runtime/output.mjs';
+import { createFrameDecoder, createFrameWriter, createProtocolState, validateFrame } from '../commands/scripts/runtime/protocol.mjs';
+import { LIMITS, validateRequest } from '../commands/scripts/runtime/contracts.mjs';
 
 const start = () => ({
   protocolVersion: 5, type: 'start', run: { id: '1'.repeat(11), name: 'agent-test', deadlineAt: null },

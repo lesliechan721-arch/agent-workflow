@@ -1,0 +1,1035 @@
+{
+  "client": "opencode v2.2.6",
+  "executableSha256": "90e4d03597b03d2051b65b4d793467764e55bacd8e22bf4824479c7233ea0e15",
+  "os": {
+    "version": "26.3.1",
+    "build": "25D2128",
+    "arch": "arm64"
+  },
+  "mode": "opencode mini --standalone / interactive Build",
+  "recordedAt": "2026-11-22T17:00:40.969451+00:00",
+  "sourceReportSha256": "92a071cb92c58a8862f8bbc27099229c0f2827d34cad66cdaaa18789b9432264",
+  "extraction": "Temporary paths, full receipts, terminal text, and provider traffic were omitted.",
+  "awVersion": "0.1.0",
+  "awBaseCommit": "9e301a37b2b61298d014447ff7da5955dc985e81",
+  "awBuildStamp": {
+    "generationId": "16d20cb3-afd5-4765-a292-b8b8cd56e140",
+    "inputDigest": "2b6a70ee7828f5cc6d775fc6a48b188b1ab86e60ea752aeb5dea104dbaa3719d",
+    "outputDigest": "3a42b172c614be38809fa6d1869d969ae7438f48dbd2112a05e0643ed1b29530",
+    "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540"
+  },
+  "awDistSha256": {
+    "index.js": "c5cd15e351fd9e0b87b7a85b8d8c805596a07ba0b3694b842b4603d418771973",
+    "src/commands/permission-batch.js": "26a350ab464400967a633e8e13eaebe1691f919ff15b57e74f99bb3521ad613b",
+    "src/index.js": "a94662dc3d982a9d3b57b30a41ec9186c4751836d523dc69e7509553dffd4eb2",
+    "src/platforms/opencode-permission-config.js": "7d29929ea1ed2f9df76c941d304c758a35dcbc44b7b8a9a1d69789f9994cf27f",
+    "src/platforms/opencode-permissions.js": "a8e3f03c11c9e37fe26727d451a135318027bcb8707c825fe24fb64f7baa3653",
+    "src/platforms/opencode-related-permissions.js": "fdc267ba26a0b3ac133fa30a8412b9b63659e457844acb6cef5e732353477c2d",
+    "src/platforms/permission-ownership.js": "fc5600b9305ae19e7b799512de7a86f3438f1ff3e67b940088d556d62b4d0d0c",
+    "src/utils/managed-command-cli-review.js": "df3565dae707a0e63ac92df92dfc5e8754803a16d862f148d91685c947707156"
+  },
+  "fixture": "Empty isolated HOME and fresh session per case, two temporary Git projects, and an anonymous loopback model fixture serving one standard report command per session.",
+  "configurations": {
+    "project-allow": {
+      "scope": "project-a",
+      "provenance": "project-allow",
+      "sha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96"
+    },
+    "user-baseline": {
+      "scope": "user",
+      "provenance": "hand-authored baseline from Build 001",
+      "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+    },
+    "project-ask": {
+      "scope": "project-a",
+      "provenance": "project-ask",
+      "sha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+    },
+    "project-deny": {
+      "scope": "project-a",
+      "provenance": "project-deny",
+      "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+    },
+    "user-deny": {
+      "scope": "user",
+      "provenance": "user-deny",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "cross-project-allow": {
+      "scope": "project-a",
+      "provenance": "cross-project-allow",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    },
+    "cross-user-start": {
+      "scope": "user",
+      "provenance": "user-deny retained",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "cross-install-confirmed-project": {
+      "scope": "project-a",
+      "provenance": "cross-install-confirmed",
+      "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+    },
+    "cross-install-confirmed-user": {
+      "scope": "user",
+      "provenance": "cross-install-confirmed",
+      "sha256": "ceebbffbc337ee8c21a6882cb637cd48d88b18ce275b9fc504cd8f6e1466130f"
+    },
+    "cross-remove-confirmed-project": {
+      "scope": "project-a",
+      "provenance": "cross-remove-confirmed",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    },
+    "cross-remove-confirmed-user": {
+      "scope": "user",
+      "provenance": "cross-remove-confirmed",
+      "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+    },
+    "protected-user-deny": {
+      "scope": "user",
+      "provenance": "hand-authored User deny, preserved through protected-project-install",
+      "sha256": "c8ae5d9f4f2634c77557d589409438cc038b28bfa317664c69017ed5c8006267"
+    },
+    "protected-project": {
+      "scope": "project-a",
+      "provenance": "unchanged through protected-project-install",
+      "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+    },
+    "user-allow": {
+      "scope": "user",
+      "provenance": "user-allow-confirmed",
+      "sha256": "2c551f4c289c678df6c1d7e037d6f6fdd282a4502ad8982b34fa63edf56a370e"
+    },
+    "user-ask": {
+      "scope": "user",
+      "provenance": "user-ask-confirmed",
+      "sha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb"
+    }
+  },
+  "awUserWrites": {
+    "allow": {
+      "reviewExitCode": 3,
+      "confirmedExitCode": 0,
+      "confirmationEffectCodes": [
+        "hostPermissionAdditionalImpact",
+        "changeHostPermissions",
+        "changeCommandRoutes",
+        "changeCommandRoutes",
+        "changeCommandRoutes"
+      ],
+      "diagnosticCodes": [
+        "hostPermissionAdditionalImpact"
+      ],
+      "reviewPreservedBytes": true,
+      "projectConfigsAbsent": true
+    },
+    "ask": {
+      "reviewExitCode": 3,
+      "confirmedExitCode": 0,
+      "confirmationEffectCodes": [
+        "hostPermissionAdditionalImpact",
+        "changeHostPermissions",
+        "changeCommandRoutes",
+        "changeCommandRoutes",
+        "changeCommandRoutes",
+        "changeCommandRoutes"
+      ],
+      "diagnosticCodes": [
+        "permissionOwnershipDegraded",
+        "hostPermissionAdditionalImpact"
+      ],
+      "reviewPreservedBytes": true,
+      "projectConfigsAbsent": true
+    }
+  },
+  "crossScopeReview": {
+    "fileOrder": [
+      "project-a",
+      "user"
+    ],
+    "owners": [
+      "fixture-source/limiter",
+      "fixture-source/companion"
+    ],
+    "observations": {
+      "install": {
+        "reviewExitCode": 3,
+        "confirmedExitCode": 0,
+        "reviewedChange": "withdraw",
+        "reviewedEffect": {
+          "code": "changeRelatedProjectPermissions",
+          "impact": "shared",
+          "subject": {
+            "target": "opencode",
+            "scope": "project"
+          },
+          "message": "<aw-fixture>/project-a/opencode.json\nRemove allow shell aw-other report *"
+        },
+        "beforeSha256": [
+          "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d",
+          "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        ],
+        "afterConfirmedSha256": [
+          "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2",
+          "ceebbffbc337ee8c21a6882cb637cd48d88b18ce275b9fc504cd8f6e1466130f"
+        ],
+        "reviewPreservedBytes": true,
+        "confirmedTargetCount": 2
+      },
+      "remove": {
+        "reviewExitCode": 3,
+        "confirmedExitCode": 0,
+        "reviewedChange": "restore",
+        "reviewedEffect": {
+          "code": "changeRelatedProjectPermissions",
+          "impact": "shared",
+          "subject": {
+            "target": "opencode",
+            "scope": "project"
+          },
+          "message": "<aw-fixture>/project-a/opencode.json\nAdd allow shell aw-other report *"
+        },
+        "beforeSha256": [
+          "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2",
+          "ceebbffbc337ee8c21a6882cb637cd48d88b18ce275b9fc504cd8f6e1466130f"
+        ],
+        "afterConfirmedSha256": [
+          "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d",
+          "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        ],
+        "reviewPreservedBytes": true,
+        "confirmedTargetCount": 2
+      }
+    },
+    "projectBConfigCreated": false,
+    "removedBothOwnersRestoredOriginalBytes": true
+  },
+  "directAwCommandExecutions": [
+    {
+      "argv": [
+        "command",
+        "run",
+        "fixture-source/probe",
+        "--",
+        "export"
+      ],
+      "exitCode": 0,
+      "stdout": []
+    },
+    {
+      "argv": [
+        "command",
+        "run",
+        "fixture-source/probe",
+        "--",
+        "export",
+        "one",
+        "two words"
+      ],
+      "exitCode": 0,
+      "stdout": [
+        "one",
+        "two words"
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "case": "baseline",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ],
+      "program": "local launch recorder",
+      "configs": {}
+    },
+    {
+      "case": "project-allow-zero",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "a": {
+          "label": "project-allow",
+          "sha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96"
+        }
+      }
+    },
+    {
+      "case": "project-allow-extra",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export one two"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "a": {
+          "label": "project-allow",
+          "sha256": "872f386177ad639b32d6b71ecb4f436668856d62c44bb4e0f90cf1032fc1cf96"
+        }
+      }
+    },
+    {
+      "case": "project-ask-once",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "ask",
+      "observed": "ask",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "once",
+      "executionsBeforeReply": [],
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-baseline",
+          "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+        },
+        "a": {
+          "label": "project-ask",
+          "sha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+        }
+      }
+    },
+    {
+      "case": "project-ask-reject",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "reject",
+      "observed": "reject",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "reject",
+      "executionsBeforeReply": [],
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-baseline",
+          "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+        },
+        "a": {
+          "label": "project-ask",
+          "sha256": "89b4bb780e8753defcb1dbf357af7f1193d88f746779a1f81a2a45f000de8214"
+        }
+      }
+    },
+    {
+      "case": "project-deny",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-baseline",
+          "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+        },
+        "a": {
+          "label": "project-deny",
+          "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+        }
+      }
+    },
+    {
+      "case": "project-deny-extra",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-baseline",
+          "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+        },
+        "a": {
+          "label": "project-deny",
+          "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+        }
+      }
+    },
+    {
+      "case": "other-project-with-project-deny",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw command run fixture-source/probe -- export"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-baseline",
+          "sha256": "4430ee57b99f3906604a89262f463c189a3915ed15b6c93ccf1b2d4245e12301"
+        },
+        "a": {
+          "label": "project-deny",
+          "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+        }
+      }
+    },
+    {
+      "case": "user-deny-in-b",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "user-deny",
+          "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        }
+      }
+    },
+    {
+      "case": "cross-allow-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw-other report"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-user-start",
+          "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        },
+        "a": {
+          "label": "cross-project-allow",
+          "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+        }
+      }
+    },
+    {
+      "case": "cross-deny-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-install-confirmed-user",
+          "sha256": "ceebbffbc337ee8c21a6882cb637cd48d88b18ce275b9fc504cd8f6e1466130f"
+        },
+        "a": {
+          "label": "cross-install-confirmed-project",
+          "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+        }
+      }
+    },
+    {
+      "case": "cross-deny-in-b",
+      "project": "b",
+      "command": "aw-other report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-install-confirmed-user",
+          "sha256": "ceebbffbc337ee8c21a6882cb637cd48d88b18ce275b9fc504cd8f6e1466130f"
+        },
+        "a": {
+          "label": "cross-install-confirmed-project",
+          "sha256": "b766e3ad0703ebeff0e15b4810916d50b908901ac92799921ed6e70601186af2"
+        }
+      }
+    },
+    {
+      "case": "cross-restored-in-a",
+      "project": "a",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw-other report"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-remove-confirmed-user",
+          "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        },
+        "a": {
+          "label": "cross-remove-confirmed-project",
+          "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+        }
+      }
+    },
+    {
+      "case": "cross-restored-in-b",
+      "project": "b",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw-other report"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-remove-confirmed-user",
+          "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        },
+        "a": {
+          "label": "cross-remove-confirmed-project",
+          "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+        }
+      }
+    },
+    {
+      "case": "user-deny-preserved",
+      "project": "a",
+      "command": "aw-other protected-report",
+      "expected": "deny",
+      "observed": "deny",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "protected-user-deny",
+          "sha256": "c8ae5d9f4f2634c77557d589409438cc038b28bfa317664c69017ed5c8006267"
+        },
+        "a": {
+          "label": "protected-project",
+          "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+        }
+      }
+    },
+    {
+      "case": "cross-before-in-b",
+      "project": "b",
+      "command": "aw-other report",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "aw-other report"
+      ],
+      "program": "local launch recorder",
+      "configs": {
+        "user": {
+          "label": "cross-user-start",
+          "sha256": "d75329f7057e0517a603c6c744482150d3dfb415f176b9f5e5c48f3fd071ee0e"
+        },
+        "a": {
+          "label": "cross-project-allow",
+          "sha256": "feaafdb15e4f1288fb237057d208032a36c893742d93a2e648df31ea6050a32d"
+        }
+      }
+    },
+    {
+      "case": "user-allow-baseline",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "[]"
+      ],
+      "program": "candidate AW and installed report module",
+      "configs": {}
+    },
+    {
+      "case": "user-allow-zero-in-a",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "[]"
+      ],
+      "program": "candidate AW and installed report module",
+      "configs": {
+        "user": {
+          "label": "user-allow",
+          "sha256": "2c551f4c289c678df6c1d7e037d6f6fdd282a4502ad8982b34fa63edf56a370e"
+        }
+      }
+    },
+    {
+      "case": "user-allow-extra-in-b",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "allow",
+      "observed": "allow",
+      "passed": true,
+      "permissionScreenRendered": false,
+      "uiReply": null,
+      "executionsBeforeReply": null,
+      "executions": [
+        "[\"one\",\"two\"]"
+      ],
+      "program": "candidate AW and installed report module",
+      "configs": {
+        "user": {
+          "label": "user-allow",
+          "sha256": "2c551f4c289c678df6c1d7e037d6f6fdd282a4502ad8982b34fa63edf56a370e"
+        }
+      }
+    },
+    {
+      "case": "user-ask-once-in-a",
+      "project": "a",
+      "command": "aw command run fixture-source/probe -- export",
+      "expected": "ask",
+      "observed": "ask",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "once",
+      "executionsBeforeReply": [],
+      "executions": [
+        "[]"
+      ],
+      "program": "candidate AW and installed report module",
+      "configs": {
+        "user": {
+          "label": "user-ask",
+          "sha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb"
+        }
+      }
+    },
+    {
+      "case": "user-ask-reject-in-b",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "reject",
+      "observed": "reject",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "reject",
+      "executionsBeforeReply": [],
+      "executions": [],
+      "program": "candidate AW and installed report module",
+      "configs": {
+        "user": {
+          "label": "user-ask",
+          "sha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb"
+        }
+      }
+    },
+    {
+      "case": "user-ask-once-extra-in-b",
+      "project": "b",
+      "command": "aw command run fixture-source/probe -- export one two",
+      "expected": "ask",
+      "observed": "ask",
+      "passed": true,
+      "permissionScreenRendered": true,
+      "uiReply": "once",
+      "executionsBeforeReply": [],
+      "executions": [
+        "[\"one\",\"two\"]"
+      ],
+      "program": "candidate AW and installed report module",
+      "configs": {
+        "user": {
+          "label": "user-ask",
+          "sha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb"
+        }
+      }
+    }
+  ],
+  "apiReadback": {
+    "blank": {
+      "project": "b",
+      "userFileRead": false,
+      "userFileSha256": null,
+      "userPermissions": [],
+      "orderedBuildPermissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*.env",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.*",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.example",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "browser",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "skill",
+          "resource": "browser",
+          "effect": "deny"
+        }
+      ]
+    },
+    "user-allow-a": {
+      "project": "a",
+      "userFileRead": true,
+      "userFileSha256": "2c551f4c289c678df6c1d7e037d6f6fdd282a4502ad8982b34fa63edf56a370e",
+      "userPermissions": [
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "allow"
+        }
+      ],
+      "orderedBuildPermissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*.env",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.*",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.example",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "allow"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "browser",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "skill",
+          "resource": "browser",
+          "effect": "deny"
+        }
+      ]
+    },
+    "user-allow-b": {
+      "project": "b",
+      "userFileRead": true,
+      "userFileSha256": "2c551f4c289c678df6c1d7e037d6f6fdd282a4502ad8982b34fa63edf56a370e",
+      "userPermissions": [
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "allow"
+        }
+      ],
+      "orderedBuildPermissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*.env",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.*",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.example",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "allow"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "browser",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "skill",
+          "resource": "browser",
+          "effect": "deny"
+        }
+      ]
+    },
+    "user-ask-a": {
+      "project": "a",
+      "userFileRead": true,
+      "userFileSha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb",
+      "userPermissions": [
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "ask"
+        }
+      ],
+      "orderedBuildPermissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*.env",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.*",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.example",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "ask"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "browser",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "skill",
+          "resource": "browser",
+          "effect": "deny"
+        }
+      ]
+    },
+    "user-ask-b": {
+      "project": "b",
+      "userFileRead": true,
+      "userFileSha256": "454c13ecfe18bc34ef8ac5cf14272cff5f8c984e4900bdd2ecefd4502dcfd6cb",
+      "userPermissions": [
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "ask"
+        }
+      ],
+      "orderedBuildPermissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*.env",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.*",
+          "effect": "ask"
+        },
+        {
+          "action": "read",
+          "resource": "*.env.example",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "aw command run fixture-source/probe -- export *",
+          "effect": "ask"
+        },
+        {
+          "action": "execute",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "browser",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "skill",
+          "resource": "browser",
+          "effect": "deny"
+        }
+      ]
+    }
+  },
+  "allowAttribution": "OpenCode launched the reports with and without the generated User allow. The private CLI server returned the AW rule after the built-in default. Its last-match rule selection is inferred from the loaded order.",
+  "coverageGaps": [
+    "OpenCode Desktop and the Desktop local service",
+    "Hot reload, other modes, versions or platforms",
+    "Custom Agent overrides and command text variants from the earlier native controls",
+    "Partial write failures and unconfirmed permission states in live host sessions"
+  ]
+}

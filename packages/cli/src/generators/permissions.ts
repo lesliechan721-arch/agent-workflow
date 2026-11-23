@@ -1,67 +1,77 @@
 import type { Diagnostic } from '../output/public-result.js';
-import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, PERMISSION_ACTIONS, type PermissionAction } from '../output/component-delivery.js';
+import { COMMAND_ROUTE_UNREACHABLE, deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED, PERMISSION_ACTIONS, type PermissionAction } from '../output/component-delivery.js';
+import type { PermissionClaim } from '../platforms/permission-sidecar.js';
 import type { PermissionDefinition } from '../types.js';
 import { buildGeneratedName, dedupe } from './shared.js';
 import type { GeneratedTextArtifact } from './instructions.js';
 import {
-  isManagedCommandId,
+  normalizeCommandSelector,
   normalizeManagedCommandPermission,
   parsePermissionCommand,
-  type ManagedCommandReference,
+  type CommandRoutes,
   type PermissionCommand,
   type ResolvedInvocationPolicy,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 export { parsePermissionCommand } from '@lesliechan721/aw-plugin-core/manifest';
 
-/** Only rules the selected host can enforce may require a command binding. */
+export interface InactiveManagedCommandPermission {
+  name: string;
+  action: 'ask' | 'deny';
+  argsPrefix: string[];
+}
+
+export function managedCommandRouteIsReachable(routes: CommandRoutes | null, argsPrefix: readonly string[]): boolean {
+  const word = argsPrefix[0];
+  return !!routes && (!!routes.fallback || routes.subcommands.some(({ name }) => word === undefined || word === name));
+}
+
 export function selectPlatformInvocationPolicy(policy: ResolvedInvocationPolicy, subject: Diagnostic['subject'],
-  skippedProducer?: (reference: ManagedCommandReference) => string | undefined): { policy: ResolvedInvocationPolicy; diagnostics: Diagnostic[] } {
+  routes?: CommandRoutes | null, portable = false): {
+  policy: ResolvedInvocationPolicy;
+  diagnostics: Diagnostic[];
+  inactivePermissions: InactiveManagedCommandPermission[];
+} {
   const diagnostics: Diagnostic[] = [];
+  const inactivePermissions: InactiveManagedCommandPermission[] = [];
   const warn = (field: string, reasonCode: string, skippedPermissionActions: PermissionAction[]) => {
     const detail = { reasonCode, skippedPermissionActions };
     diagnostics.push({ code: INVOCATION_POLICY_NOT_APPLIED, severity: 'warning', subject: { ...subject, field },
       detail, message: deliveryNoticeMessage(INVOCATION_POLICY_NOT_APPLIED, detail, field) });
   };
-  const permissions = policy.permissions.flatMap((original) => {
-    let permission = original;
-    if (skippedProducer) {
-      const skipped = new Map<string, { reasonCode: string; actions: Set<PermissionAction> }>();
-      const keep = (action: PermissionAction) => (entry: PermissionCommand) => {
-        if (typeof entry === 'string') return true;
-        const reasonCode = skippedProducer(entry.command);
-        if (!reasonCode) return true;
-        const { set, key, variant } = entry.command;
-        const field = `permissions.${original.name}.${set}.${key}.${variant}`;
-        const earlier = skipped.get(field);
-        if (earlier) earlier.actions.add(action);
-        else skipped.set(field, { reasonCode, actions: new Set([action]) });
-        return false;
-      };
-      const allow = original.allow?.filter(keep('allow'));
-      const ask = original.ask?.filter(keep('ask'));
-      const deny = original.deny?.filter(keep('deny'));
-      const excludedCommands = original.sandbox?.excludedCommands.filter(keep('sandbox'));
-      if (skipped.size) {
-        for (const [field, { reasonCode, actions }] of skipped) warn(field, reasonCode, [...actions]);
-        if (!allow?.length && !ask?.length && !deny?.length && !excludedCommands?.length) return [];
-        permission = { name: original.name, allow, ask, deny, ...(excludedCommands?.length ? { sandbox: { excludedCommands } } : {}) };
-      }
-    }
-    if (policy.platform === 'claude' || policy.platform === 'codex' && !permission.sandbox?.excludedCommands.length) {
+  const supported = policy.permissions.flatMap((permission) => {
+    const shell = policy.platform === 'codex' || (policy.platform === 'opencode' || policy.platform === 'antigravity' || policy.platform === 'grok') && !portable;
+    if (policy.platform === 'claude' || shell && !permission.sandbox?.excludedCommands.length) {
       return [permission];
     }
     // Keep enforceable restrictions. A policy with unmapped controls supplies no new grants.
-    const codex = policy.platform === 'codex';
-    const skipped = (codex ? ['allow', 'sandbox'] as const : PERMISSION_ACTIONS)
+    const skipped = (shell ? ['allow', 'sandbox'] as const : PERMISSION_ACTIONS)
       .filter((field) => field === 'sandbox' ? permission.sandbox?.excludedCommands.length : permission[field]?.length);
     if (skipped.length) warn(`permissions.${permission.name}`, 'delivery-unavailable', skipped);
-    if (codex && (permission.ask?.length || permission.deny?.length)) {
+    if (shell && (permission.ask?.length || permission.deny?.length)) {
       return [{ name: permission.name, ask: permission.ask, deny: permission.deny }];
     }
     return [];
   });
-  return { policy: { ...policy, permissions }, diagnostics };
+  const hasRoute = (entry: PermissionCommand): boolean => typeof entry === 'string' || routes === undefined
+    || managedCommandRouteIsReachable(routes, entry.argsPrefix);
+  const permissions = supported.flatMap((permission) => {
+    const { name, ask, deny } = permission;
+    const allow = permission.allow?.filter(hasRoute);
+    const excludedCommands = permission.sandbox?.excludedCommands.filter(hasRoute);
+    const skipped: PermissionAction[] = [];
+    if (allow?.length !== permission.allow?.length) skipped.push('allow');
+    if (excludedCommands?.length !== permission.sandbox?.excludedCommands.length) skipped.push('sandbox');
+    if (skipped.length) warn(`permissions.${name}`, COMMAND_ROUTE_UNREACHABLE, skipped);
+    for (const action of ['ask', 'deny'] as const) {
+      for (const entry of permission[action] ?? []) {
+        if (typeof entry !== 'string' && !hasRoute(entry)) inactivePermissions.push({ name, action, argsPrefix: [...entry.argsPrefix] });
+      }
+    }
+    if (!allow?.length && !ask?.length && !deny?.length && !excludedCommands?.length) return [];
+    return [{ name, allow, ask, deny, ...(excludedCommands?.length ? { sandbox: { excludedCommands } } : {}) }];
+  });
+  return { policy: { ...policy, permissions }, diagnostics, inactivePermissions };
 }
 
 export interface ClaudePermissions {
@@ -71,40 +81,42 @@ export interface ClaudePermissions {
   excludedCommands?: string[];
 }
 
-export type CommandReferenceResolver = (reference: ManagedCommandReference) => string;
-
-function permissionTokens(value: PermissionCommand, resolve?: CommandReferenceResolver): string[] {
+function permissionTokens(value: PermissionCommand, selector?: string): string[] {
   if (typeof value === 'string') return parsePermissionCommand(value).tokens;
   const permission = normalizeManagedCommandPermission(value);
-  if (!resolve) throw new Error('commandReferenceInvalid: managed command permission requires a producer.');
-  const id = resolve(permission.command);
-  if (!isManagedCommandId(id)) throw new Error('commandReferenceInvalid: invalid resolved command ID.');
-  return ['aw', 'command', 'run', id, '--', ...permission.argsPrefix];
+  if (!selector) throw new Error('commandReferenceInvalid: managed command permission requires a verified selector.');
+  normalizeCommandSelector(selector);
+  return ['aw', 'command', 'run', selector, '--', ...permission.argsPrefix];
 }
 
-function renderClaudeBashRule(value: PermissionCommand, resolve?: CommandReferenceResolver): string {
-  const prefix = permissionTokens(value, resolve).join(' ');
-  return `Bash(${prefix}${typeof value === 'string' ? '' : ' *'})`;
+export function hostPermissionClaims(permissions: PermissionDefinition[], selector: string): PermissionClaim[] {
+  return permissions.flatMap((permission) => (['allow', 'ask', 'deny'] as const).flatMap((effect) =>
+    (permission[effect] ?? []).map((entry) => ({ name: permission.name, effect, tokens: permissionTokens(entry, selector) }))));
+}
+
+export function renderClaudeBashRule(tokens: readonly string[]): string {
+  return `Bash(${tokens.join(' ')} *)`;
 }
 
 function renderCodexPrefixRule(
   value: PermissionCommand,
   decision: 'allow' | 'prompt' | 'forbidden',
-  resolve?: CommandReferenceResolver,
+  selector?: string,
 ): string {
-  return `prefix_rule(pattern = ${JSON.stringify(permissionTokens(value, resolve))}, decision = "${decision}")`;
+  return `prefix_rule(pattern = ${JSON.stringify(permissionTokens(value, selector))}, decision = "${decision}")`;
 }
 
 export function mergeClaudePermissions(
   permissions: PermissionDefinition[],
-  resolve?: CommandReferenceResolver,
+  selector?: string,
 ): ClaudePermissions {
+  const render = (entry: PermissionCommand) => renderClaudeBashRule(permissionTokens(entry, selector));
   const excludedCommands = dedupe(permissions.flatMap((entry) => entry.sandbox?.excludedCommands ?? [])
-    .map((entry) => `${permissionTokens(entry, resolve).join(' ')} *`)).sort();
+    .map((entry) => `${permissionTokens(entry, selector).join(' ')} *`)).sort();
   return {
-    allow: dedupe(permissions.flatMap((entry) => entry.allow ?? []).map((entry) => renderClaudeBashRule(entry, resolve))),
-    ask: dedupe(permissions.flatMap((entry) => entry.ask ?? []).map((entry) => renderClaudeBashRule(entry, resolve))),
-    deny: dedupe(permissions.flatMap((entry) => entry.deny ?? []).map((entry) => renderClaudeBashRule(entry, resolve))),
+    allow: dedupe(permissions.flatMap((entry) => entry.allow ?? []).map(render)),
+    ask: dedupe(permissions.flatMap((entry) => entry.ask ?? []).map(render)),
+    deny: dedupe(permissions.flatMap((entry) => entry.deny ?? []).map(render)),
     ...(excludedCommands.length ? { excludedCommands } : {}),
   };
 }
@@ -112,16 +124,16 @@ export function mergeClaudePermissions(
 export function generateCodexPermissionArtifacts(
   pluginName: string,
   permissions: PermissionDefinition[],
-  resolve?: CommandReferenceResolver,
+  selector?: string,
 ): GeneratedTextArtifact[] {
   return permissions.map((permission) => {
     const generatedName = buildGeneratedName(pluginName, permission.name);
     const lines = [
       `# ${pluginName}/${permission.name}`,
       '',
-      ...dedupe((permission.allow ?? []).map((entry) => renderCodexPrefixRule(entry, 'allow', resolve))).sort(),
-      ...dedupe((permission.ask ?? []).map((entry) => renderCodexPrefixRule(entry, 'prompt', resolve))).sort(),
-      ...dedupe((permission.deny ?? []).map((entry) => renderCodexPrefixRule(entry, 'forbidden', resolve))).sort(),
+      ...dedupe((permission.allow ?? []).map((entry) => renderCodexPrefixRule(entry, 'allow', selector))).sort(),
+      ...dedupe((permission.ask ?? []).map((entry) => renderCodexPrefixRule(entry, 'prompt', selector))).sort(),
+      ...dedupe((permission.deny ?? []).map((entry) => renderCodexPrefixRule(entry, 'forbidden', selector))).sort(),
       '',
     ];
 

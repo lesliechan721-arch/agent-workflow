@@ -71,7 +71,7 @@ Codex 子代理安装使用普通 Skill 的 CLI 接口门槛及 Linux、macOS、
 
 逻辑需求、产品安装、包位置、render scope 和 activation scope 分开。产品 ID 绑定平台、产品面、规范入口和配置根；版本是可变证据。部署绑定 sourceIdentity/pluginId、平台、需求 scope 与真实 route/位置。
 
-physicalKey 为 sha256: 加下列对象的规范序列化完整 SHA-256 小写 hex，规范序列化复用[命令身份](../../reference/managed-commands.md#a4-稳定-id-与物理实例)：
+physicalKey 为 sha256: 加下列对象的规范序列化完整 SHA-256 小写 hex，规范序列化见[命令包身份](../../reference/managed-commands.md#包身份与发布)：
 
 ~~~ts
 interface PhysicalIdentity {
@@ -86,7 +86,7 @@ interface PhysicalIdentity {
 
 namespaceRoot 是稳定公开安装命名空间：CLI 注册使用实际配置根，目录路由使用公开发现根，补足使用 scope 的受管入口根，generic 使用通用输出根。已有路径 realpath；缺失目标从已存在祖先解析再拼接验证过的相对路径。Windows 不将全路径小写。resourceKey 是稳定原生包逻辑键，补足包含固定类别槽。版本化 cache、staging、Skill resourceRoot 和配置值不进入身份。
 
-共享真实位置的 CLI/App 与多个 activation 复用同一 key，不同配置根/发现根分别生成。含不同 placement 命令记录的包必须分开物化，不能只分 key 却覆盖同一目录。AW 来源目录按固定平台和 namespace 分组，writer 对计算出的精确 AW 根验证，不接收作者路径。源别名重绑定不能认领旧 sourceIdentity 的包。
+共享真实位置的 CLI/App 与多个 activation 复用同一 key，不同配置根/发现根分别生成。具有不同物理身份的原生包分别写入计算出的命名空间。插件的共享命令包在 AW_HOME 中独立维护。AW 来源目录按固定平台和 namespace 分组，writer 对计算出的精确 AW 根验证，不接收作者路径。源别名重绑定不能认领旧 sourceIdentity 的包。
 
 activationKey 另含启用位置与需求 scope。身份字符串、路径存在或需求记录本身均不授予删除权；归属和共享检查仍由现有公共管线执行。
 
@@ -161,6 +161,36 @@ Grok 的 `list` 提供登记信息。`inspect` 的版本须有效且与本次入
 刷新已登记的 User 包时，AW 在个人工作目录 `$AW_HOME/runtime/user` 核对 Grok 的两份证据。该目录在 `trusted_folders.toml` 中必须有明确同意的记录，且在同一目录运行 `grok inspect --json` 必须返回 `projectRoot: null` 和 `projectTrusted: true`。Grok 1.0.77 在没有启用 Hook 时，即使用户已拒绝该目录，也可能返回 `projectTrusted: true`。回执给出需要授权的准确目录。用户拒绝、记录缺失或无法确认时，AW 保留现有登记及原生副本。授权核实且登记精确同源、独占时，AW 才在该目录执行 `uninstall --confirm --keep-data` 和 `install --trust`，保留插件持久数据，并核对实际副本的完整摘要。最终移除使用默认卸载。刷新中途失败且登记缺失时，AW 保留新源包，回执给出恢复该来源的宿主安装参数。每次重试都重新核验现场。
 
 User 批量同步会再次核对本次已确认刷新的登记、AW 源包和 Grok 实际副本。两种范围都允许升级包新增或移除自己的组件。已有组件的顺序与批次开始时核对，新组件的位置与写入后的原生回执核对。升级一个包后，内容未变的其他包可以返回无需改动，外来的顺序变化仍会中止后续写入。
+
+### 平台权限投影
+
+宿主审批规则按实际配置文件和部署范围维护。安装、同步、重建与配置应用使用已冻结的规则候选和归属证据。每个客户端已经实测的版本、产品面、范围和模式见[宿主审批验证范围](../../reference/managed-commands.md#宿主审批验证范围)。
+
+#### OpenCode V2
+
+- User 使用绝对 `OPENCODE_CONFIG_DIR` 下的 `opencode.json`。未设置时使用发现的 User 配置根，通常为 `$XDG_CONFIG_HOME/opencode` 或 `~/.config/opencode`。该覆盖只用于权限路径。Project 写入本次所选项目根下的 `opencode.json`。遇到相对 `OPENCODE_CONFIG_DIR`，停止权限投影并提示设置可核验的绝对路径。
+- AW 只修改可证实归属的 V2 `permissions` 条目，保留手工规则的相对顺序、注释和其他配置。已有 `opencode.jsonc`、当前调用目录到项目根及祖先的配置、已知环境覆盖和 agent 规则参与保守冲突判断。未知的额外策略按可能重叠处理。
+- OpenCode 匹配 Shell 命令文本。AW 的字面前缀合同覆盖[标准书写](../../reference/managed-commands.md#宿主审批验证范围)，并保留宿主对 `ask` 与已记住允许的处理。AW 将生成的允许规则放在手工规则之前，将限制规则放在之后。标准书写中重叠的 AW 规则按 `deny > ask > allow` 生效。同一文件中，若已知手工 `ask` 或 `deny` 只覆盖更宽 `allow` 的一部分，并可通过顺序保留该限制，AW 会写入 `allow` 并在 Review 和回执注明仍受手工规则约束的交集。整项被更严格的规则遮蔽或已知冲突无法保留时，报告跳过。其他规则来源无法核验时，Review 提示其影响并列出已知位置。限制规则受更高层的宽松规则影响时，可以保留在目标文件供其他会话使用，当前结果仍会报告冲突。
+- 调整 User 限制时，AW 只检查当前 `AW_HOME` 的有效 Project 归属记录所指向、且声明与本次限制重叠的配置。需变更时 Review 列出确切项目路径和待增删的规则，经确认并复核后与 User 规则一起更新。已有项目手工规则可能覆盖 User 限制，AW 保留这些规则并报告受影响的动作和位置。归属或现场字节无法核实时停止相关修改。同批插件分别提交时，已写入的 User 限制会推进已确认的项目更新。回执保留完成的写入，列出仍需恢复的项目，按[宿主权限恢复](lifecycle.md#宿主权限恢复)处理。
+- Windows 允许含字母和 `/` 的标准书写，包括 `aw command run`。OpenCode 的大小写折叠和斜杠归一化可能匹配其他写法，Review 会标明这一点。`--%`、`%NAME%`、`^` 转义、`@args` 展开和不合法的逗号列表等 Shell 语法以 `opencode-windows-command-syntax` 跳过。普通字面百分号词（如 `100%`）仍可投影。若环境已关闭 Project 配置加载，本次结果以 `config-disabled` 说明，文件中供其他会话使用的规则按归属维护。[OpenCode v2.2.6 通配匹配](https://github.com/anomalyco/opencode/blob/v2.2.6/packages/core/src/util/wildcard.ts#L3-L13) · [PowerShell 参数解析](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing#argument-mode)
+
+#### Antigravity
+
+- 可用的 Antigravity CLI User 部署写入 `~/.gemini/antigravity-cli/settings.json`。写入只涉及 `permissions.allow`、`permissions.ask`、`permissions.deny` 内 AW 的 `command(...)` 条目。Project、Shared 和仅 Desktop 的部署各保留自己的设置，超出可写范围的声明按动作报告 `antigravity-cli-global-only`。Guide 子会话的临时通信规则见[Guide 运行说明](../../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)。
+- 通常按 `command(...)` 生成逐词前缀。可识别的 `timeout`、`nohup`、`nice`、`env` 包装和前置变量赋值使用内部命令生成规则，并提示该内部命令直接执行时也会匹配。Windows 路径或特殊形式、部分开发工具命令以及其他可能进入整行匹配的前缀可追加有边界的原文规则，覆盖常见的字面书写和后续字面参数。复合命令的其他段仍由宿主独立判断。Windows 的 `%`、`!` 和 `^` 扩展语法使用逐词规则并提示整行匹配限制。无法确定目标命令或无法表达为字面前缀的声明按动作报告跳过。
+- Antigravity 按 `deny > ask > allow` 决策。`toolPermission: "strict"` 下跳过 `allow`，可表达的 `ask` 和 `deny` 仍可写入。若某个跳过的限制与请求允许的前缀重叠，也会跳过该允许规则。已存在的手工规则、其他设置和顺序予以保留。JSON 无法解析、出现重复的顶层或 `permissions` 键、权限动作数组形状错误或模式不受支持时，AW 停止写入。[权限规则](https://antigravity.google/docs/permissions?tab=cli) · [设置 schema](https://antigravity.google/schemas/v1/settings.json)
+
+#### Grok Build
+
+- AW 合并多个插件的声明时，无法写入的 `ask` 或 `deny` 仍会阻止可能重叠的 AW 允许规则。手工限制只覆盖一部分允许范围时，Review 和回执列出相关限制。通配符交集无法确定时，提示可能重叠。需要处理权限时，附加配置层无法读取会在 Review 和回执中指明文件，即使没有新增规则或声明全部跳过。重复同步无需写入时，回执仍保留这个提醒。目标配置仍须通过校验。
+- User 写入 `GROK_HOME` 下的 `config.toml`，默认位置为 `~/.grok/config.toml`。Project 使用本次选择的项目根下的 `.grok/config.toml`。Project 权限写入须核验精确项目根已有的持久授权及宿主观察；AW 从不生成项目授信记录。
+- AW 只编辑 `[permission].rules` 数组或等价 TOML 表中的自有条目，保留其他配置、规则顺序和注释。Grok 对 `env` 等包装，以及 `command`、`exec`、`builtin` 的执行形式，使用内部命令匹配 `allow`。AW 在内部命令可确定时写入对应 pattern，并提示直接执行内部命令也可能放行。声明停在包装命令时，AW 保留宿主可以匹配的外层用法并报告部分施加。附加参数指定的内部命令由 Grok 单独审核。`command -v` 和 `command -V` 等查询形式保留原文，`ask` 和 `deny` 也保留原文。`sh -c` 等内联脚本的外层规则会标明脚本内命令由 Grok 另行审核。Grok 按 `deny > ask > allow` 决策。已读取的更严格规则阻挡声明时，按动作报告冲突，仍可应用未被遮挡的匹配范围。Review 展示实际规则和额外影响。会话模式、其他已加载规则和记忆审批仍由 Grok 决定。[宿主审批验证范围](../../reference/managed-commands.md#宿主审批验证范围)
+
+#### 宿主规则归属
+
+OpenCode、Antigravity CLI Global 与 Grok Build 使用 `<AW_HOME>/platforms/<platform>/permission-ownership/<路径哈希>.json` 保存可重建证据。记录绑定规范宿主配置路径、平台、配置摘要和各 owner 的声明。多个 owner 可以共享一条规则，手工同值规则也独立保留。重复同步不会重复添加同一规则。写入继续使用现有 AW_HOME 锁，在替换前复核宿主字节、其他规则来源和归属记录。
+
+只有可确认归 AW 所有、且无剩余 owner 的贡献才可撤回。宿主文件已被编辑时，AW 需要能确认原有规则序列的位置。单条同值规则移动后，单凭值相同无法核对出处，会留在原处。归属记录缺失或损坏、规则序列有歧义或路径不安全时，保留无法确认的规则。离线卸载的保护和恢复动作见[宿主权限恢复](lifecycle.md#宿主权限恢复)。
 
 ## 3. 适配器职责与执行证据
 

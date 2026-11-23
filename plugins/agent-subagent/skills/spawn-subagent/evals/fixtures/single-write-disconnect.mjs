@@ -8,7 +8,11 @@ export const fixtureAssetURL = import.meta.url;
 export async function runFailureControl(request) {
 if (request.protocolVersion !== 5 || request.type !== 'start' || typeof request.prompt !== 'string' || !request.prompt.trim() || request.mode !== 'workspace'
   || !path.isAbsolute(request.workspace)) throw new Error('invalidFaultControl');
-process.stdout.write(JSON.stringify({ protocolVersion: 5, type: 'ready', communication: { status: 'unsupported' } }) + '\n');
+const ready = { protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: {
+  communication: { status: request.communication ? 'unsupported' : 'disabled' },
+  resume: { status: request.resume ? 'unsupported' : 'disabled' },
+} } };
+await new Promise((resolve, reject) => process.stdout.write(JSON.stringify(ready) + '\n', (error) => error ? reject(error) : resolve()));
 const root = request.workspace;
 await mkdir(path.join(root, '.role-boundary-fixture'), { recursive: true });
 const counterFile = path.join(root, '.role-boundary-fixture', 'counter.json');

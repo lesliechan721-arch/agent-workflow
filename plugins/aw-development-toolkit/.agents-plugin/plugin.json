@@ -46,7 +46,8 @@
         "aw.review-preparation.v2",
         "aw.review-inspection.v3",
         "aw.skill-validation.v2",
-        "aw.managed-commands.v1",
+        "aw.managed-commands.v2",
+        "aw.native-tools.v3",
         "aw.claude.sandbox-exclusions.v1",
         "aw.cli-output.v2"
       ]

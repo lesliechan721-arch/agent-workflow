@@ -11,11 +11,11 @@ import { pathToFileURL } from 'node:url';
 import { store, files, processes, setNativeStorageHost } from './fixtures/storage-runtime.mjs';
 
 const require = createRequire(import.meta.url);
-const scanEntrypoint = require.resolve('../skills/spawn-subagent/scripts/scan-expired.mjs');
+const scanEntrypoint = require.resolve('../commands/scripts/scan-expired.mjs');
 const { atomicJson, readJson } = files;
 const hour = 3600000;
-const identity = { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent',
-  pluginVersion: '1.0.0', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'spawn-subagent-skill', skillKey: 'spawn-subagent' };
+const identity = { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent',
+  pluginVersion: '1.0.0', platform: 'codex', sourceContentDigest: 'sha256:' + 'b'.repeat(64) };
 const absent = (target) => fs.lstat(target).then(() => false, (error) => { if (error.code === 'ENOENT') return true; throw error; });
 
 async function temporaryHome(t) {

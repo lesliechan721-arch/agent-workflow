@@ -3403,160 +3403,172 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validates managed command renderer candidates without registering commands', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-managed-'));
-    tempDirs.push(tempRoot);
-    const trace = path.join(tempRoot, 'requests.jsonl');
+  it('validates a shared command route renderer once per source or bundled candidate', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-managed-'));
+    tempDirs.push(root);
+    const trace = path.join(root, 'requests.jsonl');
     const manifest = createBaseManifest('managed-author', {
       skills: './skills',
-      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      requires: { aw: { capabilities: ['aw.managed-commands.v2'] } },
+      config: { fields: { mode: { type: 'string', default: 'fast' }, unrelated: { type: 'string', default: 'unused' } } },
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-      managedCommands: {
-        packages: [{ key: 'tools', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools', render: true }],
-        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'dynamic', refreshKeys: [] }],
-      },
+      command: { sourceDir: './tools', mode: 'dynamic', refreshKeys: ['mode'] },
     });
-    const renderer = [
+    const artifact = {
+      id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes', refreshKeys: ['mode'],
+      routes: { subcommands: [{ name: 'check', runner: 'node', entry: 'check.mjs' }] },
+    };
+    const renderer = (artifacts: unknown[]) => [
+      'import assert from "node:assert/strict";',
       'import fs from "node:fs";',
       'import path from "node:path";',
       'const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      'if (c.surface.kind !== "aw" || c.surface.name !== "managed-commands" || c.platform || c.distribution) throw new Error("wrong surface");',
-      'if (process.env.AW_PLUGIN_SURFACE !== "managed-commands" || process.env.AW_PLUGIN_PLATFORM || process.env.AW_PLUGIN_DISTRIBUTION) throw new Error("wrong environment");',
-      'if (c.commandSources.length !== 1 || c.commandSources[0].packageKey !== "tools" || !path.isAbsolute(c.commandSources[0].sourceDir)) throw new Error("wrong command source");',
-      'if (c.artifactSources.length || Object.keys(c.config.values).length) throw new Error("unrelated inputs");',
-      `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(c.requestedArtifactIds)+"\\n");`,
-      'const artifacts = c.requestedArtifactIds.map(id => id === "command-package.tools"',
-      '  ? {id,target:"aw.command-package",kind:"commandPackage",state:"present",refreshKeys:[],files:{"settings.json":"{}"}}',
-      '  : {id,target:"aw.command-set",kind:"commandSet",state:"present",refreshKeys:[],entries:[{key:"run",runner:"node",entry:"run.mjs"}]});',
-      'process.stdout.write(JSON.stringify({version:2,artifacts}));',
+      'assert.deepEqual(c.surface, { kind: "aw", name: "managed-commands" });',
+      'assert.equal(c.event, "materialize");',
+      'assert.equal(c.scope, "user");',
+      'assert.equal(c.config.targetScope, "user");',
+      'assert.equal(c.platform, undefined);',
+      'assert.equal(c.platformCapabilities, undefined);',
+      'assert.equal(process.env.AW_PLUGIN_SURFACE, "managed-commands");',
+      'assert.equal(process.env.AW_PLUGIN_PLATFORM, undefined);',
+      'assert.equal(process.env.AW_PLUGIN_DISTRIBUTION, undefined);',
+      'assert.deepEqual(c.requestedArtifactIds, ["command-routes"]);',
+      'assert.deepEqual(c.previousArtifacts, []);',
+      'assert.deepEqual(c.artifactSources, []);',
+      'assert.deepEqual(c.config.values, { mode: "fast" });',
+      'assert.equal(c.commandSources.length, 1);',
+      'assert.deepEqual(Object.keys(c.commandSources[0]), ["sourceDir"]);',
+      'assert.ok(path.isAbsolute(c.commandSources[0].sourceDir));',
+      'assert.ok(fs.statSync(path.join(c.commandSources[0].sourceDir, "check.mjs")).isFile());',
+      `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(c.requestedArtifactIds) + "\\n");`,
+      `console.log(JSON.stringify({ version: 2, artifacts: ${JSON.stringify(artifacts)} }));`,
     ].join('\n');
-    const { pluginDir } = await writeSourcePlugin(tempRoot, 'managed-author', manifest, {
-      'scripts/render.mjs': renderer,
-      'tools/run.mjs': 'console.log("ready");\n',
-      'skills/helper/SKILL.md': '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n',
+    const { pluginDir } = await writeSourcePlugin(root, 'managed-author', manifest, {
+      'scripts/render.mjs': renderer([artifact]),
+      'tools/check.mjs': 'console.log("ready");\n',
+      'skills/helper/SKILL.md': '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command}} check\n',
       'skills/helper/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
     });
     const commandRoot = path.join(process.env.AW_HOME!, 'commands');
-    const before = await fs.pathExists(commandRoot);
-    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
-    expect((await fs.readFile(trace, 'utf8')).trim().split('\n')).toHaveLength(1);
-    expect(await fs.pathExists(commandRoot)).toBe(before);
-
-    for (const [modified, expected] of [
-      [renderer.replace('"settings.json":"{}"', '"run.mjs":"changed"'), 'cannot replace'],
-      [renderer.replace('kind:"commandSet",state:', 'platform:"codex",kind:"commandSet",state:'), 'Invalid artifacts[1].platform: must match the command request.'],
-      [renderer.replace('process.stdout.write(JSON.stringify({version:2,artifacts}))', 'process.stdout.write(JSON.stringify({version:2,artifacts:artifacts.slice(0,1)}))'), 'missing requested artifact \"command-set.tools\"'],
-    ]) {
-      await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), modified);
-      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining(expected) });
-      expect(await fs.pathExists(commandRoot)).toBe(before);
-    }
-    await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer.replace('key:"run",runner:', 'key:"other",runner:'));
-    const unavailable=JSON.parse((await runValidatePlugin(pluginDir,['--json'])).stdout);
-    expect(unavailable).toMatchObject({ok:true,errors:[]});
-    // The public validator uses the production profile. On unqualified hosts,
-    // the capability gate precedes managed command dependency resolution.
-    const expectedGap = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch)
-      ? '[dependency-unmet] []'
-      : '[capability-unverified] [{"feature":"component.kind.skill"}]';
-    expect(unavailable.warnings).toContain(`component unmet (codex/user): skill:helper ${expectedGap}`);
-    expect(await fs.pathExists(commandRoot)).toBe(before);
-    await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer);
-    await writeAuthoringPluginManifest(pluginDir, {
-      ...manifest,
-      platforms: ['codex', 'claude', 'generic'],
-    });
-    await fs.outputFile(path.join(pluginDir, 'skills/helper/SKILL.md'),
-      '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n');
-    await fs.outputFile(path.join(pluginDir, 'skills/helper/README.md'), '# Helper\n');
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining('Generic Skills cannot bind native') });
-  });
-
-  // Test Value Gate: the source validator must generate only the declared native reader
-  // in its temporary package candidate, without hiding other missing runtime imports.
-  it('validates an uncommitted native reader in the managed package candidate without writing to source', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-native-reader-'));
-    tempDirs.push(tempRoot);
-    const protocol = nativeToolFixture().closure.definitions[0]!.protocol;
-    const manifest = createBaseManifest('native-reader-author', {
-      requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } },
-      nativeTools: {
-        reader: './command/native-reader.mjs',
-        definitions: [{ key: 'job', protocol }],
-        consumers: [{ kind: 'managed-command-set', key: 'tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] }],
-      },
-      managedCommands: {
-        packages: [{ key: 'command', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
-        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'command' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
-      },
-    });
-    const entry = 'import { readNativeTool } from "./native-reader.mjs";\nexport { readNativeTool };\n';
-    const { pluginDir } = await writeSourcePlugin(tempRoot, 'native-reader-author', manifest, {
-      'command/entry.mjs': entry,
-    });
+    const bundle = path.join(root, 'bundle');
     await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
-    expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);
-    expect(await fs.readFile(path.join(pluginDir, 'command/entry.mjs'), 'utf8')).toBe(entry);
-    await fs.appendFile(path.join(pluginDir, 'command/entry.mjs'), 'import "./missing.mjs";\n');
-    await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({ stdout: expect.stringContaining('Unable to resolve relative import \\"./missing.mjs\\"') });
-    expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs']);
+    expect((await fs.readFile(trace, 'utf8')).trim().split('\n')).toHaveLength(1);
+    await bundleLocalPlugin(await readPluginManifest(pluginDir), bundle);
+    await expect(runValidatePlugin(pluginDir, ['--built-bundle', bundle, '--json'])).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok": true'),
+    });
+    expect((await fs.readFile(trace, 'utf8')).trim().split('\n')).toHaveLength(2);
+
+    const rendererPath = path.join(pluginDir, 'scripts', 'render.mjs');
+    const malformed: Array<[unknown[], RegExp]> = [
+      [[], /exactly one command-routes artifact/u],
+      [[{ ...artifact, platform: 'codex' }], /unknown field.*platform/u],
+      [[{ ...artifact, refreshKeys: ['unrelated'] }], /must match the declared refreshKeys/u],
+      [[{ ...artifact, routes: { fallback: { runner: 'node', entry: 'missing.mjs' } } }], /Invalid command entry/u],
+    ];
+    for (const [artifacts, diagnostic] of malformed) {
+      await fs.writeFile(rendererPath, renderer(artifacts));
+      await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({ stdout: expect.stringMatching(diagnostic) });
+    }
+    await fs.writeFile(rendererPath, renderer([{ ...artifact, routes: {} }]));
+    const empty = JSON.parse((await runValidatePlugin(pluginDir, ['--json'])).stdout);
+    expect(empty).toMatchObject({ ok: true, errors: [] });
+    // An unsupported production profile reports its capability gap before it can materialize the Skill.
+    const expectedGap = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch)
+      ? '[command-route-unreachable] []'
+      : '[capability-unverified] [{"feature":"component.kind.skill"}]';
+    expect(empty.warnings).toContain(`component unmet (codex/user): skill:helper ${expectedGap}`);
+
+    await fs.writeFile(rendererPath, renderer([artifact]));
+    await writeAuthoringPluginManifest(pluginDir, { ...manifest, platforms: ['codex', 'claude', 'generic'] });
+    await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({
+      stdout: expect.stringContaining('generic is outside command.platforms'),
+    });
+    expect(await fs.pathExists(commandRoot)).toBe(false);
   });
 
-  // Test Value Gate: validation must retain capability gaps for undeliverable Skills
-  // and avoid starting their command renderer or registering commands.
-  it('retains shared Claude user-scope command capability gaps without registering unavailable producers', async () => {
-    const root=await fs.mkdtemp(path.join(os.tmpdir(),'aw-author-claude-shared-'));
+  // Test Value Gate: both author validation inputs must resolve the generated readers
+  // in the staged command closure and still reject a missing author resource.
+  it('validates injected readers and the remaining runtime imports of a static command', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-native-reader-'));
     tempDirs.push(root);
-    const trace=path.join(root,'requests.jsonl');
-    const fixture=await writeSourcePlugin(root,'claude-shared-author',createBaseManifest('claude-shared-author',{
-      platforms:['claude'],skills:'./skills',requires:{aw:{capabilities:['aw.managed-commands.v1']}},
-      artifacts:{configKeys:[]},scripts:{artifacts:{render:{runner:'node',path:'./scripts/render.mjs'}}},
-      managedCommands:{packages:[{key:'project-tools',scope:'project',platforms:['claude'],sourceDir:'./project-tools'}],sets:[
-        {set:'native',producer:{kind:'static-skill',platform:'claude',skillKey:'native-helper'},mode:'dynamic',refreshKeys:[]},
-        {set:'scoped',producer:{kind:'artifact',platform:'claude',artifactId:'scoped-skill'},mode:'dynamic',refreshKeys:[]},
-        {set:'project-tools',producer:{kind:'package',packageKey:'project-tools'},mode:'static',entries:[{key:'run',runner:'node',entry:'run.mjs'}]},
-      ]},extensions:{permissions:[{name:'shared-native',allow:[{command:{set:'native',key:'run',variant:'default'}}]}]},
-    }),{
-      // Claude's writer has no mapping for a Skill's tool denylist.
-      'skills/native-helper/SKILL.md':'---\nname: native-helper\ndescription: Shared native commands.\ndisallowed-tools: [Bash]\n---\n{{aw.command:native/run}}\n',
-      'skills/native-helper/scripts/run.mjs':'console.log("native");\n',
-      'project-tools/run.mjs':'console.log("project");\n',
-      'scripts/render.mjs':[
-        "import fs from 'node:fs';",
-        "const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-        'const producers = c.producers?.map(({set, componentId}) => ({set, componentId}));',
-        'const request = {surface: c.surface, scope: c.scope, platform: c.platform, requestedArtifactIds: c.requestedArtifactIds, producers};',
-        `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(request) + '\\n');`,
-        'if(c.surface!=="agent-plugin" || c.scope!=="user") throw new Error("unavailable shared commands must not run");',
-        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:c.allowedOutputKinds.includes("skill")?[{id:"scoped-skill",kind:"skill",name:"scoped-helper",requiredFeatures:[{feature:"skill.tools",values:["denylist"]}],reasonCode:"capability-unverified"}]:[]}));',
+    const { closure } = nativeToolFixture();
+    const manifest = createBaseManifest('native-reader-author', {
+      requires: { aw: { capabilities: ['aw.managed-commands.v2', 'aw.native-tools.v3'] } },
+      nativeTools: closure,
+      scripts: { tests: { node: ['./tests/command.test.mjs'] } },
+      config: { fields: { mode: { type: 'string', required: true } } },
+      command: {
+        platforms: ['claude'], sourceDir: './command', mode: 'static', runtimeConfig: { keys: ['mode'] },
+        routes: { fallback: { runner: 'node', entry: 'entry.mjs' } },
+      },
+    });
+    const entry = [
+      'export { readNativeTool } from "./.aw/native-tool-reader.mjs";',
+      'export { readCommandRuntimeConfig } from "./.aw/command-runtime-config.mjs";',
+      'import "./support.mjs";',
+    ].join('\n');
+    const { pluginDir } = await writeSourcePlugin(root, 'native-reader-author', manifest, {
+      'command/entry.mjs': entry,
+      'command/support.mjs': 'export {};\n',
+      'tests/command.test.mjs': 'import "../command/entry.mjs";\n',
+    });
+    const bundle = path.join(root, 'bundle');
+    await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+    await bundleLocalPlugin(await readPluginManifest(pluginDir), bundle, { buildMode: 'staging' });
+    await expect(runValidatePlugin(pluginDir, ['--built-bundle', bundle, '--json'])).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok": true'),
+    });
+
+    expect(await fs.readdir(path.join(pluginDir, 'command'))).toEqual(['entry.mjs', 'support.mjs']);
+    expect(await fs.pathExists(path.join(pluginDir, '.aw'))).toBe(false);
+    expect(await fs.pathExists(path.join(bundle, 'command', '.aw'))).toBe(false);
+    for (const [rootDir, options] of [[bundle, ['--built-bundle', bundle]], [pluginDir, []]] as const) {
+      await fs.remove(path.join(rootDir, 'command', 'support.mjs'));
+      await expect(runValidatePlugin(pluginDir, [...options, '--json'])).rejects.toMatchObject({
+        stdout: expect.stringMatching(/Unable to resolve relative import.*support\.mjs/u),
+      });
+    }
+  });
+
+  it('validates Claude command permissions and retains independent Skill capability gaps', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-claude-shared-'));
+    tempDirs.push(root);
+    const manifest = createBaseManifest('claude-shared-author', {
+      platforms: ['claude'], skills: './skills', requires: { aw: { capabilities: ['aw.managed-commands.v2'] } },
+      artifacts: { configKeys: [] }, scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      command: {
+        sourceDir: './tools', mode: 'static', platforms: ['claude'],
+        routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'run.mjs' }] },
+      },
+      extensions: { permissions: [{ name: 'shared-native', allow: [{ argsPrefix: ['run'] }] }] },
+    });
+    const { pluginDir } = await writeSourcePlugin(root, 'claude-shared-author', manifest, {
+      'skills/native-helper/SKILL.md': '---\nname: native-helper\ndescription: Shared native commands.\ndisallowed-tools: [Bash]\n---\n{{aw.command}} run\n',
+      'tools/run.mjs': 'console.log("native");\n',
+      'scripts/render.mjs': [
+        'import fs from "node:fs";',
+        'const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'if (c.surface !== "agent-plugin" || c.scope !== "user" || c.platform !== "claude") throw new Error("wrong shared Skill profile");',
+        'const unmet = c.allowedOutputKinds.includes("skill") ? [{ id: "scoped-skill", kind: "skill", name: "scoped-helper", requiredFeatures: [{ feature: "skill.tools", values: ["denylist"] }], reasonCode: "capability-unverified" }] : [];',
+        'console.log(JSON.stringify({ version: 3, components: [], omitted: [], unmet }));',
       ].join('\n'),
     });
-    const result = await runValidatePlugin(fixture.pluginDir, ['--json']).catch((cause: unknown) => {
-      const failure = cause as { stdout?: string; stderr?: string };
-      throw new Error(`Controlled Claude author fixture failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
-    });
-    const expected = {
+    const result = JSON.parse((await runValidatePlugin(pluginDir, ['--json'])).stdout);
+    expect(result).toMatchObject({
       ok: true,
       errors: [],
       warnings: expect.arrayContaining([
         'component unmet (claude/user): skill:native-helper [delivery-unavailable] [{"feature":"skill.tools","values":["denylist"]}]',
         'component unmet (claude/user): scoped-skill [capability-unverified] [{"feature":"skill.tools","values":["denylist"]}]',
       ]),
-    };
-    expect(JSON.parse(result.stdout)).toMatchObject(expected);
+    });
 
-    // The command preparation test covers rejection when a delivered Skill
-    // references a project-only package from a shared User render unit.
-    await fs.appendFile(path.join(fixture.pluginDir, 'skills/native-helper/SKILL.md'), '{{aw.command:project-tools/run}}\n');
-    const withProjectReference = await runValidatePlugin(fixture.pluginDir, ['--json']);
-    expect(JSON.parse(withProjectReference.stdout)).toMatchObject(expected);
-
-    const calls = (await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls.filter(({ surface, scope, platform }) => surface !== 'agent-plugin' || scope !== 'user' || platform !== 'claude')).toEqual([]);
-    expect(await fs.pathExists(path.join(process.env.AW_HOME!, 'commands'))).toBe(false);
+    await writeAuthoringPluginManifest(pluginDir, { ...manifest, platforms: ['claude', 'codex'] });
+    await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({
+      stdout: expect.stringMatching(/extensions\.permissions.*codex.*outside command\.platforms/u),
+    });
   });
-
 
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));

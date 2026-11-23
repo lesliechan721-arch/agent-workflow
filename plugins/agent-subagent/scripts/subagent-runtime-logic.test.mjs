@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
-import { validateDiagnostics } from '../skills/spawn-subagent/scripts/runtime/contracts.mjs';
+import { validateDiagnostics } from '../commands/scripts/runtime/contracts.mjs';
 import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { field } from './fixtures/windows-qualification.mjs';
 
@@ -29,11 +29,11 @@ try {
   }, originalSpawn);
   syncBuiltinESMExports();
   [commands, store, files, output, cli] = await Promise.all([
-    import('../skills/spawn-subagent/scripts/runtime/commands.mjs'),
-    import('../skills/spawn-subagent/scripts/runtime/store.mjs'),
-    import('../skills/spawn-subagent/scripts/runtime/files.mjs'),
-    import('../skills/spawn-subagent/scripts/runtime/output.mjs'),
-    import('../skills/spawn-subagent/scripts/subagent.mjs'),
+    import('../commands/scripts/runtime/commands.mjs'),
+    import('../commands/scripts/runtime/store.mjs'),
+    import('../commands/scripts/runtime/files.mjs'),
+    import('../commands/scripts/runtime/output.mjs'),
+    import('../commands/scripts/subagent.mjs'),
   ]);
 } finally {
   childProcess.execFile = originalExecFile;
@@ -307,18 +307,22 @@ test('complete file export reports consumption failure without deleting the file
 // Test Value Gate: unsupported forms must fail before any store or stdin work.
 test('parse rejects missing, mixed, repeated, stdin and removed options', () => {
   const invalid = [
-    ['start', '--executor', 'x'], ['send', '--run', 'x'],
-    ['start', '--executor', 'x', '--prompt', '-'], ['start', '--executor', 'x', '--prompt-file', '-'],
+    ['start', '--platform', 'codex', '--executor', 'x'], ['send', '--run', 'x'],
+    ['start', '--platform', 'codex', '--executor', 'x', '--prompt', '-'], ['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', '-'],
     ['send', '--run', 'x', '--text', '-'], ['send', '--run', 'x', '--text-file', '-'],
-    ['start', '--executor', 'x', '--prompt', 'task', '--prompt-file', 'file'],
+    ['start', '--platform', 'codex', '--executor', 'x', '--prompt', 'task', '--prompt-file', 'file'],
     ['send', '--run', 'x', '--text', 'text', '--text-file', 'file'],
     ['result', '--run', 'x', '--export'], ['result', '--run', 'x', '--output-file', 'file', '--export'],
     ['result', '--run', 'x', '--details'], ['result', '--run', 'x', '--output-file', 'a', '--output-file', 'b'],
-    ['start', '--executor', 'x', '--prompt-file', 'a', '--prompt-file', 'b'],
+    ['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', 'a', '--prompt-file', 'b'],
     ['send', '--run', 'x', '--text', 'a', '--text', 'b'], ['wait', '--run', 'x', '--text', 'a'],
   ];
+  for (const prefix of [[], ['--platform', 'pi'], ['--platform=codex'], ['--platform', 'codex', '--platform', 'claude']]) {
+    invalid.push(['start', ...prefix, '--executor', 'x', '--prompt', 'task']);
+  }
+  invalid.push(['start', '--executor', 'x', '--platform', 'claude', '--prompt', 'task']);
   for (const args of invalid) assert.throws(() => cli.parseCommand(args), { code: 'argumentsInvalid' }, args.join(' '));
-  assert.equal(cli.parseCommand(['start', '--executor', 'x', '--prompt-file', './-']).promptFile, './-');
+  assert.equal(cli.parseCommand(['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', './-']).promptFile, './-');
   assert.equal(cli.parseCommand(['wait', '--run', 'x', '--run', 'x', '--timeout-ms', '0']).timeoutMs, 0);
 });
 
@@ -333,7 +337,7 @@ test('command help bypasses required task inputs and diagnostics parses for ever
     assert.notEqual(help.text, overview.text);
     assert.match(help.text, new RegExp(`Usage: ${operation} `));
     assert.deepEqual(cli.parseCommand([operation, '-h']), cli.parseCommand([operation, '--help']));
-    const args = operation === 'start' ? ['--executor', 'x', '--prompt', 'task']
+    const args = operation === 'start' ? ['--platform', 'codex', '--executor', 'x', '--prompt', 'task']
       : operation === 'send' ? ['--run', 'x', '--text', 'input'] : ['--run', 'x'];
     assert.equal(cli.parseCommand([operation, ...args, '--diagnostics']).showDiagnostics, true);
     assert.throws(() => cli.parseCommand([operation, ...args, '--diagnostics', '--diagnostics']), { code: 'argumentsInvalid' });

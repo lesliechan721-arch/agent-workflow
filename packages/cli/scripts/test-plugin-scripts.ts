@@ -8,8 +8,17 @@ import { createInterface } from 'node:readline';
 import fs from 'fs-extra';
 import { readNativeTool } from '@lesliechan721/aw-native-runtime/reader';
 import type { prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
-import { getNativeToolConsumerClosure, loadPluginNativeToolClosure, isPlatformTarget, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import {
+  COMMAND_RUNTIME_CONFIG_READER,
+  createNativeToolReaderSource,
+  getCommandPackageInjectedReaders,
+  getNativeToolConsumerClosure,
+  loadPluginNativeToolClosure,
+  isPlatformTarget,
+  PLATFORM_TARGETS,
+} from '@lesliechan721/aw-plugin-core/manifest';
 import { assertSupportedNativeToolProtocol, prepareNativeToolContext, removeNativeToolEnvironment } from '../src/utils/native-tool-context.js';
+import { readCommandRuntimeConfigReaderSource } from '../src/utils/managed-command-snapshots.js';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
 import { pluginTestReporterUrl } from './plugin-test-reporter.mjs';
@@ -399,6 +408,7 @@ async function copyTestsIntoBundle(options: {
     options.bundleRoot,
     options.manifest,
   );
+  const injectedCommandReaders = getCommandPackageInjectedReaders(options.manifest);
   const scan = scanNodeImportContract({
     files: scanFiles,
     filePaths,
@@ -407,6 +417,7 @@ async function copyTestsIntoBundle(options: {
     devDependencies,
     allowDevDependencies: Boolean(options.manifest.scripts?.node?.packageRoot),
     runtimeConfigSkillRoots: options.manifest.artifacts?.sourceDirs ?? [],
+    injectedCommandReaders,
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid plugin test imports:\n${scan.errors.join('\n')}`);
@@ -422,6 +433,14 @@ async function copyTestsIntoBundle(options: {
     const targetPath = path.join(options.bundleRoot, file);
     await fs.ensureDir(path.dirname(targetPath));
     await fs.copyFile(path.join(options.baselineRoot, file), targetPath);
+  }
+  if (injectedCommandReaders) {
+    for (const file of injectedCommandReaders.paths) {
+      const source = file === COMMAND_RUNTIME_CONFIG_READER
+        ? await readCommandRuntimeConfigReaderSource()
+        : createNativeToolReaderSource();
+      await fs.outputFile(path.join(options.bundleRoot, injectedCommandReaders.sourceDir, file), source, { flag: 'wx' });
+    }
   }
   return entries;
 }
@@ -739,7 +758,7 @@ async function runPreparedPluginTests(options: {
       }
       nativeContext = fixture;
     } else {
-      nativeContext = await prepareNativeToolContext({ closure, kind: 'plugin-test', key: 'node',
+      nativeContext = await prepareNativeToolContext({ closure, kind: 'plugin-test', keys: ['node'],
         platform: nativePlatform, prepare: options.nativePrepare });
     }
     if (nativeContext.tools && Object.keys(nativeContext.tools).length > 0) spawnEnv.AW_NATIVE_TOOL_CONTEXT = JSON.stringify(nativeContext);

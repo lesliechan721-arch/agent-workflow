@@ -9,10 +9,10 @@ import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { nativeTest as test } from './fixtures/native-test.mjs';
 import { promisify } from 'node:util';
-import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, protectPrivatePaths, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
-import { observeTree, ownsProcess, processIdentity, processTable, stopOwnedTree } from '../skills/spawn-subagent/scripts/runtime/processes.mjs';
-import { windowsJobExecutable, windowsNativeOperation } from '../skills/spawn-subagent/scripts/runtime/windows-native.mjs';
-import { createRun, removeScratch, storeContext } from '../skills/spawn-subagent/scripts/runtime/store.mjs';
+import { assertNoReparsePath, currentUserIdentity, protectPrivatePath, protectPrivatePaths, resolveSafeCommand, safeSpawn, verifyPrivatePath, verifyPrivatePaths, windowsOperation } from '../commands/scripts/runtime/platform.mjs';
+import { observeTree, ownsProcess, processIdentity, processTable, stopOwnedTree } from '../commands/scripts/runtime/processes.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from '../commands/scripts/runtime/windows-native.mjs';
+import { createRun, removeScratch, storeContext } from '../commands/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const platformUrl = pathToFileURL(path.join(guideRuntimeScripts(import.meta.url), 'runtime/platform.mjs')).href;

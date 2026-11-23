@@ -1,5 +1,5 @@
 import { skillInvocationNotices } from '../output/skill-invocation-notices.js';
-import { componentGapDescription, componentGapOutcome, deliveryNoticeMessage, hasComponentDeliveryNotice,
+import { componentGapDescription, componentGapOutcome, deliveryNoticeMessage, hasComponentDeliveryNotice, HOST_PERMISSION_ADDITIONAL_IMPACT,
   isDeliveryNoticeCode, isInstallationAdvisory, safeComponentIdentity, type ComponentDelivery } from '../output/component-delivery.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
@@ -42,13 +42,19 @@ function safePosition(pluginId: string | undefined, platform: string | undefined
 
 export function projectDeliveryNoticeHistory(diagnostics: readonly RecoveryDiagnostic[], recordId: string,
   stage: 'execute' | 'apply'): SafeOperationDiagnostic[] {
-  return diagnostics.flatMap(({ code, subject, detail }, index) => {
+  return diagnostics.flatMap(({ code, subject, detail, message }, index) => {
     if (!isDeliveryNoticeCode(code)) return [];
     const target = safePosition(subject?.pluginId, subject?.target, subject?.scope);
     if (!target) return [];
     const reason = detail?.reasonCode ? safeDiagnosticCode(detail.reasonCode, 'unknown') : undefined;
     return [{ id: `${recordId}:delivery-notice:${index}`, code, stage,
-      safeMessage: deliveryNoticeMessage(code, detail, subject?.field), target, causes: [], detailLines: reason ? [reason] : [] }];
+      safeMessage: code === HOST_PERMISSION_ADDITIONAL_IMPACT
+        ? sanitizeDiagnosticText(message) : deliveryNoticeMessage(code, detail, subject?.field),
+      target, causes: [], detailLines: [
+        ...(detail?.permissionAction && detail.permissionResource
+          ? [sanitizeDiagnosticText(`${detail.permissionAction} ${detail.permissionResource}`)] : []),
+        ...(reason ? [reason] : []),
+      ] }];
   });
 }
 
@@ -618,8 +624,7 @@ export function projectExecutionDiagnostics(
     commandFacts.push({
       configCommit: 'notApplicable',
       awWrite: (raw.command === 'cleanup' || raw.command === 'uninstall')
-        && result.producer && typeof result.producer === 'object'
-        && (result.producer as Record<string, unknown>).kind === 'package' ? 'notApplicable'
+        && result.action === 'unchanged' ? 'notApplicable'
         : result.state === 'completed' ? 'completed' : result.state === 'partial' ? 'partial' : 'unknown',
       preApplyExternalEffect: 'notApplicable',
       finalVerification: result.state === 'completed' ? 'completed' : 'failed',
@@ -630,7 +635,7 @@ export function projectExecutionDiagnostics(
       diagnostics.push({
         id: `${idPrefix}:command:${index}:${errorIndex}`,
         code: typeof error.code === 'string' ? safeDiagnosticCode(error.code, 'commandPackageApplyFailed') : 'commandPackageApplyFailed',
-        stage: 'apply', safeMessage: 'The managed command producer did not complete.',
+        stage: 'apply', safeMessage: 'The shared command package did not complete.',
         causes: [], detailLines: [],
       });
     }

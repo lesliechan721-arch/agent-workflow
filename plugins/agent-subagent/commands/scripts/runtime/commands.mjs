@@ -6,7 +6,7 @@ import { fail, safeError, identifier } from './contracts.mjs';
 import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
 import { createRun, createExecution, publishRun, removeExecution, touchEntry, openRun, openRuns, observeRun, recordFiles, readRecord, saveGap, saveObservation,
-  workerAlive, expired, checkExpiry, removeScratch, terminal, delay } from './store.mjs';
+  workerAlive, confirmedTreeStopped, expired, checkExpiry, removeScratch, terminal, delay } from './store.mjs';
 import { executionConfiguration, prepareResume } from './runner.mjs';
 import { OUTPUT_LIMIT, communication, resume, initializationDiagnostics, needsInitialization, diagnostic, eventText,
   finalChunks, resultReport, measureReport, collectReport, exportHint, uncoveredGaps, textBlock } from './output.mjs';
@@ -63,11 +63,7 @@ async function launchRun(context, run, prepared, request) {
   const until = Date.now() + 10000;
   let current;
   do {
-    // This call created the private run and still owns the original child
-    // handle. Its exit state proves this worker's lifetime without reopening
-    // the run or sampling every system process on each initialization check.
-    context.table = child.exitCode === null && child.signalCode === null ? [run.meta.worker] : [];
-    try { current = await observeRun(context, run); }
+    try { current = await observeRun(context, run, { workerChild: child }); }
     catch (error) { return operationError('start', run.handle, error, run); }
     if (current.snapshot.ready || current.result) break;
     const remaining = until - Date.now();
@@ -124,13 +120,14 @@ export async function sendInput(context, request, dependencies = {}) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
+    if (context.forRun) context = await context.forRun(run);
     const touched = run.meta.terminalAt !== null;
     if (touched) await touchEntry(context, run).catch(() => {});
     run = await observeRun(context, run);
     if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (terminal(run.snapshot.state)) {
       if (!touched) await touchEntry(context, run).catch(() => {});
-      return await resumeRun(context, run, request, dependencies);
+      return await resumeRun(context, run, request, { ...dependencies, runtimeSnapshot: context.runtimeSnapshot });
     }
     if (run.snapshot.state !== 'running') fail('runClosed', 'The run no longer accepts input.');
     if (run.snapshot.initialization?.capabilities.communication?.status !== 'enabled') fail('communicationUnsupported', 'This run does not support communication.');
@@ -196,7 +193,9 @@ async function exportResult(run, events, factory, target, context) {
 export async function readResult(context, request) {
   let run;
   try {
-    run = await observeRun(context, await openRun(context, request.runs[0]));
+    run = await openRun(context, request.runs[0]);
+    if (context.forRun) context = await context.forRun(run);
+    run = await observeRun(context, run);
     if (!run.result) fail('resultNotReady', 'The run has not reached a terminal state.');
     await settleLateInputs(run);
     const events = await recordFiles(run, 'events');
@@ -279,7 +278,10 @@ export async function waitRuns(context, request) {
       try {
         const entry = opened.get(handle);
         if (entry.error) throw entry.error;
-        const run = await observeRun(context, entry.run);
+        const runContext = context.forRun ? await context.forRun(entry.run) : context;
+        const run = await observeRun(runContext, entry.run);
+        context.table = runContext.table;
+        context.tableEvidence = runContext.tableEvidence;
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
         const group = { run, handle, items: [], events, gaps: [], candidates: events.map((name) => ({ kind: 'message', name })), capability: needsInitialization(run), showDiagnostics: request.showDiagnostics };
@@ -370,17 +372,42 @@ export async function stopRun(context, request) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
-    if (!expired(run.meta, Date.now(), context)) run = await observeRun(context, run);
-    if (!run.result && !expired(run.meta, Date.now(), context)) await atomicJson(path.join(run.directory, 'stop.json'), { reason: 'requested' });
+    if (context.forRun) context = await context.forRun(run);
+    const refreshOwner = async () => {
+      const { meta } = await openRun(context, run.handle);
+      if (meta.token !== run.meta.token) fail('runUnavailable', 'The current execution changed.');
+      return meta;
+    };
+    context.table = undefined;
+    if (!expired(run.meta, Date.now(), context)) {
+      run = await observeRun(context, run);
+      if (!run.result && !expired(run.meta, Date.now(), context)) {
+        await atomicJson(path.join(run.directory, 'stop.json'), { reason: 'requested' });
+      }
+    }
     const until = Date.now() + 30000;
-    while (!run.result && !expired(run.meta, Date.now(), context) && Date.now() < until) {
-      await delay(100); context.table = undefined;
-      run = await observeRun(context, await openRun(context, run.handle));
+    // The worker publishes the final result before its last snapshot and exit.
+    while (!expired(run.meta, Date.now(), context) && (!run.result || await workerAlive(context, run.meta))) {
+      const remaining = until - Date.now();
+      if (remaining <= 0) break;
+      await delay(Math.min(100, remaining));
+      context.table = undefined;
+      if (!run.result) {
+        run.meta = await refreshOwner();
+        if (!expired(run.meta, Date.now(), context)) run = await observeRun(context, run);
+      }
     }
     context.table = undefined;
-    let stopped = run.meta.localTreeStopped;
-    if (!await workerAlive(context, run.meta) || expired(run.meta, Date.now(), context)) {
-      const root = expired(run.meta, Date.now(), context) ? run.meta.worker : run.meta.processes[0];
+    const alive = await workerAlive(context, run.meta);
+    if (!alive) {
+      // Use the worker's last owner record before checking its recorded tree.
+      run.meta = await refreshOwner();
+      if (!run.result && !expired(run.meta, Date.now(), context)) run = await observeRun(context, run);
+    }
+    const isExpired = expired(run.meta, Date.now(), context);
+    let stopped = !alive && await confirmedTreeStopped(context, run.meta);
+    if (!stopped && (!alive || isExpired)) {
+      const root = isExpired ? run.meta.worker : run.meta.processes[0];
       if (root) {
         const cleanup = await stopOwnedTree(root.pid, [root, ...run.meta.processes], run.meta.token);
         stopped = cleanup.stopped; run.meta.processes = cleanup.tracked;

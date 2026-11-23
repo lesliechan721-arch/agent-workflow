@@ -1,6 +1,7 @@
 import { isBuiltin } from 'node:module';
 import path from 'node:path';
 
+import { isInjectedCommandReaderImport, type getCommandPackageInjectedReaders } from './managed-commands.js';
 import { AW_RUNTIME_CONFIG_READER_PATH } from './runtime-config.js';
 
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
@@ -400,6 +401,7 @@ export interface NodeImportContractScanOptions {
   devDependencies?: readonly string[];
   allowDevDependencies?: boolean;
   runtimeConfigSkillRoots?: readonly string[];
+  injectedCommandReaders?: ReturnType<typeof getCommandPackageInjectedReaders>;
 }
 
 export interface NodeImportContractScanResult {
@@ -610,6 +612,7 @@ export function scanNodeImportContract(
         const resolved = resolution.file;
         if (!resolved) {
           const requested = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));
+          if (isInjectedCommandReaderImport(options.injectedCommandReaders, file, requested)) continue;
           if (runtimeConfigSkillRoots.some((root) => (
             file.startsWith(`${root}/`)
             && requested === path.posix.join(root, AW_RUNTIME_CONFIG_READER_PATH)

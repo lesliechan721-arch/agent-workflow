@@ -1,6 +1,5 @@
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 import type { InitCommandResult } from '../commands/init.js';
-import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { operationPlanNativeToolChanges, type OperationPlan } from '../commands/operation-plan.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
@@ -358,7 +357,7 @@ export function buildRebuildReceiptJson(
   const targetResults = sourceTargetResults(command, result, errors)
     .map((target) => receiptTargetResult(target, result));
   const commandResults = [...new Map((result.commandResults ?? [])
-    .map((producer) => [getCommandPackageId(producer.producer), producer])).values()];
+    .map((producer) => [producer.packageId, producer])).values()];
   const state = overallState(targetResults, result.overallState, commandResults);
   const changes = command === 'cleanup' && state !== 'succeeded'
     ? unique(targetResults.flatMap((target) => target.changes))
@@ -410,7 +409,7 @@ export function renderRebuildReceipt(
     failed: '失败',
   };
   return [
-    `${command} ${stateLabel[receipt.overallState]}：${receipt.targetResults.length} 个目标。${receipt.commandResults?.length ? ` ${receipt.commandResults.length} 个命令生产者。` : ''}`,
+    `${command} ${stateLabel[receipt.overallState]}：${receipt.targetResults.length} 个目标。${receipt.commandResults?.length ? ` ${receipt.commandResults.length} 个命令包。` : ''}`,
     ...receipt.changes.map((change) => `变更：${change}`),
     ...receipt.warnings.map((warning) => `警告：${warning}`),
     ...receipt.errors.map((error) => error.message),
@@ -431,12 +430,12 @@ export function renderRebuildReceipt(
       ...(['before', 'after'] as const).flatMap((phase) => change[phase] ? describeNativeToolClosure(change[phase]!).map((description) => `  原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`) : []),
     ]),
     ...(receipt.commandResults ?? []).flatMap((result) => [
-      `- ${result.producer.sourceId}/${result.producer.pluginName} / ${result.producer.kind}:${result.producer.key} / ${result.producer.scope}: ${result.state}`,
-      ...((command === 'cleanup' || command === 'uninstall') && result.producer.kind === 'package' ? [
-        `  保留命令包 ${getCommandPackageId(result.producer)}；${result.producer.scope === 'user' ? '所有项目共用，' : '当前项目内共用，'}其资源与绑定不随平台清理移除。`,
+      `- ${result.selector} · ${result.action} · ${result.availability} · ${result.state}`,
+      ...((command === 'cleanup' || command === 'uninstall') && result.action === 'unchanged' ? [
+        `  保留命令包 ${result.packageId}，所有项目共用。`,
       ] : []),
-      ...result.commandIds.map((id) => `  命令：${id}`),
-      ...result.removedCommandIds.map((id) => `  已撤销命令：${id}`),
+      ...result.subcommands.map((name) => `  aw command run ${result.selector} -- ${name}`),
+      ...(result.hasFallback ? [`  通用入口 · aw command run ${result.selector} --`] : []),
       ...result.errors.map((error) => `  ${error.code}: ${error.message}`),
     ]),
     ...receipt.recoveryActions.map((recovery) => `恢复：${recovery}`),

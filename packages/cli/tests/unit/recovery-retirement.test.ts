@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeCommandDefinition, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizeCommandRoutes, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 const backend = vi.hoisted(() => ({
   inspect: vi.fn(), preview: vi.fn(), execute: vi.fn(), portable: vi.fn(), resetConfig: vi.fn(),
@@ -29,7 +29,7 @@ import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { nativeToolFixture } from '../helpers/native-tools.js';
-import { resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import { readManagedCommandPackageView, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 
 function removedEvidence() {
   return { pluginId: 'local/demo', pluginName: 'demo', sourceId: 'local',
@@ -407,21 +407,23 @@ describe('retire managed command results', () => {
 
   async function installedPackage() {
     const options = location();
-    const producer: ProducerIdentity = { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
-      pluginName: 'demo', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null };
+    const producer: ProducerIdentity = { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo' };
+    const selector = 'local/demo';
     const sourceDirectory = path.join(options.cwd, 'retained-command-source');
     await fs.outputFile(path.join(sourceDirectory, 'run.mjs'), 'process.exit(0);\n');
-    const installed = await syncManagedCommandPackage({ producer, sourceDirectory,
-      sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run',
-        runner: 'node', entry: 'run.mjs', args: ['--fixed'] })] }], env: options.env });
+    const installed = await syncManagedCommandPackage({ producer, sourceDirectory, env: options.env,
+      record: { schemaVersion: 2, producer, pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'b'.repeat(64)}`,
+        runtimeConfigPlatforms: [], routes: normalizeCommandRoutes({ subcommands: [{ name: 'run',
+          runner: 'node', entry: 'run.mjs', args: ['--fixed'] }] }) } });
     const recoveryAction = `aw command package remove ${installed.id} --yes`;
     const action = { kind: 'retainManagedCommandPackage' as const, pluginId: 'local/demo', scope: 'user' as const,
-      producer, packageId: installed.id, commandIds: installed.commandIds,
-      availability: 'ready' as const, errors: [], recoveryAction };
+      producer, packageId: installed.id, selector, subcommands: ['run'], hasFallback: false,
+      availability: 'ready' as const, errors: [], recoveryActions: [recoveryAction] };
     const operationPlan = createOperationPlan({ intentChanges: [], actions: [action], changes: [], warnings: [],
       evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } });
-    const commandResult = { producer, state: 'completed' as const, commandIds: installed.commandIds,
-      removedCommandIds: [], errors: [], recoveryActions: [recoveryAction] };
+    const commandResult = { producer, packageId: installed.id, selector, action: 'unchanged' as const,
+      availability: 'ready' as const, subcommands: ['run'], hasFallback: false, state: 'completed' as const,
+      errors: [], recoveryActions: [recoveryAction] };
     backend.preview.mockResolvedValue({ operationPlan, commandResults: [commandResult] });
     return { options, installed, action, commandResult, recoveryAction };
   }
@@ -434,7 +436,7 @@ describe('retire managed command results', () => {
     const plan = await prepareRetire({ ...options, selector: 'local/demo', yes: true },
       { inventoryCatalogSourceReferences });
     expect(plan.operationPlan?.actions).toContainEqual(action);
-    expect(plan.changes.join('\n')).toContain('保留命令包 tools');
+    expect(plan.changes.join('\n')).toContain('保留命令包 local/demo');
     expect(plan.changes.join('\n')).toContain('所有项目共用');
     expect(plan.changes.join('\n')).toContain(recoveryAction);
 
@@ -444,36 +446,10 @@ describe('retire managed command results', () => {
       commandResults: [commandResult] });
     expect(result.recoveryActions).toEqual([recoveryAction]);
     expect(result.remainingTargets).toEqual([]);
-    const command = await resolveManagedCommand(installed.commandIds[0]!, options.env);
-    expect(command.view.availability).toBe('ready');
-    expect(command.launch.args).toEqual(['--fixed']);
-    expect(await fs.readFile(path.join(command.resourceRoot, 'run.mjs'), 'utf8')).toBe('process.exit(0);\n');
-  });
-
-  it.each(['partial', 'failed'] as const)('keeps a %s platform producer visible after its cleanup succeeds', async (state) => {
-    const { options, commandResult } = await installedPackage();
-    await addRoot(options, 'local/demo', 'sha256:logical');
-    const recoveryAction = 'aw cleanup local/demo --scope user --target codex --force --yes';
-    const failed = { ...commandResult, producer: { ...commandResult.producer,
-      kind: 'static-skill' as const, platform: 'codex' as const }, state,
-    errors: [{ code: 'commandBindingInvalid', message: 'Command binding is invalid.' }],
-    recoveryActions: [recoveryAction] };
-    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), sourceIdentity: failed.producer.sourceIdentity }));
-    backend.execute.mockResolvedValue({ overallState: 'partial', rebuildResults: [],
-      targetResults: [{ target: { pluginId: 'local/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
-        action: 'cleanup', state: 'completed' }], platforms: ['codex'], plugins: ['local/demo'], warnings: [],
-      receiptTargets: [], commandResults: [failed] });
-
-    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex'], yes: true },
-      { inventoryCatalogSourceReferences });
-
-    expect(result).toMatchObject({ ok: false, declarationChanged: true, commandResults: [failed],
-      targetResults: [{ agent: 'codex', execution: 'partial', observation: 'unknown',
-        blockers: [expect.objectContaining({ code: 'commandBindingInvalid' })] }],
-      remainingTargets: [expect.objectContaining({ pluginId: 'local/demo', agent: 'codex' })] });
-    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
-    expect(result.recoveryActions).toContain(recoveryAction);
-    expect(result.recoveryActions).toContain('aw plugin remove local/demo --only outputs --scope user --target codex');
+    const command = await readManagedCommandPackageView(installed.id, options.env);
+    expect(command.availability).toBe('ready');
+    expect(command.routes?.subcommands[0]?.args).toEqual(['--fixed']);
+    expect(await fs.readFile(path.join(command.resourceRoot!, 'run.mjs'), 'utf8')).toBe('process.exit(0);\n');
   });
 
   it.each([
@@ -484,7 +460,7 @@ describe('retire managed command results', () => {
     const { options, commandResult, recoveryAction } = await installedPackage();
     await addRoot(options, 'local/demo', 'sha256:logical');
     const failed = { ...commandResult, state,
-      errors: [{ code: 'commandBindingInvalid', message: 'Command binding is invalid.' }] };
+      errors: [{ code: 'commandResourceInvalid', message: 'The shared package is unavailable.' }] };
     backend.execute.mockResolvedValue({ overallState: 'partial', rebuildResults: [],
       targetResults: (['codex', 'claude'] as const).map((platform) => ({
         target: { pluginId: 'local/demo', pluginName: 'demo', platform, scope: 'user' },
@@ -504,17 +480,16 @@ describe('retire managed command results', () => {
     expect(result.targetResults.find((target) => target.agent === 'codex')).toMatchObject(codexFailed
       ? { execution: 'failed', blockers: [expect.objectContaining({ code: 'nativeRetireFailed' })] }
       : { execution: 'applied', blockers: [] });
-    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
+    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandResourceInvalid', pluginId: 'local/demo' }));
     expect(result.recoveryActions).toContain(recoveryAction);
   });
 });
 
-// Test Value Gate: frozen Skill native tools must appear in retirement Review even when no legacy artifact action exists.
-describe('retire frozen Skill native tools', () => {
+// Test Value Gate: native tool effects must appear in retirement Review even when no individual artifact action exists.
+describe('retire frozen command native tools', () => {
   it('reviews the top-level closure before any unauthorized output mutation', async () => {
     const options = location();
-    const change = { producer: { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-      kind: 'static-skill' as const, key: 'example', platform: 'codex' as const, scope: 'user' as const, projectRoot: null, placementKey: `sha256:${'b'.repeat(64)}` },
+    const change = { producer: { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo' },
       before: nativeToolFixture().closure, after: null };
     const operationPlan = createOperationPlan({ intentChanges: [], actions: [], changes: [], warnings: [], nativeToolChanges: [change],
       evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } });
@@ -523,7 +498,7 @@ describe('retire frozen Skill native tools', () => {
       { inventoryCatalogSourceReferences: async () => ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) });
     expect(plan.receipt.nativeToolChanges).toEqual([change]);
     expect(plan.changes.join('\n')).toContain('aw.windows-job.v1');
-    expect(plan.changes.join('\n')).toContain('local/demo · example');
+    expect(plan.changes.join('\n')).toContain('local/demo · job · aw.windows-job.v1');
     const result = await executeRetire(plan);
     expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewRequired' }));
     expect(backend.execute).not.toHaveBeenCalled();

@@ -8,17 +8,15 @@ import type { NormalizedPluginManifest } from './types.js';
 
 export { createNativeToolReaderSource } from '@lesliechan721/aw-native-runtime/reader';
 export const DEFAULT_NATIVE_TOOL_READER = './.aw/native-tool-reader.mjs';
-export const NATIVE_TOOLS_CAPABILITY = 'aw.native-tools.v2';
+export const NATIVE_TOOLS_CAPABILITY = 'aw.native-tools.v3';
 export interface NativeToolDefinition { key: string; protocol: string }
 export type NativeToolBinding = {
   key: string;
   platforms: ['win32'];
 } & ({ policy: 'required'; fallback?: never } | { policy: 'preferred'; fallback: string });
-export interface NativeToolConsumer {
-  kind: 'managed-command-set' | 'plugin-test';
-  key: string;
-  tools: NativeToolBinding[];
-}
+export type NativeToolConsumer =
+  | { kind: 'plugin-command'; tools: NativeToolBinding[] }
+  | { kind: 'plugin-test'; key: 'node'; tools: NativeToolBinding[] };
 export interface NativeTools { reader: string; definitions: NativeToolDefinition[]; consumers: NativeToolConsumer[] }
 export type NativeToolClosure = NativeTools;
 
@@ -56,7 +54,11 @@ function compare(left: string, right: string): number { return left < right ? -1
 function normalizeConsumers(value: unknown): NativeToolConsumer[] {
   const consumers = array(value, 'nativeTools.consumers', 128).map((value): NativeToolConsumer => {
     const input = object(value, 'nativeTools consumer', ['kind', 'key', 'tools']);
-    if (input.kind !== 'managed-command-set' && input.kind !== 'plugin-test') throw new Error('Invalid nativeTools consumer.kind.');
+    if (input.kind === 'plugin-command') {
+      if (Object.hasOwn(input, 'key')) throw new Error('Invalid nativeTools consumer: plugin-command forbids key.');
+    } else if (input.kind !== 'plugin-test' || input.key !== 'node') {
+      throw new Error('Invalid nativeTools consumer: expected plugin-command or the node plugin-test runner.');
+    }
     const tools = array(input.tools, 'nativeTools consumer.tools', 32).map((value): NativeToolBinding => {
       const binding = object(value, 'nativeTools binding', ['key', 'platforms', 'policy', 'fallback']);
       if (!Array.isArray(binding.platforms) || binding.platforms.length !== 1 || binding.platforms[0] !== 'win32') throw new Error('Invalid nativeTools binding.platforms: only win32 is supported.');
@@ -66,10 +68,13 @@ function normalizeConsumers(value: unknown): NativeToolConsumer[] {
       return { ...base, policy: 'required' };
     });
     unique(tools.map((tool) => tool.key), 'nativeTools consumer.tools');
-    return { kind: input.kind, key: name(input.key, 'nativeTools consumer.key'), tools: tools.sort((a, b) => compare(a.key, b.key)) };
+    tools.sort((a, b) => compare(a.key, b.key));
+    return input.kind === 'plugin-command'
+      ? { kind: input.kind, tools }
+      : { kind: input.kind, key: 'node', tools };
   });
-  unique(consumers.map((consumer) => `${consumer.kind}/${consumer.key}`), 'nativeTools.consumers');
-  return consumers.sort((a, b) => compare(`${a.kind}/${a.key}`, `${b.kind}/${b.key}`));
+  unique(consumers.map((consumer) => consumer.kind), 'nativeTools.consumers');
+  return consumers.sort((a, b) => compare(a.kind, b.kind));
 }
 function validateReferences(definitions: readonly { key: string }[], consumers: readonly NativeToolConsumer[]): void {
   const keys = new Set(definitions.map((entry) => entry.key));
@@ -96,9 +101,9 @@ export function normalizeNativeTools(value: unknown): NativeTools {
 export function validateNativeToolsManifest(manifest: NormalizedPluginManifest, options: { source?: boolean } = {}): void {
   if (!manifest.nativeTools) return;
   for (const consumer of manifest.nativeTools.consumers) {
-    if (consumer.kind === 'managed-command-set') {
-      if (!manifest.managedCommands?.sets.some((set) => set.set === consumer.key)) throw new Error('Invalid nativeTools consumer: unknown managed command set.');
-    } else if (consumer.key !== 'node' || (options.source && (manifest.scripts?.tests?.node?.length ?? 0) === 0)) {
+    if (consumer.kind === 'plugin-command') {
+      if (!manifest.command) throw new Error('Invalid nativeTools consumer: plugin-command requires a command declaration.');
+    } else if (options.source && (manifest.scripts?.tests?.node?.length ?? 0) === 0) {
       throw new Error('Invalid nativeTools consumer: unknown plugin test runner.');
     }
   }
@@ -120,13 +125,14 @@ export async function loadPluginNativeToolClosure(pluginRoot: string, manifest: 
 
 export function getNativeToolConsumerClosure(
   closure: NativeToolClosure | undefined,
-  kind: NativeToolConsumer['kind'],
-  key: string | readonly string[],
+  ...consumer: [kind: 'plugin-command'] | [kind: 'plugin-test', key: string | readonly string[]]
 ): NativeToolClosure | undefined {
   if (!closure) return undefined;
+  const [kind, key] = consumer;
   const normalized = normalizeNativeToolClosure(closure);
   const keys = new Set(typeof key === 'string' ? [key] : key);
-  const consumers = normalized.consumers.filter((entry) => entry.kind === kind && keys.has(entry.key));
+  const consumers = normalized.consumers.filter((entry) => entry.kind === kind
+    && (entry.kind === 'plugin-command' || keys.has(entry.key)));
   if (consumers.length === 0) return undefined;
   const tools = new Set(consumers.flatMap((entry) => entry.tools.map((tool) => tool.key)));
   return { reader: normalized.reader, definitions: normalized.definitions.filter((entry) => tools.has(entry.key)), consumers };

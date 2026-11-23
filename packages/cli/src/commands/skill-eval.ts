@@ -30,6 +30,7 @@ import type { PluginMeta } from '../types.js'
 import { validatePortableSkillDirectory, validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { normalizeReviewProfileConfig } from '../review/review-profile.js'
+import { EVAL_COMMAND_FIXTURE } from '../review/eval-source-input.js'
 import type { ReviewProfileConfig } from '../review/review-types.js'
 import {
   resolveAwSourceBindingEvalProvider,
@@ -340,6 +341,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     await fs.writeFile(selectedCasesPath, prettyJson(selected), { flag: 'wx' })
     const targetSourceRoot = path.join(operationRoot, 'materialized')
     const workRoot = path.join(operationRoot, 'work')
+    const commandFixtureRoot = path.join(operationRoot, 'command-fixture')
     await Promise.all([fs.ensureDir(targetSourceRoot), fs.ensureDir(workRoot)])
     const requiredSkills = new Set([
       selection.cases.suite.unitUnderTest,
@@ -356,6 +358,9 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       sourceIdentity: source.sourceIdentity,
       workspaceIdentity: source.workspaceIdentity,
       env: options.env,
+      ...(selection.suite.kind === 'codex-workflow' && {
+        commandFixture: { pluginName: selection.plugin.manifest.name, outputRoot: commandFixtureRoot },
+      }),
     })
     const subjectSource = resolveMaterializedSubjectRoot(targetSourceRoot, materialized)
     const runtimeTarget = path.join(subjectSource, '.agents', 'skills', options.skillName)
@@ -366,7 +371,11 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     await fs.copy(subjectSource, subjectRoot, { dereference: false, errorOnExist: true })
     await fs.remove(path.join(subjectRoot, '.agents', 'skills', options.skillName))
     await computeCanonicalDirectoryDigest(subjectRoot)
-    await copyEvalWorkspace(selection, path.join(staging, 'workspace', 'eval'))
+    const evalWorkspace = path.join(staging, 'workspace', 'eval')
+    await copyEvalWorkspace(selection, evalWorkspace)
+    if (await fs.pathExists(commandFixtureRoot)) {
+      await fs.copy(commandFixtureRoot, path.join(evalWorkspace, EVAL_COMMAND_FIXTURE), { dereference: false, overwrite: false, errorOnExist: true })
+    }
     const workspaceDigest = await computeCanonicalDirectoryDigest(path.join(staging, 'workspace'))
     let baseline: EvalSpec['baseline'] = options.baseline
       ? { type: 'without-skill' }

@@ -3,414 +3,503 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
-  getCommandPackageId,
   canonicalizeIdentityValue,
+  getCommandPackageId,
   getNativeToolConsumerClosure,
+  getPluginConfigDependencyFields,
+  getPluginConfigDependencyKeys,
   loadPluginNativeToolClosure,
   materializeNativeToolClosureFiles,
-  type NativeToolClosure,
-  getManagedCommandArtifactTargets,
-  getPluginCommandId,
+  normalizeCommandRoutes,
   normalizeProducerIdentity,
-  normalizeCommandRelativeFile,
-  replaceManagedCommandPlaceholders,
+  selectPluginConfigProfile,
   validateCommandEntryFiles,
-  type ManagedCommandProducerRef,
-  type ManagedCommandReference,
+  validatePluginConfigCandidate,
+  validatePluginConfigValue,
+  type CommandRoutes,
+  type InstalledCommandProducer,
+  type NativeToolClosure,
+  type PlatformName,
+  type PluginConfigCompiledDefinition,
   type ProducerIdentity,
-  type CommandDefinition,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
-import type { CommandProducerResult, PlatformName, PluginMeta, ReceiptTargetIdentity, Scope } from '../types.js';
-import type { RenderUnit } from '../platforms/contracts.js';
-import { resolveArtifactRenderConfig, runArtifactRenderer } from './artifact-renderer.js';
-import { resolveCommandSourceDirectory } from './artifact-sources.js';
-import type { ValidatedArtifactPlanArtifact } from './artifact-plan.js';
-import type { DynamicSkillTree } from './dynamic-skill-tree.js';
+import type { PluginMeta } from '../types.js';
+import { resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from './artifact-renderer.js';
+import { selectManagedCommandRenderConfig } from './artifact-request.js';
 import {
-  inspectManagedCommand,
-  listManagedCommandPackages,
-  listManagedCommands,
-  managedCommandDiagnostic,
+  calculateManagedCommandResourceDigest,
+  commandInputDigest,
+  commandRouteEntries,
+  readManagedCommandSource,
+  validateManagedCommandPackageClosure,
+} from './managed-command-closure.js';
+import {
+  COMMAND_RUNTIME_CONFIG_READER,
+  commandRuntimeConfigSnapshotPath,
+  readCommandRuntimeConfigReaderSource,
+  readManagedCommandRuntimeConfigSnapshot,
+  type CommandRuntimeConfigSnapshot,
+} from './managed-command-snapshots.js';
+import {
+  captureManagedCommandPackageEvidence,
+  copyManagedCommandDirectory,
   ManagedCommandError,
-  readInstalledCommandProducer,
+  readManagedCommandPackage,
+  readManagedCommandPackageView,
   syncManagedCommandPackage,
   validateManagedCommandResource,
-  type InstalledCommandSet,
   type ManagedCommandPackageEvidence,
+  type ManagedCommandPackageView,
 } from './managed-command-store.js';
-import { resolveCanonicalRepoProjectKey } from './state-paths.js';
-import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
-import { isSkillAuthorOnlyPath } from './skill-authoring.js';
-import { recoveryInterruptionCode } from '../recovery/interruption.js';
-import { readSafeOperationError } from './safe-operation-diagnostic.js';
-import { AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH, AW_RUNTIME_NATIVE_RECEIPT_PATH } from '@lesliechan721/aw-plugin-core';
+import {
+  assertReadyPluginConfigStore,
+  readPluginConfigStore,
+  resolveEffectivePluginConfig,
+  type PluginConfigValue,
+  type PluginConfigStore,
+  type ResolvedEffectivePluginConfig,
+} from './plugin-config.js';
 
-export interface ManagedCommandCandidate {
-  producer: ProducerIdentity;
-  sets: InstalledCommandSet[];
-  nativeTools?: NativeToolClosure;
+export { readManagedCommandSource } from './managed-command-closure.js';
+
+export type ManagedCommandPackageOperation =
+  | { kind: 'materialize' }
+  | { kind: 'explicit-sync' }
+  | { kind: 'platform-sync'; platforms: readonly PlatformName[] }
+  | { kind: 'config-apply'; platforms: readonly PlatformName[]; refreshRoutes: boolean };
+
+export interface ManagedCommandRoutesRenderOptions {
+  plugin: PluginMeta;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  sourceDir: string;
+  previous?: InstalledCommandProducer;
+  commonConfig?: ResolvedArtifactRenderConfig;
+  event: 'install' | 'refresh' | 'materialize';
+  changedConfigKeys?: string[];
+  referencePlugins?: readonly PluginMeta[];
+  signal?: AbortSignal;
+  scriptTimeoutMs?: number;
 }
 
-export interface PreparedManagedCommandPackage extends ManagedCommandCandidate {
+interface PackageInputs {
+  plugin: PluginMeta;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  referencePlugins?: readonly PluginMeta[];
+  resolveConfig?: (platform?: PlatformName) => Promise<ResolvedEffectivePluginConfig>;
+}
+
+interface PreparedManagedCommandPackageOptions extends PackageInputs {
+  operation: ManagedCommandPackageOperation;
+  renderRoutes?: (options: ManagedCommandRoutesRenderOptions) => Promise<CommandRoutes>;
+  signal?: AbortSignal;
+  scriptTimeoutMs?: number;
+}
+
+interface InstalledPackage {
   resourceRoot: string;
+  record: InstalledCommandProducer;
+}
+
+interface RuntimeConfigChange {
+  platform: PlatformName;
+  before?: Record<string, PluginConfigValue>;
+  after?: Record<string, PluginConfigValue>;
+}
+
+export interface PreparedManagedCommandPackage {
+  resourceRoot: string;
+  resourceDigest: string;
+  record: InstalledCommandProducer;
+  previous?: InstalledPackage;
+  expectedPackage: ManagedCommandPackageEvidence | null;
+  runtimeConfigChanges: RuntimeConfigChange[];
+  /** Per-platform config inputs actually read to build or validate the reviewed snapshots. */
+  runtimeConfigEvidence: ReadonlyMap<PlatformName, string>;
+  /** Dynamic rendering uses the common user config store. */
+  routeConfigEvidence?: string;
   cleanup(): Promise<void>;
 }
 
-export interface ManagedCommandPackageDiscovery {
-  packages: Array<{ producer: ProducerIdentity; packageId: string; packageKey: string; refreshKeys: string[]; declared: boolean; installed: boolean }>;
-  errors: Array<{ code: string; message: string; subject?: string }>;
-}
+type CommandPackageFiles = { closure: NativeToolClosure; files: Record<string, string> } | undefined;
 
-export interface RetainedManagedCommandPackage {
-  producer: ProducerIdentity;
-  packageId: string;
-  commandIds: string[];
-  availability: 'ready' | 'empty' | 'unavailable';
-  errors: CommandProducerResult['errors'];
-  recoveryAction: string;
-}
-
-export async function discoverRetainedManagedCommandPackages(options: {
-  selectors: readonly { sourceId?: string; pluginName: string }[];
-  all?: boolean; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-}): Promise<RetainedManagedCommandPackage[]> {
-  const listed = await listManagedCommandPackages(options.env).catch(() => ({ packages: [], errors: [] }));
-  const selected = listed.packages.filter(({ producer }) => options.all === true || options.selectors.some((selector) =>
-    selector.pluginName === producer.pluginName && selector.sourceId === producer.sourceId));
-  let projectRoot: string | undefined;
-  if (options.scope === 'project' && selected.some(({ producer }) => producer.scope === 'project')) {
-    projectRoot = path.normalize(await fs.realpath(await resolveCanonicalRepoProjectKey(options.cwd)));
-    if (process.platform === 'win32') projectRoot = projectRoot.replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
+export function managedCommandProducerIdentity(options: { plugin: PluginMeta }): ProducerIdentity {
+  const { sourceId, sourceIdentity, manifest } = options.plugin;
+  if (!sourceId || !sourceIdentity) {
+    throw new ManagedCommandError('commandIdentityConflict', 'A verified source identity is required for the command package.');
   }
-  return selected.filter(({ producer }) => producer.scope === 'user'
-    || (options.scope === 'project' && producer.projectRoot === projectRoot)).map((entry) => ({
-      producer: entry.producer, packageId: entry.id, commandIds: entry.sets.flatMap((set) => set.commandIds),
-      availability: entry.availability, errors: entry.errors,
-      recoveryAction: `aw command package remove ${entry.id} --yes`,
-    }));
+  return normalizeProducerIdentity({ sourceId, sourceIdentity, pluginName: manifest.name });
 }
 
-export function retainedManagedCommandPackageResult(entry: RetainedManagedCommandPackage): CommandProducerResult {
-  return { producer: entry.producer,
-    state: entry.availability === 'unavailable' ? 'partial' : 'completed', commandIds: entry.commandIds,
-    removedCommandIds: [], errors: entry.errors, recoveryActions: [entry.recoveryAction] };
-}
-
-export async function prepareManagedCommandPackageFiles(options: {
-  sourceRoot: string; files: Record<string, string>; entries: readonly CommandDefinition[];
-}): Promise<{ resourceRoot: string; cleanup(): Promise<void> }> {
-  await validateManagedCommandResource(options.sourceRoot);
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-package-'));
-  const resourceRoot = path.join(tempRoot, 'resource');
-  try {
-    await fs.copy(options.sourceRoot, resourceRoot, { dereference: false, errorOnExist: true });
-    for (const [relative, content] of Object.entries(options.files)) {
-      normalizeCommandRelativeFile(relative, 'command package generated file');
-      if (isSkillAuthorOnlyPath(relative) || relative.split('/').some((segment) => ['.git', 'node_modules', '.agents-plugin', '.codex-plugin', '.claude-plugin', '.release', '.tmp', 'evals', 'reports', '.aw-command-producer.json', '.agent-workflows-owner.json', 'owner.json', 'aw-plugin-requirements.json'].includes(segment)) || [AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH, AW_RUNTIME_NATIVE_RECEIPT_PATH].includes(relative) || options.entries.some((entry) => entry.entry === relative)) throw new ManagedCommandError('commandResourceInvalid', 'Generated files cannot replace protected resources or command entries.');
-      const destination = path.join(resourceRoot, ...relative.split('/'));
-      const existing = await fs.lstat(destination).catch(() => null);
-      if (existing && !existing.isFile()) throw new ManagedCommandError('commandResourceInvalid', 'A generated file conflicts with a directory.');
-      if (existing && ((existing.mode & 0o111) !== 0 || /\.(?:[cm]?js|[cm]?ts|sh|bash|zsh|py|rb|exe|com|cmd|bat|ps1)$/iu.test(relative))) throw new ManagedCommandError('commandResourceInvalid', 'Generated configuration cannot replace executable code.');
-      await fs.ensureDir(path.dirname(destination));
-      await fs.writeFile(destination, content, { mode: 0o600 });
-      await fs.chmod(destination, 0o600);
-    }
-    for (const reserved of ['.aw-command-producer.json', '.agent-workflows-owner.json', 'owner.json']) {
-      if (await fs.pathExists(path.join(resourceRoot, reserved))) throw new ManagedCommandError('commandResourceInvalid', 'The package source contains an AW reserved resource.');
-    }
-    await validateManagedCommandResource(resourceRoot);
-    await validateCommandEntryFiles(resourceRoot, options.entries);
-    await validateManagedCommandPackageClosure(resourceRoot, options.entries);
-    for (const entry of options.entries) await validateManagedCommandResource(resourceRoot, entry);
-    return { resourceRoot, cleanup: () => fs.remove(tempRoot) };
-  } catch (error) { await fs.remove(tempRoot); throw error; }
-}
-
-function sameProducer(left: ProducerIdentity, right: ProducerIdentity): boolean {
-  return getCommandPackageId(left) === getCommandPackageId(right);
-}
-
-export async function managedCommandProducerIdentity(options: {
-  plugin: PluginMeta; producer: ManagedCommandProducerRef; scope: Scope; cwd: string;
-  renderUnit?: Pick<RenderUnit, 'physicalKey' | 'renderScope'>;
-}): Promise<ProducerIdentity> {
-  const { plugin, producer } = options;
-  if (!plugin.sourceId || !plugin.sourceIdentity) throw new Error('commandReferenceInvalid: managed commands require verified source identity.');
-  let scope = options.scope;
-  let platform: PlatformName | null = null;
-  let placementKey: string | null = null;
-  let key: string;
-  if (producer.kind === 'package') {
-    const declaration = plugin.manifest.managedCommands?.packages.find((entry) => entry.key === producer.packageKey);
-    if (!declaration) throw new Error('commandReferenceInvalid: command package is not declared.');
-    key = declaration.key;
-    scope = declaration.scope;
-    platform = null;
-  } else {
-    if (!options.renderUnit) throw new Error('commandReferenceInvalid: a Skill producer requires its verified render unit.');
-    key = producer.kind === 'static-skill' ? producer.skillKey : producer.artifactId;
-    platform = producer.platform;
-    scope = options.renderUnit.renderScope.kind;
-    placementKey = options.renderUnit.physicalKey;
+function declaredCommand(plugin: PluginMeta): NonNullable<PluginMeta['manifest']['command']> {
+  if (!plugin.manifest.command) {
+    throw new ManagedCommandError('commandPackageDeclarationMissing',
+      'The active plugin no longer declares a command package. Run aw command package remove or aw plugin sync.');
   }
-  let projectRoot: string | null = null;
-  if (scope === 'project') {
-    const root = producer.kind === 'package' ? await resolveCanonicalRepoProjectKey(options.cwd)
-      : options.renderUnit!.renderScope.kind === 'project' ? options.renderUnit!.renderScope.projectRoot : undefined;
-    if (!root) throw new Error('commandReferenceInvalid: a project producer requires its canonical project root.');
-    projectRoot = path.normalize(await fs.realpath(root));
-    if (process.platform === 'win32') projectRoot = projectRoot.replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
+  return plugin.manifest.command;
+}
+
+async function nativeToolFiles(plugin: PluginMeta): Promise<CommandPackageFiles> {
+  if (!plugin.manifest.nativeTools?.consumers.some((consumer) => consumer.kind === 'plugin-command')) return undefined;
+  const closure = getNativeToolConsumerClosure(await loadPluginNativeToolClosure(plugin.rootDir, plugin.manifest), 'plugin-command');
+  return closure === undefined ? undefined : materializeNativeToolClosureFiles(closure);
+}
+
+export async function nativeToolsForPluginCommand(plugin: PluginMeta): Promise<NativeToolClosure | undefined> {
+  return (await nativeToolFiles(plugin))?.closure;
+}
+
+async function previousPackage(producer: ProducerIdentity, env: NodeJS.ProcessEnv, requireKnownSnapshots: boolean): Promise<{
+  view?: ManagedCommandPackageView;
+  previous?: InstalledPackage;
+  expectedPackage: ManagedCommandPackageEvidence | null;
+}> {
+  let view: ManagedCommandPackageView;
+  try { view = await readManagedCommandPackageView(getCommandPackageId(producer), env); }
+  catch (error) {
+    if (error instanceof ManagedCommandError && error.code === 'commandNotFound') return { expectedPackage: null };
+    throw error;
   }
-  return normalizeProducerIdentity({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name, kind: producer.kind, key, platform, scope, projectRoot, placementKey });
-}
-
-export function commandSetsForProducer(options: {
-  plugin: PluginMeta; producer: ManagedCommandProducerRef; artifacts?: readonly ValidatedArtifactPlanArtifact[];
-  requestedSetNames?: ReadonlySet<string>;
-  previousSets?: readonly InstalledCommandSet[];
-}): InstalledCommandSet[] {
-  const requested = (options.plugin.manifest.managedCommands?.sets ?? []).filter((set) =>
-    canonicalizeIdentityValue(set.producer) === canonicalizeIdentityValue(options.producer)
-    && (options.requestedSetNames === undefined || options.requestedSetNames.has(set.set))).map((set): InstalledCommandSet => {
-      if (set.mode === 'static') return { set: set.set, state: 'present', entries: set.entries };
-      const artifact = options.artifacts?.find((entry) => entry.target === 'aw.command-set' && entry.id === `command-set.${set.set}`);
-      if (!artifact || artifact.target !== 'aw.command-set') throw new Error(`commandReferenceInvalid: dynamic command set ${set.set} was not prepared.`);
-      return { set: set.set, state: artifact.state, entries: artifact.entries };
-    });
-  return options.requestedSetNames === undefined ? requested : [
-    ...(options.previousSets ?? []).filter((set) => !options.requestedSetNames!.has(set.set)),
-    ...requested,
-  ];
-}
-
-export async function nativeToolsForCommandSets(plugin: PluginMeta, sets: readonly Pick<InstalledCommandSet, 'set'>[]): Promise<NativeToolClosure | undefined> {
-  return getNativeToolConsumerClosure(await loadPluginNativeToolClosure(plugin.rootDir, plugin.manifest), 'managed-command-set', sets.map((set) => set.set));
-}
-
-function assertUnchangedNativeToolClosure(before: NativeToolClosure | undefined, after: NativeToolClosure | undefined): void {
-  if (JSON.stringify(before) !== JSON.stringify(after)) {
-    throw new ManagedCommandError('nativeToolSyncRequired', 'Native tool changes require a reviewed producer sync or package sync before configuration apply.');
+  if (requireKnownSnapshots && view.routes === null) {
+    throw new ManagedCommandError('commandRuntimeConfigInvalid',
+      `The previously applied platforms cannot be verified. Run aw command package remove ${view.packageId} --force, then sync the package again.`);
   }
-}
-
-/** Config refresh cannot adopt native declarations that its config Review did not show. */
-export async function assertManagedCommandPackageNativeToolsUnchanged(options: {
-  plugin: PluginMeta; producer: ProducerIdentity; env: NodeJS.ProcessEnv;
-}): Promise<void> {
-  const installed = (await listManagedCommandPackages(options.env)).packages.find((entry) => entry.id === getCommandPackageId(options.producer));
-  const before = installed ? await readInstalledCommandProducer(installed.resourceRoot) : undefined;
-  if (before && !sameProducer(before.producer, options.producer)) throw new ManagedCommandError('commandIdentityConflict', 'The installed command package belongs to another producer.');
-  const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === options.producer.key && entry.scope === options.producer.scope);
-  const sets = declaration ? (options.plugin.manifest.managedCommands?.sets ?? []).filter((set) => set.producer.kind === 'package' && set.producer.packageKey === declaration.key) : [];
-  const closure = sets.length > 0 ? await nativeToolsForCommandSets(options.plugin, sets) : undefined;
-  const after = closure ? materializeNativeToolClosureFiles(closure).closure : undefined;
-  assertUnchangedNativeToolClosure(before?.nativeTools, after);
-}
-
-export function injectNativeToolClosureFiles(files: Record<string, Buffer>, closure: NativeToolClosure | undefined): NativeToolClosure | undefined {
-  if (!closure) return undefined;
-  const generated = materializeNativeToolClosureFiles(closure);
-  for (const [relative, content] of Object.entries(generated.files)) {
-    if (files[relative] && !files[relative].equals(Buffer.from(content))) throw new ManagedCommandError('commandResourceInvalid', 'The producer contains conflicting native tool files.');
-    files[relative] = Buffer.from(content);
+  const expectedPackage = await captureManagedCommandPackageEvidence(view, env);
+  if (!view.resourceRoot || view.routes === null) return { view, expectedPackage };
+  const previous = await readManagedCommandPackage(producer, env, { validateFiles: false });
+  if (previous?.resourceRoot !== view.resourceRoot) {
+    throw new ManagedCommandError('operationReviewStale', 'The installed command package changed during preparation.');
   }
-  return generated.closure;
+  return { view, previous, expectedPackage };
 }
 
-export async function prepareManagedCommandPackage(options: {
-  referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
-  requestedArtifactIds?: readonly string[];
-  signal?: AbortSignal;
-  scriptTimeoutMs?: number;
-}): Promise<PreparedManagedCommandPackage> {
-  options.signal?.throwIfAborted();
-  const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === options.packageKey);
-  if (!declaration || declaration.scope !== options.scope) throw new ManagedCommandError('commandDefinitionInvalid', 'The requested package and scope are not declared.');
-  const renderConfig = await resolveArtifactRenderConfig({
+function configReadOptions(options: PackageInputs) {
+  return {
     sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name,
-    manifest: options.plugin.manifest, scope: declaration.scope, cwd: options.cwd, env: options.env,
-    referencePlugins: options.referencePlugins,
-  });
-  if (renderConfig.issues.length > 0) throw new ManagedCommandError('commandDefinitionInvalid', 'Resolve the plugin configuration issues before refreshing its command package.');
-  const producerRef = { kind: 'package' as const, packageKey: declaration.key };
-  const producer = await managedCommandProducerIdentity({ ...options, producer: producerRef });
-  const allTargets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) =>
-    target.producer.kind === 'package' && target.producer.packageKey === declaration.key);
-  const explicitSubset = options.requestedArtifactIds !== undefined;
-  const requestedIds = new Set(options.requestedArtifactIds);
-  if (explicitSubset && (requestedIds.size === 0 || requestedIds.size !== options.requestedArtifactIds!.length || [...requestedIds].some((id) => !allTargets.some((target) => target.id === id)))) {
-    throw new ManagedCommandError('commandDefinitionInvalid', 'A partial package request must contain unique declared targets of this producer.');
-  }
-  const targets = explicitSubset ? allTargets.filter((target) => requestedIds.has(target.id)) : allTargets;
-  const requestedSetNames = explicitSubset ? new Set(targets.flatMap((target) => target.set ? [target.set] : [])) : undefined;
-  let previous: { resourceRoot: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure } | undefined;
-  if (explicitSubset) {
-    const installed = (await listManagedCommandPackages(options.env)).packages.find((entry) => entry.id === getCommandPackageId(producer));
-    if (installed) {
-      if (installed.availability === 'unavailable') throw new ManagedCommandError('commandBindingInvalid', 'Partial refresh requires a verified installed command package. Run a complete package sync.');
-      const record = await readInstalledCommandProducer(installed.resourceRoot);
-      if (!sameProducer(record.producer, producer)) throw new ManagedCommandError('commandIdentityConflict', 'The installed command package belongs to another producer.');
-      previous = { resourceRoot: installed.resourceRoot, sets: record.sets, nativeTools: record.nativeTools };
-    }
-    const hasUnrequestedSets = (options.plugin.manifest.managedCommands?.sets ?? []).some((set) => set.producer.kind === 'package' && set.producer.packageKey === declaration.key && !requestedSetNames!.has(set.set));
-    if (!previous && (hasUnrequestedSets || (declaration.render && !targets.some((target) => target.target === 'aw.command-package')))) throw new ManagedCommandError('commandBindingInvalid', 'Partial refresh cannot reconstruct unrequested producer content. Run a complete package sync.');
-  }
-  let artifacts: ValidatedArtifactPlanArtifact[] = [];
-  let generatedFiles: Record<string, string> = {};
-  if (targets.length > 0) {
-    const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.referencePlugins, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs, ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
-    artifacts = rendered.plan.artifacts;
-    for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;
-  }
-  const sets = commandSetsForProducer({ plugin: options.plugin, producer: producerRef, artifacts, ...(requestedSetNames ? { requestedSetNames, previousSets: previous?.sets } : {}) });
-  let source = await resolveCommandSourceDirectory({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.sourceDir });
-  let temporarySource: string | undefined;
-  try {
-    if (previous && !targets.some((target) => target.target === 'aw.command-package')) {
-      temporarySource = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-previous-'));
-      source = path.join(temporarySource, 'resource');
-      await fs.copy(previous.resourceRoot, source, { dereference: false, errorOnExist: true });
-      await fs.remove(path.join(source, '.aw-command-producer.json'));
-    }
-    const prepared = await prepareManagedCommandPackageFiles({ sourceRoot: source, files: generatedFiles, entries: sets.flatMap((set) => set.entries) });
-    const closure = await nativeToolsForCommandSets(options.plugin, sets);
-    const generated = closure ? materializeNativeToolClosureFiles(closure) : undefined;
-    try {
-      if (explicitSubset && previous) assertUnchangedNativeToolClosure(previous.nativeTools, generated?.closure);
-      for (const [relative, content] of Object.entries(generated?.files ?? {})) {
-        const destination = path.join(prepared.resourceRoot, relative);
-        const existing = await fs.readFile(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-        if (existing && !existing.equals(Buffer.from(content))) throw new ManagedCommandError('commandResourceInvalid', 'The producer contains conflicting native tool files.');
-        await fs.outputFile(destination, content);
-      }
-      return { producer, sets, ...(generated ? { nativeTools: generated.closure } : {}), ...prepared };
-    } catch (error) { await prepared.cleanup(); throw error; }
-  } finally { if (temporarySource) await fs.remove(temporarySource); }
-}
-
-export async function syncPluginManagedCommandPackage(options: {
-  referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
-  requestedArtifactIds?: readonly string[];
-  signal?: AbortSignal;
-  scriptTimeoutMs?: number;
-  managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
-  expectedPackage?: ManagedCommandPackageEvidence;
-}): Promise<CommandProducerResult> {
-  const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: options.packageKey } });
-  const key = getCommandPackageId(producer);
-  let result = options.managedCommandProducerCache?.get(key);
-  if (!result) {
-    result = (async () => {
-      let candidate: PreparedManagedCommandPackage | undefined;
-      try {
-        candidate = await prepareManagedCommandPackage(options);
-        const old = await listManagedCommandPackages(options.env);
-        const previousIds = old.packages.find((entry) => entry.id === key)?.sets.flatMap((set) => set.commandIds) ?? [];
-        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env, expectedPackage: options.expectedPackage });
-        return { producer, state: 'completed' as const, commandIds: synced.commandIds, removedCommandIds: previousIds.filter((id) => !synced.commandIds.includes(id)), errors: [], recoveryActions: [] };
-      } catch (error) {
-        if (recoveryInterruptionCode(error, options.signal) || readSafeOperationError(error)) throw error;
-        return { producer, state: 'failed' as const, commandIds: [], removedCommandIds: [], errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command package sync ${producer.sourceId}/${producer.pluginName} ${producer.key} --scope ${producer.scope} --yes`] };
-      } finally { await candidate?.cleanup(); }
-    })();
-    options.managedCommandProducerCache?.set(key, result);
-  }
-  return result;
-}
-
-export async function discoverInstalledPluginManagedCommandPackages(options: {
-  plugin: PluginMeta; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  platformTargets?: readonly Pick<ReceiptTargetIdentity, 'platform' | 'scope'>[];
-}): Promise<ManagedCommandPackageDiscovery> {
-  const listed = await listManagedCommandPackages(options.env);
-  let currentProject: string | undefined;
-  const relevant = listed.packages.filter((entry) => entry.producer.sourceId === options.plugin.sourceId && entry.producer.pluginName === options.plugin.manifest.name);
-  const installedPackageIds = new Set(relevant.map((entry) => entry.id));
-  const errors = [...listed.errors];
-  if (options.scope === 'project' && (relevant.some((entry) => entry.producer.scope === 'project')
-    || (options.platformTargets?.length && options.plugin.manifest.managedCommands?.packages.some((entry) => entry.scope === 'project')))) {
-    currentProject = path.normalize(await fs.realpath(await resolveCanonicalRepoProjectKey(options.cwd)));
-  }
-  const producers = new Map<string, ProducerIdentity>();
-  for (const entry of relevant) {
-    const identity = entry.producer;
-    if (identity.scope !== options.scope || (identity.scope === 'project' && identity.projectRoot !== currentProject)) continue;
-    if (identity.sourceIdentity !== options.plugin.sourceIdentity) {
-      errors.push({ code: 'commandSourceIdentityChanged', message: `The retained command package belongs to a previous source identity; remove it with aw command package remove ${entry.id} --yes.`, subject: entry.id });
-      continue;
-    }
-    producers.set(entry.id, identity);
-  }
-  for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
-    if (declaration.scope !== options.scope) continue;
-    if (!options.platformTargets?.some((target) => declaration.platforms.includes(target.platform))) continue;
-    const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: declaration.key } });
-    producers.set(getCommandPackageId(producer), producer);
-  }
-  return { packages: [...producers].map(([packageId, producer]) => {
-    const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === producer.key && entry.scope === producer.scope);
-    const setKeys = (options.plugin.manifest.managedCommands?.sets ?? []).flatMap((set) => set.producer.kind === 'package' && set.producer.packageKey === producer.key && set.mode === 'dynamic' ? set.refreshKeys : []);
-    return { producer, packageId, packageKey: producer.key, refreshKeys: [...new Set([...(declaration?.refreshKeys ?? []), ...setKeys])], declared: declaration !== undefined, installed: installedPackageIds.has(packageId) };
-  }), errors };
-}
-
-export async function createManagedCommandReferenceResolver(options: {
-  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  renderUnit: Pick<RenderUnit, 'physicalKey' | 'renderScope'>;
-  candidates?: readonly ManagedCommandCandidate[];
-  unavailableProducers?: readonly ProducerIdentity[];
-}): Promise<(reference: ManagedCommandReference) => string> {
-  const resolved = new Map<string, string>();
-  for (const set of options.plugin.manifest.managedCommands?.sets ?? []) {
-    if (set.producer.kind !== 'package' && set.producer.platform !== options.platform) continue;
-    if (set.producer.kind === 'package') {
-      const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => set.producer.kind === 'package' && entry.key === set.producer.packageKey);
-      if (!declaration?.platforms.includes(options.platform) || (options.scope === 'user' && declaration.scope === 'project')) continue;
-    }
-    const producer = await managedCommandProducerIdentity({ ...options, producer: set.producer });
-    if (options.unavailableProducers?.some((unavailable) => sameProducer(unavailable, producer))) continue;
-    if (producer.platform && producer.platform !== options.platform) continue;
-    if (options.scope === 'user' && producer.scope === 'project') continue;
-    if (set.producer.kind === 'package') {
-      const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === producer.key);
-      if (!declaration?.platforms.includes(options.platform)) continue;
-    }
-    const candidates = (options.candidates ?? []).filter((entry) => sameProducer(entry.producer, producer));
-    const candidateContent = (candidate: ManagedCommandCandidate): string => canonicalizeIdentityValue({ producer: candidate.producer, sets: candidate.sets, nativeTools: candidate.nativeTools ?? null });
-    if (candidates.some((entry) => candidateContent(entry) !== candidateContent(candidates[0]!))) throw new Error('commandReferenceInvalid: conflicting candidates identify the same command producer.');
-    const candidate = candidates[0];
-    const entries = candidate?.sets.find((entry) => entry.set === set.set);
-    if (candidate) {
-      if (entries?.state !== 'present') continue;
-      for (const entry of entries.entries) resolved.set(`${set.set}/${entry.key}/${entry.variant}`, getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant }));
-    } else if (set.mode === 'static') {
-      for (const entry of set.entries) {
-        const id = getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant });
-        try {
-          if ((await inspectManagedCommand(id, options.env)).availability === 'ready') resolved.set(`${set.set}/${entry.key}/${entry.variant}`, id);
-        } catch (error) {
-          if (!(error instanceof ManagedCommandError) || error.code !== 'commandNotFound') throw error;
-        }
-      }
-    } else {
-      const installed = await listManagedCommands(options.env);
-      for (const command of installed.commands) if (command.availability === 'ready' && command.owner.kind === 'plugin' && sameProducer(command.owner.producer, producer) && command.name.startsWith(`${set.set}/`)) resolved.set(command.name, command.id);
-    }
-  }
-  return (reference) => {
-    if (!options.plugin.manifest.requires?.aw.capabilities?.includes('aw.managed-commands.v1')) throw new Error('commandReferenceInvalid: managed command references require aw.managed-commands.v1.');
-    const id = resolved.get(`${reference.set}/${reference.key}/${reference.variant ?? 'default'}`);
-    if (!id) throw new Error(`commandReferenceInvalid: command ${reference.set}/${reference.key}/${reference.variant ?? 'default'} has no verified producer for this consumer.`);
-    return id;
+    manifest: options.plugin.manifest, referencePlugins: options.referencePlugins,
+    cwd: options.cwd, env: options.env,
   };
 }
 
-export function resolveSkillManagedCommandReferences(tree: DynamicSkillTree, resolve: (reference: ManagedCommandReference) => string): void {
-  for (const [relative, content] of Object.entries(tree.files)) if (relative.endsWith('.md')) tree.files[relative] = Buffer.from(replaceManagedCommandPlaceholders(content.toString('utf8'), resolve), 'utf8');
+async function commonRouteConfig(options: PackageInputs): Promise<ResolvedArtifactRenderConfig> {
+  if (options.resolveConfig && options.plugin.manifest.config) {
+    return { ...await options.resolveConfig(), mode: 'artifact-render', targetScope: 'user' };
+  }
+  return resolveArtifactRenderConfig({ ...configReadOptions(options), scope: 'user' });
+}
+
+function routeConfigDigest(plugin: PluginMeta, config: ResolvedArtifactRenderConfig): string {
+  const command = declaredCommand(plugin);
+  return commandInputDigest(selectManagedCommandRenderConfig(config, command.mode === 'dynamic' ? command.refreshKeys : []));
+}
+
+function routeConfigKeyDigests(config: ReturnType<typeof selectManagedCommandRenderConfig>): Record<string, string> {
+  return Object.fromEntries(Object.entries(config.sources).map(([key, source]) => [
+    key, commandInputDigest({ field: config.schema?.[key], value: config.values[key], source,
+      issues: config.issues.filter((issue) => issue.key === key) }),
+  ]));
+}
+
+async function resolvePlatformRuntimeConfig(options: PackageInputs, platform: PlatformName): Promise<ResolvedEffectivePluginConfig> {
+  return options.resolveConfig?.(platform)
+    ?? resolveEffectivePluginConfig({ ...configReadOptions(options), platform, targetScope: 'user' });
+}
+
+function selectConfigValues(values: Record<string, PluginConfigValue>, keys: readonly string[]): Record<string, PluginConfigValue> {
+  return Object.fromEntries(keys.filter((key) => Object.hasOwn(values, key)).map((key) => [key, values[key]!]));
+}
+
+function runtimeConfigEvidence(config: ResolvedEffectivePluginConfig, keys: readonly string[]): string {
+  const dependencies = getPluginConfigDependencyKeys(config.definition, keys, config.referenceContext);
+  return commandInputDigest({
+    values: selectConfigValues(config.values, dependencies),
+    issues: config.issues.filter((issue) => dependencies.includes(issue.key)),
+  });
+}
+
+function commonRuntimeConfigDigest(plugin: PluginMeta, platform: PlatformName, store: PluginConfigStore, keys: readonly string[]): string {
+  assertReadyPluginConfigStore(store);
+  const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
+  const dependencies = getPluginConfigDependencyKeys(definition, keys);
+  return commandInputDigest(selectConfigValues(store.common ?? (store.platform ? {} : store.values), dependencies));
+}
+
+async function readCommandCommonStore(options: PackageInputs): Promise<PluginConfigStore> {
+  return options.resolveConfig ? (await options.resolveConfig()).stores.user!
+    : readPluginConfigStore({ ...configReadOptions(options), scope: 'user' });
+}
+
+function applyRuntimeConfig(config: ResolvedEffectivePluginConfig, keys: readonly string[]): Record<string, PluginConfigValue> {
+  const dependencies = getPluginConfigDependencyKeys(config.definition, keys, config.referenceContext);
+  if (config.issues.some((issue) => dependencies.includes(issue.key))
+    || validatePluginConfigCandidate(config.definition, config.values, keys, config.referenceContext).length > 0) {
+    throw new ManagedCommandError('commandRuntimeConfigInvalid', 'The effective command runtime config is invalid. Fix the configuration and sync again.');
+  }
+  return selectConfigValues(config.values, keys);
+}
+
+function previousConfigCompatible(
+  definition: PluginConfigCompiledDefinition, keys: readonly string[], old: CommandRuntimeConfigSnapshot,
+): boolean {
+  return keys.every((key) => {
+    const field = definition.fields[key]!;
+    if (!Object.hasOwn(old.effectiveValues, key)) return field.required !== true;
+    if (validatePluginConfigValue(field, old.effectiveValues[key], key).length > 0) return false;
+
+    // Validate references with the applied values when the previous snapshot includes the full dependency closure.
+    // Unpublished dependencies must not draw this platform's pending Config Store values into an unrelated sync.
+    let dependencies;
+    try { dependencies = getPluginConfigDependencyFields(definition, [key]); }
+    catch { return true; } // Cross-plugin providers are outside this snapshot.
+    if (dependencies.some(({ field }) => !old.allowedKeys.includes(field))) return true;
+    return validatePluginConfigCandidate(definition, old.effectiveValues, [key]).length === 0;
+  });
+}
+
+async function readPreviousSnapshots(previous?: InstalledPackage): Promise<Map<PlatformName, CommandRuntimeConfigSnapshot>> {
+  const snapshots = new Map<PlatformName, CommandRuntimeConfigSnapshot>();
+  if (!previous) return snapshots;
+  for (const platform of previous.record.runtimeConfigPlatforms) {
+    try {
+      snapshots.set(platform, await readManagedCommandRuntimeConfigSnapshot(previous.resourceRoot, previous.record, platform));
+    } catch (error) {
+      if (!(error instanceof ManagedCommandError)) throw error;
+      // The package record still identifies the platform. A sync can rebuild a damaged snapshot.
+    }
+  }
+  return snapshots;
+}
+
+async function prepareRuntimeConfig(options: PreparedManagedCommandPackageOptions & {
+  record: InstalledCommandProducer;
+  previous?: InstalledPackage;
+  packageExists: boolean;
+}): Promise<{
+  snapshots: Map<PlatformName, CommandRuntimeConfigSnapshot>;
+  changes: RuntimeConfigChange[];
+  evidence: ReadonlyMap<PlatformName, string>;
+}> {
+  const { operation, previous, record } = options;
+  const command = declaredCommand(options.plugin);
+  const oldSnapshots = await readPreviousSnapshots(previous);
+  const oldPlatforms = previous?.record.runtimeConfigPlatforms ?? [];
+  const keys = record.runtimeConfigKeys;
+  const snapshots = new Map<PlatformName, CommandRuntimeConfigSnapshot>();
+  const evidence = new Map<PlatformName, string>();
+  const commonDigests: Partial<Record<PlatformName, string>> = {};
+  const refresh = new Set(operation.kind === 'explicit-sync'
+    ? options.packageExists ? oldPlatforms : command.platforms
+    : 'platforms' in operation ? operation.platforms : []);
+  if (keys) for (const platform of command.platforms) {
+    const old = oldSnapshots.get(platform);
+    if (!refresh.has(platform) && !oldPlatforms.includes(platform)) continue;
+
+    let effectiveValues: Record<string, PluginConfigValue>;
+    if (!refresh.has(platform) && !old) {
+      throw new ManagedCommandError('commandRuntimeConfigInvalid', 'A previously applied snapshot is damaged. Run aw command package sync to refresh it.');
+    }
+    if (old && !refresh.has(platform) && (
+      old.sourceContentDigest === record.sourceContentDigest
+      || previousConfigCompatible(selectPluginConfigProfile(options.plugin.manifest.config!, platform), keys, old)
+    )) {
+      effectiveValues = selectConfigValues(old.effectiveValues, keys);
+    } else {
+      const config = await resolvePlatformRuntimeConfig(options, platform);
+      effectiveValues = applyRuntimeConfig(config, keys);
+      evidence.set(platform, runtimeConfigEvidence(config, keys));
+      commonDigests[platform] = commonRuntimeConfigDigest(options.plugin, platform, config.stores.user!, keys);
+    }
+    const previousDigest = previous?.record.runtimeConfigCommonDigests?.[platform];
+    if (previousDigest !== undefined) commonDigests[platform] ??= previousDigest;
+    snapshots.set(platform, {
+      schemaVersion: 1, kind: 'aw-command-runtime-config',
+      producer: record.producer, pluginVersion: record.pluginVersion, sourceContentDigest: record.sourceContentDigest,
+      platform, allowedKeys: keys, effectiveValues,
+    });
+  }
+  const changes: RuntimeConfigChange[] = [];
+  for (const platform of new Set([...oldPlatforms, ...snapshots.keys()])) {
+    const before = oldSnapshots.get(platform)?.effectiveValues;
+    const after = snapshots.get(platform)?.effectiveValues;
+    if (canonicalizeIdentityValue(before) !== canonicalizeIdentityValue(after)) {
+      changes.push({ platform, ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) });
+    }
+  }
+  if (Object.keys(commonDigests).length) record.runtimeConfigCommonDigests = commonDigests;
+  return { snapshots, changes, evidence };
+}
+
+async function verifyCommandConfigApplySource(
+  plugin: PluginMeta, previous: InstalledPackage | undefined, view: ManagedCommandPackageView | undefined, native?: NativeToolClosure,
+) {
+  if (!previous) {
+    throw new ManagedCommandError('commandBindingInvalid', 'Configuration apply requires a usable installed command package. Run aw command package sync.');
+  }
+  if (canonicalizeIdentityValue(previous.record.nativeTools) !== canonicalizeIdentityValue(native)) {
+    throw new ManagedCommandError('nativeToolSyncRequired', 'Native tool changes require aw plugin sync or aw command package sync before configuration apply.');
+  }
+  const mismatch = () => new ManagedCommandError('configApplyVersionMismatch',
+    'The installed command package differs from Active Catalog. Run aw plugin sync or aw command package sync.');
+  if (!plugin.manifest.command || previous.record.pluginVersion !== plugin.manifest.version) throw mismatch();
+  const source = await readManagedCommandSource(plugin);
+  if (previous.record.sourceContentDigest !== source.sourceContentDigest) throw mismatch();
+  if (view?.availability === 'unavailable') {
+    throw new ManagedCommandError('commandBindingInvalid', 'Configuration apply requires a usable installed command package. Run aw command package sync.');
+  }
+  return source;
+}
+
+/** Select only the snapshots and routes whose applied inputs differ. */
+export async function inspectManagedCommandConfigApply(options: PackageInputs & {
+  platform?: PlatformName;
+}): Promise<Extract<ManagedCommandPackageOperation, { kind: 'config-apply' }> | undefined> {
+  const { plugin, platform } = options;
+  const { previous, view } = await previousPackage(managedCommandProducerIdentity(options), options.env, false);
+  if (!view) return undefined;
+  await verifyCommandConfigApplySource(plugin, previous, view, await nativeToolsForPluginCommand(plugin));
+  const record = previous!.record;
+  const command = declaredCommand(plugin);
+  const keys = command.runtimeConfig?.keys;
+  const platforms: PlatformName[] = [];
+  if (platform && keys && command.platforms.includes(platform)) {
+    const config = await resolvePlatformRuntimeConfig(options, platform);
+    const values = applyRuntimeConfig(config, keys);
+    const snapshot = record.runtimeConfigPlatforms.includes(platform)
+      ? await readManagedCommandRuntimeConfigSnapshot(previous!.resourceRoot, record, platform) : undefined;
+    if (canonicalizeIdentityValue(values) !== canonicalizeIdentityValue(snapshot?.effectiveValues)) platforms.push(platform);
+  } else if (!platform && keys && record.runtimeConfigPlatforms.length) {
+    const store = await readCommandCommonStore(options);
+    for (const target of record.runtimeConfigPlatforms) {
+      if (command.platforms.includes(target)
+        && record.runtimeConfigCommonDigests?.[target] !== commonRuntimeConfigDigest(plugin, target, store, keys)) platforms.push(target);
+    }
+  }
+  const refreshRoutes = !platform && command.mode === 'dynamic' && command.refreshKeys.length > 0
+    && record.routeConfigDigest !== routeConfigDigest(plugin, await commonRouteConfig(options));
+  return platforms.length || refreshRoutes ? { kind: 'config-apply', platforms, refreshRoutes } : undefined;
+}
+
+export async function prepareManagedCommandPackage(options: PreparedManagedCommandPackageOptions): Promise<PreparedManagedCommandPackage> {
+  options.signal?.throwIfAborted();
+  const { plugin, operation } = options;
+  const declaration = declaredCommand(plugin);
+  if (operation.kind === 'platform-sync' && !operation.platforms.some((platform) => declaration.platforms.includes(platform))) {
+    throw new ManagedCommandError('commandDefinitionInvalid', 'No selected platform supports this command package.');
+  }
+  const producer = managedCommandProducerIdentity(options);
+  const requireKnownSnapshots = operation.kind === 'explicit-sync' && declaration.runtimeConfig !== undefined;
+  // Author profiles validate the route and closure without applying platform config.
+  const { previous, view, expectedPackage } = operation.kind === 'materialize'
+    ? { expectedPackage: null } : await previousPackage(producer, options.env, requireKnownSnapshots);
+  const native = await nativeToolFiles(plugin);
+
+  const source = operation.kind === 'config-apply'
+    ? await verifyCommandConfigApplySource(plugin, previous, view, native?.closure)
+    : await readManagedCommandSource(plugin);
+
+  let routes: CommandRoutes;
+  let routeEvidence: string | undefined;
+  const previousKeyDigests = previous?.record.routeConfigKeyDigests;
+  let appliedKeyDigests = previousKeyDigests;
+  if (declaration.mode === 'static') routes = declaration.routes;
+  else if (operation.kind === 'config-apply' && !operation.refreshRoutes && previous) routes = previous.record.routes;
+  else {
+    const renderRoutes = options.renderRoutes ?? (await import('./managed-command-preparation.js')).renderManagedCommandRoutes;
+    const commonConfig = await commonRouteConfig(options);
+    const selectedConfig = selectManagedCommandRenderConfig(commonConfig, declaration.refreshKeys);
+    routeEvidence = commandInputDigest(selectedConfig);
+    appliedKeyDigests = routeConfigKeyDigests(selectedConfig);
+    const changedConfigKeys = operation.kind === 'config-apply' && previousKeyDigests
+      ? Object.entries(appliedKeyDigests).filter(([key, digest]) => previousKeyDigests[key] !== digest).map(([key]) => key)
+      : [];
+    routes = normalizeCommandRoutes(await renderRoutes({ ...options, sourceDir: source.sourceRoot, previous: previous?.record,
+      commonConfig, changedConfigKeys,
+      event: operation.kind === 'config-apply' ? 'refresh' : operation.kind === 'platform-sync' ? 'install' : 'materialize' }));
+    if (routeEvidence !== routeConfigDigest(plugin, await commonRouteConfig(options))) {
+      throw new ManagedCommandError('operationReviewStale', 'Command configuration changed while preparing its routes.');
+    }
+  }
+
+  const appliedRouteDigest = routeEvidence ?? previous?.record.routeConfigDigest;
+  const record: InstalledCommandProducer = {
+    schemaVersion: 2, producer, pluginVersion: plugin.manifest.version, sourceContentDigest: source.sourceContentDigest, routes,
+    ...(declaration.mode === 'dynamic' ? { dynamicRefreshKeys: declaration.refreshKeys } : {}),
+    ...(declaration.mode === 'dynamic' && appliedRouteDigest ? { routeConfigDigest: appliedRouteDigest } : {}),
+    ...(declaration.mode === 'dynamic' && appliedKeyDigests ? { routeConfigKeyDigests: appliedKeyDigests } : {}),
+    ...(native ? { nativeTools: native.closure } : {}),
+    ...(declaration.runtimeConfig ? { runtimeConfigKeys: declaration.runtimeConfig.keys } : {}),
+    runtimeConfigPlatforms: [],
+  };
+  const runtime = await prepareRuntimeConfig({ ...options, record, previous, packageExists: view !== undefined });
+  record.runtimeConfigPlatforms = [...runtime.snapshots.keys()];
+
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-package-'));
+  const resourceRoot = path.join(tempRoot, 'resource');
+  const cleanup = () => fs.remove(tempRoot);
+  try {
+    await copyManagedCommandDirectory(source.sourceRoot, resourceRoot, options.env, { trustedPluginSource: true });
+    if (source.sourceTreeDigest !== await calculateManagedCommandResourceDigest(resourceRoot)) {
+      throw new ManagedCommandError('operationReviewStale', 'Command package resources changed while staging.');
+    }
+    const entries = commandRouteEntries(record.routes);
+    // An entry must come from the author package, even when the script imports AW's helper files.
+    await validateCommandEntryFiles(resourceRoot, entries);
+    if (record.runtimeConfigKeys) {
+      await fs.outputFile(path.join(resourceRoot, COMMAND_RUNTIME_CONFIG_READER), await readCommandRuntimeConfigReaderSource(), { flag: 'wx' });
+    }
+    for (const [platform, snapshot] of runtime.snapshots) {
+      await fs.outputFile(path.join(resourceRoot, commandRuntimeConfigSnapshotPath(platform)), `${JSON.stringify(snapshot, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    }
+    for (const [relative, content] of Object.entries(native?.files ?? {})) {
+      await fs.outputFile(path.join(resourceRoot, relative), content, { flag: 'wx' });
+    }
+    await validateManagedCommandPackageClosure(resourceRoot, entries);
+    for (const entry of entries) await validateManagedCommandResource(resourceRoot, entry);
+    options.signal?.throwIfAborted();
+    const resourceDigest = await calculateManagedCommandResourceDigest(resourceRoot);
+    return { resourceRoot, resourceDigest, record, previous, expectedPackage, cleanup,
+      runtimeConfigChanges: runtime.changes, runtimeConfigEvidence: runtime.evidence, routeConfigEvidence: routeEvidence };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+/** Recheck inputs under the caller's existing write lock, without repeating the renderer. */
+export async function verifyPreparedManagedCommandPackage(options: PackageInputs & {
+  candidate: PreparedManagedCommandPackage;
+}): Promise<void> {
+  const { candidate } = options;
+  const stale = () => new ManagedCommandError('operationReviewStale', 'The reviewed command source or configuration changed. Review the command package again.');
+  try {
+    const producer = managedCommandProducerIdentity(options);
+    const native = await nativeToolsForPluginCommand(options.plugin);
+    const source = await readManagedCommandSource(options.plugin);
+    if (canonicalizeIdentityValue(producer) !== canonicalizeIdentityValue(candidate.record.producer)
+      || canonicalizeIdentityValue(native) !== canonicalizeIdentityValue(candidate.record.nativeTools)
+      || candidate.record.pluginVersion !== options.plugin.manifest.version
+      || candidate.record.sourceContentDigest !== source.sourceContentDigest) throw stale();
+    if (candidate.routeConfigEvidence !== undefined && candidate.routeConfigEvidence !== routeConfigDigest(options.plugin, await commonRouteConfig(options))) throw stale();
+    for (const [platform, digest] of candidate.runtimeConfigEvidence) {
+      const config = await resolvePlatformRuntimeConfig(options, platform);
+      const keys = candidate.record.runtimeConfigKeys!;
+      if (digest !== runtimeConfigEvidence(config, keys)
+        || candidate.record.runtimeConfigCommonDigests?.[platform] !== commonRuntimeConfigDigest(options.plugin, platform, config.stores.user!, keys)) throw stale();
+    }
+  } catch (error) {
+    if (error instanceof ManagedCommandError && error.code === 'operationReviewStale') throw error;
+    throw stale();
+  }
+}
+
+export async function publishPreparedManagedCommandPackage(options: PackageInputs & {
+  candidate: PreparedManagedCommandPackage;
+}) {
+  await verifyPreparedManagedCommandPackage(options);
+  return syncManagedCommandPackage({ producer: options.candidate.record.producer, record: options.candidate.record,
+    sourceDirectory: options.candidate.resourceRoot, expectedPackage: options.candidate.expectedPackage,
+    expectedResourceDigest: options.candidate.resourceDigest, env: options.env });
 }

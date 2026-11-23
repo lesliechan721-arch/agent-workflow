@@ -48,6 +48,8 @@ export interface PlacementProbeGroup {
   probes: Map<string, { runner: ReadContext['runner']; signal: ReadContext['signal']; result: Promise<string | null> }>;
 }
 export interface ReadContext {
+  /** Original invocation directory, when a scoped operation runs from its project root. */
+  invocationCwd?: string;
   /** Lent only to initial resolutions of a single placement group, before rendering. */
   placementProbeGroup?: PlacementProbeGroup;
   cwd: string;

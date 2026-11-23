@@ -1,5 +1,8 @@
 import path from 'node:path';
-import { canonicalizePathThroughExistingAncestor, resolveAwHome, resolveUserHome } from '../utils/state-paths.js';
+import { getGrokPermissionConfigPath } from './grok-permission-config.js';
+import { getAntigravityGlobalPermissionPath } from './antigravity-permissions.js';
+import { isPermissionHost, type PermissionHost } from './host-permission-policy.js';
+import { canonicalizePathThroughExistingAncestor, readEnvironmentValue, resolveAwHome, resolveUserHome } from '../utils/state-paths.js';
 import { SKILL_OWNER_MARKER } from '../utils/ownership.js';
 import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { canonicalNamespaceRoot, getPhysicalKey, identityDigest } from './identity.js';
@@ -246,12 +249,48 @@ export function getProfileRenderScopes(platform: DeploymentBinding['platform'], 
   return [activationScope];
 }
 
+/** OpenCode's service replaces its global configuration root when this override is set. */
+export function getOpenCodePermissionRoot(ctx: ReadContext, discovered?: string): string | undefined {
+  const override = readEnvironmentValue(ctx.env ?? process.env, 'OPENCODE_CONFIG_DIR', ctx.platform);
+  if (!override) return discovered ?? resolvePlatformConfigRoot('opencode', ctx);
+  // A detached service may have changed its cwd. Only an absolute override
+  // identifies the same writable directory for all observed products.
+  return !override.includes('\0') && path.isAbsolute(override) ? path.normalize(override) : undefined;
+}
+
+/** Resolve the selected host settings independently of the plugin discovery directory. */
+export async function scopedPermissionPath(ctx: ReadContext, platform: PermissionHost, scope: ScopeRef, discovered?: string): Promise<string | undefined> {
+  if (platform === 'grok') {
+    const root = scope.kind === 'project' ? path.join(await canonicalNamespaceRoot(scope.projectRoot), '.grok')
+      : await canonicalNamespaceRoot(path.dirname(getGrokPermissionConfigPath(ctx, scope)));
+    return path.join(root, 'config.toml');
+  }
+  if (platform === 'antigravity') return scope.kind === 'user' ? getAntigravityGlobalPermissionPath(ctx) : undefined;
+  const user = getOpenCodePermissionRoot(ctx, discovered);
+  if (!user) return undefined;
+  return path.join(await canonicalNamespaceRoot(scope.kind === 'project' ? scope.projectRoot : user), 'opencode.json');
+}
+
+/** Host configuration or rule directory for the selected native scope. */
+export async function getInvocationPolicyPath(ctx: ReadContext, binding: DeploymentBinding, existingLayout?: DeploymentLayout): Promise<string> {
+  if (isPermissionHost(binding.platform)) {
+    const destination = await scopedPermissionPath(ctx, binding.platform, binding.scope, configRoot(binding));
+    if (!destination) throw new Error('permissionConfigurationPathUnconfirmed');
+    return destination;
+  }
+  const layout = existingLayout ?? await getDeploymentLayout(ctx, binding);
+  if (binding.platform === 'codex') return path.join(layout.activationPath, 'rules');
+  if (binding.platform === 'claude') return path.join(layout.activationPath, binding.scope.kind === 'project' ? 'settings.local.json' : 'settings.json');
+  throw new Error('platformInvocationPolicyUnsupported');
+}
+
 /** Invocation policy is a scope-local host contribution, independent of shared package bytes. */
 export async function getInvocationPolicyPhysicalKey(ctx: ReadContext, binding: DeploymentBinding): Promise<string> {
-  if (binding.platform !== 'codex' && binding.platform !== 'claude') throw new Error('platformInvocationPolicyUnsupported');
   const layout = await getDeploymentLayout(ctx, binding);
-  const namespaceRoot = await canonicalNamespaceRoot(binding.platform === 'codex'
-    ? path.join(layout.activationPath, 'rules') : layout.activationPath);
+  const destination = await getInvocationPolicyPath(ctx, binding, layout);
+  // Keep previously issued Claude owner identities valid.
+  const namespaceRoot = isPermissionHost(binding.platform) ? destination
+    : await canonicalNamespaceRoot(binding.platform === 'claude' ? path.dirname(destination) : destination);
   return getPhysicalKey({ ...layout.physicalIdentity, namespaceRoot,
     resourceKey: `${getDeploymentResourceKey(binding.plugin)}:permission` });
 }

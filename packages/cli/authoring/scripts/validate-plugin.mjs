@@ -12,6 +12,8 @@ import {
   assertPluginConfigReferenceSchemas,
   AW_RUNTIME_CONFIG_READER_PATH,
   createNativeToolReaderSource,
+  getCommandPackageInjectedReaders,
+  isInjectedCommandReaderImport,
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
   normalizePluginConfigDefinition,
@@ -21,7 +23,6 @@ import {
   PLATFORM_TARGETS,
   isPortablePlatformTarget,
   isAuthorOnlySkillDirectory,
-  getCommandPackageId,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from '@lesliechan721/aw-plugin-core/manifest';
 import { readCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
@@ -286,7 +287,6 @@ async function tryLoadCliManifestTools() {
       materializeProfilePluginComponents: materializationModule.materializeProfilePluginComponents,
       createIsolatedSkillEnv: materializationModule.createIsolatedSkillEnv,
       prepareManagedCommandPackage: commandModule.prepareManagedCommandPackage,
-      managedCommandProducerIdentity: commandModule.managedCommandProducerIdentity,
       validateRuntimeSkillClosure: (await import(pathToFileURL(path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'utils', 'runtime-skill-closure.js')).href)).validateRuntimeSkillClosure,
     };
   } catch {
@@ -1249,6 +1249,7 @@ function scanNodeImportContract(pluginDir, entryPaths, options) {
         if (!resolved.path) {
           const requested = path.posix.normalize(path.posix.join(path.posix.dirname(relativePath), specifier));
           if (options.nativeToolReader && requested === options.nativeToolReader) continue;
+          if (isInjectedCommandReaderImport(options.injectedCommandReaders, relativePath, requested)) continue;
           if ((options.runtimeConfigSkillRoots ?? []).some((root) => (
             relativePath.startsWith(`${root}/`)
             && requested === path.posix.join(root, AW_RUNTIME_CONFIG_READER_PATH)
@@ -1593,11 +1594,10 @@ async function prepareSourceComponentFixture(root, pluginDir, manifest, runtimeI
 
 async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtimeImports, tools, referenceContext, referencePlugins, skillValidationTools, validationOptions) {
   const builtBundle = validationOptions.builtBundle;
-  if (!builtBundle && !sourceManifest.skills && !sourceManifest.artifacts
-      && !(sourceManifest.managedCommands?.sets?.length || sourceManifest.managedCommands?.packages?.length)) return;
+  if (!builtBundle && !sourceManifest.skills && !sourceManifest.artifacts && !sourceManifest.command) return;
   if (runtimeImports === null) return;
   const tempRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'aw-author-components-'));
-  const packagePreparationCache = new Map();
+  let commandPackage;
   try {
     const root = path.join(tempRoot, 'plugin');
     if (builtBundle) {
@@ -1617,6 +1617,10 @@ async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtim
       sourceIdentity: `sha256:${createHash('sha256').update(fs.realpathSync(pluginDir)).digest('hex')}` };
     const plugins = [plugin, ...(referencePlugins ?? runtimeImports?.referencePlugins ?? []).filter((entry) => entry.manifest.name !== manifest.name)];
     const env = await tools.createIsolatedSkillEnv(process.env, path.join(tempRoot, 'state'));
+    if (manifest.command) {
+      commandPackage = await tools.prepareManagedCommandPackage({ plugin, referencePlugins: plugins,
+        operation: { kind: 'materialize' }, cwd: pluginDir, env });
+    }
     for (const platform of resolveSupportedPlatforms(manifest)) {
       for (const scope of ['user', 'project']) {
         const definition = compilePluginConfigDefinition(manifest.config ?? { fields: {} }, platform);
@@ -1630,7 +1634,8 @@ async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtim
           issues: [], stores: {}, referenceContext: references };
         try {
           const prepared = await tools.materializeProfilePluginComponents({ plugin, plugins, platform, scope,
-            cwd: pluginDir, env, outputRoot: path.join(tempRoot, `${platform}-${scope}`), config, packagePreparationCache });
+            cwd: pluginDir, env, outputRoot: path.join(tempRoot, `${platform}-${scope}`), config,
+            commandRecord: manifest.command?.platforms.includes(platform) ? commandPackage?.record : null });
           if (prepared.skills.length && !skillValidationTools) throw new Error('Prepared Skills require the shared CLI Skill validator.');
           for (const skill of prepared.skills) {
             // These directories retain the component's logical name. Native host
@@ -1658,25 +1663,11 @@ async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtim
         }
       }
     }
-    for (const declaration of manifest.managedCommands?.packages ?? []) {
-      const identity = await tools.managedCommandProducerIdentity({ plugin,
-        producer: { kind: 'package', packageKey: declaration.key }, scope: declaration.scope, cwd: pluginDir });
-      const key = getCommandPackageId(identity);
-      if (!packagePreparationCache.has(key)) {
-        packagePreparationCache.set(key, tools.prepareManagedCommandPackage({ plugin, referencePlugins: plugins,
-          packageKey: declaration.key, scope: declaration.scope, cwd: pluginDir, env, event: 'materialize' }));
-      }
-      await packagePreparationCache.get(key);
-    }
   } catch (cause) {
     error(`author component preparation: ${cause.message}`);
   } finally {
-    const preparedPackages = await Promise.allSettled(packagePreparationCache.values());
-    const cleanedPackages = await Promise.allSettled(preparedPackages
-      .filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value.cleanup()));
-    for (const entry of cleanedPackages) {
-      if (entry.status === 'rejected') error(`author component cleanup: ${entry.reason.message}`);
-    }
+    try { await commandPackage?.cleanup(); }
+    catch (cause) { error(`author component cleanup: ${cause.message}`); }
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
@@ -1796,6 +1787,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
             allowDevDependencies: true,
             runtimeConfigSkillRoots,
             nativeToolReader,
+            injectedCommandReaders: getCommandPackageInjectedReaders(manifest),
           });
         }
       }

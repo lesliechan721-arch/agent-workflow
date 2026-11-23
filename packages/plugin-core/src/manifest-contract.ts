@@ -50,7 +50,7 @@ import type {
 import { readJsonFile } from './read-json.js';
 import { loadPluginNativeToolClosure, normalizeNativeTools, validateNativeToolClosureFiles, validateNativeToolsManifest } from './native-tools.js';
 import { parsePermissionCommand } from './permission-command.js';
-import { normalizeManagedCommands, normalizeManagedCommandPermission, validateManagedCommandManifest, validateManagedCommandSources, type PermissionCommand } from './managed-commands.js';
+import { normalizePluginCommand, normalizeManagedCommandPermission, validateManagedCommandManifest, validateManagedCommandSources, type PermissionCommand } from './managed-commands.js';
 import { applyFileRules } from './file-rules.js';
 import { isAuthorOnlySkillCollection, isAuthorOnlySkillDirectory } from './skill-authoring.js';
 import { applyPlatformOverride } from './platform-entries.js';
@@ -1304,7 +1304,7 @@ export function validatePluginManifest(
     'buildConfig',
     'scripts',
     'config',
-    'managedCommands',
+    'command',
     'nativeTools',
   ]);
 
@@ -1405,10 +1405,10 @@ export function validatePluginManifest(
 
   if (manifest.artifacts && !manifest.scripts?.artifacts?.render) throw new Error('Invalid artifacts: requires scripts.artifacts.render.');
 
-  if (input.managedCommands !== undefined) {
-    manifest.managedCommands = normalizeManagedCommands(input.managedCommands);
-    validateManagedCommandManifest(manifest);
+  if (input.command !== undefined) {
+    manifest.command = normalizePluginCommand(input.command, manifest);
   }
+  validateManagedCommandManifest(manifest);
   if (input.nativeTools !== undefined) {
     manifest.nativeTools = normalizeNativeTools(input.nativeTools);
     validateNativeToolsManifest(manifest);

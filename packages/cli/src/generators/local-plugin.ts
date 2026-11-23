@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { preparePluginNativeTools, validateManagedCommandSources, PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import { preparePluginNativeTools, PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { applyFileRules } from '../utils/file-rules.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
@@ -15,7 +15,7 @@ import type {
   CatalogRuntimeImportResolver,
 } from '../utils/catalog-runtime-projection.js';
 import { resolveCanonicalRuntimeSourceIdentity } from '../utils/catalog-runtime-projection.js';
-import { validateManagedCommandPackageClosure } from '../utils/managed-command-closure.js';
+import { validateManagedCommandSourceClosure } from '../utils/managed-command-closure.js';
 import {
   assertManifestPlatformSupport,
   assertPluginInputTree,
@@ -454,19 +454,16 @@ async function copyArtifactSourceDirectories(
   }
 }
 
-async function copyManagedCommandPackages(plugin: PluginMeta, outputRoot: string): Promise<void> {
-  await validateManagedCommandSources(plugin.rootDir, plugin.manifest);
-  for (const commandPackage of plugin.manifest.managedCommands?.packages ?? []) {
-    const relativePath = stripDotSlash(commandPackage.sourceDir);
-    await fs.copy(path.join(plugin.rootDir, relativePath), path.join(outputRoot, relativePath), {
-      overwrite: true,
-      dereference: false,
-    });
-    const entries = (plugin.manifest.managedCommands?.sets ?? []).flatMap((set) =>
-      set.producer.kind === 'package' && set.producer.packageKey === commandPackage.key && set.mode === 'static' ? set.entries : []);
-    await validateManagedCommandPackageClosure(path.join(outputRoot, relativePath), entries);
-  }
-  await validateManagedCommandSources(outputRoot, plugin.manifest);
+async function copyManagedCommandPackage(plugin: PluginMeta, outputRoot: string): Promise<void> {
+  const command = plugin.manifest.command;
+  if (!command) return;
+  await validateManagedCommandSourceClosure(plugin.rootDir, plugin.manifest);
+  const relativePath = stripDotSlash(command.sourceDir);
+  await fs.copy(path.join(plugin.rootDir, relativePath), path.join(outputRoot, relativePath), {
+    overwrite: true,
+    dereference: false,
+  });
+  await validateManagedCommandSourceClosure(outputRoot, plugin.manifest);
 }
 
 async function resolveArtifactRuntimeImports(options: {
@@ -1769,7 +1766,7 @@ export async function bundleLocalPlugin(
       await copyBundleRootFile(plugin.rootDir, outputRoot, stripDotSlash(plugin.manifest.mcpServers));
     }
     await copyArtifactSourceDirectories(plugin, outputRoot);
-    await copyManagedCommandPackages(plugin, outputRoot);
+    await copyManagedCommandPackage(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
     await materializeArtifactRuntimeImports(artifactRuntimeProjection.projections);
     await writeJsonFile(

@@ -117,6 +117,7 @@ export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
 
 export type OwnedSharedLocator =
   | { kind: 'cursor-workspace-hook'; hooksPath: string; ownerKey: string; command: string }
+  | { kind: 'host-permissions'; platform: import('../platforms/host-permission-policy.js').PermissionHost; settingsPath: string; ownerKey: string; hostConfigRoot: string; projectRoot?: string }
   | { kind: 'claude-permissions'; settingsPath: string; ownerKey: string }
   | { kind: 'codex-instruction'; configPath: string; ownerKey: string }
   | {

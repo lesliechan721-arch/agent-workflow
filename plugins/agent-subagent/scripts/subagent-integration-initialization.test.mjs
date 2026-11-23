@@ -123,7 +123,7 @@ for (const environment of [{ status: 'available' }, { status: 'unavailable', cod
 // The same worker result path must retain the safe failure without model input.
 for (const target of ['command', 'entrypoint', ...(process.platform === 'win32' ? [] : ['nonExecutable'])]) test(`custom ${target} failure has a fixed unavailable environment result`, { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  const executor = f.snapshot.effectiveValues.subagentCommands[0];
+  const executor = f.snapshot.values.subagentCommands[0];
   if (target === 'nonExecutable') {
     executor.command = path.join(f.directory, 'non-executable');
     await fs.writeFile(executor.command, 'fixture', { mode: 0o600 });

@@ -5,9 +5,11 @@ import { canonicalizeIdentityValue, canonicalizePluginConfigValues, getCommandPa
 import type { PlatformName, PlatformTarget, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
 import type { ProducerIdentity } from '../types.js';
-import type { NativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
-import type { InstalledCommandSet } from '../utils/managed-command-store.js';
-import type { RetainedManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import type { InstalledCommandProducer } from '@lesliechan721/aw-plugin-core/manifest';
+import type { ManagedCommandPackageEvidence } from '../utils/managed-command-store.js';
+import type { ManagedCommandRouteReview } from '../utils/managed-command-cli-review.js';
+import type { PreparedManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import type { RetainedManagedCommandPackage } from './lifecycle-command-package.js';
 import type { DeploymentExclusion, FrozenDeploymentPlan } from '../platforms/contracts.js';
 
 export interface OperationArtifactFile {
@@ -38,29 +40,29 @@ type OperationActionDefinition =
       kind: 'retainManagedCommandPackage';
       pluginId: string;
       platform?: undefined;
-      scope: Scope;
+      scope: 'user';
     })
-  | {
-      kind: 'materializeNativeSkill';
-      artifactId?: string;
-      pluginId: string;
-      platform: PlatformName;
-      scope: Scope;
-      skillKey: string;
-      files: OperationArtifactFile[];
-      contentDigest: string;
-    }
   | {
       kind: 'syncManagedCommandPackage';
       pluginId: string;
       platform?: undefined;
-      scope: Scope;
+      scope: 'user';
       producer: ProducerIdentity;
-      sets: InstalledCommandSet[];
-      nativeTools?: NativeToolClosure;
-      files: Array<OperationArtifactFile & { mode: number }>;
+      record: InstalledCommandProducer;
+      expectedPackage: ManagedCommandPackageEvidence | null;
+      routeReview: ManagedCommandRouteReview;
+      runtimeConfigChanges: PreparedManagedCommandPackage['runtimeConfigChanges'];
       contentDigest: string;
     }
+  | (RetainedManagedCommandPackage & {
+      kind: 'removeManagedCommandPackage';
+      pluginId: string;
+      platform?: undefined;
+      scope: 'user';
+      expectedPackage: ManagedCommandPackageEvidence;
+      force: boolean;
+      routeReview: ManagedCommandRouteReview;
+    })
   | {
       kind: 'ensureNativeRegistration';
       pluginId: string;
@@ -122,6 +124,7 @@ type OperationActionDefinition =
       scope: Scope;
       path: string;
       ownerFingerprint: string;
+      permissionRemoval?: import('../platforms/permission-ownership.js').PermissionRemovalReview;
     }
   | {
       kind: 'removePluginConfig';
@@ -172,7 +175,7 @@ export interface OperationPlan {
 
 export type OperationPlanInput = Omit<OperationPlan, 'planFingerprint'>;
 
-/** One review surface for native declarations carried by packages or platform Skills. */
+/** Deduplicate a shared package change reviewed by several platform targets. */
 export function operationPlanNativeToolChanges(plan: Pick<OperationPlan, 'actions' | 'nativeToolChanges'> | undefined): NativeToolChange[] {
   if (!plan) return [];
   const changes = new Map<string, NativeToolChange>();
@@ -257,9 +260,7 @@ export function createBatchIntentCompatiblePlanFingerprint(
       pluginId: entry.binding.plugin.pluginId, platform: entry.binding.platform, scope: entry.binding.scope.kind }))),
     deploymentExclusions: plan.deploymentExclusions?.filter((entry) => !ignoredTargetKeys.has(targetKey({
       pluginId: entry.pluginId, platform: entry.platform, scope: entry.scope.kind }))),
-    nativeToolChanges: plan.nativeToolChanges?.filter((entry) => !ignoredTargetKeys.has(targetKey({
-      pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, platform: entry.producer.platform ?? undefined,
-      scope: entry.producer.scope }))),
+    nativeToolChanges: plan.nativeToolChanges,
     intentChanges: plan.intentChanges.map(({ scope }) => ({
       scope,
       beforeDigest: 'batch-intent',

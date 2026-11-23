@@ -21,7 +21,6 @@ import { readScopedRecoveryStatus } from '../../src/recovery/status.js';
 import { observeIntent, writeIntent } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { inspectManagedCommand, publishManagedCommandBindings, readInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -69,19 +68,18 @@ async function fixture() {
     schemaVersion: 4, name: 'native-skills', version: '1.0.0', description: 'Native package fixture',
     platforms,
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-    requires: { aw: { capabilities: ['aw.managed-commands.v1', 'aw.installed-runtime-config.v2'] } },
+    requires: { aw: { capabilities: ['aw.managed-commands.v2', 'aw.installed-runtime-config.v2'] } },
     config: { schemaVersion: 5, fields: { mode: { type: 'string', default: 'common' } }, platforms: {
       codex: { fields: { mode: { type: 'string', default: 'codex-default' } } },
       claude: { fields: { mode: { type: 'string', default: 'claude-default' } } },
     } },
     scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
     artifacts: { configKeys: ['mode'], sourceDirs: ['./skill-resources/native-skill'] },
-    managedCommands: { sets: platforms.map((platform) => ({
-      set: `${platform}-tools`, producer: { kind: 'artifact', platform, artifactId: `${platform}-skill` },
-      mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'scripts/run.mjs' }],
-    })) },
+    command: { sourceDir: './tools', mode: 'static',
+      routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'run.mjs' }] } },
   };
   await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest);
+  await fs.outputFile(path.join(pluginRoot, 'tools', 'run.mjs'), 'export const available = true;\n');
   await fs.outputFile(path.join(pluginRoot, 'skill-resources', 'native-skill', 'scripts', 'run.mjs'), 'export const available = true;\n');
   await fs.outputFile(path.join(pluginRoot, 'skill-resources', 'native-skill', 'README.md'), '# Native Skill\n');
   await fs.outputFile(path.join(pluginRoot, 'skill-resources', 'native-skill', 'agents', 'openai.yaml'),
@@ -100,7 +98,7 @@ if (context.allowedOutputKinds.includes('skill')) {
  if (missing.length) plan.unmet.push({ id: context.platform + '-skill', kind: 'skill', name: 'native-skill',
   requiredFeatures: missing, reasonCode: 'capability-unverified' });
  else plan.components.push({ id: context.platform + '-skill', kind: 'skill', name: 'native-skill', runtimeConfig: { keys: ['mode'] }, content: { files: {
-  'SKILL.md': { text: '---\\nname: native-skill\\ndescription: Native package fixture\\n---\\n# ' + context.config.values.mode + '\\nRun {{aw.command:' + context.platform + '-tools/run}}.\\n' },
+  'SKILL.md': { text: '---\\nname: native-skill\\ndescription: Native package fixture\\n---\\n# ' + context.config.values.mode + '\\nRun {{aw.command}} run.\\n' },
   'README.md': { source: { kind: 'bundle', path: 'skill-resources/native-skill/README.md' } },
   'agents/openai.yaml': { source: { kind: 'bundle', path: 'skill-resources/native-skill/agents/openai.yaml' } },
   'scripts/run.mjs': { source: { kind: 'bundle', path: 'skill-resources/native-skill/scripts/run.mjs' } }
@@ -300,16 +298,12 @@ describe('Native Skill package projection', () => {
     const { isolation, prepare } = await fixture();
     const target = await prepare(platform);
     const skill = skillRoot(target);
-    expect(await fs.readFile(path.join(skill, 'SKILL.md'), 'utf8')).toContain(`# ${platform}-value`);
+    const markdown = await fs.readFile(path.join(skill, 'SKILL.md'), 'utf8');
+    expect(markdown).toContain(`# ${platform}-value`);
+    expect(markdown).toContain('aw command run team/native-skills -- run');
     expect(await fs.pathExists(path.join(skill, 'scripts', 'run.mjs'))).toBe(true);
     expect(await fs.pathExists(path.join(skill, '.agent-workflows-owner.json'))).toBe(false);
-    expect(await fs.readJson(path.join(skill, '.aw-command-producer.json'))).toMatchObject({
-      producer: { platform, scope: 'user', projectRoot: null, kind: 'artifact', key: `${platform}-skill` },
-    });
-    const installed = await readInstalledCommandProducer(skill);
-    const commandIds = await publishManagedCommandBindings({ ...installed, resourceRoot: skill, env: isolation.env });
-    expect(commandIds).toHaveLength(1);
-    expect(await inspectManagedCommand(commandIds[0]!, isolation.env)).toMatchObject({ availability: 'ready' });
+    expect(await fs.pathExists(path.join(skill, '.aw-command-producer.json'))).toBe(false);
     expect(target.desiredOwnedComponents?.some((component) => component.kind === 'skill-directory')).toBe(false);
     for (const root of [path.join(isolation.layout.fixtureCwd, '.agents', 'skills'),
       path.join(isolation.layout.fixtureCwd, '.claude', 'skills'), path.join(isolation.layout.codexHomeDir, 'skills'),

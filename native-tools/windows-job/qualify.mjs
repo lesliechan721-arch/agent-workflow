@@ -25,7 +25,9 @@ export async function qualifyWindowsJobCandidate(options = {}) {
         report.checks.push({ id: 'go-native-tests', passed: true });
         const plugin = path.join(temporary, 'agent-subagent');
         await cp(path.resolve(windowsJobArtifactContract.toolRoot, '../../plugins/agent-subagent'), plugin, { recursive: true, filter: (source) => !source.split(path.sep).includes('node_modules') });
-        await writeFile(path.join(plugin, 'skills/spawn-subagent/scripts/runtime/native-tool-reader.mjs'), createNativeToolReaderSource());
+        const builtCommands = path.resolve(windowsJobArtifactContract.toolRoot, '../../packages/cli/plugins-dist/plugins/agent-subagent/commands');
+        await cp(builtCommands, path.join(plugin, 'commands'), { recursive: true });
+        await writeFile(path.join(plugin, 'commands/scripts/runtime/native-tool-reader.mjs'), createNativeToolReaderSource());
         await runCommand(process.execPath, [path.join(plugin, 'scripts/subagent-windows-file-boundaries.mjs')], {
           env: { AW_NATIVE_TOOL_CONTEXT: context },
         });

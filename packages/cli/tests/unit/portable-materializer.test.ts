@@ -187,15 +187,19 @@ describe('portable materializer', () => {
     async (kind) => {
       const root = await tempRoot('aw-portable-managed-command-');
       const manifest = baseManifest('local-command');
-      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
+      manifest.platforms = ['codex', 'generic'];
+      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v2'] } };
+      manifest.command = { sourceDir: './tools', platforms: ['codex'], mode: 'static',
+        routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'tool.mjs' }] } };
       if (kind === 'dynamic') {
         manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
         manifest.skills = undefined;
         manifest.artifacts = { configKeys: [], scopes: ['user'] };
       }
       const plugin = await pluginFixture(root, manifest);
+      await fs.outputFile(path.join(plugin.rootDir, 'tools', 'tool.mjs'), 'export {};\n');
       if (kind === 'static') {
-        await writeSkill(plugin.rootDir, 'portable', 'Use {{aw.command:tools/run}}.');
+        await writeSkill(plugin.rootDir, 'portable', 'Use {{aw.command}}.');
       } else {
         await fs.ensureDir(path.join(plugin.rootDir, 'scripts'));
         await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
@@ -204,7 +208,7 @@ describe('portable materializer', () => {
             content: { files: {
               'SKILL.md': { text: '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n' },
               'README.md': { text: '# Portable\\n' },
-              'references/command.md': { text: 'Use {{aw.command:tools/run}}.' },
+              'references/command.md': { text: 'Use {{aw.command}}.' },
             } },
           }], omitted: [], unmet: [] }));
         `);
@@ -215,7 +219,9 @@ describe('portable materializer', () => {
       platform: 'generic',
         plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
         env, outputRoot,
-      })).rejects.toThrow(/commandReferenceInvalid.*Generic Skills cannot bind native managed commands/u);
+      })).rejects.toThrow(kind === 'static'
+        ? 'generic is outside command.platforms'
+        : 'commandReferenceInvalid: Portable Skills cannot bind native managed commands');
       await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
       await expect(fs.pathExists(path.join(env.AW_HOME, 'commands'))).resolves.toBe(false);
     },

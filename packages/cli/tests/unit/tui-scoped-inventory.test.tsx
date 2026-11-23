@@ -648,11 +648,13 @@ describe('scoped inventory in Ink', () => {
     await press(instance, '\r');
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'retire',
       scope: 'project', selector: 'official/demo', deleteConfig: false }), expect.anything());
-    await press(instance, '\u001b');
+    await escape(instance);
     await focusAction(instance, 'Agent 管理');
     await press(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('◆ Codex'));
+    await focusAction(instance, '◆ Codex');
     await press(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('› ◇ Codex'));
     await escape(instance);
     expect(checkedFrame(instance, sizes[0]!)).toContain('还有未保存的修改');
     expect(prepareScopedTask).toHaveBeenCalledTimes(1);
@@ -1330,28 +1332,32 @@ describe('scoped inventory in Ink', () => {
 // producer failures and retained-package removal without switching to the legacy executor.
 describe('managed commands in scoped Ink recovery', () => {
   it.each(['sync', 'cleanup'] as const)('keeps command facts through %s Review, Progress and Result', async (command) => {
-    const producer = { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`,
-      pluginName: 'provider', kind: 'package' as const, key: 'tools', platform: null,
-      scope: 'user' as const, projectRoot: null, placementKey: null };
+    const producer = { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'provider' };
+    const selector = 'official/provider';
     const packageId = `pkg_${'2'.repeat(64)}`;
     const remove = `aw command package remove ${packageId} --yes`;
+    const launch = { runner: 'node' as const, entry: 'runtime.mjs', args: ['--fixed', 'value'], env: {}, envFrom: {}, cwd: 'resource' as const };
     const action = command === 'cleanup'
       ? { kind: 'retainManagedCommandPackage' as const, pluginId: 'official/provider', scope: 'user' as const,
-          producer, packageId, commandIds: ['installed-command'], availability: 'ready' as const, recoveryAction: remove }
+          producer, packageId, selector, subcommands: ['worker'], hasFallback: false,
+          availability: 'ready' as const, errors: [], recoveryActions: [remove] }
       : { kind: 'syncManagedCommandPackage' as const, pluginId: 'official/provider', scope: 'user' as const,
-          producer, sets: [{ set: 'guide', state: 'present' as const, entries: [{ key: 'worker', variant: 'default',
-            runner: 'node' as const, entry: 'runtime.mjs', args: ['--fixed', 'value'],
-            env: {}, envFrom: {}, cwd: 'resource' as const }] }], files: [], contentDigest: 'sha256:prepared' };
+          producer, record: { schemaVersion: 2 as const, producer, pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'f'.repeat(64)}`,
+            runtimeConfigPlatforms: [], routes: { subcommands: [{ name: 'worker', ...launch }] } },
+          expectedPackage: null, contentDigest: 'sha256:prepared', runtimeConfigChanges: [],
+          routeReview: { routeChanges: [{ argv: ['aw', 'command', 'run', selector, '--', 'worker'], before: null,
+            after: { ...launch, route: 'subcommand' as const } }], affectedPermissions: [], permissionReadFailures: [],
+            otherProjects: 'unobserved' as const, existingApprovalsMayMatch: false } };
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command,
       ok: command === 'cleanup', intent: { state: 'valid', roots: ['official/demo'] },
       requestedRoots: ['official/demo'], requestedTargets: [],
       selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },
       blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
       declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true,
-      commandResults: [{ producer, state: command === 'cleanup' ? 'completed' : 'failed',
-        commandIds: command === 'cleanup' ? ['installed-command'] : [], removedCommandIds: [],
+      commandResults: [{ producer, packageId, selector, action: 'unchanged', availability: command === 'cleanup' ? 'ready' : 'unavailable',
+        state: command === 'cleanup' ? 'completed' : 'failed', subcommands: command === 'cleanup' ? ['worker'] : [], hasFallback: false,
         errors: command === 'cleanup' ? [] : [{ code: 'commandProducerFailed', message: 'producer failed' }],
-        recoveryActions: command === 'cleanup' ? [remove] : ['aw sync official/demo --scope user --target codex'] }],
+        recoveryActions: command === 'cleanup' ? [remove] : ['aw command package sync official/provider'] }],
     };
     const operationPlan = createOperationPlan({ actions: [action], changes: [], warnings: [], intentChanges: [],
       evidence: { catalogDigests: [], configDigests: [], intentDigests: [], targetOwnerFingerprints: [] } });
@@ -1378,16 +1384,16 @@ describe('managed commands in scoped Ink recovery', () => {
     expect(executeScopedTask).not.toHaveBeenCalled();
     await press(instance, 'd');
     const reviewPages = await readScopedPages(instance, size);
-    expect(reviewPages).toContain('命令包 tools');
+    expect(reviewPages).toContain('命令包 official/provider');
     await press(instance, 'y');
     await vi.waitFor(() => expect(copied).toHaveBeenCalledTimes(1));
     const review = String(copied.mock.lastCall?.[0]);
-    expect(review.match(/命令包 tools/gu)).toHaveLength(1);
+    expect(review.match(/命令包 official\/provider/gu)).toHaveLength(1);
     if (command === 'sync') {
       expect(review).toContain('official/provider');
-      expect(review).toContain('更新会影响全部引用者');
-      expect(review).toContain('guide/worker/default');
-      expect(review).toContain('固定参数 ["--fixed","value"]');
+      expect(review).toContain('更新会影响所有引用者');
+      expect(review).toContain('aw command run official/provider -- worker');
+      expect(review).toContain('["runtime.mjs","--fixed","value"]');
     } else {
       expect(review).toContain('所有项目共用');
       expect(review).toContain(remove);
@@ -1397,11 +1403,11 @@ describe('managed commands in scoped Ink recovery', () => {
     await press(instance, '\r');
     await vi.waitFor(() => expect(executeScopedTask).toHaveBeenCalledOnce());
     feed.addEvent({ type: 'managed-command:producer', source: { plugin: 'provider', scope: 'user' },
-      data: { packageKey: 'tools', phase: 'start' } });
+      data: { selector, phase: 'start' } });
     await tick();
     expect(checkedFrame(instance, size)).toContain('刷新命令包');
     await press(instance, 'y');
-    expect(String(copied.mock.lastCall?.[0])).toContain(command === 'sync' ? '固定参数' : remove);
+    expect(String(copied.mock.lastCall?.[0])).toContain(command === 'sync' ? '--fixed' : remove);
     finish({ kind: 'recovery', receipt });
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     expect(checkedFrame(instance, size)).toContain(command === 'sync'
@@ -1417,7 +1423,7 @@ describe('managed commands in scoped Ink recovery', () => {
       expect(result).toContain('failed');
       expect(result).toContain('commandProducerFailed');
     } else {
-      expect(result).toContain('保留命令包：所有项目共用');
+      expect(result).toContain('所有项目共用');
       expect(result).toContain(remove);
     }
     instance.unmount();

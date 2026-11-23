@@ -1,44 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import type { NormalizedPluginManifest } from '../../src/types.js';
-import { validateArtifactPlan, createArtifactConfigDigest } from '../../src/utils/artifact-plan.js';
+import { validateCommandRoutesPlan } from '../../src/utils/artifact-plan.js';
 
-// Test Value Gate: command v2 responses must exactly match their independent request.
-const manifest: NormalizedPluginManifest = { schemaVersion: 4, name: 'commands-test', version: '1.0.0', description: 'Commands',
-  marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-  scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-  managedCommands: { packages: [{ key: 'tools', scope: 'user', platforms: ['codex'], sourceDir: './tools', render: true, refreshKeys: [] }],
-    sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'dynamic', refreshKeys: [] }] } };
-const artifacts = [
-  { id: 'command-package.tools', target: 'aw.command-package', kind: 'commandPackage', state: 'present', refreshKeys: [], files: { 'settings.json': '{}' } },
-  { id: 'command-set.tools', target: 'aw.command-set', kind: 'commandSet', state: 'present', refreshKeys: [], entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] },
-];
-function validate(plan: unknown) {
-  return validateArtifactPlan({ manifest, plan, platform: 'managed-commands', scope: 'user',
-    requestedArtifactIds: ['command-package.tools', 'command-set.tools'], renderConfig: { values: {}, sources: {}, issues: [] } });
-}
-describe('independent v2 command artifact plan', () => {
-  it('accepts exact IDs and preserves command declarations', () => {
-    const result = validate({ version: 2, artifacts });
-    expect(result.artifacts.map((entry) => entry.id)).toEqual(['command-package.tools', 'command-set.tools']);
-    expect(result.artifacts[1]).toMatchObject({ entries: [{ key: 'run', variant: 'default' }] });
+const artifact = {
+  id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes', refreshKeys: ['mode'],
+  routes: { subcommands: [{ name: 'export', runner: 'node', entry: 'run.mjs' }] },
+};
+const validate = (artifacts: unknown[]) => validateCommandRoutesPlan({ version: 2, artifacts }, ['mode']);
+
+describe('dynamic route artifact plan', () => {
+  // The renderer response either replaces the whole table or fails validation before publication.
+  it('normalizes launched commands and accepts an empty table', () => {
+    expect(validate([artifact])).toMatchObject({ ...artifact, routes: { subcommands: [{ name: 'export', entry: 'run.mjs', args: [], cwd: 'caller' }] } });
+    expect(validate([{ ...artifact, routes: {} }]).routes).toEqual({ subcommands: [] });
   });
-  it('rejects missing, duplicate, extra, platform and unknown fields', () => {
-    for (const values of [artifacts.slice(1), [...artifacts, artifacts[0]], [...artifacts, { ...artifacts[0], id: 'extra' }],
-      [{ ...artifacts[0], platform: 'codex' }, artifacts[1]], [{ ...artifacts[0], owner: 'author' }, artifacts[1]]]) {
-      expect(() => validate({ version: 2, artifacts: values })).toThrow();
+
+  it('requires one artifact with the declared identity and refresh keys', () => {
+    for (const artifacts of [[], [artifact, artifact], [artifact, { ...artifact, id: 'extra' }],
+      [{ ...artifact, id: 'wrong' }], [{ ...artifact, target: 'aw.command-set' }], [{ ...artifact, kind: 'commandSet' }],
+      [{ ...artifact, refreshKeys: [] }], [{ ...artifact, refreshKeys: ['external'] }],
+      [{ ...artifact, platform: 'codex' }], [{ ...artifact, owner: 'author' }], [{ ...artifact, files: {} }]]) {
+      expect(() => validate(artifacts)).toThrow();
     }
-    expect(() => validate({ version: 3, components: [], omitted: [], unmet: [] })).toThrow();
+    expect(() => validateCommandRoutesPlan({ version: 3, artifacts: [artifact] }, ['mode'])).toThrow();
+    expect(() => validateCommandRoutesPlan({ version: 2, artifacts: [artifact], extra: true }, ['mode'])).toThrow();
   });
-  it('rejects component targets and disabled command sets with entries', () => {
-    expect(() => validate({ version: 2, artifacts: [{ ...artifacts[0], target: 'codex.skill' }, artifacts[1]] })).toThrow();
-    expect(() => validate({ version: 2, artifacts: [artifacts[0], { ...artifacts[1], state: 'disabled' }] })).toThrow();
-  });
-  it('limits command config evidence to selected refresh inputs and renderer identity', () => {
-    const options = { artifact: { id: 'command-set.tools', target: 'aw.command-set', refreshKeys: ['enabled'] },
-      digestSalt: 'renderer', renderConfig: { values: { enabled: false, unrelated: 'a' }, sources: { enabled: 'common' as const }, issues: [] } };
-    const digest = createArtifactConfigDigest(options);
-    expect(createArtifactConfigDigest({ ...options, renderConfig: { ...options.renderConfig, values: { enabled: false, unrelated: 'b' } } })).toBe(digest);
-    expect(createArtifactConfigDigest({ ...options, renderConfig: { ...options.renderConfig, values: { enabled: true, unrelated: 'a' } } })).not.toBe(digest);
-    expect(createArtifactConfigDigest({ ...options, digestSalt: 'other-renderer' })).not.toBe(digest);
+
+  it('rejects duplicate names and entries outside author-owned resources', () => {
+    const [launch] = artifact.routes.subcommands;
+    for (const subcommands of [[launch, launch], [{ ...launch, entry: '../outside.mjs' }],
+      [{ ...launch, entry: '.aw/injected.mjs' }], [{ ...launch, runner: 'shell' }]]) {
+      expect(() => validate([{ ...artifact, routes: { subcommands } }])).toThrow();
+    }
   });
 });

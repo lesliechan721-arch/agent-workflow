@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { antigravityPermissionRule, antigravityPermissionRules, antigravitySettingsPath, prepareAntigravityPermission, assertAntigravityPermissionAllowed } from '../skills/spawn-subagent/scripts/adapters/antigravity-permissions.mjs';
+import { antigravityPermissionRule, antigravityPermissionRules, antigravitySettingsPath, prepareAntigravityPermission, assertAntigravityPermissionAllowed } from '../commands/scripts/adapters/antigravity-permissions.mjs';
 
 const options = { skip: !['darwin', 'linux'].includes(process.platform) };
 async function fixture(t, value) {
@@ -11,7 +11,7 @@ async function fixture(t, value) {
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const command = await fs.realpath(process.execPath), script = path.join(home, 'message.mjs');
   await fs.writeFile(script, 'export {};\n', { mode: 0o600 });
-  const args = [script, 'command', 'run', 'cmdp_0123456789abcdef', '--'];
+  const args = [script, 'command', 'run', 'one/agent-subagent', '--', 'message'];
   const environment = { HOME: home }, target = antigravitySettingsPath(environment);
   const directory = path.join(home, 'runtime');
   await fs.mkdir(directory, { mode: 0o700 });
@@ -59,28 +59,47 @@ test('Antigravity missing user settings stay absent while each execution gets it
   await assert.rejects(fs.access(path.join(f.home, '.gemini')), { code: 'ENOENT' });
 });
 
+function legacyRawRule(rawRule) {
+  const argument = String.raw`(?:[\x20\t]+(?:[-A-Za-z0-9_./:@%+=,]`;
+  const prefix = rawRule.slice(0, rawRule.indexOf(argument));
+  return prefix + argument + String.raw`+|'[^']*'|"(?:[^"\\$\x60]|\\[^\r\n])*"|\\[^\r\n])+)*[\x20\t]*)`;
+}
+
 test('Antigravity existing exact grants are not duplicated in the session override', options, async (t) => {
   const f = await fixture(t);
-  const rules = antigravityPermissionRules(f.command, f.args);
+  const [prefix, raw] = antigravityPermissionRules(f.command, f.args);
+  const legacy = legacyRawRule(raw);
+  assert.notEqual(legacy, raw);
+  for (const rule of [raw, legacy]) {
+    const matcher = new RegExp(`^(?:${rule.slice('command(regex:'.length, -1)})$`, 'u');
+    assert.equal(matcher.test(`"${f.command}" '${f.args[0]}' ${f.args.slice(1).join(' ')} receive --timeout-ms 0`), true);
+  }
   await fs.mkdir(f.userDirectory, { recursive: true, mode: 0o700 });
   await fs.chmod(path.dirname(f.userDirectory), 0o700);
-  const original = JSON.stringify({ permissions: { allow: rules }, preserve: true });
-  await fs.writeFile(f.target, original, { mode: 0o600 });
-  const result = await prepareAntigravityPermission(f);
-  assert.deepEqual(JSON.parse(await fs.readFile(result.settingsFile, 'utf8')), { permissions: { allow: rules } });
-  assert.equal(await fs.readFile(f.target, 'utf8'), original);
+  for (const existingRaw of [raw, legacy]) {
+    const rules = [prefix, existingRaw];
+    const original = JSON.stringify({ permissions: { allow: rules }, preserve: true });
+    await fs.writeFile(f.target, original, { mode: 0o600 });
+    const result = await prepareAntigravityPermission(f);
+    assert.deepEqual(JSON.parse(await fs.readFile(result.settingsFile, 'utf8')), { permissions: { allow: rules } });
+    assert.equal(await fs.readFile(f.target, 'utf8'), original);
+  }
 });
 
 // Permission boundary: quoted entry forms must not authorize another program,
 // Node options before the script, shell expansion, redirects or command chains.
 // Explicit POSIX targets must use the same literal paths on every host.
-test('Antigravity quoted-entry regex accepts literal arguments only', () => {
+test('Antigravity permissions isolate the message route and accept literal arguments only', () => {
   const node = '/opt/node.v24/bin/node', script = '/opt/aw/cli.mjs';
-  const args = [script, 'command', 'run', 'cmdp_0123456789abcdef', '--'];
+  const args = [script, 'command', 'run', 'one/agent-subagent', '--', 'message'];
   for (const platform of ['darwin', 'linux']) {
     assert.equal(antigravityPermissionRule(node, args, platform), `command(${[node, ...args].join(' ')})`);
     for (const invalid of ['/opt/aw/../message.mjs', '/opt//message.mjs', 'C:\\aw\\message.mjs']) {
       assert.throws(() => antigravityPermissionRule(node, [invalid, ...args.slice(1)], platform), { code: 'communicationPermissionUnsupported' });
+    }
+    assert.throws(() => antigravityPermissionRule(node, args.slice(0, -1), platform), { code: 'communicationPermissionUnsupported' });
+    for (const action of ['start', 'stop']) {
+      assert.throws(() => antigravityPermissionRule(node, [...args.slice(0, -1), action], platform), { code: 'communicationPermissionUnsupported' });
     }
   }
   assert.throws(() => antigravityPermissionRules(node, args, 'win32'), { code: 'communicationPermissionUnsupported' });
@@ -91,12 +110,16 @@ test('Antigravity quoted-entry regex accepts literal arguments only', () => {
   const matches = (command) => matcher.exec(command)?.[0] === command;
   for (const entry of [node, `'${node}'`, `"${node}"`]) for (const module of [script, `'${script}'`, `"${script}"`]) {
     for (const args of ["--bridge /tmp/run-2/binding.json send --text 'hello 世界'", "'send' '--text' 'a;b|c$(x)\nnext'", String.raw`send --text 'it'\''s'`, String.raw`send --text "say \"hello\" \$HOME"`, 'receive --timeout-ms 0', '--help']) {
-      assert.equal(matches(`${entry} ${module} command run cmdp_0123456789abcdef -- ${args}`), true, `${entry} ${module} command run cmdp_0123456789abcdef -- ${args}`);
+      const call = `${entry} ${module} command run one/agent-subagent -- 'message' ${args}`;
+      assert.equal(matches(call), true, call);
     }
   }
-  const base = `'${node}' '${script}' command run cmdp_0123456789abcdef --`;
+  const parent = `'${node}' '${script}' command run one/agent-subagent --`;
+  const base = `${parent} message`;
   for (const command of [
-    `${base}.suffix --help`, `${base.replace('cmdp_0123456789abcdef', 'cmdp_ffffffffffffffff')} --help`, `${base.replace('command run', 'command remove')} --help`, `'${node}' '${script}.suffix' --help`,
+    parent, `${parent} start --platform codex --executor fixture`, `${parent} stop --run fixture`,
+    `${base}.suffix --help`, `${base.replace('one/agent-subagent', 'two/agent-subagent')} --help`,
+    `${base.replace('command run', 'command remove')} --help`, `'${node}' '${script}.suffix' --help`,
     `'${node}' --eval '1' '${script}'`, `'${node}' /other.mjs`,
     base.replace('node.v24', 'nodeXv24'), `${base} --help; whoami`, `${base} --help && whoami`,
     `${base} --help | cat`, `${base} --help > /tmp/output`, `${base}\nwhoami`, `${base}\n`,

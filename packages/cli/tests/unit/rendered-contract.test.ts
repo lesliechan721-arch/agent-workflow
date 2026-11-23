@@ -8,13 +8,16 @@ import {
 import { validateRenderedClaudePermissions, validateRenderedHooksContent } from '../../src/utils/rendered-contract.js';
 
 describe('rendered contract validators', () => {
-  it('allows a managed command trailing wildcard without opening legacy shell patterns', () => {
-    const prefix = `aw command run cmdp_${'a'.repeat(16)} -- wait`;
+  it('allows trailing word wildcards in Bash rules and limits sandbox patterns to managed commands', () => {
+    const prefix = 'aw command run team/plugin -- wait';
     expect(() => validateRenderedClaudePermissions({
-      allow: [`Bash(${prefix} *)`], ask: [], deny: [], excludedCommands: [`${prefix} *`],
+      allow: [`Bash(${prefix} *)`, 'Bash(printf sample *)'], ask: [], deny: [], excludedCommands: [`${prefix} *`],
     })).not.toThrow();
-    for (const value of ['aw *', `${prefix}*`, `${prefix} && echo x *`, `${prefix} * *`]) {
+    for (const value of [' *', `${prefix}*`, `${prefix} && echo x *`, `${prefix} * *`]) {
       expect(() => validateRenderedClaudePermissions({ allow: [`Bash(${value})`], ask: [], deny: [] })).toThrow();
+      expect(() => validateRenderedClaudePermissions({ allow: [], ask: [], deny: [], excludedCommands: [value] })).toThrow();
+    }
+    for (const value of ['aw *', 'printf sample *']) {
       expect(() => validateRenderedClaudePermissions({ allow: [], ask: [], deny: [], excludedCommands: [value] })).toThrow();
     }
   });

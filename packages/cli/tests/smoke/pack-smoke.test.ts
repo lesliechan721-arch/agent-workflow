@@ -903,16 +903,16 @@ describe('pack smoke', () => {
     const packedManifest = await fs.readJson(packedManifestPath);
     expect(await fs.readJson(path.join(packedPluginRoot, '.mcp.json'))).toEqual({ mcpServers: {} });
     packedManifest.skills = './skills';
-    packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } };
-    packedManifest.managedCommands = {
-      packages: [{ key: 'native-tool', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
-      sets: [{ set: 'native-tools', producer: { kind: 'package', packageKey: 'native-tool' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
+    packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v2', 'aw.native-tools.v3'] } };
+    packedManifest.command = {
+      mode: 'static', platforms: ['codex', 'claude'], sourceDir: './command',
+      routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'entry.mjs' }] },
     };
     packedManifest.nativeTools = {
       reader: './command/native-reader.mjs',
       definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],
       consumers: [
-        { kind: 'managed-command-set', key: 'native-tools', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
+        { kind: 'plugin-command', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
         { kind: 'plugin-test', key: 'node', tools: [{ key: 'job', platforms: ['win32'], policy: 'required' }] },
       ],
     };
@@ -1156,19 +1156,24 @@ describe('pack smoke', () => {
         })]),
       });
     // Independent command packages do not require a qualified Native component.
+    const selector = `${developmentSourceId}/packed-build`;
     const nativePackageSync = await execAw([
-      'command', 'package', 'sync', `${developmentSourceId}/packed-build`, 'native-tool',
-      '--scope', 'user', '--yes', '--json',
+      'command', 'package', 'sync', selector, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     expect(readCommandResult(nativePackageSync.stdout, 'command.package.sync')).toMatchObject({ status: 'success' });
     const commandList = await execAw(['command', 'list', '--json'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
-    const managedCommands = readCommandResult(commandList.stdout, 'command.list');
-    const nativeCommand = managedCommands.data.commands.find((command: { name: string }) => command.name === 'native-tools/run/default');
-    expect(nativeCommand).toMatchObject({ availability: 'ready', owner: { kind: 'plugin', producer: {
-      kind: 'package', key: 'native-tool', sourceId: developmentSourceId, pluginName: 'packed-build', scope: 'user', platform: null,
-    } } });
+    const listedPackages = readCommandResult(commandList.stdout, 'command.list').data.packages;
+    const listedPackage = listedPackages.find((command: { selector: string }) => command.selector === selector);
+    expect(listedPackage).toMatchObject({ availability: 'ready', subcommands: ['run'], hasFallback: false });
+    const commandShow = await execAw(['command', 'show', selector, '--json'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    const [nativeCommand] = readCommandResult(commandShow.stdout, 'command.show').data.commands;
+    expect(nativeCommand).toMatchObject({
+      selector, packageId: listedPackage.packageId, availability: 'ready',
+      owner: { kind: 'plugin', producer: { sourceId: developmentSourceId, pluginName: 'packed-build' } },
+      routes: { subcommands: [expect.objectContaining({ name: 'run', runner: 'node', entry: 'entry.mjs' })] },
+    });
     expect(await fs.pathExists(path.join(nativeCommand.resourceRoot, 'native-reader.mjs'))).toBe(true);
-    const commandRun = await execAw(['command', 'run', nativeCommand.id, '--', 'packed-argument'], {
+    const commandRun = await execAw(['command', 'run', selector, '--', 'run', 'packed-argument'], {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
     expect(JSON.parse(commandRun.stdout)).toEqual(['packed-argument']);

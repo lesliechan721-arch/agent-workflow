@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
+import { normalizeCommandRoutes } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createPlatformEmptyState, createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformDeliveryState, writePlatformEmptyState, type PlatformInputEvidence } from '../../src/utils/platform-empty-state.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
@@ -115,10 +116,8 @@ describe('native intentional empty currentness', () => {
       manifest: { schemaVersion: 4, name: 'empty', version: '1.0.0', description: 'Empty', platforms: ['codex'],
         marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
         artifacts: { configKeys: ['enabled'], scopes: ['user'] },
-        managedCommands: { packages: [], sets: [
-          { set: 'tools', producer: { kind: 'artifact', platform: 'codex', artifactId: 'tool' }, mode: 'dynamic', refreshKeys: ['commandMode'] },
-          { set: 'other', producer: { kind: 'artifact', platform: 'claude', artifactId: 'other' }, mode: 'dynamic', refreshKeys: ['otherMode'] },
-        ] },
+        command: { sourceDir: './commands', platforms: ['codex'], mode: 'dynamic', refreshKeys: ['commandMode'] },
+        extensions: { permissions: [{ name: 'exports', allow: [{ argsPrefix: ['export'] }] }] },
         config: { schemaVersion: 5, fields: { enabled: { type: 'boolean', default: false },
           commandMode: { type: 'string', default: 'old' }, otherMode: { type: 'string', default: 'other' } }, platforms: {} },
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } } };
@@ -167,10 +166,18 @@ describe('native intentional empty currentness', () => {
     const commandConfig = structuredClone(units);
     for (const unit of commandConfig) unit.config.values.commandMode = 'saved';
     const commandState = await createPlatformEmptyState({ plugin, binding, units: commandConfig });
-    expect(await matchesPlatformEmptyState({ state: commandState, env: ctx.env })).toBe(false);
+    expect(await matchesPlatformEmptyState({ state: commandState, env: ctx.env })).toBe(true);
+    const routes = normalizeCommandRoutes({ subcommands: [{ name: 'message', runner: 'node', entry: 'message.mjs' }] });
+    const skillState = await createPlatformEmptyState({ plugin, binding, units, commandRoutes: routes });
     for (const unit of units) {
-      expect(commandState.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest === state.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest)
+      expect(skillState.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest === state.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest)
         .toBe(!unit.renderUnit.kinds.includes('skill'));
+    }
+    const allowRoutes = normalizeCommandRoutes({ subcommands: [{ name: 'export', runner: 'node', entry: 'export.mjs' }] });
+    const allowState = await createPlatformEmptyState({ plugin, binding, units, commandRoutes: allowRoutes });
+    for (const unit of units) {
+      expect(allowState.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest === skillState.units.find((entry) => entry.id === unit.renderUnit.id)!.inputDigest)
+        .toBe(unit.renderUnit.output !== 'package');
     }
     const otherConfig = structuredClone(units);
     for (const unit of otherConfig) unit.config.values.otherMode = 'saved';

@@ -313,7 +313,7 @@ describe('plugin script test runner', () => {
     const nativeManifestPath = path.join(nativePluginRoot, '.agents-plugin', 'plugin.json');
     const nativeManifest = await fs.readJson(nativeManifestPath);
     const fixture = nativeToolFixture({ kind: 'plugin-test', consumer: 'node', policy: 'preferred' });
-    nativeManifest.requires = { aw: { capabilities: ['aw.native-tools.v2'] } };
+    nativeManifest.requires = { aw: { capabilities: ['aw.native-tools.v3'] } };
     nativeManifest.nativeTools = { definitions: fixture.closure.definitions, consumers: fixture.closure.consumers };
     await fs.writeJson(nativeManifestPath, nativeManifest);
     const contextFile = path.join(repoRoot, 'native-context.json');
@@ -1280,6 +1280,46 @@ describe('plugin script test runner', () => {
   });
 });
 
+// Test Value Gate: real Node imports must resolve a trusted AW reader in the
+// isolated test bundle even though the author command source omits it.
+it('stages declared generated readers for tests of a command package', async () => {
+  const repoRoot = await makeTempRepo();
+  await configureTestManifest({ repoRoot, testEntries: ['./scripts/command.test.mjs'] });
+  const manifest = await readManifest(repoRoot);
+  manifest.requires = { aw: { capabilities: ['aw.managed-commands.v2', 'aw.native-tools.v3'] } };
+  manifest.nativeTools = nativeToolFixture().closure;
+  manifest.config = { fields: { message: { type: 'string', default: 'hello' } } };
+  manifest.command = {
+    sourceDir: './command', mode: 'static', platforms: ['claude'],
+    runtimeConfig: { keys: ['message'] }, routes: { fallback: { runner: 'node', entry: 'entry.mjs' } },
+  };
+  await writeManifest(repoRoot, manifest);
+  await fs.outputFile(path.join(pluginRoot(repoRoot), 'command', 'entry.mjs'), [
+    'export { readCommandRuntimeConfig } from "./.aw/command-runtime-config.mjs";',
+    'export { readNativeTool } from "./.aw/native-tool-reader.mjs";',
+  ].join('\n'));
+  await writeNodeTestFile(repoRoot, 'command.test.mjs', [
+    'import test from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { readCommandRuntimeConfig, readNativeTool } from "../command/entry.mjs";',
+    'test("command readers load", () => {',
+    '  assert.equal(typeof readCommandRuntimeConfig, "function");',
+    '  assert.equal(typeof readNativeTool, "function");',
+    '});',
+  ].join('\n'));
+
+  const output = captureOutput();
+  const run = () => runPluginScriptTests(['git-commit', '--platform', 'claude'], {
+    repoRoot, stdout: output.stdout, stderr: output.stderr,
+  });
+  expect(await run(), output.readStderr()).toBe(0);
+  expect(await fs.pathExists(path.join(pluginRoot(repoRoot), 'command', '.aw'))).toBe(false);
+  await writeNodeTestFile(repoRoot, 'command.test.mjs',
+    'import "../command/.aw/command-runtime-config.mjs";\n');
+  expect(await run()).toBe(1);
+  expect(output.readStderr()).toContain('Unable to resolve relative import "../command/.aw/command-runtime-config.mjs"');
+});
+
 // Test Value Gate: observe injected host tools, preferred backends, and refusal before consumer side effects.
 describe('plugin test native preparation', () => {
   async function prepareNativeTest(policy: 'required' | 'preferred' = 'required', protocol = 'aw.windows-job.v1') {
@@ -1287,9 +1327,18 @@ describe('plugin test native preparation', () => {
     await configureTestManifest({ repoRoot, testEntries: ['./scripts/native.test.mjs'] });
     const manifest = await readManifest(repoRoot);
     const fixture = nativeToolFixture({ kind: 'plugin-test', consumer: 'node', policy, protocol });
-    manifest.requires = { aw: { capabilities: ['aw.native-tools.v2'] } };
-    manifest.nativeTools = { definitions: fixture.closure.definitions, consumers: fixture.closure.consumers };
+    manifest.requires = { aw: { capabilities: ['aw.managed-commands.v2', 'aw.native-tools.v3'] } };
+    manifest.command = { sourceDir: './command', mode: 'static', platforms: ['claude'],
+      routes: { fallback: { runner: 'node', entry: 'entry.mjs' } } };
+    // Only the plugin-test consumer's tool should be available to the Node tests.
+    manifest.nativeTools = {
+      definitions: [...fixture.closure.definitions, { key: 'command-job', protocol: 'aw.windows-job.v1' }],
+      consumers: [...fixture.closure.consumers, {
+        kind: 'plugin-command', tools: [{ key: 'command-job', platforms: ['win32'], policy: 'required' }],
+      }],
+    };
     await writeManifest(repoRoot, manifest);
+    await fs.outputFile(path.join(repoRoot, 'plugins', 'git-commit', 'command', 'entry.mjs'), 'export {};\n');
     const startedFile = path.join(repoRoot, 'consumer-started');
     await writeNodeTestFile(repoRoot, 'native.test.mjs', [
       'import test from "node:test";', 'import assert from "node:assert/strict";', 'import fs from "node:fs";',

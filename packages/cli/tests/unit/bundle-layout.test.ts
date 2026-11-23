@@ -337,12 +337,10 @@ describe('bundle layout validation', () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
-      manifest.managedCommands = {
-        packages: [{ key: 'tools', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools/runtime' }],
-        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' }, mode: 'static', entries: [
-          { key: 'run', runner: 'node', entry: 'bin/run.mjs' },
-        ] }],
+      manifest.requires = { aw: { capabilities: ['aw.managed-commands.v2'] } };
+      manifest.command = {
+        sourceDir: './tools/runtime', mode: 'static', platforms: ['claude'],
+        routes: { subcommands: [{ name: 'run', runner: 'node', entry: 'bin/run.mjs' }] },
       };
     });
     await fs.outputFile(path.join(pluginRoot, 'tools/runtime/bin/run.mjs'), 'import "../lib/helper.mjs";\n');
@@ -353,6 +351,8 @@ describe('bundle layout validation', () => {
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(embeddedRoot);
+    const bundledManifest = await fs.readJson(path.join(embeddedRoot, 'plugins/git-commit/.agents-plugin/plugin.json'));
+    expect(bundledManifest.command).toMatchObject({ sourceDir: './tools/runtime', platforms: ['claude'] });
     const bundlePackageRoot = path.join(embeddedRoot, 'plugins/git-commit/tools/runtime');
     await expect(fs.readFile(path.join(bundlePackageRoot, 'data/resource.bin'))).resolves.toEqual(bytes);
     await expect(fs.pathExists(path.join(bundlePackageRoot, 'empty'))).resolves.toBe(true);

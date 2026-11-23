@@ -33,7 +33,7 @@ describe('user config sharing projection in a project context', () => {
             { platform: 'codex', scope: 'project' },
           ],
           sharedNativeRenderUnits: [{ pluginName: 'demo', platform: 'codex', renderScope: 'user',
-            configKeys: ['mode', 'token'], dynamicComponents: false, commandSets: [] }],
+            configKeys: ['mode', 'token'], dynamicComponents: false }],
         },
       },
     });

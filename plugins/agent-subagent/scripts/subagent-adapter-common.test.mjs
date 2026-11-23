@@ -8,10 +8,10 @@ import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
-import { renderCommunicationInstructions, summarizeDiagnostics } from '../skills/spawn-subagent/scripts/adapters/common.mjs';
-import { validateFrame } from '../skills/spawn-subagent/scripts/runtime/protocol.mjs';
-import { createChildBridge } from '../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs';
-import { protectPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
+import { renderCommunicationInstructions, summarizeDiagnostics } from '../commands/scripts/adapters/common.mjs';
+import { validateFrame } from '../commands/scripts/runtime/protocol.mjs';
+import { createChildBridge } from '../commands/scripts/runtime/adapter-channel.mjs';
+import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const scripts = guideRuntimeScripts(import.meta.url);

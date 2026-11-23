@@ -76,7 +76,7 @@ aw dev plugin capabilities --surface config --json
 - `scripts`：保留 `artifacts.render`、`preApply`、`helpers`、`node`、`tests` 的 Node 脚本入口。
 - `buildConfig`：保留 `cacheable`、`templates`、`fileRules`、`runtimeExports`、`buildImports`、`skillRuntimeFiles`、`generatedSkillRuntimeFiles`；资源合同见[运行时](plugin-runtime.md#1-资源声明与构建引入)。
 - `interface`：展示元数据；`config`：本文件的 Config Definition v5。
-- `managedCommands`：独立托管命令包及 Skill 命令集合，见[托管命令](managed-commands.md)。
+- `command`：按来源和插件发布的共享命令包，支持静态或动态路由和按平台的运行配置快照，见[托管命令](managed-commands.md)。
 - `nativeTools`：带 `definitions` 和 `consumers` 的原生协议要求，见[原生工具](native-tools.md)。
 
 - `schemaVersion`：必须显式为整数 `4`，其他版本拒绝读取。
@@ -135,7 +135,7 @@ type InstructionContent = {
 | `instructions` | `{ name, title, content, paths?, coverage, agentOverrides? }` |
 | `hooks` | `{ id, event, feedback, matcher?, command?, requires?, agentOverrides? }` |
 | `nativeHooks` | 平台 ID 到 `{ id, event, feedback, matcher?, command, requires? }[]` 的映射 |
-| `permissions` | 保留 allow/ask/deny、结构化托管命令引用及已支持的 Claude sandbox 策略，见[命令权限](managed-commands.md#a5-引用与权限) |
+| `permissions` | 保留 allow/ask/deny、托管命令的 `argsPrefix` 声明及 Claude sandbox 策略，见[命令权限](managed-commands.md#skill-引用与宿主权限) |
 
 公共 Hook 的 `event` 为 `before_tool | after_tool | session_start`，`feedback` 必填，为 `notify | context | block`。应用 override 后必须有 `command`。原生事件只接受该平台 registry 登记的事件和反馈合同；generic 不支持 Hooks。两种 Hook 的 `requires` 都是 `FeatureRequirement[]`。通知不等于阻断，不得丢弃必需反馈后报告成功。
 

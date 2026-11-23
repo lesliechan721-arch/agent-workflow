@@ -933,7 +933,7 @@ describe('ConsoleAppV4', () => {
           affectedTargets: [{ platform: 'codex', scope: 'user' }],
           sharedNativeRenderUnits: [{
             pluginName: 'enhance', platform: 'codex', renderScope: 'user',
-            configKeys: ['exploreWait'], dynamicComponents: true, commandSets: [],
+            configKeys: ['exploreWait'], dynamicComponents: true,
           }],
         },
       }),
@@ -999,7 +999,7 @@ describe('ConsoleAppV4', () => {
           affectedTargets: [{ platform: 'codex', scope: 'user' }],
           sharedNativeRenderUnits: [{
             pluginName: 'enhance', platform: 'codex', renderScope: 'user',
-            configKeys: ['exploreWait'], dynamicComponents: true, commandSets: [],
+            configKeys: ['exploreWait'], dynamicComponents: true,
           }],
         },
       }),

@@ -1,7 +1,8 @@
 import type { Scope, CatalogGenerationCandidateEvidence } from '../types.js';
 import type { CommandExecutionContextInput } from './runtime.js';
 import { createCommandExecutionContext } from './runtime.js';
-import { commandResult, type CommandResult, type Confirmation } from '../output/public-result.js';
+import { commandResult, inactiveCommandPermissionEffects, type CommandResult, type Confirmation } from '../output/public-result.js';
+import { describeManagedCommandRouteReview, describeManagedCommandRuntimeConfigChanges } from '../utils/managed-command-cli-review.js';
 import { type LifecycleData, publicDiagnostic, receiptResult, mergeProducerResults } from './public-lifecycle-result.js';
 import { addRequirements, intentRemove, intentReceipt } from './intent-command.js';
 import { observeIntent } from '../intent/intent-store.js';
@@ -23,7 +24,9 @@ import { parseScriptTimeoutMs } from './options.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js';
-import { deploymentConfirmationEffects } from './deployment-confirmation.js';
+import { additionalPermissionEffects, deploymentConfirmationEffects, relatedProjectPermissionEffects, restorationEffects } from './deployment-confirmation.js';
+import { HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
+import type { OperationAction } from './operation-plan.js';
 
 export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
@@ -48,6 +51,23 @@ function codeOf(error: unknown): string {
 
 export function effectsForPlan(plan: RecoveryPlan, pendingSourceIds: readonly string[] = []): Confirmation['effects'] {
   const effects: Confirmation['effects'] = [];
+  const addCommandPackageEffects = (action: Extract<OperationAction, { kind: 'syncManagedCommandPackage' | 'removeManagedCommandPackage' }>) => {
+    const subject = { pluginId: action.pluginId, scope: 'user' as const };
+    if (action.kind === 'removeManagedCommandPackage') effects.push({ code: 'removeCommandPackage',
+      message: `Remove the shared command package for ${action.pluginId}. Its entry points will stop working in all projects.`,
+      subject, impact: 'user-wide' });
+    for (const message of describeManagedCommandRouteReview(action.routeReview)) effects.push({
+      code: 'changeCommandRoutes', message, subject, impact: 'user-wide' });
+    if (action.kind === 'syncManagedCommandPackage') {
+      for (const message of describeManagedCommandRuntimeConfigChanges(action.runtimeConfigChanges)) effects.push({
+        code: 'changeCommandRuntimeConfig', message, subject, impact: 'user-wide' });
+    }
+  };
+  for (const withdrawal of plan.portableCommandWithdrawals ?? []) {
+    addCommandPackageEffects(withdrawal);
+    if (withdrawal.nativeToolChanges?.length) effects.push({ code: 'changeNativeTools', message: 'Change the installed native tool declarations.',
+      impact: 'user-wide', subject: { pluginId: withdrawal.pluginId, scope: 'user' } });
+  }
   if (pendingSourceIds.length && plan.command !== 'cleanup' && plan.command !== 'uninstall') {
     // A temporary candidate can be blocked on generation preparation. Its scripts
     // are still known effects of the request and must be authorized before Active changes.
@@ -64,24 +84,33 @@ export function effectsForPlan(plan: RecoveryPlan, pendingSourceIds: readonly st
     }
     for (const group of child.nativeGroups) {
       for (const deployment of group.preview.operationPlan?.deploymentPlans ?? []) {
-        effects.push(...deploymentConfirmationEffects(deployment));
+        effects.push(...deploymentConfirmationEffects(deployment), ...inactiveCommandPermissionEffects(deployment));
       }
       for (const native of group.preview.codexReconcilePlans ?? []) if (native.review.requiresConfirmation) for (const pluginId of native.review.sharedImpact.pluginIds) {
         effects.push({ code: 'replaceSharedOutput', message: 'Replace shared native output used by other projects.', impact: 'shared', subject: { pluginId, target: 'codex', scope: child.options.scope } });
       }
-      for (const action of group.preview.operationPlan?.actions ?? []) if (action.kind === 'removeOwnedArtifact' || action.kind === 'removeNativeRegistration' || action.kind === 'setActivation' && !action.enabled) {
-        effects.push({ code: 'removeOwnedOutput', message: 'Remove owned output or its activation.', impact: 'selected-scope', subject: { pluginId: action.pluginId, ...(action.platform ? { target: action.platform } : {}), scope: action.scope } });
+      for (const action of group.preview.operationPlan?.actions ?? []) {
+        if (action.kind === 'removeOwnedArtifact') effects.push(...restorationEffects(action.permissionRemoval?.batch?.restorations),
+          ...relatedProjectPermissionEffects(action.permissionRemoval?.batch), ...additionalPermissionEffects(action.permissionRemoval?.batch?.additionalImpacts));
+        if (action.kind === 'removeOwnedArtifact' || action.kind === 'removeNativeRegistration' || action.kind === 'setActivation' && !action.enabled) {
+          effects.push({ code: 'removeOwnedOutput', message: 'Remove owned output or its activation.', impact: 'selected-scope', subject: { pluginId: action.pluginId, ...(action.platform ? { target: action.platform } : {}), scope: action.scope } });
+        } else if (action.kind === 'syncManagedCommandPackage' || action.kind === 'removeManagedCommandPackage') {
+          addCommandPackageEffects(action);
+        }
       }
     }
     if (child.command === 'cleanup' || child.command === 'uninstall' || child.command === 'reinstall') for (const target of child.receipt.requestedTargets) {
       effects.push({ code: 'removeOwnedOutput', message: 'Remove proven owned output in the selected scope.', impact: 'selected-scope', subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope } });
     }
-    for (const change of child.receipt.nativeToolChanges ?? []) effects.push({ code: 'changeNativeTools', message: 'Change the installed native tool declarations.', impact: change.producer.scope === 'user' ? 'user-wide' : 'selected-scope', subject: { pluginId: `${change.producer.sourceId}/${change.producer.pluginName}`, scope: change.producer.scope } });
+    for (const change of child.receipt.nativeToolChanges ?? []) effects.push({ code: 'changeNativeTools', message: 'Change the installed native tool declarations.', impact: 'user-wide', subject: { pluginId: `${change.producer.sourceId}/${change.producer.pluginName}`, scope: 'user' } });
     for (const prepared of child.portableGroups) for (const target of prepared.targets) if (target.disposition === 'remove' || target.observation === 'drifted') {
       effects.push({ code: 'removeOwnedOutput', message: 'Remove or replace existing owned Portable output.', impact: 'selected-scope', subject: { pluginId: target.providerPluginId, target: target.agent, scope: child.options.scope } });
     }
   }
-  return [...new Map(effects.map((effect) => [JSON.stringify([effect.code, effect.subject, effect.impact]), effect])).values()];
+  return [...new Map(effects.map((effect) => [JSON.stringify([effect.code, effect.subject, effect.impact,
+    ...(['changeCommandRoutes', 'changeCommandRuntimeConfig', 'retainInactiveCommandRestriction', 'changeHostPermissions', 'changeRelatedProjectPermissions',
+      'invocationPolicyNotApplied', HOST_PERMISSION_ADDITIONAL_IMPACT].includes(effect.code) ? [effect.message] : []),
+  ]), effect])).values()];
 }
 
 type Candidate = { sourceId: string; candidate: CatalogGenerationCandidateEvidence; previousActive: Awaited<ReturnType<typeof readCatalogGenerationState>>['sources'][string]['active'] | null };
@@ -198,7 +227,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
       reason: 'Review the listed effects, then repeat this request from the same directory with --yes to confirm.' }];
     return result;
   };
-  const runtime: RebuildCommandRuntime = { ...context, directCli: true };
+  const runtime: RebuildCommandRuntime = { ...context, directCli: true, invocationCwd: options.cwd };
   const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, keepDependencies: options.keepDependencies, scriptTimeoutMs: timeout, interactive: false };
   try {
     if (command === 'remove' && options.only === 'requirements') {
@@ -262,17 +291,23 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
         const previousTargets = [...data.targetResults]; const previousRemaining = [...data.remainingTargets];
         const previousProducers = { commandResults: data.commandResults, nativeToolChanges: data.nativeToolChanges };
         const previousDiagnostics = result.diagnostics;
+        const previousActions = result.nextActions;
         result = receiptResult(id, data, receipt);
         mergeProducerResults(previousProducers, data);
         data.targetResults = [...previousTargets, ...data.targetResults];
         data.remainingTargets = [...previousRemaining, ...data.remainingTargets];
         data.request.plugins = exact;
         result.diagnostics.unshift(...previousDiagnostics);
+        result.nextActions = [...new Map([...previousActions, ...result.nextActions].map((entry) => [JSON.stringify(entry), entry])).values()];
       };
       try {
         if (active.length) plans.push(await prepareRecovery('uninstall', active, { ...recovery, retiringCatalogRoots: retired }, runtime));
         for (const selector of retired) plans.push(await prepareRetire({ ...location, selector, signal: context.signal, cliVersion: options.cliVersion, yes: options.yes, deleteConfig: options.deleteConfig, preservePreferences: true }, runtime));
-        const effects = plans.flatMap((plan) => 'command' in plan ? effectsForPlan(plan) : plan.receipt.targetResults.map((target) => ({ code: 'removeOwnedOutput', message: 'Remove proven owned output of a retired plugin.', impact: 'selected-scope' as const, subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope } })));
+        const effects = plans.flatMap((plan) => 'command' in plan ? effectsForPlan(plan) : [
+          ...restorationEffects(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.restorations ?? [] : [])),
+          ...additionalPermissionEffects(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.additionalImpacts ?? [] : [])),
+          ...(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? relatedProjectPermissionEffects(action.permissionRemoval?.batch) : []) ?? []),
+          ...plan.receipt.targetResults.map((target) => ({ code: 'removeOwnedOutput', message: 'Remove proven owned output of a retired plugin.', impact: 'selected-scope' as const, subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope } }))]);
         if (options.deleteConfig) effects.push(...exact.map((pluginId) => ({ code: 'deletePluginConfig', message: 'Delete all local common and platform configuration for this plugin.', impact: 'user-wide' as const, subject: { pluginId, scope: 'user' as const } })));
         const invalidPlan = plans.find((plan) => 'blockExecution' in plan
           ? plan.blockExecution || plan.receipt.targetResults.some((target) => target.blockers.length > 0)

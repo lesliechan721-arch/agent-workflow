@@ -7,16 +7,16 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { build } from 'esbuild';
-import { protectPrivatePath } from '../../skills/spawn-subagent/scripts/runtime/platform.mjs';
+import { protectPrivatePath } from '../../commands/scripts/runtime/platform.mjs';
 import { guideRuntimeScripts } from './guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
 const registeredEntries = {
-  codex: require.resolve('../../skills/spawn-subagent/scripts/adapters/codex-v5.mjs'),
-  claude: require.resolve('../../skills/spawn-subagent/scripts/adapters/claude-code-v5.mjs'),
-  oracle: require.resolve('../../skills/spawn-subagent/scripts/adapters/oracle-v5.mjs'),
-  message: require.resolve('../../skills/spawn-subagent/scripts/message.mjs'),
-  mcp: require.resolve('../../skills/spawn-subagent/scripts/message-mcp.mjs'),
+  codex: require.resolve('../../commands/scripts/adapters/codex-v5.mjs'),
+  claude: require.resolve('../../commands/scripts/adapters/claude-code-v5.mjs'),
+  oracle: require.resolve('../../commands/scripts/adapters/oracle-v5.mjs'),
+  message: require.resolve('../../commands/scripts/message.mjs'),
+  mcp: require.resolve('../../commands/scripts/message-mcp.mjs'),
 };
 const scripts = guideRuntimeScripts(new URL('../', import.meta.url));
 const registeredScripts = path.dirname(registeredEntries.message);

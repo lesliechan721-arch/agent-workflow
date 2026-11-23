@@ -36,7 +36,7 @@
 | [CLI 命令与输出](reference/cli.md) | 非交互命令、JSON 外壳、退出码、确认与生命周期 payload |
 | [Manifest 与配置声明合同](reference/manifest-and-config.md) | Plugin Manifest v4 规范、Config Definition v5、本地 `$ref` 展开、Store v6 Envelope 存储与原子写入解耦。 |
 | [插件运行时合同](reference/plugin-runtime.md) | 静态/动态 Skill 声明、readRuntimeConfig 合同、完整组件集合 v3、命令响应 v2、preApply 脚本与原生平台投影。 |
-| [托管命令参考合同](reference/managed-commands.md) | 托管命令稳定 ID 算法（`cmdp_` 前缀）、参数权限（`argsPrefix`）、Claude Code 沙箱排除与执行生命周期。 |
+| [托管命令参考合同](reference/managed-commands.md) | 插件命令名称、路由、按平台配置快照、宿主权限与命令包维护。 |
 | [原生工具参考合同](reference/native-tools.md) | 原生二进制工具依赖声明（`aw.windows-job.v1`）、平台工具 Reader 协议与平台包按需解析。 |
 | [外部 Catalog 参考合同](reference/catalog.md) | 外部 Catalog Snapshot schema 7 规范、来源配置 schema 2、三层版本分层、发布计划与 Journal 状态机。 |
 | [Review 取证与 Eval 评估合同](reference/review-and-eval.md) | 纯只读 Review 取证回执、证据缺口分析、来源绑定（sourceBinding）、EvalSpec v1 / EvalAudit v1 / EvalResult v2 机器合同。 |

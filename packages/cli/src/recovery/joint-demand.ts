@@ -50,7 +50,7 @@ export const canReuseProviderAcrossScopes = (target: AgentId): boolean => target
 // Independently installed native packages can provide static Skills to a project.
 export function hasInheritableSkills({ manifest }: PluginMeta): boolean {
   return Boolean(manifest.skills) && !manifest.extensions && !manifest.mcpServers && !manifest.artifacts
-    && !manifest.config && !manifest.managedCommands && !manifest.nativeTools
+    && !manifest.config && !manifest.command && !manifest.nativeTools
     && !manifest.scripts?.artifacts?.render && !manifest.scripts?.preApply;
 }
 

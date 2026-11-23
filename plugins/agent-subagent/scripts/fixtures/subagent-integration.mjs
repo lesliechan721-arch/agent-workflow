@@ -5,12 +5,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { parseHandle } from '../../skills/spawn-subagent/scripts/runtime/store.mjs';
+import { parseHandle } from '../../commands/scripts/runtime/store.mjs';
 import { guideRuntimeScripts } from './guide-runtime-resources.mjs';
 
 const require = createRequire(import.meta.url);
-const registeredEntry = require.resolve('../../skills/spawn-subagent/scripts/subagent.mjs');
-const registeredWorker = require.resolve('../../skills/spawn-subagent/scripts/worker.mjs');
+const registeredEntry = require.resolve('../../commands/scripts/subagent.mjs');
+const registeredWorker = require.resolve('../../commands/scripts/worker.mjs');
 const registeredClock = require.resolve('./subagent-clock.mjs');
 const registeredDiagnostics = require.resolve('./subagent-platform-diagnostics.mjs');
 const sourceScripts = guideRuntimeScripts(new URL('../', import.meta.url));
@@ -196,7 +196,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-parent-runtime-test-'));
   const temporaryRoot = path.join(directory, 'temporary');
   const workspace = path.join(directory, 'workspace 中文');
-  const installed = path.join(directory, 'installed guide 中文');
+  let installed = path.join(directory, 'installed guide 中文');
   const generations = path.join(directory, 'generations.log');
   await Promise.all([fs.mkdir(temporaryRoot), fs.mkdir(workspace), fs.mkdir(installed)]);
   await fs.cp(sourceScripts, path.join(installed, 'scripts'), { recursive: true });
@@ -210,16 +210,33 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
   await fs.copyFile(registeredDiagnostics, diagnosticsPreload);
   const diagnosticsArgs = process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1'
     ? ['--import', pathToFileURL(diagnosticsPreload).href] : [];
-  const snapshot = { installedIdentity: { sourceId: 'fixture', sourceIdentity: 'fixture-source', pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent', pluginVersion: '0.0.0', platform: 'codex', scope: 'user', configScope: 'user', artifactId: 'spawn-subagent-skill', skillKey: 'spawn-subagent' }, resourceRoot: installed,
-    effectiveValues: {
-      subagentRetentionHours: 0,
-      subagentCommands: [{ key: 'fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
-  const config = path.join(installed, 'effective.json');
-  const save = () => fs.writeFile(config, JSON.stringify(snapshot));
+  const installedIdentity = { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginId: 'fixture/agent-subagent',
+    pluginName: 'agent-subagent', pluginVersion: '0.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64), platform: 'codex' };
+  const snapshot = { installedIdentity, resourceRoot: installed, platform: 'codex', values: {
+    subagentRetentionHours: 0,
+    subagentCommands: [{ key: 'fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
+  const claude = structuredClone(snapshot);
+  claude.platform = claude.installedIdentity.platform = 'claude';
+  const save = () => Promise.all([snapshot, claude].map((value) =>
+    fs.writeFile(path.join(installed, value.platform + '.json'), JSON.stringify(value))));
   await save();
-  await fs.writeFile(path.join(installed, 'scripts', 'aw-runtime-config.mjs'),
-    "import fs from 'node:fs/promises';export async function readRuntimeConfig({keys}){if(JSON.stringify(keys)!=='[\"subagentCommands\",\"subagentRetentionHours\"]')throw new Error('Unexpected runtime keys');return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
-  const entry = path.join(installed, 'scripts', path.relative(sourceScripts, sourceEntry));
+  await fs.mkdir(path.join(installed, '.aw'));
+  await fs.writeFile(path.join(installed, '.aw', 'command-runtime-config.mjs'), `import fs from 'node:fs/promises';
+export async function readCommandRuntimeConfig({keys, platform}) {
+  if (!['codex', 'claude'].includes(platform)) throw new Error('Unexpected platform');
+  if (![JSON.stringify(['subagentCommands', 'subagentRetentionHours']), JSON.stringify(['subagentRetentionHours'])].includes(JSON.stringify(keys))) throw new Error('Unexpected keys');
+  const snapshot = JSON.parse(await fs.readFile(new URL('../' + platform + '.json', import.meta.url), 'utf8'));
+  snapshot.values = Object.fromEntries(keys.map((key) => [key, snapshot.values[key]]));
+  return snapshot;
+}
+`);
+  async function rotate() {
+    const next = installed + '-next';
+    await fs.rename(installed, next);
+    installed = next;
+    snapshot.resourceRoot = claude.resourceRoot = installed;
+    await save();
+  }
   // Windows native tools need their normal host environment. Normalize names so
   // the isolated paths below replace host values without mixed-case duplicates.
   const nativeEnvironment = process.platform === 'win32'
@@ -234,7 +251,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       signal.throwIfAborted();
       const began = performance.now();
       phase('commandBegin', { operation: args[0] });
-      const child = spawn(process.execPath, [...diagnosticsArgs, entry, ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [...diagnosticsArgs, path.join(installed, 'scripts', path.basename(sourceEntry)), ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       const abort = () => child.kill('SIGKILL');
       signal.addEventListener('abort', abort, { once: true });
@@ -266,7 +283,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       child.stdin.on('error', () => {}); if (!keepStdinOpen) child.stdin.end(stdin);
     });
   }
-  async function start(scenario = {}, { prompt = 'Assigned fixture task.', promptFile, extra = [], env = {}, stdin, cwd } = {}) {
+  async function start(scenario = {}, { platform = 'codex', prompt = 'Assigned fixture task.', promptFile, extra = [], env = {}, stdin, cwd } = {}) {
     const runDirectory = path.join(directory, `scenario-${++nextScenario}`);
     const index = nextScenario;
     scenarios.push({ index, directory: runDirectory });
@@ -274,7 +291,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     const scenarioFile = path.join(runDirectory, 'scenario.json');
     await fs.writeFile(scenarioFile, JSON.stringify(scenario));
     const input = promptFile === undefined ? ['--prompt', prompt] : ['--prompt-file', promptFile];
-    const response = await command(['start', '--executor', 'fixture', '--workspace', workspace, ...input, ...extra],
+    const response = await command(['start', '--platform', platform, '--executor', 'fixture', '--workspace', workspace, ...input, ...extra],
       { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
     const run = field(response.stdout, 'run');
     phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });
@@ -401,7 +418,7 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
       finally { await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); phase('cleanupEnd'); }
     }
   }, { timeout: cleanupTimeoutMs + 5000 });
-  return { directory, homeRoot: directory, temporaryRoot, workspace, installed, generations, snapshot, config, save, command, start, resume, initialized, clock, waitTerminal, evidence, stopped, exportResult, phase };
+  return { directory, homeRoot: directory, temporaryRoot, workspace, get installed() { return installed; }, generations, snapshot, claude, get config() { return path.join(installed, 'codex.json'); }, save, rotate, command, start, resume, initialized, clock, waitTerminal, evidence, stopped, exportResult, phase };
 }
 
 

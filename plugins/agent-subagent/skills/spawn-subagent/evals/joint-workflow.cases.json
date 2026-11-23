@@ -503,7 +503,7 @@
         },
         "configuration": {},
         "setup": [
-          "fixture通过公开AW命令建立keys-only v2安装；配置save未apply时安装值保持原值，apply后新调用读取新值。",
+          "fixture通过公开AW命令建立按平台配置快照的共享命令包；配置save未apply时安装值保持原值，apply后新调用读取新值。",
           "真实workspace或bundle adapter支持长期 worker 与持续等待；首次调用仍活跃时实际发生apply。",
           "宿主工具trace保留同一session继续等待和两个独立生成；没有活动更新窗口则本例前提unavailable。"
         ]
@@ -720,7 +720,7 @@
         "workspaceFiles": {},
         "setup": [
           "fixture注册Adapter v5的workspace执行器；任务仅为有界只读请求。",
-          "真实run携带--file空字符串，记录filesNotAllowedInWorkspace、退出2和零adapter执行；不调用模型。"
+          "公开 start 携带 --file 空字符串，记录filesNotAllowedInWorkspace、退出2和零adapter执行；不调用模型。"
         ]
       },
       "expected": {
@@ -749,7 +749,7 @@
           "src/select.js": "export function selectRows(rows, tenantId, ids) { return rows.filter(row => ids.includes(row.id)); }\n"
         },
         "setup": [
-          "fixture公开安装keys-only v2 Guide；真实外部adapter及宿主session提供可观察活跃窗口。",
+          "fixture公开安装共享 Guide 命令包；真实外部adapter及宿主session提供可观察活跃窗口。",
           "初次输入读取后才实际更新指令及无关Skill；保留前后源文件和实际执行者trace。",
           "没有revision、digest或peer一致性门禁；真实缺文件/非法输入仍失败。"
         ]

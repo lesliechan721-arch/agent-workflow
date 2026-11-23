@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { PassThrough } from 'node:stream';
-import { protectPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
-import { createChildBridge, invokeChildTool } from '../skills/spawn-subagent/scripts/runtime/adapter-channel.mjs';
-import { executeClaude, negotiateClaudeCommunication, claudeArguments } from '../skills/spawn-subagent/scripts/adapters/claude-code-v5.mjs';
-import { deferred } from '../skills/spawn-subagent/scripts/adapters/common.mjs';
+import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
+import { createChildBridge, invokeChildTool } from '../commands/scripts/runtime/adapter-channel.mjs';
+import { executeClaude, negotiateClaudeCommunication, claudeArguments } from '../commands/scripts/adapters/claude-code-v5.mjs';
+import { deferred } from '../commands/scripts/adapters/common.mjs';
 import { fixture, windows, supported, testTimeoutMs, answer, scripts, sourceEntries } from './fixtures/adapter-v5.mjs';
 
 for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed v5 preserves input, configuration and real exit`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {

@@ -56,6 +56,7 @@ export function buildManagedCommandEnvironment(options: {
 export interface ManagedCommandRunOptions {
   id: string;
   args: string[];
+  noFallback?: boolean;
   cwd: string;
   cliEntry: string;
   env?: NodeJS.ProcessEnv;
@@ -67,13 +68,16 @@ export interface ManagedCommandRunOptions {
 export async function prepareManagedCommandRun(options: ManagedCommandRunOptions): Promise<{ executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> {
   const hostEnvironment = { ...(options.env ?? process.env) };
   const awHome = await resolveAwHomeCanonical(hostEnvironment);
-  const { launch, resourceRoot, producer, set } = await resolveManagedCommand(options.id, hostEnvironment);
+  const { launch, resourceRoot, producer, args } = await resolveManagedCommand(options.id, hostEnvironment, {
+    args: options.args,
+    noFallback: options.noFallback,
+  });
   // Reject invalid bindings before native preparation or consumer startup.
   const host: CommandHost = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry: path.resolve(options.cliEntry), awHome };
   const environment = buildManagedCommandEnvironment({ launch, hostEnvironment, host, platform: options.platform });
   let nativeContext: NativeToolContext;
   try {
-    nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'managed-command-set', key: set ?? '',
+    nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'plugin-command',
       platform: options.platform, arch: options.arch, prepare: options.prepareNativeTool });
   } catch (error) {
     throw new ManagedCommandError(error && typeof error === 'object' && 'code' in error ? String(error.code) : 'nativeToolUnavailable', 'The required native tool could not be prepared. Reinstall the current CLI/Eval package and include optional dependencies.');
@@ -82,7 +86,7 @@ export async function prepareManagedCommandRun(options: ManagedCommandRunOptions
   const absoluteEntry = path.resolve(resourceRoot, launch.entry);
   return {
     executable: launch.runner === 'node' ? process.execPath : absoluteEntry,
-    args: [...(launch.runner === 'node' ? [absoluteEntry] : []), ...launch.args, ...options.args],
+    args: [...(launch.runner === 'node' ? [absoluteEntry] : []), ...launch.args, ...args],
     cwd: launch.cwd === 'resource' ? resourceRoot : options.cwd,
     env: environment,
   };

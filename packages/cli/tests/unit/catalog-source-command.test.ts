@@ -52,6 +52,7 @@ describe('catalog source mutation v6', () => {
     };
     await expect(updateCatalogSourceCommand(update)).rejects.toMatchObject({
       code: 'catalogSourceIdentityChangeConfirmationRequired',
+      message: expect.stringContaining('aw command run team/<plugin> --'),
     });
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
     const preview = await preflightCatalogSourceMutation({

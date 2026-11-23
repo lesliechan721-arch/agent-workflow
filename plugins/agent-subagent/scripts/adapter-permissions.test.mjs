@@ -19,7 +19,7 @@ const scripts = guideRuntimeScripts(new URL('./', import.meta.url));
 test('installed adapter permission modes and environment contracts', async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-adapter-permission-cases-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const movedScripts = path.join(root, 'skills/spawn-subagent/scripts');
+  const movedScripts = path.join(root, 'commands/scripts');
   await fs.cp(scripts, movedScripts, { recursive: true });
   if (process.env.AW_PLUGIN_EVENT !== 'test') for (const relative of ['adapters/codex-profile.mjs', 'file-selection/selection.mjs']) {
     const entry = path.join(movedScripts, relative);

@@ -35,6 +35,7 @@ import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import { getDeploymentLayout, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
 import { deploymentPackageComponent } from '../platforms/inspection.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
+import { offlinePermissionComponents } from '../platforms/permission-ownership.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
 import { readPlatformPackageContentDigest } from './platform-empty-state.js';
 import type { DeploymentBinding, InstallRoute, RecoveryCandidate } from '../platforms/contracts.js';
@@ -1363,6 +1364,14 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
   }
   // Grok rules are scope-local supplements. Codex supplements and Claude permission tokens use their existing exact readers.
   for (const scope of options.scope === 'user' ? ['user'] as const : ['user', 'project'] as const) {
+    for (const platform of ['opencode', 'antigravity', 'grok'] as const) {
+      const permissions = await inventoryRead({ operation: () => offlinePermissionComponents(ctx, scope === 'project' ? projectRoot : undefined, platform),
+        absent: [], errors, cwd: options.cwd, env: options.env, location: path.join(resolveAwHome(options.env), 'platforms', platform, 'permission-ownership'),
+        kind: 'permissionOwnershipRead' });
+      for (const component of permissions) references.push({ kind: 'namespacedOwner', location: component.locator.settingsPath,
+        sourceId: component.identity.sourceId, sourceIdentity: component.identity.sourceIdentity, pluginName: component.identity.plugin,
+        platform, scope, ownedComponent: component });
+    }
     const root = scope === 'user' ? path.join(resolvePlatformConfigRoot('grok', ctx), 'rules') : path.join(projectRoot, '.grok/rules');
     references.push(...await findOwnedHeadersInDirectory(root, new Set(['.md', '.rules']), false, errors, options.env, options.cwd));
   }

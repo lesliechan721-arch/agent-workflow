@@ -1,11 +1,18 @@
+import { reviewedInactivePermissions } from '../utils/managed-command-review.js';
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
+import {
+  describeManagedCommandRouteReview,
+  describeManagedCommandRuntimeConfigChanges,
+  type ManagedCommandRouteReview,
+} from '../utils/managed-command-cli-review.js';
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
+import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
-import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, isDeliveryNoticeCode, isInstallationAdvisory,
+import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, HOST_PERMISSION_ADDITIONAL_IMPACT, isDeliveryNoticeCode, isInstallationAdvisory,
   safeComponentIdentity, type ComponentDelivery, type PermissionAction } from './component-delivery.js';
 
 export const CLI_OUTPUT_SCHEMA_VERSION = 2;
@@ -35,21 +42,65 @@ function componentDeliveryLines(delivery: ComponentDelivery): string[] {
   ];
 }
 
+export interface PermissionRuleChange {
+  change: 'add' | 'remove';
+  effect: Exclude<PermissionAction, 'sandbox'>;
+  resource: string;
+}
+
 export interface Diagnostic {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
   detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[];
-    skippedPermissionActions?: PermissionAction[] };
+    skippedPermissionActions?: PermissionAction[]; permissionResource?: string; permissionAction?: Exclude<PermissionAction, 'sandbox'>;
+    permissionChanges?: PermissionRuleChange[] };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }
   | { kind: 'manual'; message: string };
+export type PublicCommandProducerResult = Omit<CommandProducerResult, 'errors' | 'recoveryActions'> & { blockerCodes: string[] };
+
+export function commandPackageRecoveryActions(results: readonly CommandProducerResult[] = []): NextAction[] {
+  const actions = new Map<string, NextAction>();
+  for (const result of results) {
+    for (const [verb, selector] of [['sync', result.selector], ['remove', result.selector], ['remove', result.packageId]] as const) {
+      const argv = ['aw', 'command', 'package', verb, selector];
+      const command = argv.join(' ');
+      const forced = verb === 'remove' && result.recoveryActions.some((entry) => entry === `${command} --force` || entry === `${command} --force --yes`);
+      if (!forced && !result.recoveryActions.some((entry) => entry === command || entry === `${command} --yes`)) continue;
+      actions.set(command, { kind: 'command', argv: forced ? [...argv, '--force'] : argv, requiresConfirmation: true,
+        reason: verb === 'sync' ? 'Repair the affected command package after resolving its diagnostics.'
+          : 'Review removal of the shared command package. This affects all projects using it.' });
+    }
+  }
+  return [...actions.values()];
+}
+
+function commandPackageLines(result: PublicCommandProducerResult): string[] {
+  const { selector, action, availability, state, subcommands, hasFallback, blockerCodes } = result;
+  return [
+    `Command package ${selector}: ${action}, ${availability} (${state})${blockerCodes.length ? ` [${blockerCodes.join(', ')}]` : ''}`,
+    ...subcommands.map((name) => `  aw command run ${selector} -- ${name}`),
+    ...(hasFallback ? [`  Fallback · aw command run ${selector} --`] : []),
+  ];
+}
+
 export interface Confirmation {
   required: boolean;
   provided: boolean;
   effects: Array<{ code: string; message: string; subject?: Diagnostic['subject']; impact: 'selected-scope' | 'user-wide' | 'shared' | 'unknown' }>;
+}
+
+export function inactiveCommandPermissionEffects(deployment: FrozenDeploymentPlan): Confirmation['effects'] {
+  const { plugin, platform, scope } = deployment.binding;
+  return reviewedInactivePermissions(deployment.binding, deployment.evidence.managedCommandReview).map(({ action, argsPrefix }) => ({
+    code: 'retainInactiveCommandRestriction',
+    message: `Keep the ${action} rule for ${['aw', 'command', 'run', plugin.pluginId, '--', ...argsPrefix].join(' ')}. No handler is currently reachable for this prefix.`,
+    impact: 'selected-scope',
+    subject: { pluginId: plugin.pluginId, target: platform, scope: scope.kind },
+  }));
 }
 export interface CommandResult<T extends object = Record<string, unknown>> {
   schemaVersion: typeof CLI_OUTPUT_SCHEMA_VERSION;
@@ -118,7 +169,7 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   const apply = data.apply as {
     state?: string; reason?: string;
     targetResults?: Array<Pick<ConfigApplyTargetResult, 'target' | 'state' | 'partialDelivery' | 'errorCode'> & ComponentDelivery>;
-    commandResults?: Array<Pick<CommandProducerResult, 'producer' | 'state'> & { blockerCodes?: string[] }>;
+    commandResults?: PublicCommandProducerResult[];
   } | undefined;
   if (apply) {
     lines.push(`Apply: ${apply.state ?? 'unknown'}${apply.reason ? ` (${apply.reason})` : ''}`);
@@ -132,12 +183,9 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       lines.push(`${position}: ${label}${partialDelivery ? ' (some outputs verified)' : ''}${errorCode ? ` [${errorCode}]` : ''}`);
       lines.push(...componentDeliveryLines(entry));
     }
-    for (const { producer, state, blockerCodes } of apply.commandResults ?? []) {
-      const position = [producer.platform, producer.scope].filter(Boolean).join('/');
-      const name = `${producer.sourceId}/${producer.pluginName} ${producer.kind}:${producer.key}`;
-      lines.push(`${name} ${position}: ${state}${blockerCodes?.length ? ` [${blockerCodes.join(', ')}]` : ''}`);
-    }
+    for (const entry of apply.commandResults ?? []) lines.push(...commandPackageLines(entry));
   }
+  for (const entry of (data.commandResults ?? []) as PublicCommandProducerResult[]) lines.push(...commandPackageLines(entry));
 
   const snapshot = data.snapshot as { state?: string; path?: string } | undefined;
   if (snapshot?.state) lines.push(`Snapshot: ${snapshot.state}${verbose && snapshot.path ? ` (${snapshot.path})` : ''}`);
@@ -157,10 +205,10 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   const changes = data.changes;
   if (changes && !Array.isArray(changes) && typeof changes === 'object') for (const [key, value] of Object.entries(changes)) if (value !== 'none') lines.push(`${key}: ${String(value)}`);
-  for (const key of ['items', 'sources', 'entries', 'commands', 'packages', 'targetResults', 'checks', 'inventory', 'extraObserved', 'skills']) {
+  for (const key of ['items', 'sources', 'entries', 'commands', 'packages', 'orphanedPackages', 'targetResults', 'checks', 'inventory', 'extraObserved', 'skills']) {
     const entries = data[key];
     if (!Array.isArray(entries)) continue;
-    if (entries.length === 0 && key !== 'extraObserved') lines.push(`${key}: none`);
+    if (entries.length === 0 && key !== 'extraObserved' && key !== 'orphanedPackages') lines.push(`${key}: none`);
     const rows = key === 'inventory'
       ? entries.flatMap((entry) => entry.targetResults?.length ? entry.targetResults : [entry])
       : entries;
@@ -180,10 +228,22 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
           : targetContentLabels[targetEntry.content];
       const operation = key === 'inventory' ? undefined : entry.execution ?? entry.availability ?? entry.status ?? entry.state;
       lines.push([
-        entry.pluginId ?? entry.id ?? entry.sourceId ?? entry.storeKey ?? entry.name ?? entry.skill,
+        entry.selector ?? entry.pluginId ?? entry.id ?? entry.sourceId ?? entry.storeKey ?? entry.name ?? entry.skill,
         entry.target, content && entry.scope, entry.version, operation, disabled ? 'Disabled' : content,
-        entry.summary ?? entry.description,
+        entry.summary ?? entry.description, entry.packageId, key === 'orphanedPackages' ? '(orphaned package)' : undefined,
       ].filter(Boolean).join('  '));
+      if (Array.isArray(entry.subcommands)) {
+        if (entry.subcommands.length) lines.push(`  Subcommands: ${entry.subcommands.join(', ')}`);
+        if (entry.hasFallback) lines.push('  Fallback available');
+      }
+      if (result.command === 'command.show') {
+        if (entry.pluginVersion) lines.push(`  Plugin version: ${String(entry.pluginVersion)}`);
+        if (entry.resourceRoot) lines.push(`  Resource root: ${String(entry.resourceRoot)}`);
+        const routes = entry.routes as { subcommands: Array<{ name: string; entry: string; args: string[] }>; fallback?: { entry: string; args: string[] } } | undefined;
+        for (const route of routes?.subcommands ?? []) lines.push(`  ${route.name}: ${JSON.stringify([route.entry, ...route.args])}`);
+        if (routes?.fallback) lines.push(`  Fallback: ${JSON.stringify([routes.fallback.entry, ...routes.fallback.args])}`);
+        if (Array.isArray(entry.runtimeConfigPlatforms) && entry.runtimeConfigPlatforms.length) lines.push(`  Applied configuration: ${entry.runtimeConfigPlatforms.join(', ')}`);
+      }
       if (entry.profile && typeof entry.profile === 'object') { const profile = entry.profile as { platform?: string; scope?: string }; lines.push(`  Profile: ${profile.platform ?? 'unknown'}/${profile.scope ?? 'unknown'}${entry.finalPath ? `; final: ${String(entry.finalPath)}` : ''}`); }
       const compatibility = entry.compatibility as { state?: string; requiredCapabilities?: string[]; missingCapabilities?: string[] } | undefined;
       if (compatibility?.state === 'unsupported') lines.push(`  Incompatible; required: ${compatibility.requiredCapabilities?.join(', ') ?? 'unknown'}; missing: ${compatibility.missingCapabilities?.join(', ') ?? 'unknown'}`);
@@ -237,6 +297,10 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       if (verbose && entry.blockerCodes && Array.isArray(entry.blockerCodes)) lines.push(`  Blockers: ${entry.blockerCodes.join(', ')}`);
     }
   }
+  const packageReview = data.packageReview as (ManagedCommandRouteReview & { runtimeConfigChanges?: Array<{ platform: string; before?: unknown; after?: unknown }> }) | undefined;
+  if (packageReview) lines.push(...describeManagedCommandRouteReview(packageReview),
+    ...describeManagedCommandRuntimeConfigChanges(packageReview.runtimeConfigChanges ?? []));
+  if (Array.isArray(data.recoveryActions)) for (const action of data.recoveryActions) lines.push(`Recovery: ${String(action)}`);
   for (const entry of (data.remainingTargets ?? []) as Array<Pick<PublicTargetResult, 'pluginId' | 'target' | 'scope'>>) {
     lines.push(`Remaining: ${entry.pluginId} / ${entry.target} / ${entry.scope}`);
   }
@@ -248,9 +312,12 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
     else if (confirmation === null) lines.push('Confirmation: not prepared');
   }
   if (confirmation?.required) for (const effect of confirmation.effects) {
+    const permissionImpact = effect.code === HOST_PERMISSION_ADDITIONAL_IMPACT;
+    if (permissionImpact && confirmation.provided) continue;
     const subject = effect.subject;
-    const position = configMutation ? [subject?.pluginId ?? subject?.sourceId, subject?.target, subject?.scope, subject?.field].filter(Boolean) : [];
-    lines.push(`Effect: ${effect.message}${configMutation ? ` [${[...position, effect.impact].join(' / ')}]` : ''}`);
+    const showPosition = configMutation || permissionImpact;
+    const position = showPosition ? [subject?.pluginId ?? subject?.sourceId, subject?.target, subject?.scope, subject?.field].filter(Boolean) : [];
+    lines.push(`${permissionImpact ? 'Warning' : 'Effect'}: ${effect.message}${showPosition ? ` [${[...position, effect.impact].join(' / ')}]` : ''}`);
   }
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
   for (const diagnostic of result.diagnostics) {

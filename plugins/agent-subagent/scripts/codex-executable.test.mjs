@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { resolveCodexExecutable } from '../skills/spawn-subagent/scripts/adapters/codex-executable.mjs';
+import { resolveCodexExecutable } from '../commands/scripts/adapters/codex-executable.mjs';
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-codex-executable-'));

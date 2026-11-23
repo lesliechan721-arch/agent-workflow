@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertOracleFileSelectionSupported } from '../skills/spawn-subagent/scripts/adapters/oracle-arguments.mjs';
+import { assertOracleFileSelectionSupported } from '../commands/scripts/adapters/oracle-arguments.mjs';
 import { fixture, windows, supported, testTimeoutMs, readCapturedSoFar, waitForCaptured } from './fixtures/adapter-v5.mjs';
 
 // Test Value Gate: capture observation must wait for backend input despite file

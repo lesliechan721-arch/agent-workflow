@@ -2,14 +2,12 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getPluginCommandId } from '@lesliechan721/aw-plugin-core/manifest';
 import { createIsolatedSkillEnv, prepareSkillPluginBundle } from '../../src/review/skill-materialization.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers } from '../../src/utils/component-command-preparation.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import type { PluginManifestSource, PluginMeta, PlatformName } from '../../src/types.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 const tempRoots: string[] = [];
 const placementKey = `sha256:${'b'.repeat(64)}`;
 afterEach(async () => { await Promise.all(tempRoots.splice(0).map((root) => fs.remove(root))); });
@@ -18,7 +16,6 @@ async function finalize(options: {
   platform: PlatformName;
   root: string;
   env: NodeJS.ProcessEnv;
-  output?: string;
 }) {
   // The preparation boundary consumes qualified facts; this fixture does not qualify a local client.
   const capabilities = getAuthoringPlatformCapabilities(options.platform, 'user');
@@ -36,268 +33,140 @@ async function finalize(options: {
   });
   return finalizePlatformSkillProducers({
     ...options, prepared, cwd: options.root,
-    skillWorkRoot: path.join(options.root, options.output ?? 'candidates'), renderUnit: {
+    skillWorkRoot: path.join(options.root, 'candidates'), renderUnit: {
       physicalKey: placementKey, renderScope: { kind: 'user' }, kinds: ['skill']
     }
   });
 }
 describe('Skill materialization', () => {
   it.each([
-    {
-      kind: 'static-skill', consumer: 'static'
-    }, {
-      kind: 'artifact', consumer: 'static'
-    }, {
-      kind: 'package', consumer: 'static'
-    },
-    {
-      kind: 'package', consumer: 'dynamic'
-    }, {
-      kind: 'static-skill', consumer: 'dynamic'
-    }, {
-      kind: 'artifact', consumer: 'dynamic'
-    },
-  ] as const)('resolves $consumer references to a $kind from the complete isolated candidate set', async ({ kind, consumer }) => {
+    ['static', 'static'],
+    ['static', 'dynamic'],
+    ['dynamic', 'static'],
+    ['dynamic', 'dynamic'],
+  ] as const)('expands %s Skill references to a %s package during isolated preparation', async (skillMode, commandMode) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-command-reference-'));
     tempRoots.push(root);
     const pluginRoot = path.join(root, 'source');
-    const producer = kind === 'static-skill' ? {
-      kind, platform: 'codex', skillKey: 'provider'
-    }
-      : kind === 'artifact' ? {
-        kind, platform: 'codex', artifactId: 'provider'
-      } : {
-        kind, packageKey: 'provider'
-      };
-    const manifest = {
-      schemaVersion: 4, name: 'review-commands', version: '0.1.0', description: 'Review command candidate fixture.', platforms: ['codex'], ...(consumer === 'static' || kind === 'static-skill' ? { skills: './skills' } : {}),
-      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } }, marketplace: {
-        category: 'test', strict: true, policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL'
-        }
-      },
-      scripts: {
-        artifacts: {
-          render: {
-            runner: 'node', path: './render.mjs'
-          }
-        }
-      },
-      ...(kind === 'artifact' || consumer === 'dynamic' ? { artifacts: { configKeys: [] } } : {}),
-      managedCommands: {
-        packages: kind === 'package' ? [{
-          key: 'provider', scope: 'user', platforms: ['codex'], sourceDir: './tools', render: true
-        }] : [],
-        sets: [{
-          set: 'tools', producer, mode: 'dynamic', refreshKeys: []
-        }]
-      }
-    };
-    await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), manifest);
-    const files = (skill: string, body: string) => ({
-      'SKILL.md': `---\nname: ${skill}\ndescription: Review fixture.\n---\n${body}\n`,
-      'README.md': `# ${skill}\n`, 'scripts/tool.mjs': 'export {};\n',
-      'references/usage.md': '```sh\n{{aw.command:tools/run/default}} check\n```\n',
-      'scripts/literal.json': '{"template":"{{aw.command:tools/run}}"}\n'
-    });
-    if (consumer === 'static' || kind === 'static-skill') {
-      await fs.ensureDir(path.join(pluginRoot, 'skills'));
-    }
-    if (consumer === 'static') {
-      for (const [file, bytes] of Object.entries(files('consumer', 'Use {{aw.command:tools/run}} check.'))) {
-        await fs.outputFile(path.join(pluginRoot, 'skills/consumer', file), bytes);
-      }
-    }
-    if (kind === 'static-skill') {
-      for (const [file, bytes] of Object.entries(files('provider', '[Command](scripts/tool.mjs).'))) {
-        await fs.outputFile(path.join(pluginRoot, 'skills/provider', file), bytes);
-      }
-    }
-    if (kind === 'package') {
-      await fs.outputFile(path.join(pluginRoot, 'tools/scripts/tool.mjs'), 'export {};\n');
-    }
-    const dynamicNames = [...(kind === 'artifact' ? ['provider'] : []), ...(consumer === 'dynamic' ? ['consumer'] : [])];
-    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `
-import fs from 'node:fs';const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));
-if(c.surface==='agent-plugin'){
-const values=${JSON.stringify(Object.fromEntries(dynamicNames.map(name => [name, files(name, name === 'consumer' ? 'Use {{aw.command:tools/run}} check.' : '[Command](scripts/tool.mjs).')])))};
-console.log(JSON.stringify({version:3,components:Object.entries(values).map(([name,files])=>({id:name,kind:'skill',name,content:{files:Object.fromEntries(Object.entries(files).map(([file,text])=>[file,{text}]))}})),omitted:[],unmet:[]}));
-}else console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>id==='command-set.tools'?{id,target:'aw.command-set',kind:'commandSet',${kind === 'package' ? '' : "platform:'codex',"}state:'present',refreshKeys:[],entries:[{key:'run',runner:'node',entry:'scripts/tool.mjs'}]}:{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:[],files:{'settings.json':'{"mode":"prepared"}'}})}));
-`);
-    const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
-    const plugin = await readPluginManifest(pluginRoot);
-    const prepared = await prepareSkillPluginBundle({
-      plugin, plugins: [plugin], workRoot: path.join(root, 'work'), env
-    });
-    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-    const bundlePlugin = {
-      ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/review-commands'
-    };
-    try {
-      const result = await finalize({
-        plugin: bundlePlugin, platform: 'codex', root, env
-      });
-      try {
-        const id = getPluginCommandId({
-          schemaVersion: 2, producer: {
-            sourceId: 'fixture', sourceIdentity, pluginName: 'review-commands', kind, key: 'provider',
-            platform: kind === 'package' ? null : 'codex', scope: 'user', projectRoot: null, placementKey: kind === 'package' ? null : placementKey
-          }, set: 'tools', key: 'run', variant: 'default'
-        });
-        const tree = result.skills.find(skill => skill.tree.skillKey === 'consumer')!.tree;
-        expect(tree.files['SKILL.md']!.toString()).toContain(`aw command run ${id} -- check`);
-        expect(tree.files['references/usage.md']!.toString()).toContain(`aw command run ${id} -- check`);
-        expect(tree.files['scripts/literal.json']!.toString()).toContain('{{aw.command:tools/run}}');
-        expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
-      }
-      finally {
-        await result.cleanup();
-      }
-    }
-    finally {
-      await prepared.cleanup();
-    }
-  });
-  it('uses shared user config for native Skill commands and rejects project-only packages', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-shared-'));
-    tempRoots.push(root);
-    const pluginRoot = path.join(root, 'source');
-    const trace = path.join(root, 'trace.jsonl');
-    await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), {
-      schemaVersion: 4, name: 'shared-native', version: '0.1.0', description: 'Shared user command fixture.', platforms: ['claude'], skills: './skills',
-      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } }, marketplace: {
-        category: 'test', strict: true, policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL'
-        }
-      },
-      config: {
-        schemaVersion: 5, fields: {
-          mode: {
-            type: 'string', default: 'default'
-          }
-        }
-      }, scripts: {
-        artifacts: {
-          render: {
-            runner: 'node', path: './render.mjs'
-          }
-        }
-      },
-      managedCommands: {
-        packages: [{
-          key: 'project-tools', scope: 'project', platforms: ['claude'], sourceDir: './tools'
-        }], sets: [
-          {
-            set: 'tools', producer: {
-              kind: 'static-skill', platform: 'claude', skillKey: 'provider'
-            }, mode: 'dynamic', refreshKeys: ['mode']
-          },
-          {
-            set: 'project-tools', producer: {
-              kind: 'package', packageKey: 'project-tools'
-            }, mode: 'static', entries: [{
-              key: 'run', runner: 'node', entry: 'tool.mjs'
-            }]
-          }
-        ]
-      }
-    });
-    for (const name of ['consumer', 'provider']) {
-      await fs.outputFile(path.join(pluginRoot, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: Shared fixture.\n---\n${name === 'consumer' ? '{{aw.command:tools/run/from-user}} check' : '[Command](tool.mjs).'}\n`);
-      await fs.outputFile(path.join(pluginRoot, 'skills', name, 'README.md'), `# ${name}\n`);
-    }
-    await fs.outputFile(path.join(pluginRoot, 'skills/provider/tool.mjs'), 'export {};\n');
-    await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), 'export {};\n');
-    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `import fs from 'node:fs';const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({scope:c.scope,values:c.config.values})+'\\n');console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:'claude',state:'present',refreshKeys:['mode'],entries:[{key:'run',variant:c.config.values.mode,runner:'node',entry:'tool.mjs'}]}))}));`);
-    const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
-    const plugin = await readPluginManifest(pluginRoot);
-    const prepared = await prepareSkillPluginBundle({
-      plugin, plugins: [plugin], workRoot: path.join(root, 'work'), env
-    });
-    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-    const logicalIdentity = 'fixture/shared-native';
-    const bundlePlugin = {
-      ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity, catalogLogicalIdentity: logicalIdentity
-    };
-    try {
-      await writePluginConfigStore({
-        sourceId: 'fixture', sourceIdentity, logicalIdentity, pluginName: plugin.manifest.name, scope: 'user', platform: 'claude', cwd: root, env, values: { mode: 'from-user' }
-      });
-      const result = await finalize({
-        plugin: bundlePlugin, platform: 'claude', root, env, output: 'valid'
-      });
-      try {
-        expect(result.skills.find(skill => skill.tree.skillKey === 'consumer')!.tree.files['SKILL.md']!.toString()).toMatch(/aw command run cmdp_[a-f0-9]{16} -- check/);
-        expect((await fs.readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line))).toEqual([{
-          scope: 'user', values: { mode: 'from-user' }
-        }]);
-      }
-      finally {
-        await result.cleanup();
-      }
-      await fs.appendFile(path.join(prepared.bundleRoot, 'claude/skills/consumer/SKILL.md'), '{{aw.command:project-tools/run}}\n');
-      await expect(finalize({
-        plugin: bundlePlugin, platform: 'claude', root, env, output: 'invalid'
-      })).rejects.toThrow('commandReferenceInvalid');
-      expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
-    }
-    finally {
-      await prepared.cleanup();
-    }
-  });
-  it.each(['undeclared', 'project-package', 'other-platform', 'missing-capability', 'malformed'] as const)('rejects %s references without publishing commands', async (failure) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-invalid-'));
-    tempRoots.push(root);
-    const pluginRoot = path.join(root, 'source');
-    const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
+    const launch = { name: 'check', runner: 'node', entry: 'tool.mjs' } as const;
     const manifest: PluginManifestSource = {
-      schemaVersion: 4, name: 'invalid-review', version: '0.1.0', description: 'Invalid reference fixture.', platforms: ['codex'], skills: './skills',
-      requires: { aw: { capabilities: failure === 'missing-capability' ? [] : ['aw.managed-commands.v1'] } }, marketplace: {
-        category: 'test', strict: true, policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL'
-        }
-      },
-      ...(failure === 'project-package' || failure === 'other-platform' ? {
-        managedCommands: {
-          packages: [{
-            key: 'provider', scope: failure === 'project-package' ? 'project' : 'user', platforms: [failure === 'other-platform' ? 'claude' : 'codex'], sourceDir: './tools'
-          }], sets: [{
-            set: 'tools', producer: {
-              kind: 'package', packageKey: 'provider'
-            }, mode: 'static', entries: [{
-              key: 'run', runner: 'node', entry: 'run.mjs'
-            }]
-          }]
-        }
-      } : {})
+      schemaVersion: 4, name: 'review-commands', version: '0.1.0',
+      description: 'Review command candidate fixture.', platforms: ['codex'],
+      requires: { aw: { capabilities: ['aw.managed-commands.v2'] } },
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      ...(skillMode === 'static' ? { skills: './skills' } : { artifacts: { configKeys: [] } }),
+      ...(skillMode === 'dynamic' || commandMode === 'dynamic' ? {
+        scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      } : {}),
+      command: commandMode === 'static'
+        ? { sourceDir: './tools', mode: 'static', routes: { subcommands: [launch] } }
+        : { sourceDir: './tools', mode: 'dynamic', refreshKeys: [] },
     };
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), manifest);
-    await fs.outputFile(path.join(pluginRoot, 'skills/consumer/SKILL.md'), `---\nname: consumer\ndescription: Invalid reference.\n---\n${failure === 'malformed' ? '{{aw.command:tools}}' : '{{aw.command:tools/run}}'}\n`);
-    await fs.outputFile(path.join(pluginRoot, 'skills/consumer/README.md'), '# Consumer\n');
-    if (manifest.managedCommands) {
-      await fs.outputFile(path.join(pluginRoot, 'tools/run.mjs'), 'export {};\n');
-    }
-    const source = await readPluginManifest(pluginRoot);
-    const prepared = await prepareSkillPluginBundle({
-      plugin: source, plugins: [source], workRoot: path.join(root, 'work'), env
-    });
-    try {
-      const plugin = {
-        ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`
-      };
-      if (failure === 'missing-capability') {
-        plugin.manifest.requires = { aw: { capabilities: [] } };
-        await fs.remove(path.join(prepared.bundleRoot, 'codex/skills/consumer/aw-plugin-requirements.json'));
+    await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), 'export {};\n');
+    const files = {
+      'SKILL.md': '---\nname: consumer\ndescription: Review fixture.\n---\nUse {{aw.command}} check.\n',
+      'README.md': '# Consumer\n',
+      'references/usage.md': '```sh\n{{aw.command}} check\n```\n',
+      'scripts/literal.json': '{"template":"{{aw.command}}"}\n',
+    };
+    if (skillMode === 'static') {
+      for (const [file, contents] of Object.entries(files)) {
+        await fs.outputFile(path.join(pluginRoot, 'skills/consumer', file), contents);
       }
-      await expect(finalize({
-        plugin, platform: 'codex', root, env
-      })).rejects.toThrow(failure === 'missing-capability' ? 'require aw.managed-commands.v1' : 'commandReferenceInvalid');
-      expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
     }
-    finally {
+    if (manifest.scripts) {
+      const renderedFiles = Object.fromEntries(Object.entries(files).map(([file, text]) => [file, { text }]));
+      const components = [{ id: 'consumer', kind: 'skill', name: 'consumer', content: { files: renderedFiles } }];
+      const artifacts = [{ id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes',
+        refreshKeys: [], routes: { subcommands: [launch] } }];
+      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+        "import fs from 'node:fs';",
+        "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+        "if (context.surface === 'agent-plugin') {",
+        `  console.log(JSON.stringify(${JSON.stringify({ version: 3, components, omitted: [], unmet: [] })}));`,
+        "} else {",
+        `  console.log(JSON.stringify(${JSON.stringify({ version: 2, artifacts })}));`,
+        "}",
+      ].join('\n'));
+    }
+    const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
+    const source = await readPluginManifest(pluginRoot);
+    const prepared = await prepareSkillPluginBundle({ plugin: source, plugins: [source], workRoot: path.join(root, 'work'), env });
+    try {
+      const plugin = { ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+        pluginId: 'fixture/review-commands' };
+      const result = await finalize({ plugin, platform: 'codex', root, env });
+      const tree = result.skills.find((skill) => skill.tree.skillKey === 'consumer')!.tree;
+      expect(tree.files['SKILL.md']!.toString()).toContain('aw command run fixture/review-commands -- check');
+      expect(tree.files['references/usage.md']!.toString()).toContain('aw command run fixture/review-commands -- check');
+      expect(tree.files['scripts/literal.json']!.toString()).toBe(files['scripts/literal.json']);
+      expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
+    } finally {
       await prepared.cleanup();
     }
   });
+
+  it.each(['undeclared', 'other-platform', 'missing-capability', 'legacy-placeholder', 'empty-routes'] as const)(
+    'handles %s without publishing a package', async (scenario) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-unavailable-'));
+      tempRoots.push(root);
+      const pluginRoot = path.join(root, 'source');
+      const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
+      const manifest: PluginManifestSource = {
+        schemaVersion: 4, name: 'unavailable-review', version: '0.1.0',
+        description: 'Unavailable command fixture.', platforms: ['codex', 'claude'], skills: './skills',
+        requires: { aw: { capabilities: ['aw.managed-commands.v2'] } },
+        marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        ...(scenario !== 'undeclared' ? {
+          command: { sourceDir: './tools', platforms: [scenario === 'other-platform' ? 'claude' : 'codex'],
+            mode: 'static', routes: scenario === 'empty-routes' ? {} : {
+              subcommands: [{ name: 'check', runner: 'node', entry: 'run.mjs' }],
+            } },
+        } : {}),
+      };
+      await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), manifest);
+      const reference = scenario === 'legacy-placeholder' ? '{{aw.command:tools/run}}' : '{{aw.command}}';
+      await fs.outputFile(path.join(pluginRoot, 'skills/consumer/SKILL.md'),
+        `---\nname: consumer\ndescription: Command consumer.\n---\n${reference} check\n`);
+      await fs.outputFile(path.join(pluginRoot, 'skills/consumer/README.md'), '# Consumer\n');
+      await fs.outputFile(path.join(pluginRoot, 'skills/independent/SKILL.md'),
+        '---\nname: independent\ndescription: Standalone Skill.\n---\nNo command dependencies.\n');
+      await fs.outputFile(path.join(pluginRoot, 'skills/independent/README.md'), '# Independent\n');
+      if (manifest.command) await fs.outputFile(path.join(pluginRoot, 'tools/run.mjs'), 'export {};\n');
+      const source = await readPluginManifest(pluginRoot);
+      const bundle = prepareSkillPluginBundle({ plugin: source, plugins: [source], workRoot: path.join(root, 'work'), env });
+      if (scenario === 'undeclared' || scenario === 'legacy-placeholder') {
+        await expect(bundle).rejects.toThrow(scenario === 'undeclared'
+          ? '{{aw.command}} requires a command declaration' : 'commandReferenceInvalid');
+        expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
+        return;
+      }
+      const prepared = await bundle;
+      try {
+        const plugin = { ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+        if (scenario === 'missing-capability') {
+          plugin.manifest.requires = { aw: { capabilities: [] } };
+          await fs.remove(path.join(prepared.bundleRoot, 'codex/skills/consumer/aw-plugin-requirements.json'));
+          await fs.remove(path.join(prepared.bundleRoot, 'codex/skills/independent/aw-plugin-requirements.json'));
+        }
+        const result = finalize({ plugin, platform: 'codex', root, env });
+        if (scenario === 'empty-routes') {
+          const materialized = await result;
+          expect(materialized.skills.map((skill) => skill.tree.skillKey)).toEqual(['independent']);
+          expect(materialized.prepared.expected.unmet).toContainEqual(
+            expect.objectContaining({ name: 'consumer', reasonCode: 'command-route-unreachable' }),
+          );
+        } else {
+          await expect(result).rejects.toThrow(scenario === 'missing-capability'
+            ? 'require aw.managed-commands.v2' : 'codex is outside command.platforms');
+        }
+        expect(await fs.pathExists(path.join(env.AW_HOME!, 'commands'))).toBe(false);
+      } finally {
+        await prepared.cleanup();
+      }
+    },
+  );
   it('creates all state and temporary paths under the isolated root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-materialization-env-'));
     tempRoots.push(root);

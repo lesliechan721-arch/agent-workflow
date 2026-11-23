@@ -74,6 +74,8 @@ export interface ResolvedCatalogPlugin {
   plugin: PluginMeta;
 }
 
+export class CatalogPluginNotFoundError extends Error {}
+
 export class CatalogLeaseEscapeError extends Error {
   constructor(message = 'Catalog lease callback returned protected path evidence.') {
     super(message);
@@ -415,7 +417,7 @@ export async function withResolvedCatalogPlugin<T>(
         : [];
     });
     if (matches.length === 0) {
-      throw new Error(`Plugin "${options.selector}" does not exist in the required catalog source set.`);
+      throw new CatalogPluginNotFoundError(`Plugin "${options.selector}" does not exist in the required catalog source set.`);
     }
     if (matches.length > 1) {
       throw new Error(

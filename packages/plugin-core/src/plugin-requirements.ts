@@ -10,6 +10,7 @@ import {
   type RegisteredAwCapabilityId,
 } from './aw-capabilities.js'
 import { resolvePlatformHookDefinitions } from './hooks-contract.js'
+import { parseManagedCommandPlaceholders } from './managed-commands.js'
 import { resolveSupportedNativePlatforms, resolveSupportedPlatforms, isPortablePlatformTarget } from './platform-support.js'
 import type { NormalizedPluginManifest, PluginConfigSchemaField, PluginManifestSource } from './types.js'
 
@@ -47,7 +48,7 @@ export function deriveAwCapabilitiesFromManifest(
   const capabilities: RegisteredAwCapabilityId[] = []
   if ((manifest as { schemaVersion?: number }).schemaVersion === 4) capabilities.push('aw.plugin-manifest.v4')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
-  if (manifest.nativeTools) capabilities.push('aw.native-tools.v2')
+  if (manifest.nativeTools) capabilities.push('aw.native-tools.v3')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
   if (manifest.config && 'schemaVersion' in manifest.config
@@ -89,13 +90,13 @@ export function deriveAwCapabilitiesFromManifest(
     }
   }
   const permissions = manifest.extensions?.permissions ?? []
-  if (manifest.managedCommands !== undefined || permissions.some((entry) =>
-    [entry, entry.agentOverrides?.codex, entry.agentOverrides?.claude].some((permission) =>
-      permission && [permission.allow, permission.ask, permission.deny].some((items) => items?.some((item) => typeof item !== 'string'))))) {
-    capabilities.push('aw.managed-commands.v1')
+  if (manifest.command !== undefined || permissions.some((entry) =>
+    [entry, ...Object.values(entry.agentOverrides ?? {})].some((permission) =>
+      permission && [permission.allow, permission.ask, permission.deny].some((items) => items?.some((item: unknown) => typeof item !== 'string'))))) {
+    capabilities.push('aw.managed-commands.v2')
   }
   if (permissions.some((entry) => entry.agentOverrides?.claude?.sandbox !== undefined)) {
-    capabilities.push('aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1')
+    capabilities.push('aw.managed-commands.v2', 'aw.claude.sandbox-exclusions.v1')
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v2')
@@ -147,7 +148,7 @@ function commandCapabilities(group: string, command: string | undefined, tail: s
   } else if (group === 'command'
     && (['list', 'show', 'install', 'update', 'remove', 'run'].includes(command)
       || command === 'package' && ['sync', 'remove'].includes(subcommand))) {
-    capability = 'aw.managed-commands.v1'
+    capability = 'aw.managed-commands.v2'
   } else {
     capability = COMMAND_CAPABILITIES[`${group} ${command}`]
   }
@@ -328,7 +329,12 @@ export async function scanPluginAwCliRequirements(options: {
   )).flat()
   for (const file of [...new Set(skillFiles)].sort()) {
     const relativePath = path.relative(options.pluginRoot, file).split(path.sep).join('/')
-    for (const scanned of shellFenceCommands(await fs.readFile(file, 'utf8'))) {
+    const content = await fs.readFile(file, 'utf8')
+    if (parseManagedCommandPlaceholders(content).length > 0) {
+      if (!options.manifest.command) throw new Error(`Invalid ${relativePath}: {{aw.command}} requires a command declaration.`)
+      detected.push('aw.managed-commands.v2')
+    }
+    for (const scanned of shellFenceCommands(content)) {
       record(relativePath, 'shell-fence', scanned)
     }
   }

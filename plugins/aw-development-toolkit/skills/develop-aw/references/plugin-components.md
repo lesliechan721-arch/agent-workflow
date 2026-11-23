@@ -10,7 +10,7 @@
 | 常驻指令、角色或 Agent 配置 | 对应 instruction、agent/role 或 extension；Agent 内容采用 `agent-content`，模型配置服从调用方的有效约束 |
 | 在事件发生时执行动作 | Hook；写明触发、输入、副作用与失败行为，用受控事件作确定性验证 |
 | 访问工具服务 | MCP；按合同声明 command、env、auth、网络和权限，验证实际启动、健康与清理 |
-| 脚本需要稳定调用入口或独立资源生命周期 | 采用 托管命令（`references/managed-commands.md`），选择资源 producer、集合和权限 |
+| 脚本需要稳定调用入口或独立资源生命周期 | 采用 托管命令（`references/managed-commands.md`），声明共享包、路由和权限 |
 | 改变工具或 Agent 的可执行范围 | 权限声明；范围与所需动作匹配，核对目标平台的实际支持 |
 | 根据配置、scope 或状态生成内容 | 按 平台投影（`references/platform-projection.md`） 选择投影机制；选定 renderer 后采用其 请求与输出方法（`references/aw-artifact-renderer.md`） |
 
@@ -34,7 +34,7 @@ MCP 的凭据值不进入 Skill、日志或分发包。生命周期由实际 run
 
 runtimeConfig 位于动态 Skill 组件，不是静态 Skill 或 Manifest 顶层字段。需要该能力时采用完整组件 renderer，并声明 aw.installed-runtime-config.v2。keys 非空、无重复，属于 artifacts.configKeys 的非敏感闭包；平台须实际支持此运行合同。
 
-AW 在最终 Skill 注入 reader 和配置快照。脚本从真实调用位置解析该产物的 reader，不读最新全局 store，不手写保留 receipt。保存新配置不改变已安装产物。按实际平台及 render scope 验证；共享包配置来源见 renderer 方法。独立托管包使用 托管命令（references/managed-commands.md）的参数/配置文件方法。
+AW 在最终 Skill 注入 reader 和配置快照。脚本从真实调用位置解析该产物的 reader，不读最新全局 store，不手写保留 receipt。保存新配置不改变已安装产物。按实际平台及 render scope 验证；共享包配置来源见 renderer 方法。共享命令脚本使用 托管命令（`references/managed-commands.md`）的按平台配置快照。
 
 ## 生命周期与交付
 

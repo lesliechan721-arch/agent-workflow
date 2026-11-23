@@ -11,7 +11,7 @@ import { assertHookMatcherAllowed, assertNoDuplicateHookHandlers } from './hooks
 import { compilePluginConfigDefinition, getPluginConfigDependencyKeys } from './plugin-config.js';
 import { applyPlatformOverride } from './platform-entries.js';
 import { supportsPlatform } from './platform-support.js';
-import { normalizeCommandRelativeFile, normalizeCommandSetArtifact, type PermissionCommand, type ManagedCommandPermission } from './managed-commands.js';
+import { assertManagedCommandPlatform, normalizeCommandRelativeFile, parseManagedCommandPlaceholders, type PermissionCommand, type ManagedCommandPermission } from './managed-commands.js';
 import { resolveCanonicalRuntimeSourceIdentity } from './runtime-export-source.js';
 import { isSkillAuthorOnlyPath, isAuthorOnlySkillDirectory } from './skill-authoring.js';
 import { validatePortableSkillName } from './portable-skill-validation.js';
@@ -82,12 +82,6 @@ export interface PlatformRenderContextV2 {
   resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string; root: string; digest: string }>;
   previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
 }
-export interface AgentCommandContextV1 {
-  schemaVersion: 1; surface: 'agent-commands'; platform: Exclude<PlatformId, 'generic'>; scope: Scope;
-  plugin: PlatformRenderContextV2['plugin']; config: PlatformRenderContextV2['config']; changedConfigKeys: string[];
-  requestedArtifactIds: string[]; previousArtifacts: import('./managed-commands.js').CommandSetArtifact[];
-  producers: Array<{ set: string; componentId: string; resourceRoot: string }>;
-}
 export const CAPABILITY_REASON_CODES = [
   'client-missing', 'version-unsupported', 'interface-unsupported', 'scope-unsupported',
   'capability-unverified', 'delivery-unavailable', 'consumer-missing', 'consumer-disabled', 'policy-blocked',
@@ -136,14 +130,13 @@ const getComponentValidator = lazyValidator<PluginComponent>(`${componentSchema.
 const getPlanValidator = lazyValidator<PlatformComponentPlanV3>(`${componentSchema.$id}#/$defs/platformComponentPlanV3`);
 const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV2>(`${componentSchema.$id}#/$defs/platformCapabilitiesV2`);
 const getContextValidator = lazyValidator<PlatformRenderContextV2>(`${componentSchema.$id}#/$defs/platformRenderContextV2`);
-const getCommandContextValidator = lazyValidator<AgentCommandContextV1>(`${componentSchema.$id}#/$defs/agentCommandContextV1`);
 const getRequirementValidator = lazyValidator<FeatureRequirement>(`${manifestSchema.$id}#/$defs/featureRequirement`);
 function assertSchema<T>(getValidator: () => ValidateFunction<T>, value: unknown, field: string): asserts value is T {
   const validator = getValidator();
   if (!validator(value)) throw new Error(`Invalid ${field}: ${getComponentAjv().errorsText(validator.errors)}.`);
 }
 function assertIdentity(id: string): void {
-  if (id.trim() === '' || /[/\\\u0000-\u001f\u007f]/u.test(id) || id.startsWith('command-set.') || id.startsWith('command-package.')) {
+  if (id.trim() === '' || /[/\\\u0000-\u001f\u007f]/u.test(id) || id === 'command-routes') {
     throw new Error(`Invalid component ID ${JSON.stringify(id)}.`);
   }
 }
@@ -548,7 +541,11 @@ export async function normalizeStaticPluginComponents(options: {
       const files = await staticSkillFiles(pluginRoot, path.posix.join(directory, entry.name));
       const skill: PluginComponent = { id: `skill:${entry.name}`, kind: 'skill', name: entry.name, content: { files } };
       const skillIdentity = await resolveCanonicalRuntimeSourceIdentity(pluginRoot, path.posix.join(directory, entry.name, 'SKILL.md'), 'static Skill frontmatter');
-      skill.requires = getComponentFeatureRequirements(skill, { skillText: await fs.readFile(skillIdentity.sourceRealPath, 'utf8') }).filter((requirement) => requirement.feature !== 'component.kind.skill');
+      const skillText = await fs.readFile(skillIdentity.sourceRealPath, 'utf8');
+      if (parseManagedCommandPlaceholders(skillText).length > 0) {
+        assertManagedCommandPlatform(manifest, platform, `Skill ${entry.name} {{aw.command}}`);
+      }
+      skill.requires = getComponentFeatureRequirements(skill, { skillText }).filter((requirement) => requirement.feature !== 'component.kind.skill');
       if (skill.requires.length === 0) delete skill.requires;
       components.push(skill);
     }
@@ -607,32 +604,4 @@ export function getRendererConfigKeys(manifest: NormalizedPluginManifest, platfo
   if (!manifest.config) throw new Error('Invalid renderer config: missing definition.');
   const config = compilePluginConfigDefinition(manifest.config, platform);
   return declared.filter((key) => kind !== 'skill' || getPluginConfigDependencyKeys(config, [key]).every((dependency) => config.fields[dependency]?.sensitive !== true));
-}
-
-export function assertAgentCommandContext(value: unknown): asserts value is AgentCommandContextV1 {
-  assertSchema(getCommandContextValidator, value, 'agent command context');
-  const configKeys = new Set(Object.keys(value.config.schema.fields));
-  for (const [key, field] of Object.entries(value.config.schema.fields)) {
-    if (field.sensitive === true) throw new Error('Invalid agent command context: sensitive config is not permitted.');
-    if (!Object.hasOwn(value.config.sources, key)) throw new Error('Invalid agent command context: missing config source.');
-    if ((value.config.sources[key] === 'missing') === Object.hasOwn(value.config.values, key)) throw new Error('Invalid agent command context: missing config value/source mismatch.');
-  }
-  for (const key of [...Object.keys(value.config.values), ...Object.keys(value.config.sources), ...value.changedConfigKeys, ...value.config.issues.map((issue) => issue.path.field)]) {
-    if (!configKeys.has(key)) throw new Error('Invalid agent command context: config outside whitelist.');
-  }
-  if (value.requestedArtifactIds.some((id) => !id.startsWith('command-set.'))) throw new Error('Invalid agent command context: only command-set IDs are permitted.');
-  const producerSets = new Set<string>();
-  for (const producer of value.producers) {
-    assertIdentity(producer.componentId);
-    if (!path.isAbsolute(producer.resourceRoot) || producerSets.has(producer.set)) throw new Error('Invalid agent command context: duplicate producer or non-absolute resource root.');
-    producerSets.add(producer.set);
-    if (!value.requestedArtifactIds.includes(`command-set.${producer.set}`)) throw new Error('Invalid agent command context: producer outside request.');
-  }
-  if (producerSets.size !== value.requestedArtifactIds.length) throw new Error('Invalid agent command context: each requested set requires one producer.');
-  const previousIds = new Set<string>();
-  for (const previous of value.previousArtifacts) {
-    normalizeCommandSetArtifact(previous);
-    if (previous.platform !== value.platform || !value.requestedArtifactIds.includes(previous.id) || previousIds.has(previous.id)) throw new Error('Invalid agent command context: previous artifact outside this request.');
-    previousIds.add(previous.id);
-  }
 }

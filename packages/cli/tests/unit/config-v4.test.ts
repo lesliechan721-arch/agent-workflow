@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
-import { normalizePluginConfigDefinition, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizePluginCommand, normalizePluginConfigDefinition, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -13,8 +13,8 @@ import {
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { applyPluginConfigWrite } from '../../src/utils/plugin-config-write.js';
-import { selectPlatformRenderConfig } from '../../src/utils/artifact-request.js';
-import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { prepareManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
+import { readManagedCommandRuntimeConfigSnapshot } from '../../src/utils/managed-command-snapshots.js';
 import { createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -44,32 +44,34 @@ function fixture() {
   return { store, plugin, save };
 }
 
-async function subagentRuntimeComponents(plugin: PluginMeta, config: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>): Promise<PluginComponent[]> {
-  const { renderArtifactPlan } = await import('../../../../plugins/agent-subagent/scripts/render-artifacts.mjs');
-  const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
-  capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
-  for (const [feature, values] of [['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],
-    ['skill.runtime-config', ['aw.installed-runtime-config.v2']]] as const) {
-    capabilities.features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
-  }
-  const plan = await renderArtifactPlan({ schemaVersion: 2, surface: 'agent-plugin', platform: 'codex', scope: 'user',
-    plugin: { pluginId: 'team/executor-config', name: plugin.manifest.name, version: plugin.manifest.version },
-    config: selectPlatformRenderConfig({ resolved: { ...config, mode: 'artifact-render', targetScope: 'user' },
-      keys: plugin.manifest.artifacts!.configKeys, nonSensitive: true }),
-    changedConfigKeys: [], allowedOutputKinds: ['skill'], platformCapabilities: capabilities, previousComponents: [],
-    resources: [{ kind: 'bundle', name: './skills/spawn-subagent', digest: `sha256:${'0'.repeat(64)}`,
-      root: path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/skills/spawn-subagent') }],
-  });
-  return plan.components;
+async function guideConfigFixture() {
+  const f = fixture();
+  const { plugin, store } = f;
+  const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
+  const command = normalizePluginCommand(source.command, source);
+  if (command.mode !== 'static') throw new Error('Expected the shipped Guide to have static routes.');
+  plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+  plugin.manifest.command = command;
+  await fs.outputJson(plugin.manifestPath, { ...source, name: plugin.manifest.name });
+  const entries = new Set(command.routes.subcommands.map(({ entry }) => entry));
+  if (command.routes.fallback) entries.add(command.routes.fallback.entry);
+  for (const entry of entries) await fs.outputFile(path.join(plugin.rootDir, command.sourceDir, entry), 'export {};\n');
+  const runtimeValues = async () => {
+    const candidate = await prepareManagedCommandPackage({ plugin, cwd: store.cwd, env: store.env,
+      operation: { kind: 'platform-sync', platforms: ['codex'] } });
+    try {
+      const snapshot = await readManagedCommandRuntimeConfigSnapshot(candidate.resourceRoot, candidate.record, 'codex');
+      return snapshot.effectiveValues;
+    } finally { await candidate.cleanup(); }
+  };
+  return { ...f, runtimeValues };
 }
 
 describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: use the shipped plugin schema, writer and runtime snapshot so
   // convenience fields cannot be accepted in the wrong branch or lost on apply.
   it('saves Agent Subagent backend options and keeps profile values out of installed runtime', async () => {
-    const { store, plugin, save } = fixture();
-    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
-    plugin.manifest.config = normalizePluginConfigDefinition(source.config);
+    const { store, plugin, save, runtimeValues } = await guideConfigFixture();
     const defaults = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
     for (const key of ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile']) {
       expect(defaults.values[key]).toEqual({ executor: 'native' });
@@ -94,12 +96,7 @@ describe('Config Definition v4 CLI boundaries', () => {
     await save({ subagentCommands: commands, generalTaskProfile });
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
     expect(config.values).toMatchObject({ subagentCommands: commands, generalTaskProfile });
-    plugin.manifest.artifacts = source.artifacts;
-    plugin.manifest.requires = source.requires;
-    const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', components: await subagentRuntimeComponents(plugin, config),
-      config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-    expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
+    expect(await runtimeValues()).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [
@@ -134,20 +131,13 @@ describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: persisted retention and installed snapshots control deletion;
   // zero must survive saving, and invalid values must preserve the prior file.
   it('saves Guide retention hours including zero and rejects invalid ranges atomically', async () => {
-    const { store, plugin, save } = fixture();
-    const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
-    plugin.manifest.config = normalizePluginConfigDefinition(source.config);
-    plugin.manifest.artifacts = source.artifacts;
-    plugin.manifest.requires = source.requires;
+    const { store, plugin, save, runtimeValues } = await guideConfigFixture();
     const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
     for (const subagentRetentionHours of [maximum, 1, 0]) {
       await save({ subagentRetentionHours });
       const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
       expect(config.values.subagentRetentionHours).toBe(subagentRetentionHours);
-      const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', components: await subagentRuntimeComponents(plugin, config),
-        config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
-      expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
+      expect(await runtimeValues()).toEqual({ subagentCommands: [], subagentRetentionHours });
     }
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);

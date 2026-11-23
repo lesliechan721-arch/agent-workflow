@@ -13,7 +13,7 @@ import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 /** Simulate the public Codex CLI while AW writes the real canonical payload. */
 export async function createCodexNativeTestRuntime(
   isolation: { env: NodeJS.ProcessEnv; layout: { fixtureCwd: string } },
-  options: { rejectAdd?: (pluginId: string) => boolean } = {},
+  options: { rejectAdd?: (pluginId: string) => boolean; projectRoots?: readonly string[] } = {},
 ) {
   const binRoot = path.join(isolation.layout.fixtureCwd, 'codex-native-bin');
   if (process.platform === 'win32') {
@@ -33,6 +33,7 @@ export async function createCodexNativeTestRuntime(
   const marketplaces = new Map<string, string>();
   const packageRoots = new Map<string, string>();
   const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
+  const projectRoots = new Set((options.projectRoots ?? [isolation.layout.fixtureCwd]).map((root) => path.resolve(root)));
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
     if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
     const index = invocation.args.indexOf('plugin');
@@ -65,17 +66,17 @@ export async function createCodexNativeTestRuntime(
       await applyCodexConfigTransactionFile(configPath, { removePluginActivations: [args[2]!] });
     }
     if (args[1] === 'list' && args.includes('--json')) {
+      const cwd = path.resolve(invocation.cwd);
       const [user, project] = await Promise.all([
         readCodexConfigFile(configPath),
-        readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex/config.toml')),
+        projectRoots.has(cwd) ? readCodexConfigFile(path.join(cwd, '.codex/config.toml')) : null,
       ]);
-      const exactProject = path.resolve(invocation.cwd) === path.resolve(isolation.layout.fixtureCwd);
       const marketplace = args[args.indexOf('--marketplace') + 1];
       return { exitCode: 0, stdout: JSON.stringify({ installed: [...installed]
         .filter(([id]) => id.endsWith(`@${marketplace}`)).map(([pluginId, version]) => ({
           pluginId, installed: true, version,
           enabled: user.snapshot.plugins[pluginId]?.enabled === true
-            || exactProject && project.snapshot.plugins[pluginId]?.enabled === true,
+            || project?.snapshot.plugins[pluginId]?.enabled === true,
         })), available: [] }), stderr: '' };
     }
     return { exitCode: 0, stdout: '', stderr: '' };

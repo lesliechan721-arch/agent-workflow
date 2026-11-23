@@ -10,7 +10,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
-import { protectPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
+import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
 import { fixture, scripts, supported, testTimeoutMs } from './fixtures/adapter-v5.mjs';
 
 const moduleTimeoutMs = 30000;
@@ -28,7 +28,7 @@ function moduleResourcesForFile() {
     moduleResourceRoot = root;
     let entry = moduleEntry;
     if (process.env.AW_PLUGIN_EVENT !== 'test') {
-      const installed = path.join(root, 'skills/spawn-subagent/scripts');
+      const installed = path.join(root, 'commands/scripts');
       await fs.cp(scripts, installed, { recursive: true });
       await fs.cp(path.join(scripts, '../assets'), path.join(installed, '../assets'), { recursive: true });
       entry = path.join(root, 'scripts/fixtures/adapter-recovery.mjs');

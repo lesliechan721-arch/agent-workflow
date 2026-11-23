@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "kind": "antigravity-cli-global-configuration-qualification",
+  "status": "local-management-and-settings-load-passed",
+  "host": {
+    "os": "macOS",
+    "version": "26.3.1",
+    "arch": "arm64"
+  },
+  "client": {
+    "name": "agy",
+    "version": "1.5.14",
+    "sha256": "e8c2959bf4744580d0e5b8f938ec2dc3918a942b620a6262e53856400f14e5fb"
+  },
+  "candidate": {
+    "build": "pnpm build",
+    "antigravityMapperSha256": "e1f402d811685b94909301fe6b8368678a6b022c107c19dc925c3413d89514bc"
+  },
+  "boundary": {
+    "home": "temporary empty HOME/AW_HOME/XDG roots",
+    "projects": "two independent empty local Git repositories",
+    "externalNetwork": "denied by macOS sandbox; only loopback allowed for native listener",
+    "credentials": "empty environment and home, user credential directories and keychain service access denied",
+    "modelPrompt": "none",
+    "scope": "CLI Global"
+  },
+  "review": {
+    "exitCode": 3,
+    "effectCodes": [
+      "hostPermissionAdditionalImpact",
+      "changeHostPermissions",
+      "changeCommandRoutes",
+      "changeCommandRoutes",
+      "changeCommandRoutes"
+    ],
+    "settingsUnchanged": true
+  },
+  "sourceReportSha256": "69498a33436583030c65aa6e09221bc8439829dfeaef96ca02e21b552fdd43f0",
+  "extraction": "Selected result and build identity fields. Temporary paths, native terminal output and full receipts were omitted.",
+  "installation": {
+    "exitCode": 0,
+    "registeredInBothProjects": true,
+    "configuredGlobalRules": {
+      "ask": [
+        "command(echo approval-manual)",
+        "command(echo approval-ask)"
+      ],
+      "allow": [
+        "command(aw command run fixture/approval-sample -- summary)",
+        "command(echo café)"
+      ],
+      "deny": [
+        "command(echo approval-deny)"
+      ]
+    },
+    "generatedGlobalSettingsSha256": "eea398908a4f435d85b0227875d95a0cff33c4fdcddcf17a0d0b08efc155a8ca"
+  },
+  "nativeStartup": {
+    "settingsBytesRewritten": true,
+    "actionListsPreserved": true,
+    "signInRequired": true
+  },
+  "removal": {
+    "syncExitCode": 0,
+    "removeExitCode": 0,
+    "manualRulePreserved": true,
+    "registeredInEitherProject": false
+  },
+  "unverified": [
+    "actual allow/ask/deny outcomes",
+    "authenticated precedence and sandbox behavior",
+    "Project and Shared rule storage",
+    "Desktop loading",
+    "Windows matching",
+    "interactive decisions for quoted, regex and wrapper rules"
+  ],
+  "finalPrecedenceReplay": {
+    "sourceReportSha256": "8fd8cc3673163ced0f381b7cc646bc57aab32db8b381b405b89244f3e4aeb9a0",
+    "extraction": "Selected public lifecycle results, native readback, and safety observation. Temporary paths and full receipt text were omitted.",
+    "awBuildStamp": {
+      "generationId": "8a16a507-c508-4bb6-b040-ff7660eca3a1",
+      "inputDigest": "6db6823c91ea42c34c5ae3d11081a06f909b9c3d6577f65217cd75902d53f82b",
+      "outputDigest": "1bb8c373519b5efda88e247bc955aede7507d13573e62f8ff1f099fed3d8291e",
+      "cliPackageDigest": "93959d6465c7509f7b70d69c0bbdfb6137920f410df7db324801faa6c7d44540",
+      "builtAt": "2026-11-22T13:33:12.570Z"
+    },
+    "buildBinding": "The captured Antigravity mapper SHA-256 matches the dist mapper in this build.",
+    "antigravityMapperSha256": "0294a9aed28d7f22dca4439fb7ce69c47ed4dd7ad8835f1cc6bccc815b0e01af",
+    "configuration": {
+      "declaration": "allow echo report?",
+      "withBothNativeFormsDenied": {
+        "reviewExitCode": 3,
+        "reviewEffectCodes": [
+          "hostPermissionAdditionalImpact",
+          "changeHostPermissions",
+          "invocationPolicyNotApplied",
+          "changeCommandRoutes",
+          "changeCommandRoutes",
+          "changeCommandRoutes",
+          "changeCommandRoutes"
+        ],
+        "installExitCode": 0,
+        "skippedAction": [
+          "allow"
+        ],
+        "reasonCode": "permission-rule-conflict"
+      },
+      "withOnlyLiteralFormDenied": {
+        "syncExitCode": 0,
+        "literalDenyPreserved": true,
+        "allowForm": "raw regex",
+        "additionalImpactReason": "antigravity-user-rule-precedence"
+      },
+      "afterUserRemovesDeny": {
+        "syncExitCode": 0,
+        "literalAndRawFormsRestored": true,
+        "globalSettingsSha256": "778161793f02bb33db04a9f8121d966ac6ef85b22e57a195f265a38442022264"
+      }
+    },
+    "native": {
+      "listedAndEnabledInBothProjects": true,
+      "settingsBytesRewritten": true,
+      "nonemptyRuleListsPreserved": true,
+      "emptyDenyRemovedDuringNormalization": true,
+      "signInRequired": true,
+      "removedFromBothProjects": true,
+      "manualRuleRetained": true
+    },
+    "mixedEditSafetyObservation": {
+      "reasonCode": "permissionOwnershipDegraded",
+      "changes": "removed a manual rule from a Deny list also containing an AW entry",
+      "projectionContinued": true,
+      "retirement": "native removal succeeded and older rule copies with degraded ownership evidence were retained"
+    },
+    "unverified": [
+      "actual approval, prompt and denial outcomes",
+      "authenticated Project, Shared or Desktop behavior",
+      "Windows native matching"
+    ]
+  }
+}

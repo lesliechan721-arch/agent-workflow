@@ -1,7 +1,5 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,9 +12,10 @@ import { patchPluginConfigStore, readPluginConfigStore, resolveConfigRead,
   resolvePluginConfigStorePath, setAtomicConfigBeforeRenameHookForTests, toCliConfigPromptSchema,
   writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { analyzePluginConfigMutationImpact } from '../../src/utils/plugin-config-impact.js';
-import { syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
-import { listManagedCommandPackages } from '../../src/utils/managed-command-store.js';
-import { createDefaultPluginProcessRunner, defaultPluginProcessRunner, type PluginScriptInvocation } from '../../src/utils/plugin-scripts.js';
+import { prepareManagedCommandPackage, publishPreparedManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
+import { readManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import { readManagedCommandRuntimeConfigSnapshot } from '../../src/utils/managed-command-snapshots.js';
+import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import { replaceCatalogSourcesConfig, readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
@@ -145,41 +144,19 @@ describe('configuration saves and explicit apply', () => {
     expect(impact).toMatchObject({ storeChanged: true, noEffectiveChange: true, affectedTargets: [] });
   });
 
-  // Test Value Gate: an empty previous dynamic set must still refresh when an authorized renderer or Skill set input changes.
-  it.each(['codex', 'copilot'] as const)('tracks complete %s render units and real command producers without guessing component names', async (platform) => {
+  // Test Value Gate: shared user renderers in project context must be reviewed for affected platform inputs.
+  it.each(['codex', 'copilot'] as const)('tracks complete %s shared render units', async (platform) => {
     const f = fixture();
     f.plugin.manifest.platforms = [platform];
     f.plugin.manifest.artifacts = { configKeys: ['mode'] };
-    f.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'checks', mode: 'dynamic', refreshKeys: ['note'],
-      producer: { kind: 'artifact', platform, artifactId: 'runtime-selected-skill' } }] };
     const run = vi.spyOn(defaultPluginProcessRunner, 'run');
-    const target = { pluginName: 'demo', pluginId: 'team/demo', platform, scope: 'project' as const };
+    const target = { pluginName: 'demo', platform, scope: 'project' as const };
     const impact = await analyzePluginConfigMutationImpact({ ...f.options, context: 'project', visibleTargets: [target],
       commandDiscovery: { packages: [], errors: [] }, mutation: { kind: 'patch', updates: { mode: 'fast', note: 'enabled' } } });
     expect(impact.affectedTargets).toEqual([target]);
     expect(impact.sharedNativeRenderUnits).toEqual([{ pluginName: 'demo', platform, renderScope: 'user',
-      configKeys: ['mode', 'note'], dynamicComponents: true,
-      commandSets: [{ set: 'checks', producer: { kind: 'artifact', platform, artifactId: 'runtime-selected-skill' } }] }]);
+      configKeys: ['mode'], dynamicComponents: true }]);
     expect(run).not.toHaveBeenCalled();
-  });
-
-  // Test Value Gate: activation scope cannot grant a shared renderer an excluded config profile, or hide a separate static Skill command consumer.
-  it('uses the actual render scope and independent Skill command refresh keys', async () => {
-    const f = fixture();
-    f.plugin.manifest.platforms = ['claude'];
-    f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['project'] };
-    f.plugin.manifest.skills = './skills';
-    f.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'checks', mode: 'dynamic', refreshKeys: ['note'],
-      producer: { kind: 'static-skill', platform: 'claude', skillKey: 'check' } }] };
-    const target = { pluginName: 'demo', platform: 'claude' as const, scope: 'project' as const };
-    const options = { ...f.options, context: 'project' as const, visibleTargets: [target], commandDiscovery: { packages: [], errors: [] } };
-    const ignored = await analyzePluginConfigMutationImpact({ ...options, mutation: { kind: 'patch', updates: { mode: 'fast' } } });
-    expect(ignored.affectedTargets).toEqual([]);
-    const impact = await analyzePluginConfigMutationImpact({ ...options, mutation: { kind: 'patch', updates: { note: 'enabled' } } });
-    expect(impact.affectedTargets).toEqual([target]);
-    expect(impact.sharedNativeRenderUnits).toEqual([{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
-      configKeys: ['note'], dynamicComponents: false,
-      commandSets: [{ set: 'checks', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'check' } }] }]);
   });
 
   // Test Value Gate: two Native platforms must not be widened into the Codex/Claude shorthand while preparing preApply authorization.
@@ -294,33 +271,36 @@ describe('configuration saves and explicit apply', () => {
   });
 });
 
-async function packageFixture(options: { second?: boolean; project?: boolean } = {}) {
+async function packageFixture(mode: 'static' | 'dynamic' = 'dynamic') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
-  if (options.project) execFileSync('git', ['init', '-q'], { cwd });
   const sourceRoot = path.join(cwd, 'catalog');
   const pluginRoot = path.join(sourceRoot, 'plugins/demo');
   const renders = path.join(cwd, 'renders');
-  await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), 'process.exit(0);\n');
+  await fs.outputFile(path.join(pluginRoot, 'tools/safe.mjs'), 'process.exit(0);\n');
+  await fs.outputFile(path.join(pluginRoot, 'tools/fast.mjs'), 'process.exit(0);\n');
   await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
     "import fs from 'node:fs';",
-    'const context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,"utf8"));',
-    'fs.appendFileSync(' + JSON.stringify(renders) + ',JSON.stringify({event:context.event,keys:context.changedConfigKeys,cwd:process.cwd()})+"\\n");',
-    'console.log(JSON.stringify({version:2,artifacts:context.requestedArtifactIds.map(id=>({id,target:"aw.command-package",kind:"commandPackage",state:"present",refreshKeys:["mode"],files:{"config.json":JSON.stringify({mode:context.config.values.mode,source:context.config.sources.mode})}}))}));',
+    'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    'fs.appendFileSync(' + JSON.stringify(renders) + ', JSON.stringify(context.config.values) + "\\n");',
+    'const mode = context.config.values.mode;',
+    'const routes = { subcommands: mode === "empty" ? [] : [{ name: "check", runner: "node", entry: mode + ".mjs" }] };',
+    'console.log(JSON.stringify({ version: 2, artifacts: [{ id: "command-routes", target: "aw.command-routes", kind: "commandRoutes", refreshKeys: ["mode"], routes }] }));',
   ].join('\n'));
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'Package config fixture\n', (manifest) => {
     manifest.platforms = ['codex', 'claude'];
     manifest.config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
-      mode: { type: 'string', default: 'safe' }, token: { type: 'string', sensitive: true },
+      mode: { type: 'string', default: 'safe' },
+      runtime: { type: 'string', default: 'default' },
+      unrelated: { type: 'string', default: 'initial' },
     } });
-    manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-    manifest.managedCommands = { packages: [
-      { key: 'personal', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools', render: true, refreshKeys: ['mode'] },
-      { key: 'uninstalled', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools', render: true, refreshKeys: ['mode'] },
-      ...(options.second ? [{ key: 'another', scope: 'user' as const, platforms: ['codex' as const, 'claude' as const], sourceDir: './tools', render: true, refreshKeys: ['mode'] }] : []),
-      ...(options.project ? [{ key: 'workspace', scope: 'project' as const, platforms: ['codex' as const, 'claude' as const], sourceDir: './tools', render: true, refreshKeys: ['mode'] }] : []),
-    ], sets: [] };
+    const base = { sourceDir: './tools', platforms: ['codex', 'claude'] as const, runtimeConfig: { keys: ['runtime'] } };
+    manifest.command = mode === 'dynamic' ? { ...base, platforms: [...base.platforms], mode, refreshKeys: ['mode'] }
+      : { ...base, platforms: [...base.platforms], mode, routes: {
+        subcommands: [{ name: 'check', runner: 'node', entry: 'safe.mjs', args: [], cwd: 'caller' }],
+      } };
+    if (mode === 'dynamic') manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
   });
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
@@ -331,167 +311,156 @@ async function packageFixture(options: { second?: boolean; project?: boolean } =
   const loaded = await readPluginManifest(path.join(source.rootDir, 'plugins/demo'), { mode: 'bundle' });
   const plugin: PluginMeta = { ...loaded, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
     catalogLogicalIdentity: source.logicalIdentity, pluginId: 'team/demo' };
-  const store = { sourceId: source.sourceId, sourceIdentity: source.sourceIdentity, logicalIdentity: source.logicalIdentity,
-    pluginName: 'demo', scope: 'user' as const, cwd, env };
-  const applyOptions = { plugin, scope: 'user' as const, context: 'user' as const, cwd, env, cliVersion: '1.0.0' };
-  const sync = (key: string, scope: 'user' | 'project' = 'user') => syncPluginManagedCommandPackage({ plugin, packageKey: key, scope, cwd, env });
-  return { cwd, env, plugin, store, renders, options: applyOptions, sync };
+  const producer = { sourceId: source.sourceId, sourceIdentity: source.sourceIdentity, pluginName: 'demo' };
+  const store = { ...producer, logicalIdentity: source.logicalIdentity, scope: 'user' as const, cwd, env };
+  const options = { plugin, scope: 'user' as const, cwd, env, cliVersion: '1.0.0' };
+  const sync = async () => {
+    const candidate = await prepareManagedCommandPackage({ ...options, operation: { kind: 'explicit-sync' } });
+    try { return await publishPreparedManagedCommandPackage({ ...options, candidate }); }
+    finally { await candidate.cleanup(); }
+  };
+  const installed = async () => (await readManagedCommandPackage(producer, env))!;
+  const values = async (platform: 'codex' | 'claude') => {
+    const current = await installed();
+    return (await readManagedCommandRuntimeConfigSnapshot(current.resourceRoot, current.record, platform)).effectiveValues;
+  };
+  const countRenders = async () => (await fs.readFile(renders, 'utf8')).trim().split('\n').length;
+  return { cwd, env, plugin, store, options, sync, installed, values, countRenders };
 }
 
 describe('existing command package apply', () => {
-  // Test Value Gate: package-only apply must work without Intent and cannot install a declaration that has no existing output.
-  it('refreshes one existing common package and leaves Intent and missing packages unchanged', async () => {
+  // Test Value Gate: common package-only apply refreshes the existing package exactly once without creating Intent.
+  it('reviews and applies one shared route update without rerendering', async () => {
     const f = await packageFixture();
-    expect(await f.sync('personal')).toMatchObject({ state: 'completed' });
-    const inventory = await listManagedCommandPackages(f.env);
-    const resource = inventory.packages[0]!.resourceRoot;
-    await fs.remove(f.renders);
-    const saved = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'fast' } } });
-    expect(saved).toMatchObject({ configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [],
-      commandResults: [{ producer: { key: 'personal', platform: null }, state: 'completed' }] } });
-    expect(await fs.readJson(path.join(resource, 'config.json'))).toEqual({ mode: 'fast', source: 'common' });
-    expect((await listManagedCommandPackages(f.env)).packages.map((entry) => entry.producer.key)).toEqual(['personal']);
-    expect((await fs.readFile(f.renders, 'utf8')).trim().split('\n')).toHaveLength(1);
+    await f.sync();
+    await applyPluginConfigWrite({ ...f.options, request: { updates: { mode: 'fast' } } });
+    expect(await f.countRenders()).toBe(1);
+    const reviewed = await preparePluginConfigApply(f.options);
+    expect(reviewed.commandPackageReviews).toMatchObject([{
+      routeChanges: [{ argv: ['aw', 'command', 'run', 'team/demo', '--', 'check'],
+        before: { entry: 'safe.mjs' }, after: { entry: 'fast.mjs' } }],
+      otherProjects: 'unobserved',
+    }]);
+    await disposePluginConfigApply(reviewed.plan);
+    const applied = await applyPluginConfig({ ...f.options, expectedEvidence: reviewed.evidence });
+    expect(applied).toMatchObject({ configWrite: 'notStarted', apply: { state: 'succeeded', targetResults: [],
+      commandResults: [{ selector: 'team/demo', action: 'updated', availability: 'ready',
+        subcommands: ['check'], hasFallback: false, state: 'completed' }] } });
+    expect((await f.installed()).record.routes.subcommands[0]?.entry).toBe('fast.mjs');
+    expect(await f.countRenders()).toBe(2);
     expect(await fs.pathExists(path.join(f.env.AW_HOME!, 'intent.json'))).toBe(false);
   });
 
-  // Test Value Gate: a platform override must never alter a platform-null producer's common values or run its renderer.
-  it('keeps common command packages unchanged after a platform-only save and apply', async () => {
+  // Test Value Gate: applying one platform cannot render a pending common route or publish another platform's queued override.
+  it('updates only the requested platform snapshot', async () => {
     const f = await packageFixture();
-    await f.sync('personal');
-    const before = await fs.readFile(f.renders, 'utf8');
-    const saved = await applyPluginConfigWrite({ ...f.options, platform: 'codex', apply: true, request: { updates: { mode: 'native' } } });
-    expect(saved.apply).toMatchObject({ state: 'skipped', reason: 'noVisibleTarget' });
-    expect(await fs.readFile(f.renders, 'utf8')).toBe(before);
-    const installed = (await listManagedCommandPackages(f.env)).packages[0]!;
-    expect(await fs.readJson(path.join(installed.resourceRoot, 'config.json'))).toEqual({ mode: 'safe', source: 'default' });
+    await f.sync();
+    await patchPluginConfigStore({ ...f.store, updates: { mode: 'fast' } });
+    await patchPluginConfigStore({ ...f.store, platform: 'claude', updates: { runtime: 'claude-pending' } });
+    const saved = await applyPluginConfigWrite({ ...f.options, platform: 'codex', apply: true, request: { updates: { runtime: 'codex-now' } } });
+    expect(saved.apply).toMatchObject({ state: 'succeeded', commandResults: [{ state: 'completed' }] });
+    expect(await f.values('codex')).toEqual({ runtime: 'codex-now' });
+    expect(await f.values('claude')).toEqual({ runtime: 'default' });
+    expect((await f.installed()).record.routes.subcommands[0]?.entry).toBe('safe.mjs');
+    expect(await f.countRenders()).toBe(1);
   });
 
-  // Test Value Gate: Review must bind installed producer and current config evidence, and retry apply must not resave config.
-  it('rejects stale Review, then accepts a fresh independent apply without writing the Store', async () => {
-    const f = await packageFixture();
-    await f.sync('personal');
-    await applyPluginConfigWrite({ ...f.options, request: { updates: { mode: 'saved' } } });
+  // Test Value Gate: common snapshot Review must disclose saved platform overrides when applying them together.
+  it('reviews all affected platform snapshots, including a pending override, before publishing', async () => {
+    const f = await packageFixture('static');
+    await f.sync();
+    await patchPluginConfigStore({ ...f.store, platform: 'claude', updates: { runtime: 'claude-pending' } });
+    await patchPluginConfigStore({ ...f.store, updates: { unrelated: 'irrelevant' } });
+    expect((await applyPluginConfig(f.options)).apply).toMatchObject({ state: 'succeeded', commandResults: [] });
+    expect(await f.values('claude')).toEqual({ runtime: 'default' });
+    await patchPluginConfigStore({ ...f.store, updates: { runtime: 'common-now' } });
     const reviewed = await preparePluginConfigApply(f.options);
-    const evidence = structuredClone(reviewed.evidence);
-    expect(reviewed.commandPackages).toHaveLength(1);
+    expect(reviewed.commandPackageReviews).toMatchObject([{ runtimeConfigChanges: [
+      { platform: 'codex', before: { runtime: 'default' }, after: { runtime: 'common-now' } },
+      { platform: 'claude', before: { runtime: 'default' }, after: { runtime: 'claude-pending' } },
+    ] }]);
     await disposePluginConfigApply(reviewed.plan);
-    await patchPluginConfigStore({ ...f.store, updates: { mode: 'newer' } });
-    const file = resolvePluginConfigStorePath(f.store);
-    const before = await fs.readFile(file, 'utf8');
-    const stat = await fs.stat(file);
-    const rendersBefore = await fs.readFile(f.renders, 'utf8');
-    const stale = await applyPluginConfig({ ...f.options, expectedEvidence: evidence });
-    expect(stale).toMatchObject({ configWrite: 'notStarted', apply: { state: 'unavailable', error: { code: 'operationPlanStale' } } });
-    expect(await fs.readFile(f.renders, 'utf8')).toBe(rendersBefore);
-    const current = await preparePluginConfigApply(f.options);
-    const currentEvidence = structuredClone(current.evidence);
-    await disposePluginConfigApply(current.plan);
-    expect(await applyPluginConfig({ ...f.options, expectedEvidence: currentEvidence }))
-      .toMatchObject({ configWrite: 'notStarted', apply: { state: 'succeeded' } });
-    expect(await fs.readFile(file, 'utf8')).toBe(before);
-    expect((await fs.stat(file)).mtimeMs).toBe(stat.mtimeMs);
+    expect((await applyPluginConfig({ ...f.options, expectedEvidence: reviewed.evidence })).apply.state).toBe('succeeded');
+    expect(await f.values('claude')).toEqual({ runtime: 'claude-pending' });
+    expect(await f.values('codex')).toEqual({ runtime: 'common-now' });
   });
 
-  // Test Value Gate: a damaged ownership marker must report apply discovery failure after a valid save and must retain the output.
+  // Test Value Gate: Review binds approved config and route inputs. A stale review cannot rerender, publish or rewrite the Store.
+  it('preserves old output and the currently saved config when the reviewed inputs drift', async () => {
+    const f = await packageFixture();
+    await f.sync();
+    await patchPluginConfigStore({ ...f.store, updates: { mode: 'fast' } });
+    const reviewed = await preparePluginConfigApply(f.options);
+    await disposePluginConfigApply(reviewed.plan);
+    await patchPluginConfigStore({ ...f.store, updates: { mode: 'empty' } });
+    const file = resolvePluginConfigStorePath(f.store);
+    const before = await fs.readFile(file);
+    const renders = await f.countRenders();
+    expect(await applyPluginConfig({ ...f.options, expectedEvidence: reviewed.evidence })).toMatchObject({
+      configWrite: 'notStarted', apply: { state: 'unavailable', error: { code: 'operationReviewStale' } },
+    });
+    expect(await f.countRenders()).toBe(renders);
+    expect(await fs.readFile(file)).toEqual(before);
+    expect((await f.installed()).record.routes.subcommands[0]?.entry).toBe('safe.mjs');
+  });
+
+  // Test Value Gate: approvals can start matching a new route between Review and publication.
+  it('binds user-scope Review to user permissions and excludes project settings', async () => {
+    const f = await packageFixture();
+    await fs.ensureDir(path.join(f.cwd, '.git'));
+    await f.sync();
+    await patchPluginConfigStore({ ...f.store, updates: { mode: 'fast' } });
+    const rules = { permissions: { allow: ['Bash(aw command run team/demo -- check *)'] } };
+    await fs.outputJson(path.join(f.cwd, '.claude/settings.local.json'), rules);
+    const reviewed = await preparePluginConfigApply(f.options);
+    expect(reviewed.commandPackageReviews).toMatchObject([{ affectedPermissions: [] }]);
+    await disposePluginConfigApply(reviewed.plan);
+    const renders = await f.countRenders();
+    await fs.outputJson(path.join(f.env.AW_CLAUDE_HOME!, 'settings.json'), rules);
+    expect(await applyPluginConfig({ ...f.options, expectedEvidence: reviewed.evidence })).toMatchObject({
+      configWrite: 'notStarted', apply: { state: 'unavailable', error: { code: 'operationReviewStale' } },
+    });
+    expect(await f.countRenders()).toBe(renders);
+    expect((await f.installed()).record.routes.subcommands[0]?.entry).toBe('safe.mjs');
+  });
+
+  // Test Value Gate: a disappeared reviewed package must block a combined mutation before the Store commit.
+  it('rejects a reviewed save-and-apply when the command package is removed', async () => {
+    const f = await packageFixture();
+    await f.sync();
+    const request = { updates: { mode: 'fast' } };
+    const reviewed = await preparePluginConfigApply({ ...f.options, mutation: { kind: 'patch', ...request } });
+    await disposePluginConfigApply(reviewed.plan);
+    expect(reviewed.commandPackageEvidence).toHaveLength(1);
+    const installed = await f.installed();
+    await fs.move(path.resolve(installed.resourceRoot, '../..'), path.join(f.cwd, 'detached-package'));
+    await expect(applyPluginConfigWrite({ ...f.options, apply: true, request,
+      expectedCommandPackageEvidence: reviewed.commandPackageEvidence })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readPluginConfigStore(f.store)).exists).toBe(false);
+  });
+
+  // Test Value Gate: a damaged owner marker reports discovery failure after saving and preserves existing output.
   it('keeps the saved value and old output after command ownership discovery fails', async () => {
     const f = await packageFixture();
-    await f.sync('personal');
-    const installed = (await listManagedCommandPackages(f.env)).packages[0]!;
-    const output = await fs.readFile(path.join(installed.resourceRoot, 'config.json'));
-    await fs.writeFile(path.join(path.dirname(installed.resourceRoot), 'owner.json'), '{broken');
-    const saved = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'committed' } } });
+    await f.sync();
+    const { resourceRoot } = await f.installed();
+    await fs.writeFile(path.resolve(resourceRoot, '../../owner.json'), '{broken');
+    const saved = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'fast' } } });
     expect(saved).toMatchObject({ configWrite: 'succeeded', overallState: 'partial',
       apply: { state: 'partial', errors: [expect.objectContaining({ stage: 'targetDiscovery' })] } });
-    expect((await readPluginConfigStore(f.store)).values.mode).toBe('committed');
-    expect(await fs.readFile(path.join(installed.resourceRoot, 'config.json'))).toEqual(output);
+    expect((await readPluginConfigStore(f.store)).values.mode).toBe('fast');
+    expect(await fs.pathExists(resourceRoot)).toBe(true);
   });
 
-  // Test Value Gate: project apply may refresh user and current-project packages, while user-only apply is cwd-neutral.
-  it('refreshes user and current-project packages and keeps user render execution outside the repo', async () => {
-    const f = await packageFixture({ project: true });
-    await f.sync('personal');
-    await f.sync('workspace', 'project');
-    await fs.remove(f.renders);
-    const saved = await applyPluginConfigWrite({ ...f.options, context: 'project', apply: true, request: { updates: { mode: 'joint' } } });
-    expect(saved).toMatchObject({ configWrite: 'succeeded', apply: { state: 'succeeded' } });
-    if (saved.apply.state !== 'succeeded') throw new Error('Expected a successful package apply.');
-    expect(saved.apply.commandResults?.map((entry) => entry.producer.scope).sort()).toEqual(['project', 'user']);
-    const records = (await fs.readFile(f.renders, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    expect(records).toHaveLength(2);
-    expect(records[0].cwd).not.toBe(f.cwd);
-    expect(records[1].cwd).toBe(await fs.realpath(f.cwd));
-  });
-
-  // Test Value Gate: exact package Review selection must not widen to an unreviewed installed producer.
-  it('executes only reviewed package IDs', async () => {
-    const f = await packageFixture({ second: true });
-    await f.sync('personal');
-    await f.sync('another');
-    const packages = (await listManagedCommandPackages(f.env)).packages;
-    const selected = packages.find((entry) => entry.producer.key === 'personal')!;
-    const unselected = packages.find((entry) => entry.producer.key === 'another')!;
-    await applyPluginConfigWrite({ ...f.options, request: { updates: { mode: 'selected' } } });
-    await fs.remove(f.renders);
-    const applied = await applyPluginConfig({ ...f.options, applyCommandPackages: [selected.id] });
-    expect(applied).toMatchObject({ apply: { state: 'succeeded', commandResults: [{ producer: { key: 'personal' } }] } });
-    expect(await fs.readJson(path.join(unselected.resourceRoot, 'config.json'))).toEqual({ mode: 'safe', source: 'default' });
-    expect((await fs.readFile(f.renders, 'utf8')).trim().split('\n')).toHaveLength(1);
-  });
-
-  // Test Value Gate: cancellation and unconfirmed process cleanup must stop later producers; ordinary renderer failure remains partial.
-  it.each(['cancel', 'cleanup', 'cancelled cleanup', 'ordinary'] as const)('preserves committed config and %s renderer failure semantics', async (mode) => {
-    const f = await packageFixture({ second: true });
-    const secret = 'private-renderer-token';
-    await writePluginConfigStore({ ...f.store, values: { token: secret } });
-    const renderSuccess = async (invocation: PluginScriptInvocation) => {
-      const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!);
-      return { exitCode: 0, signal: null, timedOut: false, stderr: '', stdout: JSON.stringify({ version: 2,
-        artifacts: context.requestedArtifactIds.map((id: string) => ({ id, target: 'aw.command-package', kind: 'commandPackage',
-          state: 'present', refreshKeys: ['mode'], files: { 'config.json': JSON.stringify({ mode: context.config.values.mode }) } })) }) };
-    };
-    const run = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(renderSuccess);
-    for (const key of ['personal', 'another']) expect(await f.sync(key)).toMatchObject({ state: 'completed' });
-    run.mockClear();
-    const controller = new AbortController();
-    const failure = mode === 'cancel' ? new DOMException('package refresh cancelled', 'AbortError')
-      : new Error('Process tree cleanup unconfirmed: ' + f.cwd + ' ' + secret);
-    const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null,
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => true) });
-    const cleanupRunner = createDefaultPluginProcessRunner({ platform: 'linux',
-      spawn: (() => { queueMicrotask(() => child.emit('exit', 0, null)); return child; }) as unknown as typeof import('node:child_process').spawn,
-      observeProcessTree: () => ({ pid: 321, onFailure: () => () => undefined, dispose: () => undefined }),
-      terminateProcessTree: async () => { throw failure; } });
-    const contexts: Array<{ event: string; changedConfigKeys: string[] }> = [];
-    run.mockImplementation(async (invocation, options) => {
-      contexts.push(await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!));
-      if (contexts.length > 1) return renderSuccess(invocation);
-      if (mode === 'cancel') { controller.abort(failure); throw failure; }
-      if (mode === 'cleanup' || mode === 'cancelled cleanup') {
-        try { return await cleanupRunner.run(invocation, options); }
-        finally { if (mode === 'cancelled cleanup') controller.abort(new DOMException('Refresh interrupted', 'AbortError')); }
-      }
-      throw new Error('ordinary renderer preparation failure ' + secret);
-    });
-    const result = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'committed' } },
-      rebuildRuntime: { signal: controller.signal, scriptTimeoutMs: 1234 } })
-      .then((receipt) => ({ receipt }), (error: unknown) => ({ error }));
-    expect(run.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal, timeoutMs: 1234 });
-    expect(contexts[0]).toMatchObject({ event: 'refresh', changedConfigKeys: ['mode'] });
-    if (mode === 'ordinary') {
-      expect(run).toHaveBeenCalledTimes(2);
-      expect(result).toMatchObject({ receipt: { configWrite: 'succeeded', apply: { state: 'partial',
-        commandResults: [expect.objectContaining({ state: 'failed' }), expect.objectContaining({ state: 'completed' })] } } });
-      expect(JSON.stringify(result)).not.toContain(secret);
-    } else {
-      expect(run).toHaveBeenCalledOnce();
-      expect(result).toMatchObject({ error: { configWrite: 'succeeded',
-        ...(mode === 'cancel' ? { message: 'package refresh cancelled' } : { operationDiagnostic: { code: 'pluginProcessCleanupFailed' } }) } });
-      if ('error' in result) {
-        expect((result.error as Error).message).not.toContain(f.cwd);
-        expect((result.error as Error).message).not.toContain(secret);
-      }
-    }
-    expect((await readPluginConfigStore(f.store)).values.mode).toBe('committed');
+  // Test Value Gate: a failed renderer must preserve a successful config save and the previously published revision.
+  it('keeps the applied package after the saved config selects an invalid entry', async () => {
+    const f = await packageFixture();
+    await f.sync();
+    const old = await f.installed();
+    const saved = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'missing-entry' } } });
+    expect(saved).toMatchObject({ configWrite: 'succeeded', overallState: 'partial',
+      apply: { state: 'partial', commandResults: [{ state: 'failed' }] } });
+    expect((await readPluginConfigStore(f.store)).values.mode).toBe('missing-entry');
+    expect((await f.installed()).resourceRoot).toBe(old.resourceRoot);
   });
 });

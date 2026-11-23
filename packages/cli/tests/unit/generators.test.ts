@@ -759,9 +759,9 @@ describe('local-plugin generator', () => {
     ];
 
     expect(mergeClaudePermissions(permissions)).toEqual({
-      allow: ['Bash(git status)'],
-      ask: ['Bash(git commit)'],
-      deny: ['Bash(git push)'],
+      allow: ['Bash(git status *)'],
+      ask: ['Bash(git commit *)'],
+      deny: ['Bash(git push *)'],
     });
     expect(generateCodexPermissionArtifacts('git-commit', permissions)[0].content).toContain(
       'prefix_rule(pattern = ["git","push"], decision = "forbidden")',
@@ -772,26 +772,21 @@ describe('local-plugin generator', () => {
   });
 
   it('resolves managed permissions to the same narrow command in both platforms', () => {
-    const id = `cmdp_${'a'.repeat(16)}`;
-    const command = { set: 'guide', key: 'subagent', variant: 'default' };
-    const entry = { command, argsPrefix: ['wait'] };
+    const selector = 'team/guide';
+    const entry = { argsPrefix: ['wait'] };
     const permissions = [{ name: 'guide', allow: [entry, entry], sandbox: { excludedCommands: [entry] } }];
-    const resolve = (reference: typeof command) => {
-      expect(reference).toEqual(command);
-      return id;
-    };
-    expect(mergeClaudePermissions(permissions, resolve)).toEqual({
-      allow: [`Bash(aw command run ${id} -- wait *)`], ask: [], deny: [],
-      excludedCommands: [`aw command run ${id} -- wait *`],
+    expect(mergeClaudePermissions(permissions, selector)).toEqual({
+      allow: ['Bash(aw command run team/guide -- wait *)'], ask: [], deny: [],
+      excludedCommands: ['aw command run team/guide -- wait *'],
     });
-    const rule = generateCodexPermissionArtifacts('guide', permissions, resolve)[0].content;
-    expect(rule).toContain(`prefix_rule(pattern = ["aw","command","run","${id}","--","wait"], decision = "allow")`);
+    const rule = generateCodexPermissionArtifacts('guide', permissions, selector)[0].content;
+    expect(rule).toContain('prefix_rule(pattern = ["aw","command","run","team/guide","--","wait"], decision = "allow")');
     expect(rule.match(/prefix_rule/gu)).toHaveLength(1);
-    expect(mergeClaudePermissions([{ name: 'sandbox-only', sandbox: { excludedCommands: [entry] } }], resolve).allow)
+    expect(mergeClaudePermissions([{ name: 'sandbox-only', sandbox: { excludedCommands: [entry] } }], selector).allow)
       .toEqual([]);
     expect(() => mergeClaudePermissions(permissions)).toThrow('commandReferenceInvalid');
-    expect(() => mergeClaudePermissions(permissions, () => 'other')).toThrow('commandReferenceInvalid');
-    expect(() => mergeClaudePermissions([{ name: 'unsafe', allow: [{ command, argsPrefix: ['wait *'] }] }], resolve))
+    expect(() => mergeClaudePermissions(permissions, 'other')).toThrow('Invalid command selector');
+    expect(() => mergeClaudePermissions([{ name: 'unsafe', allow: [{ argsPrefix: ['wait *'] }] }], selector))
       .toThrow();
   });
 

@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { createRun, observeRun, openRun, storeContext, workerAlive } from '../skills/spawn-subagent/scripts/runtime/store.mjs';
-import { protectPrivatePath, verifyPrivatePath } from '../skills/spawn-subagent/scripts/runtime/platform.mjs';
+import { createRun, observeRun, openRun, storeContext, workerAlive } from '../commands/scripts/runtime/store.mjs';
+import { protectPrivatePath, verifyPrivatePath } from '../commands/scripts/runtime/platform.mjs';
 import { fixture, sleep, eventually, windows, testTimeoutMs, blocks, field, bounded, successful } from './fixtures/subagent-integration.mjs';
 
 // Test Value Gate: an unrecoverable worker file error must reach the public
@@ -197,7 +197,7 @@ test('late worker final publication survives a parent lost-worker observation', 
 // new work, and repeat observations must preserve the first expiry origin.
 test('lost worker result is fixed once and expires without regenerating work', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
+  f.snapshot.values.subagentRetentionHours = 24; await f.save();
   const started = await f.start({ messages: ['Saved process message.'] });
   await f.initialized(started); await started.published();
   const before = await f.evidence(started.run);
@@ -226,6 +226,37 @@ test('lost worker result is fixed once and expires without regenerating work', {
   assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
 });
 
+// A single wait may include both platforms. A retention update must apply
+// through the saved handle without changing the other platform's result.
+test('controls use the platform saved at start and its latest retention setting', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  f.claude.values.subagentCommands[0].args = ['from-claude'];
+  await f.save();
+  const codex = await f.start({ finishImmediately: true, finalText: 'Codex report.' });
+  const roleFile = path.join(f.workspace, 'claude-role.md');
+  await fs.writeFile(roleFile, 'Review the assigned files.');
+  const claude = await f.start({ finishImmediately: true, finalText: 'Claude report.' }, { platform: 'claude', extra: ['--instructions-file', roleFile] });
+  const [codexRun, claudeRun] = await Promise.all([f.stopped(codex.run), f.stopped(claude.run)]);
+  assert.deepEqual((await codex.observed()).request.args, []);
+  assert.deepEqual((await claude.observed()).request.args, ['from-claude']);
+  assert.equal(claudeRun.meta.installedIdentity.platform, 'claude');
+  assert.equal(JSON.parse(await fs.readFile(path.join(claudeRun.directory, 'execution.json'))).selected.instructionsFile, roleFile);
+  assert.match((await claude.observed()).request.prompt, /Review the assigned files/);
+  f.claude.values.subagentRetentionHours = 1;
+  await f.save();
+  const future = await f.clock(['wait', 'send', 'result', 'stop'], { now: Math.max(codexRun.meta.terminalAt, claudeRun.meta.terminalAt) + 3600001 });
+  const options = { env: future.environment };
+  const mixed = await f.command(['wait', '--run', claude.run, '--run', codex.run, '--timeout-ms', '0'], options);
+  assert.equal(mixed.code, 1);
+  assert.match(mixed.stderr, /runExpired/);
+  assert.deepEqual(blocks(mixed.stdout, 'FINAL'), ['Codex report.']);
+  const expired = await f.command(['send', '--run', claude.run, '--text', 'Expired input.'], options);
+  assert.equal(field(expired.stderr, 'code'), 'runExpired');
+  assert.equal(field((await f.command(['result', '--run', claude.run], options)).stderr, 'code'), 'runExpired');
+  successful(await f.command(['stop', '--run', claude.run], options), 'stop');
+  assert.deepEqual(blocks((await f.command(['result', '--run', codex.run], options)).stdout, 'FINAL'), ['Codex report.']);
+});
+
 // Test Value Gate: expired ownership and stopped-process evidence must permit
 // cleanup even when cached content is damaged; read-only help must not scan.
 test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', { timeout: testTimeoutMs }, async (t) => {
@@ -242,7 +273,7 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
   await fs.writeFile(path.join(run.directory, 'final.json'), '{damaged cached content');
   // start and wait can launch a detached scan. Enable expiry after setup so
   // only the three commands below can remove the deliberately expired run.
-  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
+  f.snapshot.values.subagentRetentionHours = 24; await f.save();
   assert.equal((await f.command(['--help'])).code, 0); await fs.stat(run.directory);
   assert.equal((await f.command(['result', '--run', started.run, '--export', '--output-file', 'unused'])).code, 2); await fs.stat(run.directory);
   const expired = await f.command(['result', '--run', started.run]);

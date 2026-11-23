@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { resolveFiles, assertNativeSelectionReadable } from '../../../skills/spawn-subagent/scripts/file-selection/selection.mjs';
+import { resolveFiles, assertNativeSelectionReadable } from '../../../commands/scripts/file-selection/selection.mjs';
 
 // This file moves with the same registered relative layout as the Guide.
 // It imports the final bundled module through a literal specifier, without

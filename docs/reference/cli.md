@@ -197,11 +197,44 @@ type LifecycleData = {
 
 Antigravity 的诊断只在已确认实际读者不支持该控制（`invocationControlUnsupported`），或有可靠回读表明策略实际降级（`invocationControlDegraded`）时生成。每项控制以 `product: 'cli' | 'app'` 标识相关读者。缺少会话实测、未登录或查询失败时仍保留未知资格，回执省略该提示。CLI 文本、JSON、TUI、历史和导出表达同一结果。警告不影响成功退出码或重试范围。
 
-命令规则部分或全部未施加时，`invocationPolicyNotApplied` 通过 `detail.skippedPermissionActions` 列出具体动作。`sandbox` 指沙箱排除。`subject.field` 标明权限规则，按需附上托管命令的集合、键和变体标识。CLI 文本、JSON、TUI、历史和导出均报告这些动作。`plugin.status` 在有适用证据时也保留提示。诊断只使用安全标识和固定动作，省略作者命令、参数和文件路径。其他适用动作照常交付，提示不影响成功退出码或重试范围。
+命令规则部分或全部未施加时，`invocationPolicyNotApplied` 通过 `detail.skippedPermissionActions` 列出具体动作。`sandbox` 指沙箱排除。`subject.field` 形如 `permissions.<name>`，`detail.reasonCode` 标明跳过原因。不可达的命令路由使用 `command-route-unreachable`。CLI 文本、JSON、TUI、历史和导出均报告这些动作。`plugin.status` 在有适用证据时也保留提示。诊断使用安全标识和固定动作，省略作者命令及参数。OpenCode 已知 Project 的手工规则与本次 User 限制冲突时，`detail.path` 标明该 Project 权限配置。其他适用动作照常交付，提示不影响成功退出码或重试范围。
+
+| `invocationPolicyNotApplied` 的 `detail.reasonCode` | 含义 |
+| --- | --- |
+| `permission-prefix-unrepresentable` | AW 未能验证当前宿主或运行环境对该命令前缀的精确匹配。 |
+| `grok-project-trust-required` | 当前 Grok 项目没有可核验的授权。请在 Grok 中核对项目授权后重试。 |
+| `grok-shell-prefix-normalized` | Grok 匹配 `allow` 时无法从该前置环境赋值或包装形式中确定内部命令。 |
+| `grok-wrapper-target-not-covered` | Grok 保留未指定内部命令时的 `allow`。附加参数指定的内部命令由 Grok 单独审核。 |
+| `grok-shell-pattern-unrepresentable` | 该声明包含 Grok Bash 文本规则无法按当前形式施加的词。 |
+| `permission-rule-conflict` | 已有规则与请求重叠，或另一条无法施加的限制与请求的允许规则重叠，相关动作无法完整施加。 |
+| `permission-config-path-unconfirmed` | OpenCode 不能核实相对 `OPENCODE_CONFIG_DIR` 对应的宿主配置位置。 |
+| `config-disabled` | 例如当前 OpenCode 环境关闭了 Project 配置加载。 |
+| `opencode-windows-command-syntax` | 前缀包含 Windows Shell 的扩展、转义或其他特殊语法，例如 `--%` 或 `%NAME%`。 |
+| `antigravity-cli-global-only` | 目标超出可写的 Antigravity CLI Global 设置范围，例如 Project 或仅 Desktop。 |
+| `antigravity-command-matching-unverified` | Antigravity 可能解开命令包装或按完整命令匹配，无法保持该字面前缀的语义。 |
+| `antigravity-config-path-unconfirmed` | 无法从用户主目录确定 Antigravity CLI Global 设置位置。 |
+| `antigravity-strict-mode` | 已识别 Antigravity Global 的 `strict` 模式时，为跳过的 `allow` 单独报告。 |
+
+宿主权限归属和写入使用独立的诊断。位置已确认时，相关诊断通过 `detail.path` 标明宿主配置文件。配置交付的回执和真实客户端审批的证据范围见[宿主审批验证范围](managed-commands.md#宿主审批验证范围)。
+
+| 诊断 code | 含义 |
+| --- | --- |
+| `permissionOwnershipDegraded` | 无法核验规则的归属或配置路径，保留相关现有规则。 |
+| `permissionConfigurationConflict` | 宿主配置位置或内容无法安全更新，或 Review 后的规则证据发生变化。 |
+| `permissionOwnershipWriteFailed` | 宿主配置已变化，归属记录未保存成功。 |
+| `permissionRelatedProjectUpdated` | OpenCode Project 配置中已写入的变更。`detail.path` 指向配置，`detail.permissionChanges` 记录实际增删的动作、规则效果和公开匹配范围。归属记录未保存时，同一路径也会报告待恢复。 |
+| `permissionRelatedProjectUpdateIncomplete` | OpenCode 权限更新未完成。`detail.path` 指向一个未完成的项目配置。因中断暂停时，`detail.reasonCode` 为 `operationInterrupted`。 |
+| `hostPermissionRestored` | 卸载后另一 owner 的有效规则得以恢复，回执保留受影响的插件和范围。 |
+
+`hostPermissionAdditionalImpact` 表示宿主权限的匹配范围或配置来源可能影响审批。需要更改权限时，`data.confirmation.effects` 以该 code 展示相关配置和影响。User 规则的 `impact` 为 `user-wide`。执行结果的同名 warning 用 `subject` 标识插件、平台和作用域。规则级提示还附带 `permissions.<name>`，用 `detail.reasonCode`、`detail.path`、`detail.permissionResource` 和 `detail.permissionAction` 标明原因、宿主配置、原生匹配项和动作。Grok 的 `grok-additional-rules-unverified` 是文件级提示，`detail.path` 指向无法读取的附加配置。Grok 的 `grok-manual-restriction-preserved` 提示授权范围中可能仍受哪些已有规则限制。跳过的动作另见 `invocationPolicyNotApplied`。
+
+若调整 OpenCode User 限制还会改动 AW 已知的 Project 权限，`data.confirmation.effects` 中的 `changeRelatedProjectPermissions` 列出每个受影响配置的路径、待增删规则及 Project 作用域。`plugin config apply` 和 `plugin config set/unset/reset --apply` 也使用此确认。配置写入已经提交而应用失败时，已保存设置仍保留。
+
+核对宿主规则和恢复步骤见[宿主权限恢复](../maintainers/architecture/lifecycle.md#宿主权限恢复)。
 
 独立运行 `plugin config apply` 时，`configWrite` 为 `notStarted`。中断回执保留当时已解析的请求、已完成的确认以及已有的应用结果。收到 SIGINT 或 SIGTERM 后等待清理并分别退出 130 或 143，清理无法确认时退出 1。如果所有目标已完成并通过核验，收尾时收到信号仍保留成功回执和已交付 Skill 的警告。
 
-配置应用的文本回执按插件、平台和范围列出每个位置的状态和已有错误码，也列出命令包的归属、名称、范围和状态。同一目标若有部分输出已读回、其余输出仍失败，`data.apply.targetResults[]` 保留 `state: "failed"` 和失败原因，并附 `partialDelivery: true`。已交付 Skill 的提示保留在对应的 `diagnostics` 中。此时回执引导用户检查未完成的输出。仅需恢复项目位置、公开同步命令会重跑已完成的个人位置时，回执指向 TUI 中的项目选择。
+配置应用的文本回执按插件、平台和范围列出每个位置的状态和已有错误码，也列出共享命令包的选择器、动作和可用状态。命令包回执字段见[命令管理与 JSON](managed-commands.md#命令管理与-json)。同一目标若有部分输出已读回、其余输出仍失败，`data.apply.targetResults[]` 保留 `state: "failed"` 和失败原因，并附 `partialDelivery: true`。已交付 Skill 的提示保留在对应的 `diagnostics` 中。此时回执引导用户检查未完成的输出。仅需恢复项目位置、公开同步命令会重跑已完成的个人位置时，回执指向 TUI 中的项目选择。
 
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 
@@ -209,7 +242,7 @@ Antigravity 的诊断只在已确认实际读者不支持该控制（`invocation
 
 生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。`renderScope` 对应组件实际准备的范围。例如 Codex 的 Project 目标中，共享包里的 Hook 缺口标为 `user`，独立角色的缺口标为 `project`。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
 
-`plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。
+`plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。 OpenCode、Grok 和 Antigravity CLI Global 也核对当前插件的 AW 权限归属和上次交付的原生规则。规则缺失会提示同步，归属受损或无法可信地读取已交付规则时显示未确认。宿主当前会话的批准仍由宿主决定。
 
 无法确认安装所需证据时，目标为 `content: unknown` 并计入 `counts.unconfirmed`。显式目标没有可以独立完成的已知结果时返回 `blocked`（3），同时有可独立完成的已知结果时返回 `partial`（4）。各宿主的必需启用、权限和可选加载观察由实际部署路由决定。
 
@@ -249,5 +282,5 @@ CLI 升级后，使用 v1 的已安装插件脚本须重新部署。先运行 `a
 
 **两个必要的协议边界：**
 
-1. `aw command run <id> -- <args...>` 保持 stdin/stdout/stderr、二进制/流式字节和子程序退出码透传，不加结果外壳。`--` 后参数完全属于子程序；AW 格式选项不得跨越该边界。启动前 AW 错误仍使用安全英文 stderr 与现有启动失败码；没有启动时不能生成子程序成功结果。
+1. `aw command run <来源/插件> [--no-fallback] -- [args...]` 与 `aw command run <cmdu-id> -- [args...]` 透传 stdin/stdout/stderr、二进制或流式字节和子程序退出码。AW 根据 `--` 后的首词匹配插件子命令，剩余参数按原 argv 传入业务入口。启动前错误使用安全英文 stderr，语法和路由错误退出码为 2，其他启动错误退出码为 1。[调用与路由](managed-commands.md#调用与路由)
 2. TUI 是单独的交互呈现，不把画面输出视为 CLI 机器协议。`aw tui --json` 是无效组合，不启动界面；TUI 继续直接使用共享领域服务和 Review 证据。

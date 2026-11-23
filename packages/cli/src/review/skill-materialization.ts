@@ -102,7 +102,7 @@ export async function materializeProfilePluginComponents(options: {
   portable?: boolean;
   kinds?: readonly ComponentKind[];
   config?: ResolvedArtifactRenderConfig;
-  packagePreparationCache?: Parameters<typeof finalizePlatformSkillProducers>[0]['packagePreparationCache'];
+  commandRecord?: Parameters<typeof finalizePlatformSkillProducers>[0]['commandRecord'];
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
 }): Promise<{
@@ -134,7 +134,6 @@ export async function materializeProfilePluginComponents(options: {
   const binding = resolution.bindings[0];
   if (!binding) throw new Error('authorProfileLayoutMissing');
   const preparation: ComponentPreparationBinding[] = [];
-  let packageCommandResolver: Awaited<ReturnType<typeof finalizePlatformSkillProducers>>['commandResolver'];
   const skills: Array<{ id: string; name: string; path: string; dynamic: boolean }> = [];
   const preparedUnits: Array<{ unit: RenderUnit; capabilities: PlatformCapabilitiesV2;
     finalized: Awaited<ReturnType<typeof finalizePlatformSkillProducers>> }> = [];
@@ -165,7 +164,6 @@ export async function materializeProfilePluginComponents(options: {
         ...options, renderUnit: unit, prepared,
         skillWorkRoot: path.join(options.outputRoot, '.prepare-skills', unit.id.replace(/[^a-z0-9]/gu, '')),
       });
-      if (unit.kinds.includes('skill')) packageCommandResolver = finalized.commandResolver;
       preparedUnits.push({ unit, capabilities, finalized });
     }
     for (const { unit, capabilities, finalized } of preparedUnits) {
@@ -180,8 +178,8 @@ export async function materializeProfilePluginComponents(options: {
       // Portable generic uses the original Skill name. A namespaced native supplement
       // would validate a different name, which can exceed the portable length limit.
       const portableGeneric = options.portable && options.platform === 'generic';
-      const projection = current.empty === 'unmet' || portableGeneric ? null : await projectPlatform({
-        cwd: options.cwd, env: options.env, commandResolver: finalized.commandResolver ?? packageCommandResolver,
+      const projection = portableGeneric || current.empty === 'unmet' && !finalized.invocationPolicy.policy.permissions.length ? null : await projectPlatform({
+        cwd: options.cwd, env: options.env,
         stagingRoot: nativeRoot,
       }, {
         binding, renderUnit: unit, capabilities,
@@ -223,9 +221,8 @@ export async function materializeProfilePluginComponents(options: {
       });
     }
   } finally {
-    await Promise.all(preparedUnits.map(({ finalized }) => finalized.cleanup()));
+    await fs.remove(path.join(options.outputRoot, '.prepare-skills'));
   }
-  await fs.remove(path.join(options.outputRoot, '.prepare-skills'));
   await fs.ensureDir(path.join(options.outputRoot, 'skills'));
   for (const selected of options.selectedSkills ?? []) {
     if (skills.some((skill) => skill.name === selected)

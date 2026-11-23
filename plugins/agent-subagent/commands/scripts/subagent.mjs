@@ -26,10 +26,11 @@ Exit: 0 completed, 1 operation failed or startup pending, 2 invalid input.
 
 const commandHelp = {
   start: `Start an external task.
-Usage: start --executor KEY (--prompt TEXT | --prompt-file PATH)
+Usage: start --platform TARGET --executor KEY (--prompt TEXT | --prompt-file PATH)
     [--name NAME] [--workspace DIR] [--instructions-file FILE] [--file SELECTOR]...
     [--model MODEL] [--reasoning-effort EFFORT] [--deadline-ms N] [--diagnostics]
 
+--platform TARGET must be the first option and must be codex or claude.
 --executor KEY selects the exact installed external executor; native uses host tools.
 --workspace DIR defaults to the caller directory. Relative paths use that directory.
 --instructions-file FILE supplies role instructions. Task and instructions: 256 KiB each.
@@ -42,7 +43,7 @@ start observes initialization for up to 10 seconds. Reuse a starting or failed h
 with wait/result/stop; do not submit the task again. start consumes no messages or final.
 Backend configuration, authentication, permissions, and approvals remain in effect.
 --diagnostics includes routine initialization information and startupNotReady.
-Example: start --executor KEY --prompt-file task.txt
+Example: start --platform codex --executor KEY --prompt-file task.txt
 `,
   send: `Send input to a running task with communication=true, or resume a stopped task.
 Usage: send --run HANDLE (--text TEXT | --text-file PATH) [--diagnostics]
@@ -95,13 +96,13 @@ Example: stop --run HANDLE
 
 const options = {
   help: { type: 'boolean', short: 'h' }, diagnostics: { type: 'boolean' },
-  executor: { type: 'string' }, prompt: { type: 'string' }, 'prompt-file': { type: 'string' }, name: { type: 'string' },
+  platform: { type: 'string' }, executor: { type: 'string' }, prompt: { type: 'string' }, 'prompt-file': { type: 'string' }, name: { type: 'string' },
   workspace: { type: 'string' }, 'instructions-file': { type: 'string' }, file: { type: 'string', multiple: true },
   model: { type: 'string' }, 'reasoning-effort': { type: 'string' }, 'deadline-ms': { type: 'string' },
   run: { type: 'string', multiple: true }, text: { type: 'string' }, 'text-file': { type: 'string' }, 'timeout-ms': { type: 'string' }, 'output-file': { type: 'string' },
 };
 const allowed = {
-  start: ['executor', 'prompt', 'prompt-file', 'name', 'workspace', 'instructions-file', 'file', 'model', 'reasoning-effort', 'deadline-ms'],
+  start: ['platform', 'executor', 'prompt', 'prompt-file', 'name', 'workspace', 'instructions-file', 'file', 'model', 'reasoning-effort', 'deadline-ms'],
   send: ['run', 'text', 'text-file'], wait: ['run', 'timeout-ms'], result: ['run', 'output-file'], stop: ['run'],
 };
 function integer(value, name, minimum, maximum) {
@@ -121,9 +122,12 @@ export function parseCommand(argv) {
   const value = parsed.values;
   if (value.help) return { operation: 'help', topic: operation };
   if (operation === 'start') {
+    if (argv[0] !== 'start' || argv[1] !== '--platform' || !['codex', 'claude'].includes(argv[2])) {
+      fail('argumentsInvalid', 'Start with --platform codex or --platform claude before the executor options.');
+    }
     if (!value.executor || Object.hasOwn(value, 'prompt') === Object.hasOwn(value, 'prompt-file') || value.prompt === '-' || value['prompt-file'] === '-' || value['prompt-file'] === '') fail('argumentsInvalid', `Supply --executor and exactly one of --prompt TEXT or --prompt-file PATH. ${helpHint}`);
     if (value.name !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.name)) fail('nameInvalid', 'Use 1-64 ASCII letters, digits, dot, underscore, or hyphen; start with a letter or digit.');
-    return { operation, showDiagnostics: value.diagnostics === true, executor: value.executor, prompt: value.prompt, promptFile: value['prompt-file'], name: value.name, workspace: value.workspace,
+    return { operation, platform: value.platform, showDiagnostics: value.diagnostics === true, executor: value.executor, prompt: value.prompt, promptFile: value['prompt-file'], name: value.name, workspace: value.workspace,
       instructionsFile: value['instructions-file'], files: value.file ?? [], model: value.model, reasoningEffort: value['reasoning-effort'],
       ...(value['deadline-ms'] === undefined ? {} : { deadlineMs: integer(value['deadline-ms'], '--deadline-ms', 1, Number.MAX_SAFE_INTEGER - Date.now()) }) };
   }
@@ -137,9 +141,23 @@ export function parseCommand(argv) {
     ...(operation === 'wait' ? { timeoutMs: value['timeout-ms'] === undefined ? 600000 : integer(value['timeout-ms'], '--timeout-ms', 0, 1800000) } : {}) };
 }
 
-async function installedReader() {
-  try { return (await import('./aw-runtime-config.mjs')).readRuntimeConfig; }
-  catch { fail('installedRuntimeMissing', 'The AW runtime helper is missing. Sync or reinstall and run from the installed Guide.', ['sync', 'reinstall']); }
+async function readPlatformSnapshot(platform, keys, dependencies) {
+  if (!['codex', 'claude'].includes(platform)) fail('argumentsInvalid', 'Choose the Guide platform codex or claude.');
+  let read = dependencies.readCommandRuntimeConfig;
+  if (!read) {
+    try { ({ readCommandRuntimeConfig: read } = await import('../.aw/command-runtime-config.mjs')); }
+    catch { fail('commandRuntimeConfigMissing', 'The command revision is missing its configuration reader. Sync or reinstall the Guide.', ['sync', 'reinstall']); }
+  }
+  try { return await read({ from: import.meta.url, platform, keys }); }
+  catch (error) {
+    const code = ['commandRuntimeConfigMissing', 'commandRuntimeConfigKeyDenied'].includes(error.code) ? error.code : 'commandRuntimeConfigInvalid';
+    fail(code, 'The Guide platform configuration could not be read. Sync or reinstall the command package.', ['sync', 'reinstall']);
+  }
+}
+
+function retentionSettings(snapshot) {
+  const hours = snapshot?.values.subagentRetentionHours;
+  return { retentionHours: snapshot && hours === undefined ? 24 : hours ?? null, sourceIdentity: snapshot?.installedIdentity };
 }
 export async function executeCommand(request, dependencies = {}) {
   if (request.operation === 'help') return { text: commandHelp[request.topic] ?? HELP, exitCode: 0 };
@@ -153,19 +171,33 @@ export async function executeCommand(request, dependencies = {}) {
     if (Buffer.byteLength(text) > LIMITS.messageBodyBytes) fail('messageTooLarge', 'The message exceeds the 24576 byte limit.');
     request = { ...request, text };
   }
-  let snapshot;
-  try {
-    const reader = dependencies.readRuntimeConfig ?? await installedReader();
-    snapshot = await reader({ from: import.meta.url, keys: RUNTIME_KEYS });
-  } catch (error) { if (request.operation === 'start') throw error; }
-  let prepared;
-  if (request.operation === 'start') prepared = await prepareRun(selectExecution(snapshot, request), request, dependencies);
-  const retention = snapshot?.effectiveValues?.subagentRetentionHours;
-  const context = await storeContext({ ...dependencies, retentionHours: snapshot ? retention === undefined ? 24 : retention : null,
-    sourceIdentity: snapshot?.installedIdentity });
-  launchExpiryScan(context);
-  if (request.operation === 'start') return startRun(context, prepared, request);
-  if (request.operation === 'send') return sendInput(context, request, { ...dependencies, runtimeSnapshot: snapshot });
+  if (request.operation === 'start') {
+    const snapshot = await readPlatformSnapshot(request.platform, RUNTIME_KEYS, dependencies);
+    const prepared = await prepareRun(selectExecution(snapshot, request), request, dependencies);
+    const context = await storeContext({ ...dependencies, ...retentionSettings(snapshot) });
+    launchExpiryScan(context);
+    return startRun(context, prepared, request);
+  }
+
+  const context = await storeContext(dependencies);
+  const platforms = new Map();
+  // A wait can observe runs from both platforms. Read one applied policy per
+  // platform only after verifying a handle, including on subsequent wait polls.
+  context.forRun = async (run) => {
+    const platform = run.meta.installedIdentity?.platform;
+    if (!platforms.has(platform)) {
+      let snapshot;
+      if (['codex', 'claude'].includes(platform)) {
+        try { snapshot = await readPlatformSnapshot(platform, ['subagentRetentionHours'], dependencies); }
+        catch { /* Keep fixed results and local stop available when the package needs repair. */ }
+      }
+      const settings = { ...retentionSettings(snapshot), runtimeSnapshot: snapshot };
+      platforms.set(platform, settings);
+      launchExpiryScan({ ...context, ...settings });
+    }
+    return { ...context, ...platforms.get(platform) };
+  };
+  if (request.operation === 'send') return sendInput(context, request, dependencies);
   if (request.operation === 'wait') return waitRuns(context, request);
   if (request.operation === 'result') return readResult(context, request);
   return stopRun(context, request);
