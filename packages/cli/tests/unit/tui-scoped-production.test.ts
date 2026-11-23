@@ -715,7 +715,7 @@ describe('scoped TUI production reads', () => {
     const reads = calls.filter((call) => !call.args.includes('--version'));
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.args.slice(read.args.indexOf('plugin'))).toEqual(['plugin', 'list', '--marketplace', expect.stringMatching(/^aw-local-[a-f0-9]{12}$/u), '--json']);
+      expect(read.args.slice(read.args.indexOf('plugin'))).toEqual(['plugin', 'list', '--marketplace', 'aw-local', '--json']);
       expect(read.signal?.aborted).toBe(true);
     }
     expect(calls.every((call) => /codex/u.test(call.command) || call.args.some((arg) => /codex/u.test(arg)))).toBe(true);

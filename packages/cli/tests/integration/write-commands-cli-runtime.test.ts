@@ -474,6 +474,45 @@ describe('five namespaced write commands', () => {
     });
   }, 30_000);
 
+  // Test Value Gate: a blocked host cannot stop an independent host in one public install.
+  it('installs Codex when the selected Claude marketplace has a same-name conflict', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'shared-marketplace-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.platforms = ['codex', 'claude'];
+      manifest.extensions = {
+        instructions: [{ name: 'demo-policy', title: 'Demo policy', content: 'Demo policy.', coverage: ['main'] }],
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env: isolation.env });
+    await writePreferences({ scope: 'user', cwd, env: isolation.env }, {
+      ...createEmptyPreferences(), targets: ['codex', 'claude'],
+    });
+    const codex = await createCodexNativeTestRuntime(isolation);
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const settingsPath = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    const settings = JSON.stringify({ enabledPlugins: { 'foreign-owner@aw-team': true } });
+    await fs.outputFile(settingsPath, settings);
+
+    const receipt = await runRecovery('install', ['team/demo'], {
+      cwd, env: isolation.env, scope: 'user', context: 'user', targets: ['codex', 'claude'], cliVersion: '1.0.0', yes: true,
+    }, {
+      env: isolation.env,
+      codexManagerResolver: codex.codexManagerResolver,
+      nativeCliRunner: (invocation) => claude.isClaudeInvocation(invocation)
+        ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation),
+    });
+    expect(receipt.targetResults, JSON.stringify(receipt)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent: 'codex', execution: 'applied' }),
+      expect.objectContaining({ agent: 'claude', execution: 'not-run',
+        blockers: expect.arrayContaining([expect.objectContaining({ code: 'externalOwnershipPresent' })]) }),
+    ]));
+    await expect(fs.readFile(settingsPath, 'utf8')).resolves.toBe(settings);
+  });
+
   it('keeps successful Native config output when another platform fails to render', async (test) => {
     const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();

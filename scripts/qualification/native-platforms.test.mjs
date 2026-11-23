@@ -106,21 +106,21 @@ test('captures only bounded fixture Codex source configuration', async () => {
     assert.equal((await readQualificationCodexSources(home)).state, 'missing');
     assert.equal((await readQualificationCodexSources('relative-home')).state, 'invalid-path');
     const source = path.join(options.cwd, 'marketplace');
-    const name = 'aw-qualification-abcdef123456';
+    const name = 'aw-qualification';
     await fs.writeFile(path.join(home, 'config.toml'), [
       'api_key = "credential-must-not-appear"',
       '[marketplaces.foreign]', 'source = "https://user:password@example.com/repository"',
+      '[marketplaces.aw-qualification-other]', 'source = "https://user:password@example.com/other"',
       `[marketplaces.${name}]`, `source = ${JSON.stringify(source)}`, 'source_type = "local"',
     ].join('\n'));
     const captured = await readQualificationCodexSources(home);
     assert.deepEqual(captured, { state: 'captured-parser-projection', sources: [{ name, source,
       sourceFormat: 'absolute', sourceType: 'local', sourcePointsToManifest: false }], omitted: 0 });
     assert(!JSON.stringify(captured).includes('credential')); assert(!JSON.stringify(captured).includes('password'));
-    await fs.writeFile(path.join(home, 'config.toml'), Array.from({ length: 6 }, (_, index) =>
-      `[marketplaces.aw-qualification-${String(index).padStart(12, '0')}]\nsource = "https://user:password@example.com/private"\n`).join('\n'));
+    await fs.writeFile(path.join(home, 'config.toml'),
+      `[marketplaces.${name}]\nsource = "https://user:password@example.com/private"\n`);
     const bounded = await readQualificationCodexSources(home);
-    assert.equal(bounded.sources.length, 4); assert.equal(bounded.omitted, 2);
-    assert(bounded.sources.every((entry) => entry.source === null && entry.sourceFormat === 'other'));
+    assert.deepEqual(bounded.sources, [{ name, source: null, sourceFormat: 'other', sourceType: null, sourcePointsToManifest: false }]);
     assert(!JSON.stringify(bounded).includes('password'));
     await fs.writeFile(path.join(home, 'config.toml'), 'x'.repeat(1024 * 1024 + 1));
     assert.equal((await readQualificationCodexSources(home)).state, 'over-limit');
