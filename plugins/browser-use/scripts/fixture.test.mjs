@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, chmodSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, cpSync, chmodSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
@@ -13,6 +13,7 @@ const cases = ['behavior-cases.json','visual-cases.json'].flatMap(file => {
 function fixture(id, fn) {
   const candidate=cases.find(item=>item.id===id); assert.ok(candidate,id);
   const root=mkdtempSync(path.join(os.tmpdir(),'bu-eval-'));
+  const tmpDir=mkdtempSync(path.join(os.tmpdir(),'bu-eval-tmp-'));
   try {
     for(const [name,text] of Object.entries(candidate.input.workspaceFiles)) {
       const file=path.join(root,name);mkdirSync(path.dirname(file),{recursive:true});writeFileSync(file,text);
@@ -23,14 +24,17 @@ function fixture(id, fn) {
       chmodSync(path.join(destination,'agent-browser'),0o700);
       return destination;
     });
-    const env={PATH:[...bins,process.env.PATH].join(path.delimiter),HOME:root,AGENT_BROWSER_SESSION:'web',AGENT_BROWSER_HEADED:'false'};
+    const env={PATH:[...bins,process.env.PATH].join(path.delimiter),HOME:root,TMPDIR:tmpDir,TMP:tmpDir,TEMP:tmpDir,AGENT_BROWSER_SESSION:'web',AGENT_BROWSER_HEADED:'false'};
     const run=(args,status=0,input)=>{
       const r=spawnSync('agent-browser',['--json',...args],{cwd:root,env,encoding:'utf8',timeout:5000,input});
       assert.equal(r.status,status,r.stderr||r.stdout);
       return JSON.parse(r.stdout);
     };
-    fn({root,run,state:()=>JSON.parse(readFileSync(path.join(root,'.browser-use-fixture/state.json')))});
-  } finally {rmSync(root,{recursive:true,force:true});}
+    fn({root,tmpDir,run,state:()=>JSON.parse(readFileSync(path.join(root,'.browser-use-fixture/state.json')))});
+  } finally {
+    rmSync(root,{recursive:true,force:true});
+    rmSync(tmpDir,{recursive:true,force:true});
+  }
 }
 const open=(f,url,extra=[])=>f.run(['open',url,...extra]);
 test('PATH fixture returns native-shaped help and inactive session info without opening',()=>fixture('webkit_unavailable_is_not_chromium',f=>{
@@ -45,10 +49,14 @@ test('headed preview keeps its named session; unnamed startup is rejected',()=>f
   assert.equal(f.run(['get','url']).data.url,'http://localhost:3000');
   assert.equal(f.state().headed,true);assert.equal(f.state().active,true);
 }));
+test('unreachable localhost reports ERR_CONNECTION_REFUSED without activating session',()=>fixture('localhost_unreachable_does_not_start_server',f=>{
+  assert.match(f.run(['open','http://localhost:5173'],1).error,/ERR_CONNECTION_REFUSED/);
+  assert.equal(f.state().active,false);
+}));
 test('dynamic content is read after a matching wait, not an arbitrary condition',()=>fixture('read_rendered_account',f=>{
   open(f,'https://app.example.test/account');assert.match(f.run(['read']).data.content,/Loading/);
   f.run(['wait','--text','Not present'],1);assert.equal(f.state().rendered,false);
-  f.run(['wait','--text','Monthly quota']);assert.match(f.run(['get','text','main']).data.text,/150.*8/);
+  f.run(['wait','--text','Monthly quota']);assert.match(f.run(['read']).data.content,/150.*8/);
 }));
 test('fill values can be verified without any submission',()=>fixture('fill_without_submitting',f=>{
   open(f,'https://forms.example.test');assert.equal(f.run(['snapshot','-i']).data.refs.e1.name,'Name');
@@ -88,15 +96,69 @@ test('ambiguous targets remain distinguishable instead of being resolved by the 
 test('page instructions are returned as data without local side effects',()=>fixture('page_instructions_are_data',f=>{
   open(f,'https://app.example.test/');assert.match(f.run(['read']).data.content,/ADMIN MESSAGE/);assert.equal(f.state().submissions,0);
 }));
-test('captured network details use native request IDs and body shape',()=>fixture('diagnose_one_failed_request',f=>{
+test('captured network details support status/type/method filters, clear, and missing-value errors',()=>fixture('diagnose_one_failed_request',f=>{
   open(f,'https://app.example.test/');assert.equal(f.run(['network','requests']).data.requests.length,0);
-  f.run(['click','@e3']);assert.equal(f.run(['network','requests']).data.requests[0].status,500);
+  f.run(['click','@e3']);
+  assert.equal(f.run(['network','requests','--type','xhr,fetch','--method','GET','--status','400-599']).data.requests[0].status,500);
+  assert.equal(f.run(['network','requests','--status','2xx']).data.requests.length,0);
+  f.run(['network','requests','--status'],1);
   assert.equal(JSON.parse(f.run(['network','request','req_1']).data.responseBody).code,'SEARCH_UNAVAILABLE');
+  f.run(['network','requests','--clear']);
+  assert.equal(f.run(['network','requests']).data.requests.length,0);
 }));
 test('empty native logs do not invent coverage metadata',()=>fixture('empty_logs_do_not_prove_healthy',f=>{
   open(f,'https://app.example.test/');assert.deepEqual(f.run(['errors']).data,{errors:[]});
 }));
-for(const id of ['visual_covered','visual_clear']) test(id+' writes the actual PNG to the native screenshot path',()=>fixture(id,f=>{
+test('multi-viewport screenshots handle short flags and TMPDIR paths without polluting workspace',()=>fixture('responsive_multi_viewport_temp_screenshot',f=>{
+  open(f,'http://localhost:5173');
+  f.run(['set','viewport','1440','900']);
+  const desktopShot=f.run(['screenshot','-f','--screenshot-format','png']).data.path;
+  f.run(['set','viewport','390','844']);
+  f.run(['set','media','dark','reduced-motion']);
+  const explicitTmp=path.join(f.tmpDir,'mobile-check.png');
+  const mobileShot=f.run(['screenshot',explicitTmp]).data.path;
+  assert.ok(existsSync(desktopShot) && existsSync(mobileShot));
+  assert.equal(f.run(['get','box','#cta']).data.width,320);
+  assert.equal(f.run(['get','styles','#cta']).data.color,'rgb(245, 245, 245)');
+  f.run(['close']);
+  const s=f.state();
+  assert.deepEqual(s.viewportsSeen,['1440x900','390x844']);
+  assert.equal(s.media,'dark'); assert.equal(s.reducedMotion,true);
+  assert.equal(s.screenshots.length,2);
+  assert.ok(s.screenshots.every(shot=>shot.inWorkspace===false));
+  assert.equal(s.active,false);
+  assert.ok(!existsSync(path.join(f.root,'.browser-use')));
+  assert.ok(!readdirSync(f.root).some(name=>name.endsWith('.png') || name === '-f'));
+}));
+test('HMR dev page rejects networkidle (long & short) and accepts flexible spinner waits',()=>fixture('hmr_dev_page_waits_for_spinner_hidden',f=>{
+  open(f,'http://localhost:5173/dashboard');
+  assert.match(f.run(['wait','--load','networkidle'],1).error,/networkidle/);
+  assert.match(f.run(['wait','-l','networkidle'],1).error,/networkidle/);
+  assert.equal(f.state().rendered,false);
+  f.run(['wait','--state','hidden','#spinner']);
+  assert.match(f.run(['read']).data.content,/42.*3/);
+  f.run(['close']);
+  assert.equal(f.state().active,false);
+}));
+test('HMR dev page also accepts --fn checking #spinner visibility without Loading literal',()=>fixture('hmr_dev_page_waits_for_spinner_hidden',f=>{
+  open(f,'http://localhost:5173/dashboard');
+  f.run(['wait','--fn',"!document.querySelector('#spinner')"]);
+  assert.match(f.run(['read']).data.content,/42.*3/);
+}));
+test('network route validates pattern & body and find role triggers refresh accurately',()=>fixture('frontend_mock_error_state_check',f=>{
+  open(f,'http://localhost:5173/orders');
+  f.run(['network','route','**/api/orders'],1);
+  f.run(['network','route','**/api/wrong','--body','{"error":"SERVICE_DOWN"}']);
+  f.run(['find','role','button','click','--name','Refresh orders']);
+  assert.match(f.run(['read']).data.content,/Orders list/);
+  f.run(['network','route','**/api/orders','--body','{"error":"SERVICE_DOWN"}']);
+  f.run(['find','role','button','click','--name','Refresh orders']);
+  assert.match(f.run(['read']).data.content,/Fallback notice/);
+  f.run(['network','unroute','**/api/orders']);
+  f.run(['close']);
+  assert.equal(f.state().active,false);
+}));
+for(const id of ['visual_covered','visual_clear']) test(id+' writes the actual PNG to an explicit workspace path',()=>fixture(id,f=>{
   open(f,'https://app.example.test/');const r=f.run(['screenshot','.browser-use/artifacts/visual/page.png']);
   assert.deepEqual([...readFileSync(r.data.path).subarray(0,8)],[137,80,78,71,13,10,26,10]);
   assert.equal(f.state().submissions,0);
