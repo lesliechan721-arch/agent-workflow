@@ -32,7 +32,7 @@ async function runAw(cliEntry: string, workspaceRoot: string, args: string[]) {
   });
 }
 
-it('validates the built dynamic Skill before preparing a publication plan', async () => {
+it('validates the built dynamic Skill and Grok permissions before preparing a publication plan', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-built-catalog-smoke-'));
   const workspaceRoot = path.join(temporaryRoot, 'workspace');
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
@@ -54,7 +54,8 @@ it('validates the built dynamic Skill before preparing a publication plan', asyn
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   await fs.writeJson(manifestPath, {
     ...await fs.readJson(manifestPath),
-    platforms: ['generic'],
+    platforms: ['generic', 'grok'],
+    extensions: { permissions: [{ name: 'build-demo', allow: ['printf built-skill'], agentOverrides: { generic: null } }] },
     scripts: {
       node: { build: { runner: 'node', path: './build.mjs' } },
       artifacts: { render: { runner: 'node', path: './render.mjs' } },

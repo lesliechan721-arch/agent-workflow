@@ -89,6 +89,10 @@ export async function prepareSkillPluginBundle(options: {
   }
 }
 
+function profileHostRoot(home: string, platform: PlatformTarget): string {
+  return path.join(home, 'profile-host', platform);
+}
+
 /** Prepare a fixed author profile without discovery or native registration. */
 export async function materializeProfilePluginComponents(options: {
   plugin: PluginMeta;
@@ -114,7 +118,7 @@ export async function materializeProfilePluginComponents(options: {
   const pluginId = options.plugin.pluginId ?? `${sourceId}/${options.plugin.manifest.name}`;
   const sourceIdentity = options.plugin.sourceIdentity ?? await computeCanonicalDirectoryDigest(options.plugin.rootDir);
   options = { ...options, plugin: { ...options.plugin, sourceId, sourceIdentity, pluginId } };
-  const productRoot = path.join(options.env.HOME!, 'profile-host', options.platform);
+  const productRoot = profileHostRoot(options.env.HOME!, options.platform);
   await fs.ensureDir(productRoot);
   const resolution = await resolveDeployments({ cwd: options.cwd, env: options.env }, {
     plugin: {
@@ -260,6 +264,7 @@ export async function createIsolatedSkillEnv(
     AW_HOME: path.join(scopeRoot, 'aw-home'),
     CODEX_HOME: codexHome,
     CLAUDE_CONFIG_DIR: path.join(scopeRoot, 'claude-home'),
+    GROK_HOME: profileHostRoot(home, 'grok'),
     NODE_PATH: '',
   };
   delete env.AW_CODEX_HOME;
@@ -275,6 +280,7 @@ export async function createIsolatedSkillEnv(
     fs.ensureDir(env.AW_HOME!),
     fs.ensureDir(env.CODEX_HOME!),
     fs.ensureDir(env.CLAUDE_CONFIG_DIR!),
+    fs.ensureDir(env.GROK_HOME!),
   ]);
   return env;
 }
