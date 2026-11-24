@@ -28,7 +28,11 @@ MCP 的凭据值不进入 Skill、日志或分发包。生命周期由实际 run
 
 配置 helper 只完成合同允许的辅助任务；输出应确定、可测试。不要用 helper 重建另一套配置状态或隐式安装依赖。
 
+固定对象的属性可声明一层对象数组，例如 `executors[].models[]`。内层 `items` 可复用本地定义，展开后需为无 `variants` 的固定叶级对象。每层数组均可用 `validation.uniqueBy` 约束标识。
+
 需要从另一插件的对象数组选择标量 key 时，使用 `valueRef.plugin`，并显式声明同 source 的直接安装依赖和 `aw.plugin-config-cross-plugin-value-ref.v1`。省略 plugin 仍是本地引用。provider 必须满足原有字段、uniqueBy、类型及非敏感约束；consumer/provider 采用同一平台，候选使用已保存配置，不读取另一插件的未保存草稿。字段与关联校验以当前 capability registry 和完整作者验证为准，不在 renderer 自建跨插件配置读取。
+
+需要给可自由填写的标量字段提供实时选项时，声明 `aw.plugin-config-suggestions.v1`、字段 `suggestions: { provider, dependsOn? }` 和 `scripts.config.suggestions` 的 Node 入口。跨插件可填写同源直接依赖的 `plugin` 裸名。读取 stdin 中的非敏感 `providerConfigValues` 与同级 `dependencyValues`，将候选值和标题放入响应 `items`。用 `aw plugin config suggestions <source/plugin> <field-path> --json` 验证成功和不可用路径，保留手工输入。建议脚本在 POSIX 启动的所有后代必须留在 AW 进程组内。使用默认的 `detached: false`，并让嵌套工具遵守同一约定。
 
 ## 读取本次安装生效的配置
 

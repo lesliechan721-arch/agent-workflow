@@ -1220,112 +1220,11 @@ function stringify(obj, { maxDepth = 1e3, numbersAsFloat = false, strictTemporal
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-// commands/scripts/file-selection/contracts.mjs
-var LIMITS = Object.freeze({
-  inputBytes: 1024 * 1024,
-  outputBytes: 16 * 1024 * 1024,
-  selectors: 4096,
-  patterns: 8192,
-  patternBytes: 32768,
-  braceRange: 1e3,
-  expandedPatterns: 8192,
-  entries: 1e5,
-  operations: 5e5,
-  files: 1e5,
-  ignoreFileBytes: 1024 * 1024,
-  ignoreTotalBytes: 4 * 1024 * 1024,
-  durationMs: 3e4
-});
-
-// commands/scripts/runtime/contracts.mjs
-var LIMITS2 = Object.freeze({
-  taskBytes: 262144,
-  instructionBytes: 262144,
-  promptBytes: 524352,
-  requestBytes: 8388608,
-  outputBytes: 4194304,
-  logBytes: 8388608,
-  resultBytes: 33554432,
-  messageBytes: 4096,
-  messageBodyBytes: 24576,
-  messageFrameBytes: 262144,
-  controlFrameBytes: 4096,
-  deliveryFrameBytes: 16384,
-  receiveMs: 6e5,
-  waitMs: 6e5,
-  maximumWaitMs: 18e5
-});
-var RUNTIME_KEYS = Object.freeze(["subagentCommands", "subagentRetentionHours"]);
-var STATES = Object.freeze(["completed", "failed", "cancelled", "unknown"]);
-var RuntimeError = class extends Error {
-  constructor(code, message, recoveryActions = []) {
-    super(message);
-    this.name = "RuntimeError";
-    this.code = code;
-    this.recoveryActions = recoveryActions;
-  }
-};
-function fail(code, message, recoveryActions = []) {
-  throw new RuntimeError(code, message, recoveryActions);
-}
-
-// commands/scripts/adapters/codex-hooks.mjs
-var hookEvents = Object.fromEntries(["PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt"].map((name) => [name, name.replace(/[A-Z]/g, (letter, index) => `${index ? "_" : ""}${letter.toLowerCase()}`)]));
-var table = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-function mergeStateRecord(base, overlay) {
-  const result = { ...base, ...overlay };
-  for (const [key, value] of Object.entries(overlay)) {
-    if (table(base?.[key]) && table(value)) result[key] = mergeStateRecord(base[key], value);
-  }
-  return result;
-}
-function convertHooks(value, { invalid, unsupported }) {
-  if (!table(value)) invalid("hooks", "Hooks must be a table for source-state mapping.");
-  const result = Object.assign(/* @__PURE__ */ Object.create(null), value);
-  for (const [event, groups] of Object.entries(value)) {
-    if (event === "state") {
-      if (!table(groups)) invalid("hooks.state", "Hook state must be a table.");
-      result.state = /* @__PURE__ */ Object.create(null);
-      for (const [index, [key, state]] of Object.entries(groups).entries()) {
-        const field2 = `hooks.state[${index}]`;
-        if (!table(state)) invalid(field2, "A hook state record must be a table.");
-        if (Object.hasOwn(state, "enabled") && typeof state.enabled !== "boolean") invalid(`${field2}.enabled`, "Hook enabled state must be a boolean.");
-        if (Object.hasOwn(state, "trusted_hash") && typeof state.trusted_hash !== "string") invalid(`${field2}.trusted_hash`, "Hook trust state must be a string.");
-        if (key.trim()) result.state[key.trim()] = mergeStateRecord(result.state[key.trim()], state);
-      }
-      continue;
-    }
-    const known = Object.hasOwn(hookEvents, event);
-    const field = known ? `hooks.${event}` : "hooks.<event>";
-    if (!Array.isArray(groups)) {
-      if (known) invalid(field, "Hook event groups must be an array for source-state mapping.");
-      continue;
-    }
-    for (const [groupIndex, group] of groups.entries()) {
-      const groupField = `${field}[${groupIndex}]`;
-      if (!table(group)) {
-        if (known) invalid(groupField, "A hook group must be a table for source-state mapping.");
-        continue;
-      }
-      if (Object.hasOwn(group, "hooks") && !Array.isArray(group.hooks)) {
-        if (known) invalid(`${groupField}.hooks`, "Hook handlers must be an array for source-state mapping.");
-        continue;
-      }
-      for (const [handlerIndex, handler] of (group.hooks ?? []).entries()) {
-        const handlerField = `${groupField}.hooks[${handlerIndex}]`;
-        if (!table(handler)) {
-          if (known) invalid(handlerField, "A hook handler must be a table for source-state mapping.");
-          continue;
-        }
-        if (handler.type === "prompt" || handler.type === "agent") unsupported(`${handlerField}.type`, "This hook handler cannot execute in the supported Codex backend.");
-        if (event === "SessionEnd" && handler.type === "mcp_tool") unsupported(`${handlerField}.type`, "The Codex backend does not execute MCP tool handlers for SessionEnd.");
-      }
-    }
-  }
-  return result;
-}
-
 // commands/scripts/adapters/codex-profile.mjs
+import { fail } from "../runtime/contracts.mjs";
+import { convertHooks, table } from "./codex-hooks.mjs";
+import { checkCodexArguments } from "./codex-arguments.mjs";
+import { rejectOption } from "./arguments.mjs";
 var threadFields = /* @__PURE__ */ new Set([
   "model",
   "service_tier",
@@ -1586,9 +1485,64 @@ async function readCodexProfile(name, environment, diagnostics = [], cwd = proce
   }
   return { profilePath, document: parseProfile(text, diagnostics) };
 }
-function splitConfiguration(value, { diagnostics = [] } = {}) {
+async function readCodexConfiguration(args, {
+  profile,
+  workspace,
+  environment,
+  diagnostics = [],
+  privateMcpServer,
+  permissionMode = "default",
+  model,
+  reasoningEffort
+}) {
+  checkCodexArguments({ args, permissionMode, execution: { model, reasoningEffort } });
+  let raw = /* @__PURE__ */ Object.create(null);
+  let ephemeral = false;
+  const extras = [];
+  const conversion = { diagnostics, environment, baseDir: workspace, privateMcpServer };
+  const addRaw = (value) => {
+    raw = mergeConfiguration(raw, convertProfile(value, { ...conversion, explicit: true }));
+  };
+  const values = /* @__PURE__ */ new Set(["--config", "-c", "--enable", "--disable", "--model", "-m", "--sandbox", "-s", "--ask-for-approval", "-a", "--profile", "-p"]);
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    const equals = argument.indexOf("=");
+    let option = equals < 0 ? argument : argument.slice(0, equals);
+    let value = equals < 0 ? void 0 : argument.slice(equals + 1);
+    if (/^-[cmpsa].+/.test(argument)) {
+      option = argument.slice(0, 2);
+      value = argument.slice(2);
+    }
+    if (values.has(option)) {
+      value ??= args[++index];
+      if (typeof value !== "string") fail("adapterArgumentsInvalid", "The backend option requires a value.");
+      if (option === "--profile" || option === "-p") {
+        if (profile !== void 0) rejectOption(option);
+        profile = value;
+      } else if (option === "--config" || option === "-c") {
+        const parsed = parseConfigArgument(value, { diagnostics });
+        if (permissionMode !== "default" && (Object.hasOwn(parsed, "approval_policy") || Object.hasOwn(parsed, "approvals_reviewer") || permissionMode === "full-access" && Object.hasOwn(parsed, "sandbox_mode"))) rejectOption(option);
+        if (Object.hasOwn(parsed, "model") && model !== void 0 || Object.hasOwn(parsed, "model_reasoning_effort") && reasoningEffort !== void 0) rejectOption(option);
+        addRaw(parsed);
+      } else if (option === "--enable" || option === "--disable") addRaw({ features: { [value]: option === "--enable" } });
+      else if (option === "--model" || option === "-m") addRaw({ model: value });
+      else if (option === "--sandbox" || option === "-s") addRaw({ sandbox_mode: value });
+      else addRaw({ approval_policy: value });
+    } else if (option === "--strict-config") extras.push(option);
+    else if (option === "--ephemeral") ephemeral = true;
+    else if (option === "--dangerously-bypass-approvals-and-sandbox") addRaw({ approval_policy: "never", sandbox_mode: "danger-full-access" });
+    else if (option === "--full-auto") addRaw({ approval_policy: "on-request", sandbox_mode: "workspace-write" });
+    else fail("parameterUnavailable", `The Codex app-server adapter cannot preserve ${option}. Remove this explicit option.`);
+  }
+  const loaded = await readCodexProfile(profile, environment, diagnostics, workspace);
+  const defaults = convertProfile(loaded.document ?? {}, { ...conversion, baseDir: loaded.profilePath ? path.dirname(loaded.profilePath) : workspace });
+  const merged = mergeConfiguration(defaults, raw);
+  return { merged, defaults, raw, extras, ephemeral, profilePath: loaded.profilePath };
+}
+function splitConfiguration(value, { diagnostics = [], launchOnly = false } = {}) {
   const launch = /* @__PURE__ */ Object.create(null), thread = /* @__PURE__ */ Object.create(null);
   const threadValue = (key, item, target = key) => {
+    if (launchOnly) return;
     try {
       thread[target] = jsonValue(item);
     } catch {
@@ -1611,8 +1565,8 @@ function splitConfiguration(value, { diagnostics = [] } = {}) {
   }
   return { launch, thread };
 }
-function launchArguments(launch, extra = [], platform = process.platform) {
-  const argv = ["app-server", ...extra];
+function buildCodexLaunchArgs({ launch, extras = [] }, platform = process.platform) {
+  const argv = ["app-server", ...extras];
   try {
     for (const [key, value] of Object.entries(launch)) argv.push("-c", `${/^[A-Za-z0-9_-]+$/.test(key) ? key : tomlValue(key)}=${tomlValue(value)}`);
   } catch {
@@ -1623,11 +1577,12 @@ function launchArguments(launch, extra = [], platform = process.platform) {
   return argv;
 }
 export {
+  buildCodexLaunchArgs,
   convertProfile,
-  launchArguments,
   mergeConfiguration,
   parseConfigArgument,
   parseProfile,
+  readCodexConfiguration,
   readCodexProfile,
   splitConfiguration,
   tomlValue

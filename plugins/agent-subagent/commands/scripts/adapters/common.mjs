@@ -1,13 +1,15 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization, identifier } from '../runtime/contracts.mjs';
+import { ADAPTER_PROTOCOL_VERSION, LIMITS, fail, redact, safeError, fields, text, absolutePath, validateCommunication, validateInitialization, identifier } from '../runtime/contracts.mjs';
 import { summarizeDiagnostics } from '../runtime/diagnostics.mjs';
 import { safePath, readLimited, textFromBytes } from '../runtime/files.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from '../runtime/protocol.mjs';
 import { safeSpawn, resolveSafeCommand } from '../runtime/platform.mjs';
 import { createChildBridge } from '../runtime/adapter-channel.mjs';
 import { observeTree, stopOwnedTree } from '../runtime/processes.mjs';
+import { INTROSPECTION_MAX_BYTES } from '../introspection/protocol.mjs';
+import { INTROSPECTION_TIMEOUT_MS } from '../introspection/process.mjs';
+import { presentIntrospectionFrame, probePresentation } from '../introspection/presentation.mjs';
 
 export { summarizeDiagnostics };
 
@@ -50,69 +52,6 @@ function validateNegotiation(value, context) {
   context.initialization.capabilities.resume = structuredClone(context.resume);
   if (context.request.sessionId && !resume.supported) fail('resumeUnsupported', 'The selected backend cannot resume this session with the saved configuration.');
   context.communicationCandidate = structuredClone(capability);
-}
-
-export function rejectOption(option) {
-  fail('adapterArgumentConflict', `The adapter owns ${option}. Remove it from args.`);
-}
-
-/** Protect invocation controls while leaving ordinary options to the backend. */
-export function checkArguments(args, { owned, commands = [], short = {}, booleans = [], values = [], variadic = [], onOption }) {
-  let valueExpected = false;
-  let variadicExpected = false;
-  for (let index = 0; index < args.length; index++) {
-    const argument = args[index];
-    if (valueExpected) { valueExpected = false; continue; }
-    if (variadicExpected && !argument.startsWith('-')) continue;
-    variadicExpected = false;
-    if (argument === '--' || argument === '-') rejectOption(argument);
-    if (!argument.startsWith('-')) fail('adapterArgumentConflict', 'args must contain backend options and their values, not a command or prompt.');
-    if (argument.startsWith('--')) {
-      const equals = argument.indexOf('=');
-      const option = equals < 0 ? argument : argument.slice(0, equals);
-      const value = equals < 0 ? args[index + 1] : argument.slice(equals + 1);
-      if (owned.includes(option)) rejectOption(option);
-      onOption?.(option, value);
-      variadicExpected = equals < 0 && variadic.includes(option);
-      valueExpected = equals < 0 && !variadicExpected && (values.includes(option) || (!booleans.includes(option) && typeof value === 'string' && !value.startsWith('-')));
-      continue;
-    }
-    for (let offset = 1; offset < argument.length; offset++) {
-      const option = `-${argument[offset]}`;
-      if (owned.includes(option)) rejectOption(option);
-      const kind = short[option];
-      if (kind === 'value') {
-        const value = argument.slice(offset + 1) || args[index + 1];
-        onOption?.(option, value);
-        variadicExpected = variadic.includes(option);
-        valueExpected = !variadicExpected && offset + 1 === argument.length;
-        break;
-      }
-      if (kind !== 'boolean') {
-        const next = args[index + 1];
-        if (commands.includes(next)) rejectOption(next);
-        valueExpected = offset + 1 === argument.length && typeof next === 'string' && !next.startsWith('-');
-        break;
-      }
-      onOption?.(option, undefined);
-    }
-  }
-}
-
-export async function privateOutputPath(directory, target) {
-  if (typeof target !== 'string' || !path.isAbsolute(target) || path.normalize(target) !== target) fail('adapterOutputPathInvalid', 'The adapter output path must be absolute and normalized.');
-  const relative = path.relative(directory, target);
-  if (!relative || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) fail('adapterOutputPathInvalid', 'The adapter output must stay in this private run directory.');
-  await safePath(path.dirname(target), 'directory');
-  try { await fs.lstat(target); fail('adapterOutputExists', 'This output already exists. Do not resubmit an existing run.'); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  return target;
-}
-
-export async function finalOutput(target) {
-  const value = textFromBytes(await readLimited(target, LIMITS.outputBytes, 'adapterOutputTooLarge'));
-  await fs.chmod(target, 0o600);
-  return value;
 }
 
 const instructionSections = ['common', 'mcp', 'command', 'command-argument', 'in-turn', 'turn-boundary', 'none', 'active-receive'];
@@ -277,13 +216,15 @@ export function adapterMain(moduleUrl, descriptor, help) {
   if (!process.argv[1] || fileURLToPath(moduleUrl) !== path.resolve(process.argv[1])) return;
   process.umask(0o077);
   if (process.argv.length === 3 && ['--help', '-h'].includes(process.argv[2])) { process.stdout.write(help); return; }
-  if (process.argv.length !== 2) { process.stderr.write('adapterArgumentsInvalid: This adapter accepts v5 JSONL on stdin or --help.\n'); process.exitCode = 1; return; }
+  if (process.argv.length !== 2) { process.stderr.write('adapterArgumentsInvalid: This adapter accepts v6 JSONL on stdin or --help.\n'); process.exitCode = 1; return; }
   const state = createProtocolState();
   const writer = createFrameWriter(process.stdout, { direction: 'adapter' });
   const deliveries = new Set();
+  const probeController = new AbortController();
   let context, task, closingTask, protocolFailed = false, finished = false, ready = false, closing = false, deadlineTimer, stopTimer;
+  let introspection, writingIntrospection = false;
   const emit = async (value) => {
-    const frame = { protocolVersion: 5, ...value };
+    const frame = { protocolVersion: ADAPTER_PROTOCOL_VERSION, ...value };
     state.acceptAdapter(frame);
     await writer.write(frame);
   };
@@ -295,6 +236,15 @@ export function adapterMain(moduleUrl, descriptor, help) {
     if (ready) void context.beginClosing(reason === 'requested' || reason === 'deadline' ? 'cancelled' : 'error').catch(() => {});
     void Promise.resolve().then(() => context.onStop?.()).catch(() => {});
     armClosingTimer();
+  };
+  const cancelConnection = (exitCode) => {
+    if (finished || probeController.signal.aborted) return;
+    probeController.abort();
+    process.exitCode = exitCode;
+    process.stdin.destroy();
+    // The probe has already closed its backend. A blocked stdout write can
+    // otherwise keep the process alive after the caller cancels.
+    if (writingIntrospection) process.exit(exitCode);
   };
   const armClosingTimer = () => {
     if (stopTimer) return;
@@ -346,7 +296,6 @@ export function adapterMain(moduleUrl, descriptor, help) {
         }
         const { supported: _supported, ...details } = capability;
         const communication = validateCommunication({ status: 'enabled', ...details });
-        if (request.mode === 'bundle') fail('protocolInvalid', 'Bundle runs cannot enable communication.');
         if (communication.passiveDelivery !== 'none' && typeof submitInput !== 'function') fail('bridgeInvalid', 'Passive communication requires an input submission method.');
         context.bridge = await createChildBridge({
           directory: path.join(request.runtime.directory, 'communication'), deadlineAt: request.run.deadlineAt,
@@ -390,7 +339,6 @@ export function adapterMain(moduleUrl, descriptor, help) {
     let result;
     try {
       if (!/^[a-f0-9]{48}$/.test(process.env.AW_SUBAGENT_PROCESS_TOKEN ?? '')) fail('processMarkerMissing', 'Run this adapter through the Guide runner.');
-      if (request.mode !== descriptor.mode) fail('adapterModeUnsupported', `This adapter requires ${descriptor.mode} mode.`);
       if (descriptor.permissionMode === true ? !Object.hasOwn(request, 'permissionMode') : Object.hasOwn(request, 'permissionMode')) fail('protocolInvalid', 'The permission mode must match the selected adapter.');
       if (descriptor.codex === true ? !Object.hasOwn(request, 'codex') : Object.hasOwn(request, 'codex')) fail('protocolInvalid', 'The Codex configuration must match the selected adapter.');
       await safePath(request.workspace, 'directory');
@@ -435,14 +383,29 @@ export function adapterMain(moduleUrl, descriptor, help) {
       process.stdin.destroy();
     }
   };
-  const protocolError = () => {
+  const protocolError = (error) => {
     if (protocolFailed) return;
     protocolFailed = true;
-    if (context) shutdown('channelError', 'protocolInvalid');
-    else { process.stderr.write('protocolInvalid: Invalid Adapter v5 input.\n'); process.exitCode = 1; process.stdin.destroy(); }
+    const oversized = error?.code === 'protocolTooLarge';
+    const code = oversized ? 'protocolTooLarge' : 'protocolInvalid';
+    if (context) shutdown('channelError', code);
+    else {
+      const message = oversized ? 'The Adapter v6 frame exceeds its byte limit.' : 'Invalid Adapter v6 frame.';
+      process.stderr.write(`${code}: ${message}\n`);
+      cancelConnection(1);
+    }
   };
   const decoder = createFrameDecoder({ direction: 'worker', onFrame(frame) {
+    if (protocolFailed) return;
     try {
+      if (introspection) fail('protocolInvalid', 'Send one introspect frame per connection.');
+      if (frame.type === 'introspect') {
+        if (context || !descriptor.introspection || Object.hasOwn(frame, 'codex') !== (descriptor.codex === true)) {
+          fail('protocolInvalid', 'The introspect frame must match the adapter on a separate connection.');
+        }
+        introspection = frame;
+        return;
+      }
       state.acceptWorker(frame);
       if (frame.type === 'start') {
         task = run(frame);
@@ -454,12 +417,57 @@ export function adapterMain(moduleUrl, descriptor, help) {
         deliveries.add(pending);
         pending.finally(() => deliveries.delete(pending));
       }
-    } catch { protocolError(); }
+    } catch (error) { protocolError(error); }
   } });
-  process.stdin.on('data', (chunk) => { if (protocolFailed) return; try { decoder.push(chunk); } catch { protocolError(); } });
-  process.stdin.on('end', () => { try { decoder.end(); } catch { protocolError(); } if (!context) { protocolError(); return; } if (!finished) shutdown('channelError', 'channelClosed'); });
-  process.stdin.on('error', () => { if (!finished) shutdown('channelError', 'channelClosed'); });
-  process.stdout.on('error', () => shutdown('channelError', 'channelWriteFailed'));
-  process.on('SIGINT', () => shutdown('requested'));
-  process.on('SIGTERM', () => shutdown('requested'));
+  process.stdin.on('data', (chunk) => {
+    if (protocolFailed || probeController.signal.aborted) return;
+    try { decoder.push(chunk); } catch (error) { protocolError(error); }
+  });
+  process.stdin.on('end', async () => {
+    if (probeController.signal.aborted) return;
+    try { decoder.end(); } catch (error) { protocolError(error); }
+    if (introspection && !protocolFailed) {
+      const { signal } = probeController;
+      try {
+        const { runBuiltinIntrospection } = await import('../introspection/builtin.mjs');
+        if (signal.aborted) return;
+        const frame = await runBuiltinIntrospection(descriptor.introspection, introspection, process.env, {
+          signal: AbortSignal.any([signal, AbortSignal.timeout(INTROSPECTION_TIMEOUT_MS)]),
+        });
+        if (signal.aborted) return;
+        const line = `${JSON.stringify(presentIntrospectionFrame(frame, probePresentation(process.env)))}\n`;
+        if (Buffer.byteLength(line) > INTROSPECTION_MAX_BYTES) fail('protocolTooLarge', 'The introspection frame exceeds its byte limit.');
+        writingIntrospection = true;
+        await new Promise((resolve, reject) => {
+          process.stdout.write(line, (error) => {
+            writingIntrospection = false;
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      } catch (error) {
+        writingIntrospection = false;
+        if (!signal.aborted) protocolError(error);
+      } finally { finished = true; }
+      return;
+    }
+    if (!context) { protocolError(); return; }
+    if (!finished) shutdown('channelError', 'channelClosed');
+  });
+  process.stdin.on('error', () => {
+    if (context) shutdown('channelError', 'channelClosed');
+    else cancelConnection(1);
+  });
+  const outputClosed = () => {
+    if (context) shutdown('channelError', 'channelWriteFailed');
+    else cancelConnection(1);
+  };
+  process.stdout.on('error', outputClosed);
+  process.stdout.on('close', outputClosed);
+  for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    process.on(signal, () => {
+      if (context) shutdown('requested');
+      else cancelConnection(exitCode);
+    });
+  }
 }

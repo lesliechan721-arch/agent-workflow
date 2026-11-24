@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { atomicJson, atomicJsonFiles, readJson, safePath } from './files.mjs';
-import { fail, STATES, runId, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
+import { ADAPTER_PROTOCOL_VERSION, fail, STATES, runId, validateResult, validateInitialization, validateDiagnostics } from './contracts.mjs';
 import { currentUserIdentity, protectPrivatePath, protectPrivatePaths, verifyPrivatePath, verifyPrivatePaths, assertNoReparseTree } from './platform.mjs';
 import { processTable } from './processes.mjs';
 import { windowsNativeOperation } from './windows-native.mjs';
@@ -13,7 +13,8 @@ import { windowsNativeOperation } from './windows-native.mjs';
 export const CACHE_MS = 86400000;
 export const terminal = (state) => STATES.includes(state);
 export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const handlePattern = /^aw5-([A-Za-z0-9_-]{11})-([A-Za-z0-9_-]{22})$/;
+const RUN_SCHEMA = 6;
+const handlePattern = /^aw6-([A-Za-z0-9_-]{11})-([A-Za-z0-9_-]{22})$/;
 const runKeyPattern = /^[A-Za-z0-9_-]{22}$/;
 const recordName = /^[a-z0-9-]+\.json$/;
 const identityKeys = ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform'];
@@ -32,7 +33,7 @@ function retentionMilliseconds(context, meta) {
 
 export function parseHandle(handle) {
   const match = typeof handle === 'string' && handle.match(handlePattern);
-  if (!match) fail('runUnavailable', 'The run handle is unavailable.');
+  if (!match) fail('runUnavailable', 'Use a current aw6 run handle or start a new run. Older run handles need to be cleared separately.');
   return { id: match[1], key: match[2] };
 }
 
@@ -87,7 +88,7 @@ export async function createRun(context, name, workspace, installedIdentity = co
   await prepareRoot(context);
   const id = randomBytes(8).toString('base64url');
   const key = randomBytes(16).toString('base64url');
-  const handle = `aw5-${id}-${key}`;
+  const handle = `aw6-${id}-${key}`;
   const entryDirectory = path.join(context.root, id);
   const containerDirectory = path.join(entryDirectory, 'executions');
   await privateDirectory(entryDirectory);
@@ -102,7 +103,7 @@ async function prepareExecution(context, stable, paths) {
   const children = ['events', 'outbox', 'gaps', 'adapter'].map((part) => path.join(directory, part));
   for (const target of children) await fs.mkdir(target, { mode: 0o700 });
   await protectPrivatePaths(children.map((target) => ({ target, kind: 'directory' })));
-  const meta = { schema: 5, ...stable, executionId,
+  const meta = { schema: RUN_SCHEMA, ...stable, executionId,
     token: randomBytes(24).toString('hex'), worker: null, processes: [],
     createdAt: Date.now(), terminalAt: null, localTreeStopped: false };
   const snapshot = { state: 'starting', sequence: 1, ready: false, initialization: null, initializationSequence: 0 };
@@ -130,7 +131,7 @@ export async function publishRun(context, run) {
   const verified = await readExecution(context, run.directory, { entry: false });
   if (verified.meta.token !== run.meta.token) fail('runUnavailable', 'The run ownership changed.');
   const { id, key, owner, name, installedIdentity, executionId } = run.meta;
-  await atomicJson(path.join(run.entryDirectory, 'current.json'), { schema: 5, id, key, owner, name, installedIdentity, executionId });
+  await atomicJson(path.join(run.entryDirectory, 'current.json'), { schema: RUN_SCHEMA, id, key, owner, name, installedIdentity, executionId });
 }
 
 export async function touchEntry(context, run) {
@@ -157,7 +158,7 @@ async function readEntry(context, id) {
 
 async function readVerifiedEntry(context, id) {
   const entry = await readJson(path.join(context.root, id, 'current.json'), 16384);
-  if (entry.schema !== 5 || entry.id !== id || !runKeyPattern.test(entry.key ?? '') ||
+  if (entry.schema !== RUN_SCHEMA || entry.id !== id || !runKeyPattern.test(entry.key ?? '') ||
     !runKeyPattern.test(entry.executionId ?? '') || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(entry.name ?? '') ||
     JSON.stringify(entry.owner) !== JSON.stringify(context.owner)) fail('runUnavailable', 'The run entry is invalid.');
   return entry;
@@ -182,14 +183,14 @@ async function readVerifiedExecution(context, paths, entry) {
   const { directory, id } = paths;
   try {
     const meta = await readJson(path.join(directory, 'owner.json'), 1024 * 1024);
-    if (meta.schema !== 5 || meta.id !== id || meta.executionId !== path.basename(directory) || !runKeyPattern.test(meta.key ?? '') ||
+    if (meta.schema !== RUN_SCHEMA || meta.id !== id || meta.executionId !== path.basename(directory) || !runKeyPattern.test(meta.key ?? '') ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(meta.name ?? '') ||
       !/^[a-f0-9]{48}$/.test(meta.token ?? '') || JSON.stringify(meta.owner) !== JSON.stringify(context.owner) ||
       !Array.isArray(meta.processes) || !(meta.terminalAt === null || Number.isSafeInteger(meta.terminalAt) && meta.terminalAt >= 0)) {
       fail('runUnavailable', 'The run ownership information is invalid.');
     }
     if (entry && (entry.key !== meta.key || entry.name !== meta.name || JSON.stringify(entry.installedIdentity) !== JSON.stringify(meta.installedIdentity))) fail('runUnavailable', 'The run ownership changed.');
-    return { ...paths, meta, ...(entry ? { entry } : {}), handle: `aw5-${id}-${meta.key}` };
+    return { ...paths, meta, ...(entry ? { entry } : {}), handle: `aw6-${id}-${meta.key}` };
   } catch { fail('runUnavailable', 'The run ownership cannot be verified.'); }
 }
 
@@ -376,7 +377,7 @@ export async function observeRun(context, run, { allowExpired = false, workerChi
           const status = input.phase === 'queued' ? 'notSubmitted' : 'unknown';
           await saveGap(run, name, input, status, status === 'unknown' ? 'inputDeliveryUnknown' : 'workerLost');
         }
-        result = { protocolVersion: 5, type: 'result', state: 'unknown', generationStarted: null,
+        result = { protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'result', state: 'unknown', generationStarted: null,
           backendExitCode: null, text: '', code: 'workerLost', message: 'Final text was not saved.' };
         await atomicJson(path.join(run.directory, 'final.json'), result);
       } catch { fail('runStateUnavailable', 'The lost-worker result could not be saved.'); }

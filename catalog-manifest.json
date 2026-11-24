@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.79",
+  "catalogVersion": "0.1.0-beta.81",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "fe602f138d9354a4807511b1f81be191881040dd"
+    "sourceHead": "1f1b105434608cfa56d4782cf650440a6717f9e8"
   },
   "entries": [
     {
@@ -101,10 +101,10 @@
     {
       "name": "agent-subagent",
       "source": "./plugins/agent-subagent",
-      "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
+      "description": "组织已授权的通用子代理委派、原生与外部执行器自省、执行配置与跨平台调度。",
       "interface": {
         "displayName": "Agent Subagent",
-        "shortDescription": "通用子代理委派与执行配置",
+        "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
         "capabilities": [
           "Skills",
           "Agents"
@@ -114,7 +114,8 @@
       "tags": [
         "subagent",
         "delegation",
-        "execution"
+        "execution",
+        "introspection"
       ],
       "strict": true,
       "policy": {
@@ -125,7 +126,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.11",
+      "version": "0.2.0-beta.1",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -137,6 +138,7 @@
             "aw.platform-render-context.v2",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
+            "aw.plugin-config-suggestions.v1",
             "aw.plugin-config-summary.v1",
             "aw.plugin-config-unique-by.v1",
             "aw.plugin-config-value-ref.v1",
@@ -149,9 +151,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:bdca54ba572aeae7e0de8ef8c7165115364fd0948972252e3ee9603827978e60",
-      "manifestDigest": "sha256:55fe7d54bfd1e11fe4254c343ec702f73416438de0fe45948b378680736189a1",
-      "contentDigest": "sha256:30c5e1533244f23420207656cbae0d296778435a82ad09d262c40d56f06cd407"
+      "artifactDigest": "sha256:4c03582040486b5825e1364ae926adc421dba86de01af70966a198418d82db16",
+      "manifestDigest": "sha256:8e3ef9a9bc06f805968a200331b8d70ed3368484e5a438501adbcf8a1bc673a6",
+      "contentDigest": "sha256:e7cbd4fd05fd9ca799c60f86af746edbea0f0d72f19c51e82a38a46406e96b67"
     },
     {
       "name": "aw-development-toolkit",
@@ -174,7 +176,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.21",
+      "version": "0.1.0-beta.22",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -200,9 +202,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:82a7d1486e07250007268b8a610c4ec3aa834328217c6133412499a50fb4f43d",
-      "manifestDigest": "sha256:694460349c6573e1ff29fcb2760d4442f998318f94dffab578e8e52e2bd99f0f",
-      "contentDigest": "sha256:260a16df8b1e48874e991f4662e63e37f26e34049d66ebc372c86b15a59bd8e5"
+      "artifactDigest": "sha256:785c4703c4d2b000e8478706582bc405ee72a6fa3c01ac012500a9e15ac14898",
+      "manifestDigest": "sha256:86ad0586d918ddb915a929c5aed7957802a5a198783e3e37abae5ab603d17026",
+      "contentDigest": "sha256:4c2bd074bdfc90629e2ed60106a82013112eb4e0fc8ac37a8b5b78e24a998458"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -312,7 +314,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.32",
+      "version": "0.2.0-beta.33",
       "dependencies": [
         "agent-subagent"
       ],
@@ -334,9 +336,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:92d57aa87361fdb85be8b61409db82b6a8349292e887959ddb0ac6c97ff18f2e",
-      "manifestDigest": "sha256:f4c2704923ac20b3e054f037f23b135de82ad8951aefc244778a9e15b1767578",
-      "contentDigest": "sha256:6d347d3e5a80adcab40b87d419d97e5ed7d99f682e27c6866056b3b109909c84"
+      "artifactDigest": "sha256:5b651d81a817e9d09f6d021420c5d011295bd2dd75b47330cd0cb926cd1761cc",
+      "manifestDigest": "sha256:206cb10e58400a24aa30a5346e5b658019d1b3150d1f08572b5267246419e9c3",
+      "contentDigest": "sha256:e7217169be9199d74729cdcd64f7b64b85b194f44b4edd56b459f3b7e13704f0"
     },
     {
       "name": "decision-kit",

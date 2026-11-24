@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fail } from './contracts.mjs';
+import { readWindowsShim, windowsPowerShellEnvironment, windowsShimEnvironment } from '../introspection/executable.mjs';
 import { windowsJobExecutable, windowsNativeOperation } from './windows-native.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -19,16 +20,6 @@ function windowsSystemExecutable(...parts) {
 }
 
 const windowsPowerShell = () => windowsSystemExecutable('WindowsPowerShell', 'v1.0', 'powershell.exe');
-
-function isPowerShellModulePath(name) {
-  return ['psmodulepath', 'winpsmodulepath'].includes(name.toLowerCase());
-}
-
-function windowsHostEnvironment(environment, input) {
-  // A Node process launched by pwsh inherits PowerShell 7 module paths. Windows
-  // PowerShell 5.1 uses only its fixed system modules for native operations.
-  return { ...Object.fromEntries(Object.entries(environment).filter(([name]) => !isPowerShellModulePath(name))), ...input };
-}
 
 function nativeFailure(error, operation, started, timeoutMs, phase = 'execute') {
   const systemCode = ['ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error.code) ? error.code : null;
@@ -66,7 +57,11 @@ export async function windowsOperation(source, input = {}, operation = 'other') 
   try {
     const { stdout } = await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
       shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024,
-      env: windowsHostEnvironment(process.env, { AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64'), AW_SUBAGENT_NATIVE_OPERATION: operation }),
+      env: {
+        ...windowsPowerShellEnvironment(process.env),
+        AW_SUBAGENT_PLATFORM_INPUT: Buffer.from(JSON.stringify(input)).toString('base64'),
+        AW_SUBAGENT_NATIVE_OPERATION: operation,
+      },
     });
     phase = 'parse';
     return stdout.trim() ? JSON.parse(stdout) : null;
@@ -244,57 +239,12 @@ async function findCommand(command, cwd, environment) {
   fail('executableNotFound', 'The selected executable was not found on PATH.');
 }
 
-function npmShim(target) {
-  return ['@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0', '', 'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ') ELSE (', '  SET "_prog=node"', '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '', `endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${target}" %*`, ''].join('\n');
-}
-
-function pnpmShim(target, nodePath, nodeArgs) {
-  const lines = ['@SETLOCAL'];
-  if (nodePath) lines.push('@IF NOT DEFINED NODE_PATH (', `  @SET "NODE_PATH=${nodePath}"`, ') ELSE (', `  @SET "NODE_PATH=${nodePath};%NODE_PATH%"`, ')');
-  lines.push('@IF EXIST "%~dp0\\node.exe" (', `  "%~dp0\\node.exe" ${nodeArgs} "%~dp0\\${target}" %*`, ') ELSE (', '  @SET PATHEXT=%PATHEXT:;.JS;=;%', `  node ${nodeArgs} "%~dp0\\${target}" %*`, ')', '');
-  return lines.join('\n');
-}
-
 async function resolveWindowsShim(shim, args, options) {
-  // Batch syntax is not executed. Only a complete known launcher and its
-  // package.json bin contract can select an ordinary JavaScript entrypoint.
-  await assertNoReparsePath(shim);
-  if ((await fs.stat(shim)).size > 65536) fail('executableShimUnsupported', 'The selected Windows launcher is too large.');
-  const content = (await fs.readFile(shim, 'utf8')).replaceAll('\r\n', '\n');
-  const targets = [...content.matchAll(/"%(?:dp0%|~dp0)\\([^"\r\n]+\.(?:c?js|mjs))"/g)].map((match) => match[1]);
-  const target = targets[0];
-  const nodePath = content.match(/^  @SET "NODE_PATH=([^"\n]+)"$/m)?.[1];
-  const nodeArgs = content.includes('node --preserve-symlinks ') ? '--preserve-symlinks' : '';
-  if (!target || targets.some((item) => item !== target) || ![npmShim(target), pnpmShim(target, nodePath, nodeArgs)].includes(content)) fail('executableShimUnsupported', 'The selected Windows launcher is not a supported npm or pnpm shim. Use a native executable or an explicit Node entrypoint.');
-  const entrypoint = await fs.realpath(path.resolve(path.dirname(shim), target)).catch(() => fail('executableShimUnsupported', 'The selected launcher entrypoint is missing.'));
-  await assertNoReparsePath(entrypoint);
-  let directory = path.dirname(entrypoint);
-  let metadata;
-  let packageRoot;
-  while (directory !== path.dirname(directory)) {
-    try {
-      const metadataPath = path.join(directory, 'package.json');
-      await assertNoReparsePath(metadataPath);
-      metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
-      packageRoot = directory;
-      break;
-    } catch (error) { if (error.code !== 'pathMissing') fail('executableShimUnsupported', 'The selected launcher package could not be verified.'); }
-    directory = path.dirname(directory);
-  }
-  const binName = options.binName ?? path.basename(shim, path.extname(shim));
-  const bin = typeof metadata?.bin === 'string' ? metadata.bin : metadata?.bin?.[binName];
-  if (typeof metadata?.name !== 'string' || (options.packageName !== undefined && metadata.name !== options.packageName) || typeof bin !== 'string' || path.resolve(packageRoot, bin) !== entrypoint) fail('executableShimUnsupported', 'The selected launcher does not match its package bin contract.');
-  const relative = path.relative(packageRoot, entrypoint);
-  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) fail('executableShimUnsupported', 'The selected launcher entrypoint is outside its package.');
-  const environment = { ...(options.env ?? process.env) };
-  if (nodePath) {
-    // Preserve the validated shim's Node module lookup without executing SET.
-    const expanded = nodePath.replaceAll('%~dp0', path.dirname(shim));
-    if (expanded.includes('%')) fail('executableShimUnsupported', 'The selected launcher uses unsupported environment expansion.');
-    const existing = environmentValue(environment, 'NODE_PATH');
-    for (const name of Object.keys(environment)) if (name.toLowerCase() === 'node_path') delete environment[name];
-    environment.NODE_PATH = existing ? `${expanded};${existing}` : expanded;
-  }
+  const { entrypoint, nodePath, nodeArgs } = await readWindowsShim(shim, {
+    // npm and pnpm can link the installed package to its canonical bin directory.
+    ...options, checkPath: assertNoReparsePath, followEntrypointLinks: true,
+  });
+  const environment = { ...windowsShimEnvironment(shim, nodePath, options.env ?? process.env) };
   let node = path.join(path.dirname(shim), 'node.exe');
   try { if (!(await fs.stat(node)).isFile()) throw new Error(); } catch { node = await findCommand('node', options.cwd ?? process.cwd(), environment); }
   const nodeInvocation = await resolveSafeCommand(node, [...(nodeArgs ? [nodeArgs] : []), entrypoint, ...args], { ...options, env: environment });

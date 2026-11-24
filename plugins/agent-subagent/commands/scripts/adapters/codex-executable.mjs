@@ -1,12 +1,11 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { assertNoReparsePath, resolveSafeCommand, windowsOperation } from '../runtime/platform.mjs';
+import { checkWindowsProbePath, windowsEnvironmentValue, windowsPowerShellEnvironment } from '../introspection/executable.mjs';
+import { resolveProbeExecutable, runProbeProcess } from '../introspection/process.mjs';
 
-const execFileAsync = promisify(execFile);
 const field = 'codexCliSource';
+const timed = (signal, ms) => AbortSignal.any([signal, AbortSignal.timeout(ms)]);
 
 function discoveryError(code, source, message) {
   const error = new Error(`Codex executable discovery (${source}): ${message}`);
@@ -30,11 +29,12 @@ async function existing(target, kind) {
   }
 }
 
-async function macApp(environment, cwd, source) {
+async function macApp(environment, cwd, source, { resolveCommand, signal, containment }) {
   const home = environment.HOME || os.homedir();
   const directories = [path.join(home, 'Applications'), '/Applications'];
   for (const directory of directories) {
     for (const name of ['Codex.app', 'ChatGPT.app']) {
+      signal.throwIfAborted();
       const bundle = path.join(directory, name);
       if (!await existing(bundle, 'directory')) continue;
       const root = await fs.realpath(bundle);
@@ -43,14 +43,13 @@ async function macApp(environment, cwd, source) {
       if (!inside(root, await fs.realpath(plist))) continue;
       let identifier;
       try {
-        const result = await execFileAsync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist], {
-          env: environment, cwd, timeout: 5000, maxBuffer: 4096, shell: false,
+        const result = await runProbeProcess({ command: '/usr/bin/plutil', args: ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist] }, {
+          env: environment, cwd, signal: timed(signal, 5000), containment, maximumBytes: 4096,
         });
+        if (result.code !== 0) continue;
         identifier = result.stdout.trim();
-      } catch (error) {
-        // A malformed plist is not a matching bundle. Failure to run the OS
-        // query is different from an absent or unrelated App.
-        if (Number.isSafeInteger(error.code) && error.killed !== true) continue;
+      } catch {
+        signal.throwIfAborted();
         throw discoveryError('codexAppQueryFailed', source, 'The macOS bundle identity query failed. Repair the App or retry after the system query is available.');
       }
       if (identifier !== 'com.openai.codex') continue;
@@ -58,8 +57,9 @@ async function macApp(environment, cwd, source) {
       if (!await existing(embedded, 'file')) continue;
       const canonical = await fs.realpath(embedded);
       if (!inside(root, canonical)) continue;
+      signal.throwIfAborted();
       try {
-        return await resolveSafeCommand(canonical, [], { cwd, env: environment });
+        return await resolveCommand(canonical, [], { cwd, env: environment });
       } catch (error) {
         if (['executableNotFound', 'executableNotRunnable', 'executableInvalid'].includes(error.code)) continue;
         throw error;
@@ -88,27 +88,49 @@ const windowsPackagesQuery = [
   'ConvertTo-Json -InputObject @($packages) -Compress -Depth 4',
 ].join('\n');
 
-async function windowsApp(environment, cwd, source) {
+async function queryWindowsPackages(signal, containment) {
+  const root = windowsEnvironmentValue(process.env, 'SystemRoot');
+  if (!root || !path.isAbsolute(root)) throw new Error();
+  const command = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '[Environment]::SetEnvironmentVariable("PSModulePath", [IO.Path]::Combine($PSHOME, "Modules"), "Process")',
+    '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)',
+    windowsPackagesQuery,
+  ].join('\n');
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+  const result = await runProbeProcess({ command, args }, {
+    env: windowsPowerShellEnvironment(process.env), signal, containment, maximumBytes: 1024 * 1024,
+  });
+  if (result.code !== 0) throw new Error();
+  return JSON.parse(result.stdout.trim());
+}
+
+async function windowsApp(environment, cwd, source, { resolveCommand, checkWindowsPath, signal, containment }) {
   let packages;
   try {
-    packages = await windowsOperation(windowsPackagesQuery);
+    packages = await queryWindowsPackages(timed(signal, 30_000), containment);
     if (!Array.isArray(packages) || packages.some((item) => !item || !/^OpenAI\.Codex_[^!\s]+$/i.test(item.family) || typeof item.root !== 'string' || !path.isAbsolute(item.root) || item.root.includes('\0') || typeof item.version !== 'string')) throw new Error();
   } catch {
+    signal.throwIfAborted();
     throw discoveryError('codexAppQueryFailed', source, 'The Windows registered App/package query failed. Retry after the system package query is available.');
   }
   const candidates = new Map();
   const roots = new Set();
   let inspected = 0;
   for (const item of packages) {
+    signal.throwIfAborted();
     if (!await existing(item.root, 'directory')) continue;
     const root = await fs.realpath(item.root);
     if (roots.has(root)) continue;
     roots.add(root);
-    await assertNoReparsePath(item.root, 'directory');
+    await checkWindowsPath(item.root, 'directory');
     const pending = [{ directory: root, depth: 0 }];
     while (pending.length > 0) {
+      signal.throwIfAborted();
       const { directory, depth } = pending.pop();
       for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        signal.throwIfAborted();
         if (++inspected > 50000) throw discoveryError('codexAppSearchLimit', source, 'The registered App package exceeds the bounded executable search. Use a PATH CLI or repair the App.');
         const target = path.join(directory, entry.name);
         const stat = await fs.lstat(target);
@@ -119,8 +141,9 @@ async function windowsApp(environment, cwd, source) {
           if (depth >= 16) throw discoveryError('codexAppSearchLimit', source, 'The registered App package exceeds the bounded executable search. Use a PATH CLI or repair the App.');
           pending.push({ directory: canonical, depth: depth + 1 });
         } else if (entry.name.toLowerCase() === 'codex.exe') {
-          await assertNoReparsePath(target, 'file');
-          const invocation = await resolveSafeCommand(canonical, [], { cwd, env: environment });
+          await checkWindowsPath(target, 'file');
+          signal.throwIfAborted();
+          const invocation = await resolveCommand(canonical, [], { cwd, env: environment });
           candidates.set(invocation.command, invocation);
         }
       }
@@ -130,28 +153,39 @@ async function windowsApp(environment, cwd, source) {
   return candidates.values().next().value ?? null;
 }
 
-async function selected(invocation, selectedSource, source, environment, cwd) {
+async function selected(invocation, selectedSource, source, environment, cwd, signal) {
   let version;
   try {
-    const { stdout } = await execFileAsync(invocation.command, [...invocation.args, '--version'], {
-      env: invocation.env ?? environment, cwd, timeout: 3000, maxBuffer: 4096, shell: false, windowsHide: true,
+    const { stdout, code } = await runProbeProcess({ ...invocation, args: [...invocation.args, '--version'] }, {
+      env: environment, cwd, signal: timed(signal, 3000), maximumBytes: 4096,
     });
     // Do not publish arbitrary backend stdout or configuration values.
-    version = stdout.trim().match(/^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$/)?.[1];
-  } catch { /* Version evidence is optional; the selected entry never changes. */ }
+    if (code === 0) version = stdout.trim().match(/^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$/)?.[1];
+  } catch { /* Version evidence is optional. */ }
+  signal.throwIfAborted();
   return {
     ...invocation,
     diagnostic: { code: 'codexExecutableSelected', field, message: `Codex executable (${source}) selected ${selectedSource}: ${invocation.command}${version ? `; version ${version}` : ''}.` },
   };
 }
 
-export async function resolveCodexExecutable({ source = 'auto', environment = process.env, platform = process.platform, cwd = process.cwd() } = {}) {
+export async function resolveCodexExecutable({
+  source = 'auto', environment = process.env, platform = process.platform, cwd = process.cwd(),
+  resolveCommand = resolveProbeExecutable, checkWindowsPath = checkWindowsProbePath,
+  signal = AbortSignal.timeout(30_000), reportVersion = true, containment,
+} = {}) {
+  signal.throwIfAborted();
   if (!['auto', 'cli', 'app'].includes(source)) throw discoveryError('protocolInvalid', 'invalid', 'codexCliSource must be auto, cli, or app.');
+  const select = (invocation, selectedSource) => {
+    signal.throwIfAborted();
+    return reportVersion ? selected(invocation, selectedSource, source, environment, cwd, signal) : invocation;
+  };
   if (source !== 'app') {
     try {
-      const invocation = await resolveSafeCommand('codex', [], { env: environment, cwd, packageName: '@openai/codex', binName: 'codex' });
-      return await selected(invocation, 'path', source, environment, cwd);
+      const invocation = await resolveCommand('codex', [], { env: environment, cwd, packageName: '@openai/codex', binName: 'codex' });
+      return select(invocation, 'path');
     } catch (error) {
+      signal.throwIfAborted();
       if (error.code === 'executableNotRunnable' && source === 'cli') throw discoveryError(error.code, source, 'The PATH Codex entry is not executable. Repair its permissions or select the App source.');
       if (!['executableNotFound', 'executableNotRunnable'].includes(error.code)) {
         throw discoveryError(error.code ?? 'codexExecutableInvalid', source, 'The PATH Codex entry could not be safely resolved. Repair its launcher or select the App source.');
@@ -162,13 +196,16 @@ export async function resolveCodexExecutable({ source = 'auto', environment = pr
   if (source !== 'cli' && ['darwin', 'win32'].includes(platform)) {
     let invocation;
     try {
-      invocation = platform === 'darwin' ? await macApp(environment, cwd, source) : await windowsApp(environment, cwd, source);
+      const options = { resolveCommand, checkWindowsPath, signal, containment };
+      invocation = platform === 'darwin' ? await macApp(environment, cwd, source, options) : await windowsApp(environment, cwd, source, options);
     } catch (error) {
+      signal.throwIfAborted();
       if (error.diagnostic) throw error;
       throw discoveryError('codexAppDiscoveryFailed', source, 'The selected App could not be inspected safely. Repair the App or select a PATH CLI.');
     }
-    if (invocation) return selected(invocation, 'app', source, environment, cwd);
+    if (invocation) return select(invocation, 'app');
   }
+  signal.throwIfAborted();
   throw discoveryError('codexExecutableNotFound', source, source === 'cli'
     ? 'No executable PATH CLI was found. Install Codex CLI, repair PATH, or select the App source.'
     : source === 'app'

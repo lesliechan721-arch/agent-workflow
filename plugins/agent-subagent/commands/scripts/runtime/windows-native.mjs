@@ -58,57 +58,7 @@ var init_native_tool_reader = __esm({
 // commands/scripts/runtime/windows-native.mjs
 import { spawn } from "node:child_process";
 import path from "node:path";
-
-// commands/scripts/file-selection/contracts.mjs
-var LIMITS = Object.freeze({
-  inputBytes: 1024 * 1024,
-  outputBytes: 16 * 1024 * 1024,
-  selectors: 4096,
-  patterns: 8192,
-  patternBytes: 32768,
-  braceRange: 1e3,
-  expandedPatterns: 8192,
-  entries: 1e5,
-  operations: 5e5,
-  files: 1e5,
-  ignoreFileBytes: 1024 * 1024,
-  ignoreTotalBytes: 4 * 1024 * 1024,
-  durationMs: 3e4
-});
-
-// commands/scripts/runtime/contracts.mjs
-var LIMITS2 = Object.freeze({
-  taskBytes: 262144,
-  instructionBytes: 262144,
-  promptBytes: 524352,
-  requestBytes: 8388608,
-  outputBytes: 4194304,
-  logBytes: 8388608,
-  resultBytes: 33554432,
-  messageBytes: 4096,
-  messageBodyBytes: 24576,
-  messageFrameBytes: 262144,
-  controlFrameBytes: 4096,
-  deliveryFrameBytes: 16384,
-  receiveMs: 6e5,
-  waitMs: 6e5,
-  maximumWaitMs: 18e5
-});
-var RUNTIME_KEYS = Object.freeze(["subagentCommands", "subagentRetentionHours"]);
-var STATES = Object.freeze(["completed", "failed", "cancelled", "unknown"]);
-var RuntimeError = class extends Error {
-  constructor(code, message, recoveryActions = []) {
-    super(message);
-    this.name = "RuntimeError";
-    this.code = code;
-    this.recoveryActions = recoveryActions;
-  }
-};
-function fail(code, message, recoveryActions = []) {
-  throw new RuntimeError(code, message, recoveryActions);
-}
-
-// commands/scripts/runtime/windows-native.mjs
+import { fail } from "./contracts.mjs";
 var spawnNative = spawn;
 var windowsJobTool;
 var inputLimit = 256 * 1024;

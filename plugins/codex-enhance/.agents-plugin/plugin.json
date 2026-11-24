@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.32",
+  "version": "0.2.0-beta.33",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -149,7 +149,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -183,11 +183,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -244,7 +239,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -277,11 +272,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -371,7 +361,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -405,11 +395,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -466,7 +451,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -499,11 +484,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -593,7 +573,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -627,11 +607,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -688,7 +663,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -721,11 +696,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -815,7 +785,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -849,11 +819,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -910,7 +875,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -943,11 +908,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -1037,7 +997,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -1071,11 +1031,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -1132,7 +1087,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -1165,11 +1120,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -1259,7 +1209,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "required": true,
                   "choices": {
                     "allowCustom": true,
@@ -1293,11 +1243,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -1354,7 +1299,7 @@
               },
               "reasoningEffort": {
                 "type": "string",
-                "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                "description": "推理强度偏好；可用档位由执行器与模型决定。",
                 "choices": {
                   "allowCustom": true,
                   "presets": [
@@ -1387,11 +1332,6 @@
                       "id": "ultra",
                       "title": "ultra",
                       "value": "ultra"
-                    },
-                    {
-                      "id": "pro",
-                      "title": "pro",
-                      "value": "pro"
                     }
                   ]
                 },
@@ -1487,7 +1427,7 @@
                   },
                   "reasoningEffort": {
                     "type": "string",
-                    "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                    "description": "推理强度偏好；可用档位由执行器与模型决定。",
                     "required": true,
                     "choices": {
                       "allowCustom": true,
@@ -1521,11 +1461,6 @@
                           "id": "ultra",
                           "title": "ultra",
                           "value": "ultra"
-                        },
-                        {
-                          "id": "pro",
-                          "title": "pro",
-                          "value": "pro"
                         }
                       ]
                     },
@@ -1582,7 +1517,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "choices": {
                     "allowCustom": true,
                     "presets": [
@@ -1615,11 +1550,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },
@@ -1716,7 +1646,7 @@
                   },
                   "reasoningEffort": {
                     "type": "string",
-                    "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                    "description": "推理强度偏好；可用档位由执行器与模型决定。",
                     "required": true,
                     "choices": {
                       "allowCustom": true,
@@ -1750,11 +1680,6 @@
                           "id": "ultra",
                           "title": "ultra",
                           "value": "ultra"
-                        },
-                        {
-                          "id": "pro",
-                          "title": "pro",
-                          "value": "pro"
                         }
                       ]
                     },
@@ -1811,7 +1736,7 @@
                 },
                 "reasoningEffort": {
                   "type": "string",
-                  "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。",
+                  "description": "推理强度偏好；可用档位由执行器与模型决定。",
                   "choices": {
                     "allowCustom": true,
                     "presets": [
@@ -1844,11 +1769,6 @@
                         "id": "ultra",
                         "title": "ultra",
                         "value": "ultra"
-                      },
-                      {
-                        "id": "pro",
-                        "title": "pro",
-                        "value": "pro"
                       }
                     ]
                   },

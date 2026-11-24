@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { atomicJson, readJson, executablePaths, fileFailureDiagnostic } from './runtime/files.mjs';
-import { LIMITS, redact, fail, safeError, validateResult } from './runtime/contracts.mjs';
+import { ADAPTER_PROTOCOL_VERSION, LIMITS, redact, fail, safeError, validateResult } from './runtime/contracts.mjs';
 import { sanitizeDiagnostics, summarizeDiagnostics } from './runtime/diagnostics.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState } from './runtime/protocol.mjs';
 import { safeSpawn, resolveSafeCommand } from './runtime/platform.mjs';
@@ -108,7 +108,7 @@ export async function runWorker(directory) {
       });
     } catch (error) {
       const safe = safeError(error);
-      candidate = { protocolVersion: 5, type: 'result', state: 'failed', generationStarted: false,
+      candidate = { protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'result', state: 'failed', generationStarted: false,
         backendExitCode: null, text: '', code: safe.code,
         message: 'The custom command or entrypoint is missing, unreadable, or not executable. Repair the executor and start a new run.',
         initialization: { environment: { status: 'unavailable', code: safe.code }, capabilities: {} } };
@@ -156,7 +156,7 @@ export async function runWorker(directory) {
           run.meta.stopRequested = stopReason;
           await atomicJson(path.join(directory, 'owner.json'), run.meta);
           await state('closing');
-          if (!exited && !candidate) writeFrame({ protocolVersion: 5, type: 'stop', reason: stopReason }).catch(() => markFault('adapterInputClosed'));
+          if (!exited && !candidate) writeFrame({ protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'stop', reason: stopReason }).catch(() => markFault('adapterInputClosed'));
         }
         if (!stopReason && snapshot.state === 'running' && snapshot.initialization?.capabilities.communication?.status === 'enabled') {
           for (const name of await recordFiles(run, 'outbox')) {
@@ -165,7 +165,7 @@ export async function runWorker(directory) {
             // Persist the uncertain write stage before touching the connection. Never replay it.
             await atomicJson(path.join(directory, 'outbox', name), { ...input, phase: 'writing' });
             pendingNames.set(input.id, name);
-            writeFrame({ protocolVersion: 5, type: 'message', id: input.id, text: input.text }).catch(() => markFault('adapterInputClosed'));
+            writeFrame({ protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'message', id: input.id, text: input.text }).catch(() => markFault('adapterInputClosed'));
           }
         }
         if (now - lastObservation >= 1000) {
@@ -190,7 +190,7 @@ export async function runWorker(directory) {
   } catch { fault ??= 'localTreeStopUnconfirmed'; }
   child?.stdin?.destroy(); child?.stdout?.destroy(); child?.stderr?.destroy();
   await writes.catch(() => {});
-  if (!candidate) candidate = { protocolVersion: 5, type: 'result', state: child?.pid ? 'unknown' : 'failed',
+  if (!candidate) candidate = { protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'result', state: child?.pid ? 'unknown' : 'failed',
     generationStarted: child?.pid ? null : false, backendExitCode: null, text: '',
     code: fault ?? 'adapterResultMissing', message: 'A complete backend result was not received.' };
   if (fault || !stopped || (child && adapterExitCode !== 0) ||
@@ -205,7 +205,7 @@ export async function runWorker(directory) {
   else if (readyDiagnostics?.length) candidate.diagnostics = readyDiagnostics;
   else if (snapshot.diagnostics?.length) candidate.diagnostics = snapshot.diagnostics;
   try { validateResult(candidate); }
-  catch { candidate = { protocolVersion: 5, type: 'result', state: 'unknown', generationStarted: null, backendExitCode: null, text: '', code: 'adapterResultInvalid' }; }
+  catch { candidate = { protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'result', state: 'unknown', generationStarted: null, backendExitCode: null, text: '', code: 'adapterResultInvalid' }; }
   for (const name of await recordFiles(run, 'outbox')) {
     const input = await readRecord(run, 'outbox', name);
     const status = input.phase === 'queued' ? 'notSubmitted' : 'unknown';

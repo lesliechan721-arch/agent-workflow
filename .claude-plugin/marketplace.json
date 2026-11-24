@@ -55,10 +55,10 @@
     {
       "name": "agent-subagent",
       "source": "./plugins/agent-subagent",
-      "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
+      "description": "组织已授权的通用子代理委派、原生与外部执行器自省、执行配置与跨平台调度。",
       "interface": {
         "displayName": "Agent Subagent",
-        "shortDescription": "通用子代理委派与执行配置",
+        "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
         "capabilities": [
           "Skills",
           "Agents"
@@ -68,7 +68,8 @@
       "tags": [
         "subagent",
         "delegation",
-        "execution"
+        "execution",
+        "introspection"
       ],
       "strict": true,
       "policy": {

@@ -1,5 +1,5 @@
 import { fail } from '../runtime/contracts.mjs';
-import { rejectOption } from './common.mjs';
+import { rejectOption } from './arguments.mjs';
 import { permissionMode } from './permission-mode.mjs';
 
 const owned = new Set([
