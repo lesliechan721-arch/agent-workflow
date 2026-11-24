@@ -73,7 +73,7 @@ aw dev plugin capabilities --surface config --json
 - `mcpServers`：插件相对 JSON 文件，顶层为 `{ "mcpServers": { "名称": 定义 } }`。
 - `extensions`：下文的静态 Agents、Hooks、Instructions 和调用权限。
 - `artifacts`：动态 renderer 的配置、资源和 scope 权限，完整字段见[运行时](plugin-runtime.md#3-动态-renderer-与-platformcomponentplan-合同)。
-- `scripts`：保留 `artifacts.render`、`preApply`、`helpers`、`node`、`tests` 的 Node 脚本入口。
+- `scripts`：声明 `artifacts.render`、`preApply`、`config.suggestions`、`helpers`、`node`、`tests` 的 Node 脚本入口。
 - `buildConfig`：保留 `cacheable`、`templates`、`fileRules`、`runtimeExports`、`buildImports`、`skillRuntimeFiles`、`generatedSkillRuntimeFiles`；资源合同见[运行时](plugin-runtime.md#1-资源声明与构建引入)。
 - `interface`：展示元数据；`config`：本文件的 Config Definition v5。
 - `command`：按来源和插件发布的共享命令包，支持静态或动态路由和按平台的运行配置快照，见[托管命令](managed-commands.md)。
@@ -97,6 +97,7 @@ aw dev plugin capabilities --surface config --json
   - `aw.plugin-config-unique-by.v1`：使用对象数组唯一键声明时派生要求。
   - `aw.plugin-config-value-ref.v1`：使用本地值引用时派生要求。
   - `aw.plugin-config-cross-plugin-value-ref.v1`：使用跨插件值引用时派生要求。
+  - `aw.plugin-config-suggestions.v1`：使用动态建议字段或提供建议脚本时派生要求。
   - `aw.plugin-config-summary.v1`：使用配置摘要展示时派生要求。
   - `aw.plugin-config-array.v1`：使用数组配置字段时派生要求。
   - `aw.installed-runtime-config.v2`：使用运行时配置读取时声明。
@@ -235,7 +236,7 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 
 ### 3.3 支持的字段类型与约束
 
-支持以下基础类型：`string`、`number`、`boolean`、固定结构 `object`、动态 `KV object`（带 `additionalProperties`）、以及受约束的一维 `array`。
+支持以下基础类型：`string`、`number`、`boolean`、固定结构 `object`、动态 `KV object`（带 `additionalProperties`）、以及受约束的 `array`。
 
 #### 对象类型（Object）规范
 
@@ -248,6 +249,7 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 
 - `type: "array"` 必须给出单一 `items` schema，元素类型允许为 `string`、`number`、`boolean`、固定结构 `object` 或 `KV object`。
 - `items` 可以引用本地 definitions，展开后遵守容器边界。`items` 自身严禁声明 `default`、`required`、`sensitive`。固定结构对象元素内的属性允许声明 `required`。
+- 顶层固定对象及顶层对象数组元素可以用一个属性保存固定对象数组，例如 `executors[].models[]`。内层的 `items` 支持本地 `$ref`，必须展开为无 `variants` 的固定对象，属性限非敏感标量、标量数组和标量字典，可声明 `required`。内层数组支持 `uniqueBy`，最多两层对象数组。
 - **数组校验与容量限制**：`validation.minItems` 与 `maxItems` 是非负整数，数组最多包含 128 项（未显式声明 max 也受此硬限制）。每个数组完整值的规范化紧凑 JSON UTF-8 编码最多为 262144 字节（256 KiB）。对象元素仍最多 32 个属性。
 - **唯一性**：`uniqueItems` 默认为 `false`；设为 `true` 时发现重复值报错，绝不静默去重。
 
@@ -261,6 +263,14 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 - **整体性原则**：对象 preset 是完整 object 值而非 patch；数组 preset 是完整 array 选择，`allowCustom: false` 时禁止自定义增删改排。
 - **等价性判断**：相等判断忽略对象键的声明与书写顺序，但严格保留数组元素的顺序。
 - **空值边界**：空数组 `[]`、未设置（unconfigured）和显式 unset 彼此不等价；`required: true` 仅约束键必须存在，不代表非空（例如 `[]` 或 `""` 均可满足 required）。
+
+#### 动态建议（`suggestions`）
+
+Config v5 的非敏感标量字段或固定对象的标量属性可以声明 `suggestions`，包括数组项内的属性。示例为 `"suggestions": { "provider": "executor-models", "dependsOn": ["executor"] }`。字段允许自由输入，可同时保留 `choices.allowCustom: true` 的静态预设。含 `const`、`valueRef` 或封闭预设的字段不能声明建议。
+
+- `provider` 匹配 `^[a-z][a-z0-9-]{0,63}$`。省略 `plugin` 时由本插件的 `scripts.config.suggestions` 处理。跨插件时填写同源直接依赖的插件裸名，Catalog 会核对提供方脚本。
+- `dependsOn` 最多列出 8 个互不重复的同级非敏感属性，包括当前变体的属性。顶层字段省略此项或填空数组。
+- 建议仅供选择，自由输入、值校验、保存和应用沿用字段 schema。脚本声明、输入输出及限额见[配置建议脚本](plugin-runtime.md#配置建议脚本)。
 
 #### 数组内唯一键（`uniqueBy`）与值引用（`valueRef`）
 

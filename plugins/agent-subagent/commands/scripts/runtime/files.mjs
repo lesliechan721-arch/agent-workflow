@@ -4,26 +4,11 @@ import { constants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { LIMITS, fail } from './contracts.mjs';
 import { protectPrivatePaths } from './platform.mjs';
+import { safePath } from './safe-path.mjs';
+
+export { safePath };
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-
-export async function safePath(target, kind = 'file', { allowExecutableSymlink = false } = {}) {
-  if (!path.isAbsolute(target) || target.includes('\0') || path.normalize(target) !== target) fail('pathInvalid', 'A runtime path must be absolute and normalized.');
-  let current = path.parse(target).root;
-  for (const segment of path.relative(current, target).split(path.sep).filter(Boolean)) {
-    current = path.join(current, segment);
-    let stat;
-    try { stat = await fs.lstat(current); } catch { fail('pathMissing', 'A required runtime path is missing or unreadable.'); }
-    if (stat.isSymbolicLink()) {
-      if (allowExecutableSymlink) return safePath(await fs.realpath(target), kind);
-      fail('pathSymlink', 'Symbolic links are not allowed in private runtime resources.');
-    }
-    if (current !== target && !stat.isDirectory()) fail('pathInvalid', 'A path parent is not a normal directory.');
-  }
-  const stat = await fs.lstat(target);
-  if (kind === 'file' ? !stat.isFile() : !stat.isDirectory()) fail('pathInvalid', 'The path has an unsupported node type.');
-  return target;
-}
 
 export async function readLimited(target, maximumBytes, code = 'inputTooLarge') {
   await safePath(target);
@@ -81,14 +66,6 @@ export async function readInputFile(target, maximumBytes, tooLargeCode, callerCw
   } finally {
     if (handle) await handle.close().catch(() => fail('inputFileReadFailed', 'The selected input file could not be closed.'));
   }
-}
-
-export async function readText(target, maximumBytes, code) {
-  // These files are explicit caller selections, not workspace-relative bundle members.
-  const resolved = await fs.realpath(path.resolve(target)).catch(() => fail('pathMissing', 'The selected instruction file is missing or unreadable.'));
-  const text = textFromBytes(await readLimited(resolved, maximumBytes, code));
-  if (!text.trim()) fail('inputEmpty', 'The instruction file is empty.');
-  return text;
 }
 
 export async function executablePaths(command, entrypoint) {

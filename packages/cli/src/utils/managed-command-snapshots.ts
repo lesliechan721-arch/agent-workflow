@@ -13,7 +13,15 @@ import { ManagedCommandError } from './managed-command-errors.js';
 import { resolveCliPackageRoot } from './paths.js';
 
 export { COMMAND_RUNTIME_CONFIG_READER } from '@lesliechan721/aw-plugin-core/manifest';
+export const COMMAND_RUNTIME_CONFIG_DIRECTORY = '.aw/runtime-config';
 const SNAPSHOT_KIND = 'aw-command-runtime-config';
+
+export interface CommandRuntimeConfigContext {
+  schemaVersion: 1;
+  platform: PlatformName;
+  packageId: string;
+  revision: string;
+}
 
 export interface CommandRuntimeConfigSnapshot {
   schemaVersion: 1;
@@ -27,7 +35,7 @@ export interface CommandRuntimeConfigSnapshot {
 }
 
 export function commandRuntimeConfigSnapshotPath(platform: PlatformName): string {
-  return `.aw/runtime-config/${platform}.json`;
+  return `${COMMAND_RUNTIME_CONFIG_DIRECTORY}/${platform}.json`;
 }
 
 export async function readCommandRuntimeConfigReaderSource(): Promise<Buffer> {
@@ -39,6 +47,10 @@ export async function readCommandRuntimeConfigReaderSource(): Promise<Buffer> {
 
 function snapshotInvalid(): never {
   throw new ManagedCommandError('commandRuntimeConfigInvalid', 'The installed command runtime config is invalid. Run aw command package sync or aw plugin sync.');
+}
+
+function snapshotMissing(): never {
+  throw new ManagedCommandError('commandRuntimeConfigMissing', 'The installed command runtime config is missing. Run aw command package sync or aw plugin sync.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,9 +75,7 @@ async function readRegularConfigFile(root: string, relative: string): Promise<Bu
     }
     return await fs.readFile(current);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new ManagedCommandError('commandRuntimeConfigMissing', 'The installed command runtime config is missing. Run aw command package sync or aw plugin sync.');
-    }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') snapshotMissing();
     snapshotInvalid();
   }
 }
@@ -73,7 +83,8 @@ async function readRegularConfigFile(root: string, relative: string): Promise<Bu
 export async function readManagedCommandRuntimeConfigSnapshot(
   resourceRoot: string, record: InstalledCommandProducer, platform: PlatformName,
 ): Promise<CommandRuntimeConfigSnapshot> {
-  if (!record.runtimeConfigKeys || !record.runtimeConfigPlatforms.includes(platform)) snapshotInvalid();
+  const keys = record.runtimeConfigKeys;
+  if (!keys || !record.runtimeConfigPlatforms.includes(platform)) snapshotMissing();
   const bytes = await readRegularConfigFile(resourceRoot, commandRuntimeConfigSnapshotPath(platform));
   let value: unknown;
   try { value = JSON.parse(bytes.toString('utf8')); }
@@ -87,20 +98,21 @@ export async function readManagedCommandRuntimeConfigSnapshot(
     || value.platform !== platform
     || canonicalizeIdentityValue(value.producer) !== canonicalizeIdentityValue(record.producer)
     || !Array.isArray(value.allowedKeys)
-    || canonicalizeIdentityValue(value.allowedKeys) !== canonicalizeIdentityValue(record.runtimeConfigKeys)
+    || canonicalizeIdentityValue(value.allowedKeys) !== canonicalizeIdentityValue(keys)
     || !isRecord(value.effectiveValues)
-    || Object.entries(value.effectiveValues).some(([key, entry]) => !record.runtimeConfigKeys!.includes(key) || !isConfigValue(entry))) {
+    || Object.entries(value.effectiveValues).some(([key, entry]) => !keys.includes(key) || !isConfigValue(entry))) {
     snapshotInvalid();
   }
   return value as unknown as CommandRuntimeConfigSnapshot;
 }
 
 export async function validateManagedCommandRuntimeConfigFiles(
-  resourceRoot: string, record: InstalledCommandProducer,
+  resourceRoot: string, record: InstalledCommandProducer, platform?: PlatformName,
 ): Promise<void> {
   if (!record.runtimeConfigKeys) return;
-  await readRegularConfigFile(resourceRoot, COMMAND_RUNTIME_CONFIG_READER);
-  for (const platform of record.runtimeConfigPlatforms) {
+  const platforms = platform === undefined ? record.runtimeConfigPlatforms : [platform];
+  for (const platform of platforms) {
     await readManagedCommandRuntimeConfigSnapshot(resourceRoot, record, platform);
   }
+  await readRegularConfigFile(resourceRoot, COMMAND_RUNTIME_CONFIG_READER);
 }

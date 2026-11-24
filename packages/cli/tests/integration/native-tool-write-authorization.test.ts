@@ -257,7 +257,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     expect(cancelled, JSON.stringify(cancelled)).toMatchObject({ code: 3, receipt: { status: 'blocked', data: { confirmation: { effects: expect.arrayContaining([
       expect.objectContaining({ code: 'removeCommandPackage', impact: 'user-wide', subject: { pluginId: selector, scope: 'user' } }),
     ]) } } } });
-    expect((await resolveManagedCommand(selector, env)).launch.entry).toBe('main.mjs');
+    expect((await resolveManagedCommand(`${selector}/claude`, env)).launch.entry).toBe('main.mjs');
     if (delivery === 'generic-target') {
       const review = await prepareRecovery('sync', [selector], {
         cwd, env, scope: 'user', context: 'user', cliVersion: '99.0.0', targets: ['generic'],
@@ -266,11 +266,11 @@ describe('native declaration confirmation at ordinary write entries', () => {
       const settings = path.join(native.claudeHome, 'settings.json');
       const before = await fs.readJson(settings);
       try {
-        await fs.outputJson(settings, { ...before, permissions: { allow: [`Bash(aw command run ${selector} -- *)`] } });
+        await fs.outputJson(settings, { ...before, permissions: { allow: [`Bash(aw command run ${selector}/claude -- *)`] } });
         const stale = await executeRecovery(review, { yes: true });
         expect(stale).toMatchObject({ ok: false, blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]),
           outputsMayHaveChanged: false });
-        expect((await resolveManagedCommand(selector, env)).launch.entry).toBe('main.mjs');
+        expect((await resolveManagedCommand(`${selector}/claude`, env)).launch.entry).toBe('main.mjs');
       } finally {
         await review.context.dispose();
         await fs.outputJson(settings, before);

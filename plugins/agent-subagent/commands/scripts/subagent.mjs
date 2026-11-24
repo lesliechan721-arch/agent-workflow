@@ -2,7 +2,9 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { RUNTIME_KEYS, LIMITS, fail, safeError } from './runtime/contracts.mjs';
+import { RUNTIME_KEYS, NATIVE_PLATFORMS, LIMITS, fail, safeError } from './runtime/contracts.mjs';
+import { windowsJobExecutable } from './runtime/windows-native.mjs';
+import { inspectRegistry } from './introspection/inspect.mjs';
 import { selectExecution } from './runtime/plan.mjs';
 import { prepareRun } from './runtime/runner.mjs';
 import { readInputFile } from './runtime/files.mjs';
@@ -10,8 +12,9 @@ import { storeContext, launchExpiryScan } from './runtime/store.mjs';
 import { startRun, sendInput, waitRuns, readResult, stopRun } from './runtime/commands.mjs';
 import { writeChunk, diagnostic } from './runtime/output.mjs';
 
-export const HELP = `Guide external task runtime (Adapter v5)
+export const HELP = `Guide external task runtime (Adapter v6)
 Usage: <command> [options]
+  inspect List configured executors or inspect a model directory.
   start   Start an external task.
   send    Send input to a running task or resume a stopped task.
   wait    Wait for unread events or a terminal result.
@@ -25,25 +28,26 @@ Exit: 0 completed, 1 operation failed or startup pending, 2 invalid input.
 `;
 
 const commandHelp = {
+  inspect: 'Usage: inspect [--executor KEY [--json]] [--diagnostics]\nOmit KEY to list configured executors offline.\n',
   start: `Start an external task.
-Usage: start --platform TARGET --executor KEY (--prompt TEXT | --prompt-file PATH)
-    [--name NAME] [--workspace DIR] [--instructions-file FILE] [--file SELECTOR]...
+Usage: start --executor KEY (--prompt TEXT | --prompt-file PATH)
+    [--name NAME] [--workspace DIR] [--instructions-file FILE]
     [--model MODEL] [--reasoning-effort EFFORT] [--deadline-ms N] [--diagnostics]
 
---platform TARGET must be the first option and must be codex or claude.
 --executor KEY selects the exact installed external executor; native uses host tools.
 --workspace DIR defaults to the caller directory. Relative paths use that directory.
---instructions-file FILE supplies role instructions. Task and instructions: 256 KiB each.
+Omit --instructions-file for the installed default, pass an empty string to disable
+instructions, or supply a UTF-8 file relative to the caller directory.
+Task and instructions: 256 KiB each.
 --model MODEL and --reasoning-effort EFFORT override backend defaults when supported.
 --deadline-ms N is a positive safe integer. There is no default execution deadline.
---file SELECTOR may repeat in bundle mode. Workspace mode rejects --file.
 NAME: 1-64 ASCII letters, digits, dot, underscore, or hyphen; start with a letter or digit.
 Input must be text or a regular UTF-8 file; '-' and stdin are unsupported.
 start observes initialization for up to 10 seconds. Reuse a starting or failed handle
 with wait/result/stop; do not submit the task again. start consumes no messages or final.
 Backend configuration, authentication, permissions, and approvals remain in effect.
 --diagnostics includes routine initialization information and startupNotReady.
-Example: start --platform codex --executor KEY --prompt-file task.txt
+Example: start --executor KEY --prompt-file task.txt
 `,
   send: `Send input to a running task with communication=true, or resume a stopped task.
 Usage: send --run HANDLE (--text TEXT | --text-file PATH) [--diagnostics]
@@ -95,14 +99,16 @@ Example: stop --run HANDLE
 };
 
 const options = {
+  json: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' }, diagnostics: { type: 'boolean' },
-  platform: { type: 'string' }, executor: { type: 'string' }, prompt: { type: 'string' }, 'prompt-file': { type: 'string' }, name: { type: 'string' },
-  workspace: { type: 'string' }, 'instructions-file': { type: 'string' }, file: { type: 'string', multiple: true },
+  executor: { type: 'string' }, prompt: { type: 'string' }, 'prompt-file': { type: 'string' }, name: { type: 'string' },
+  workspace: { type: 'string' }, 'instructions-file': { type: 'string' },
   model: { type: 'string' }, 'reasoning-effort': { type: 'string' }, 'deadline-ms': { type: 'string' },
   run: { type: 'string', multiple: true }, text: { type: 'string' }, 'text-file': { type: 'string' }, 'timeout-ms': { type: 'string' }, 'output-file': { type: 'string' },
 };
 const allowed = {
-  start: ['platform', 'executor', 'prompt', 'prompt-file', 'name', 'workspace', 'instructions-file', 'file', 'model', 'reasoning-effort', 'deadline-ms'],
+  inspect: ['executor', 'json'],
+  start: ['executor', 'prompt', 'prompt-file', 'name', 'workspace', 'instructions-file', 'model', 'reasoning-effort', 'deadline-ms'],
   send: ['run', 'text', 'text-file'], wait: ['run', 'timeout-ms'], result: ['run', 'output-file'], stop: ['run'],
 };
 function integer(value, name, minimum, maximum) {
@@ -116,19 +122,20 @@ export function parseCommand(argv) {
   catch { fail('argumentsInvalid', `An argument is invalid or unsupported. ${helpHint}`); }
   const [operation, ...rest] = parsed.positionals;
   if (operation === undefined && parsed.values.help && parsed.tokens.length === 1) return { operation: 'help' };
-  if (!Object.hasOwn(allowed, operation) || rest.length) fail('operationUnsupported', 'Use start, send, wait, result, or stop.');
+  if (!Object.hasOwn(allowed, operation) || rest.length) fail('operationUnsupported', 'Use inspect, start, send, wait, result, or stop.');
   const supplied = parsed.tokens.filter((token) => token.kind === 'option').map((token) => token.name);
-  if (supplied.some((key) => !['help', 'diagnostics', ...allowed[operation]].includes(key)) || supplied.some((key) => !['run', 'file'].includes(key) && supplied.filter((item) => item === key).length !== 1)) fail('argumentsInvalid', `The command contains an unsupported or repeated argument. ${helpHint}`);
+  if (supplied.some((key) => !['help', 'diagnostics', ...allowed[operation]].includes(key)) || supplied.some((key) => key !== 'run' && supplied.filter((item) => item === key).length !== 1)) fail('argumentsInvalid', `The command contains an unsupported or repeated argument. ${helpHint}`);
   const value = parsed.values;
   if (value.help) return { operation: 'help', topic: operation };
+  if (operation === 'inspect') {
+    if (value.json && !value.executor) fail('argumentsInvalid', '--json requires --executor.');
+    return { operation, executor: value.executor, json: value.json === true };
+  }
   if (operation === 'start') {
-    if (argv[0] !== 'start' || argv[1] !== '--platform' || !['codex', 'claude'].includes(argv[2])) {
-      fail('argumentsInvalid', 'Start with --platform codex or --platform claude before the executor options.');
-    }
     if (!value.executor || Object.hasOwn(value, 'prompt') === Object.hasOwn(value, 'prompt-file') || value.prompt === '-' || value['prompt-file'] === '-' || value['prompt-file'] === '') fail('argumentsInvalid', `Supply --executor and exactly one of --prompt TEXT or --prompt-file PATH. ${helpHint}`);
     if (value.name !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.name)) fail('nameInvalid', 'Use 1-64 ASCII letters, digits, dot, underscore, or hyphen; start with a letter or digit.');
-    return { operation, platform: value.platform, showDiagnostics: value.diagnostics === true, executor: value.executor, prompt: value.prompt, promptFile: value['prompt-file'], name: value.name, workspace: value.workspace,
-      instructionsFile: value['instructions-file'], files: value.file ?? [], model: value.model, reasoningEffort: value['reasoning-effort'],
+    return { operation, showDiagnostics: value.diagnostics === true, executor: value.executor, prompt: value.prompt, promptFile: value['prompt-file'], name: value.name, workspace: value.workspace,
+      instructionsFile: value['instructions-file'], model: value.model, reasoningEffort: value['reasoning-effort'],
       ...(value['deadline-ms'] === undefined ? {} : { deadlineMs: integer(value['deadline-ms'], '--deadline-ms', 1, Number.MAX_SAFE_INTEGER - Date.now()) }) };
   }
   const runs = value.run ?? [];
@@ -141,23 +148,31 @@ export function parseCommand(argv) {
     ...(operation === 'wait' ? { timeoutMs: value['timeout-ms'] === undefined ? 600000 : integer(value['timeout-ms'], '--timeout-ms', 0, 1800000) } : {}) };
 }
 
-async function readPlatformSnapshot(platform, keys, dependencies) {
-  if (!['codex', 'claude'].includes(platform)) fail('argumentsInvalid', 'Choose the Guide platform codex or claude.');
+async function readPlatformSnapshot(keys, dependencies) {
   let read = dependencies.readCommandRuntimeConfig;
   if (!read) {
     try { ({ readCommandRuntimeConfig: read } = await import('../.aw/command-runtime-config.mjs')); }
     catch { fail('commandRuntimeConfigMissing', 'The command revision is missing its configuration reader. Sync or reinstall the Guide.', ['sync', 'reinstall']); }
   }
-  try { return await read({ from: import.meta.url, platform, keys }); }
+  try {
+    const snapshot = await read({ from: import.meta.url, keys });
+    if (!NATIVE_PLATFORMS.includes(snapshot?.platform) || snapshot.installedIdentity?.platform !== snapshot.platform) {
+      fail('commandRuntimeConfigInvalid', 'The Guide platform configuration is invalid.');
+    }
+    return snapshot;
+  }
   catch (error) {
-    const code = ['commandRuntimeConfigMissing', 'commandRuntimeConfigKeyDenied'].includes(error.code) ? error.code : 'commandRuntimeConfigInvalid';
+    if (error?.code === 'commandRuntimeConfigContextMissing') {
+      fail(error.code, 'Launch through the installed AW command for this platform.');
+    }
+    const code = ['commandRuntimeConfigMissing', 'commandRuntimeConfigKeyDenied'].includes(error?.code) ? error.code : 'commandRuntimeConfigInvalid';
     fail(code, 'The Guide platform configuration could not be read. Sync or reinstall the command package.', ['sync', 'reinstall']);
   }
 }
 
 function retentionSettings(snapshot) {
-  const hours = snapshot?.values.subagentRetentionHours;
-  return { retentionHours: snapshot && hours === undefined ? 24 : hours ?? null, sourceIdentity: snapshot?.installedIdentity };
+  const { subagentRetentionHours = 24 } = snapshot.values;
+  return { retentionHours: subagentRetentionHours, sourceIdentity: snapshot.installedIdentity };
 }
 export async function executeCommand(request, dependencies = {}) {
   if (request.operation === 'help') return { text: commandHelp[request.topic] ?? HELP, exitCode: 0 };
@@ -171,33 +186,23 @@ export async function executeCommand(request, dependencies = {}) {
     if (Buffer.byteLength(text) > LIMITS.messageBodyBytes) fail('messageTooLarge', 'The message exceeds the 24576 byte limit.');
     request = { ...request, text };
   }
+  const snapshot = await readPlatformSnapshot(['start', 'inspect'].includes(request.operation) ? RUNTIME_KEYS : ['subagentRetentionHours'], dependencies);
+  if (request.operation === 'inspect') {
+    dependencies.signal?.throwIfAborted();
+    const text = await inspectRegistry(snapshot.values.subagentCommands ?? [], request,
+      { workspace: callerCwd, env: dependencies.environment ?? process.env, containment: { windowsJobExecutable }, signal: dependencies.signal });
+    return { text, exitCode: 0 };
+  }
   if (request.operation === 'start') {
-    const snapshot = await readPlatformSnapshot(request.platform, RUNTIME_KEYS, dependencies);
     const prepared = await prepareRun(selectExecution(snapshot, request), request, dependencies);
     const context = await storeContext({ ...dependencies, ...retentionSettings(snapshot) });
     launchExpiryScan(context);
     return startRun(context, prepared, request);
   }
 
-  const context = await storeContext(dependencies);
-  const platforms = new Map();
-  // A wait can observe runs from both platforms. Read one applied policy per
-  // platform only after verifying a handle, including on subsequent wait polls.
-  context.forRun = async (run) => {
-    const platform = run.meta.installedIdentity?.platform;
-    if (!platforms.has(platform)) {
-      let snapshot;
-      if (['codex', 'claude'].includes(platform)) {
-        try { snapshot = await readPlatformSnapshot(platform, ['subagentRetentionHours'], dependencies); }
-        catch { /* Keep fixed results and local stop available when the package needs repair. */ }
-      }
-      const settings = { ...retentionSettings(snapshot), runtimeSnapshot: snapshot };
-      platforms.set(platform, settings);
-      launchExpiryScan({ ...context, ...settings });
-    }
-    return { ...context, ...platforms.get(platform) };
-  };
-  if (request.operation === 'send') return sendInput(context, request, dependencies);
+  const context = await storeContext({ ...dependencies, ...retentionSettings(snapshot) });
+  launchExpiryScan(context);
+  if (request.operation === 'send') return sendInput(context, request, { ...dependencies, runtimeSnapshot: snapshot });
   if (request.operation === 'wait') return waitRuns(context, request);
   if (request.operation === 'result') return readResult(context, request);
   return stopRun(context, request);
@@ -207,7 +212,31 @@ async function main() {
   process.umask(0o077);
   let outputError;
   process.stdout.on('error', (error) => { outputError = error; });
-  const response = await executeCommand(parseCommand(process.argv.slice(2)));
+  const request = parseCommand(process.argv.slice(2));
+  const cancel = new AbortController();
+  const onSigint = () => cancel.abort('SIGINT');
+  const onSigterm = () => cancel.abort('SIGTERM');
+  const onSighup = () => cancel.abort('SIGHUP');
+  if (request.operation === 'inspect') {
+    process.on('SIGINT', onSigint);
+    process.on('SIGTERM', onSigterm);
+    if (process.platform !== 'win32') process.on('SIGHUP', onSighup);
+  }
+  let response;
+  try {
+    response = await executeCommand(request, { signal: cancel.signal });
+  } catch (error) {
+    if (!cancel.signal.aborted) throw error;
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    if (process.platform !== 'win32') process.off('SIGHUP', onSighup);
+  }
+  if (cancel.signal.aborted) {
+    if (cancel.signal.reason === 'SIGHUP') process.kill(process.pid, 'SIGHUP');
+    else process.exitCode = cancel.signal.reason === 'SIGINT' ? 130 : 143;
+    return;
+  }
   try {
     await writeChunk(process.stdout, response.text);
     await new Promise((resolve) => setImmediate(resolve));
@@ -228,6 +257,6 @@ async function main() {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main().catch(async (error) => {
   const safe = safeError(error);
   await writeChunk(process.stderr, diagnostic(safe.code, safe.message)).catch(() => {});
-  const invalidInput = new Set(['argumentsInvalid', 'operationUnsupported', 'nameInvalid', 'executorInvalid', 'executorUnknown', 'nativeUnsupported', 'parameterInvalid', 'registryInvalid', 'environmentInvalid', 'environmentConflict', 'promptInvalid', 'taskTooLarge', 'inputEmpty', 'inputFileInvalid', 'messageInvalid', 'messageTooLarge', 'instructionsInvalid', 'instructionsTooLarge', 'binaryUnsupported', 'filesNotAllowedInWorkspace', 'fileSelectionInputInvalid', 'fileSelectionLimitExceeded']);
+  const invalidInput = new Set(['argumentsInvalid', 'operationUnsupported', 'nameInvalid', 'executorInvalid', 'executorUnknown', 'nativeUnsupported', 'parameterInvalid', 'registryInvalid', 'environmentInvalid', 'environmentConflict', 'promptInvalid', 'taskTooLarge', 'inputEmpty', 'inputFileInvalid', 'messageInvalid', 'messageTooLarge', 'instructionsInvalid', 'instructionsTooLarge', 'binaryUnsupported']);
   process.exitCode = invalidInput.has(safe.code) ? 2 : 1;
 });

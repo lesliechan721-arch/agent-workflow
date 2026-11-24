@@ -48,6 +48,7 @@ describe('public domain result projection', () => {
         }, {
           producer: { sourceId: 'team', pluginName: 'provider' }, packageId: `pkg_${'2'.repeat(64)}`,
           selector: 'team/provider', action: 'updated', availability: 'ready', subcommands: ['publish'], hasFallback: false,
+          invocationSelectors: ['team/provider/codex', 'team/provider/claude'],
           state: 'completed', recoveryActions: [], errors: [],
         }],
       },
@@ -58,7 +59,8 @@ describe('public domain result projection', () => {
       'team/later codex/user: skipped [dependencyFailed]',
       'Command package team/consumer: unchanged, unavailable (failed) [processCleanupUnconfirmed]',
       'Command package team/provider: updated, ready (completed)',
-      '  aw command run team/provider -- publish',
+      '  aw command run team/provider/codex -- publish',
+      '  aw command run team/provider/claude -- publish',
     ]));
   });
 

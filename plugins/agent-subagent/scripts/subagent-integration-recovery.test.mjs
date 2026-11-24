@@ -226,34 +226,48 @@ test('lost worker result is fixed once and expires without regenerating work', {
   assert.deepEqual(blocks(expired.stdout, 'FINAL'), []);
 });
 
-// A single wait may include both platforms. A retention update must apply
-// through the saved handle without changing the other platform's result.
-test('controls use the platform saved at start and its latest retention setting', { timeout: testTimeoutMs }, async (t) => {
+// Test Value Gate: platform-scoped launch looks up the current applied
+// registry. A key unique to each registry detects reuse of another platform.
+test('installed start selects the applied registry for each Native platform', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  f.claude.values.subagentCommands[0].args = ['from-claude'];
+  const platforms = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'];
+  for (const platform of platforms) f.snapshots[platform].values.subagentCommands[0].key = `${platform}-fixture`;
+  await f.save();
+  const missingWorkspace = path.join(f.directory, 'missing-workspace');
+  for (const platform of platforms) {
+    const response = await f.command(['start', '--executor', `${platform}-fixture`, '--prompt', 'Task.', '--workspace', missingWorkspace], { platform });
+    assert.equal(field(response.stderr, 'code'), 'workspaceMissing', platform);
+  }
+  assert.equal(await fs.stat(f.generations).catch(() => null), null);
+});
+
+// Test Value Gate: read a foreign result and mix handles in one wait. Only the
+// caller's own platform applies its current retention setting to a run.
+test('cross-platform wait and result preserve runs outside the current retention scope', { timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  f.snapshots.pi.values.subagentCommands[0].args = ['from-pi'];
   await f.save();
   const codex = await f.start({ finishImmediately: true, finalText: 'Codex report.' });
-  const roleFile = path.join(f.workspace, 'claude-role.md');
-  await fs.writeFile(roleFile, 'Review the assigned files.');
-  const claude = await f.start({ finishImmediately: true, finalText: 'Claude report.' }, { platform: 'claude', extra: ['--instructions-file', roleFile] });
-  const [codexRun, claudeRun] = await Promise.all([f.stopped(codex.run), f.stopped(claude.run)]);
+  const pi = await f.start({ finishImmediately: true, finalText: 'Pi report.' }, { platform: 'pi' });
+  const [codexRun, piRun] = await Promise.all([f.stopped(codex.run), f.stopped(pi.run)]);
   assert.deepEqual((await codex.observed()).request.args, []);
-  assert.deepEqual((await claude.observed()).request.args, ['from-claude']);
-  assert.equal(claudeRun.meta.installedIdentity.platform, 'claude');
-  assert.equal(JSON.parse(await fs.readFile(path.join(claudeRun.directory, 'execution.json'))).selected.instructionsFile, roleFile);
-  assert.match((await claude.observed()).request.prompt, /Review the assigned files/);
-  f.claude.values.subagentRetentionHours = 1;
+  assert.deepEqual((await pi.observed()).request.args, ['from-pi']);
+  assert.equal(piRun.meta.installedIdentity.platform, 'pi');
+  f.snapshots.pi.values.subagentRetentionHours = 1;
   await f.save();
-  const future = await f.clock(['wait', 'send', 'result', 'stop'], { now: Math.max(codexRun.meta.terminalAt, claudeRun.meta.terminalAt) + 3600001 });
-  const options = { env: future.environment };
-  const mixed = await f.command(['wait', '--run', claude.run, '--run', codex.run, '--timeout-ms', '0'], options);
+  const future = await f.clock(['wait', 'send', 'result', 'stop'], { now: Math.max(codexRun.meta.terminalAt, piRun.meta.terminalAt) + 3600001 });
+  const crossPlatform = await f.command(['result', '--run', pi.run], { env: future.environment });
+  successful(crossPlatform, 'result');
+  assert.deepEqual(blocks(crossPlatform.stdout, 'FINAL'), ['Pi report.']);
+  const options = { platform: 'pi', env: future.environment };
+  const mixed = await f.command(['wait', '--run', pi.run, '--run', codex.run, '--timeout-ms', '0'], options);
   assert.equal(mixed.code, 1);
   assert.match(mixed.stderr, /runExpired/);
   assert.deepEqual(blocks(mixed.stdout, 'FINAL'), ['Codex report.']);
-  const expired = await f.command(['send', '--run', claude.run, '--text', 'Expired input.'], options);
+  const expired = await f.command(['send', '--run', pi.run, '--text', 'Expired input.'], options);
   assert.equal(field(expired.stderr, 'code'), 'runExpired');
-  assert.equal(field((await f.command(['result', '--run', claude.run], options)).stderr, 'code'), 'runExpired');
-  successful(await f.command(['stop', '--run', claude.run], options), 'stop');
+  assert.equal(field((await f.command(['result', '--run', pi.run], options)).stderr, 'code'), 'runExpired');
+  successful(await f.command(['stop', '--run', pi.run], options), 'stop');
   assert.deepEqual(blocks((await f.command(['result', '--run', codex.run], options)).stdout, 'FINAL'), ['Codex report.']);
 });
 

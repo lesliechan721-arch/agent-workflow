@@ -454,8 +454,9 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   if (receipt.allSatisfied !== undefined) data.allSatisfied = receipt.allSatisfied;
   if (receipt.inSync !== undefined) data.inSync = receipt.inSync;
   if (receipt.commandResults) data.commandResults = receipt.commandResults.map(({
-    producer, packageId, selector, action, availability, subcommands, hasFallback, state, errors,
+    producer, packageId, selector, action, availability, subcommands, hasFallback, invocationSelectors, state, errors,
   }) => ({ producer, packageId, selector, action, availability, subcommands, hasFallback, state,
+    ...(invocationSelectors === undefined ? {} : { invocationSelectors }),
     blockerCodes: errors.map((entry) => entry.code) }));
   if (receipt.nativeToolChanges) data.nativeToolChanges = receipt.nativeToolChanges.map(({ producer, before, after }) => ({ producer, before, after }));
   const diagnostics = [...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => publicDiagnostic(entry));

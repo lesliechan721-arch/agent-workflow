@@ -25,7 +25,7 @@ describe('managed command CLI', () => {
     isolated = await createIsolatedTestEnv();
     source = path.join(isolated.layout.fixtureCwd, 'source');
     await fs.mkdir(source);
-    await fs.writeFile(path.join(source, 'entry.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.REPORT, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), host: JSON.parse(process.env.AW_COMMAND_HOST), source: process.env.COPY, worker: process.env.AW_SUBAGENT_WORKER, author: process.env.AW_PLUGIN_CONTEXT })); process.exit(17);\n');
+    await fs.writeFile(path.join(source, 'entry.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.REPORT, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), host: JSON.parse(process.env.AW_COMMAND_HOST), source: process.env.COPY, worker: process.env.AW_SUBAGENT_WORKER, author: process.env.AW_PLUGIN_CONTEXT, runtimeConfig: process.env.AW_COMMAND_RUNTIME_CONFIG })); process.exit(17);\n');
   });
   afterEach(async () => { await isolated.cleanup(); });
 
@@ -109,14 +109,16 @@ describe('managed command CLI', () => {
     const installed = await installPackage({ producer, routes });
     const listed = await invoke(['list', '--json']);
     expect(listed.receipt.data.packages).toEqual([expect.objectContaining({
-      selector, packageId: installed.id, availability: 'ready', subcommands: ['export', 'message'], hasFallback: true,
+      selector, packageId: installed.id, availability: 'ready', subcommands: ['export', 'message'], hasFallback: true, requiresPlatformContext: false,
     })]);
     expect((await invoke(['show', selector, '--json'])).receipt.data.commands).toEqual([expect.objectContaining({
       owner: { kind: 'plugin', producer }, selector, packageId: installed.id, pluginVersion: '1.0.0',
       sourceContentDigest: `sha256:${'a'.repeat(64)}`, availability: 'ready', resourceRoot: installed.resourceRoot,
       routes: { subcommands: [expect.objectContaining(exportRoute), expect.objectContaining(messageRoute)], fallback: expect.objectContaining({ entry: 'fallback.mjs' }) },
-      runtimeConfigPlatforms: [], nativeTools: null, errors: [], recoveryActions: [],
+      runtimeConfigPlatforms: [], requiresPlatformContext: false, nativeTools: null, errors: [], recoveryActions: [],
     })]);
+    expect(await invoke(['run', `${selector}/codex`, '--no-fallback', '--', 'absent']))
+      .toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('aw: commandPlatformUnexpected:') });
     await expectRouteDispatch(selector, report);
     await fs.rm(report);
     const absent = await invoke(['run', selector, '--no-fallback', '--', 'export-all']);
@@ -140,9 +142,78 @@ describe('managed command CLI', () => {
     ['routing', '--'], ['official/routing'], ['official/routing', '--no-fallback', '--'],
     ['official/routing', '--unknown', '--'], ['official/routing', '-xh', '--'], ['official/route/extra', '--'],
     ['OFFICIAL/routing', '--'], ['official/Routing', '--'], ['official/routing', '--no-fallback=true', '--', 'export'],
+    ['official/routing/generic', '--'], ['official/routing/codex/extra', '--'], ['official/routing/', '--'],
     ['cmdu_12345678-1234-4234-8234-123456789abc', '--no-fallback', '--', 'export'],
   ].map((args) => ({ args })))('rejects invalid run arguments $args before looking up a package', async ({ args }) => {
     expect(await invoke(['run', ...args])).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('aw: invalidArguments:') });
+  });
+
+  it('checks the requested platform and route before launching a child with its pinned runtime config', async () => {
+    const producer = await officialProducer('configured');
+    const selector = 'official/configured';
+    const report = path.join(isolated.layout.fixtureCwd, 'runtime.json');
+    const runtimeConfigPlatforms = ['codex', 'claude'] as const;
+    const record = {
+      schemaVersion: 2 as const, producer, pluginVersion: '1.0.0', sourceContentDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeConfigPlatforms: [...runtimeConfigPlatforms], runtimeConfigKeys: ['mode'],
+      routes: normalizeCommandRoutes({ subcommands: [{ name: 'read', runner: 'node', entry: 'entry.mjs', env: { REPORT: report } }] }),
+    };
+    await fs.writeFile(path.join(source, 'entry.mjs'), `
+import fs from 'node:fs';
+import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';
+const result = await readCommandRuntimeConfig({ from: import.meta.url, keys: ['mode'] });
+fs.writeFileSync(process.env.REPORT, JSON.stringify({ result, context: JSON.parse(process.env.AW_COMMAND_RUNTIME_CONFIG) }));
+`);
+    await fs.mkdir(path.join(source, '.aw', 'runtime-config'), { recursive: true });
+    await fs.copyFile(new URL('../../authoring/assets/command-runtime-config.mjs', import.meta.url), path.join(source, '.aw', 'command-runtime-config.mjs'));
+    for (const platform of runtimeConfigPlatforms) {
+      await fs.writeFile(path.join(source, '.aw', 'runtime-config', `${platform}.json`), JSON.stringify({
+        schemaVersion: 1, kind: 'aw-command-runtime-config', producer, pluginVersion: record.pluginVersion,
+        sourceContentDigest: record.sourceContentDigest, platform, allowedKeys: ['mode'], effectiveValues: { mode: platform },
+      }));
+    }
+    const installed = await syncManagedCommandPackage({ producer, record, sourceDirectory: source, env: isolated.env });
+    const show = async () => (await invoke(['show', selector, '--json'])).receipt.data.commands[0];
+    const list = async () => (await invoke(['list', '--json'])).receipt.data.packages[0];
+    expect(await show()).toMatchObject({ requiresPlatformContext: true, runtimeConfigPlatforms });
+    expect(await list()).toMatchObject({ requiresPlatformContext: true });
+    expect(await invoke(['run', selector, '--', 'unknown'])).toMatchObject({
+      exitCode: 2, stdout: '', stderr: expect.stringMatching(/aw: commandPlatformRequired:.*codex, claude/u),
+    });
+    expect(await invoke(['run', `${selector}/grok`, '--', 'unknown']))
+      .toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('aw: commandRouteNotFound:') });
+    expect(await invoke(['run', `${selector}/grok`, '--', 'read']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandRuntimeConfigMissing:') });
+
+    const codexSnapshot = path.join(installed.resourceRoot, '.aw', 'runtime-config', 'codex.json');
+    await fs.rm(codexSnapshot);
+    expect(await invoke(['run', `${selector}/codex`, '--', 'read']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandRuntimeConfigMissing:') });
+    await fs.writeFile(codexSnapshot, '{broken');
+    expect(await invoke(['run', `${selector}/codex`, '--', 'read']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandRuntimeConfigInvalid:') });
+    await fs.rm(codexSnapshot);
+    await fs.symlink(path.join(source, '.aw', 'runtime-config', 'codex.json'), codexSnapshot, 'file');
+    expect(await invoke(['run', `${selector}/codex`, '--', 'read']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandRuntimeConfigInvalid:') });
+    await expect(fs.lstat(report)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await show()).toMatchObject({ availability: 'unavailable', requiresPlatformContext: null });
+    expect(await list()).toMatchObject({ availability: 'unavailable', requiresPlatformContext: null });
+
+    expect(await invoke(['run', `${selector}/claude`, '--', 'read'], { aw_command_runtime_config: '{stale' }))
+      .toMatchObject({ exitCode: 0, stdout: '', stderr: '' });
+    expect(JSON.parse(await fs.readFile(report, 'utf8'))).toMatchObject({
+      result: { values: { mode: 'claude' }, platform: 'claude', resourceRoot: installed.resourceRoot,
+        installedIdentity: { ...producer, pluginId: selector, platform: 'claude', pluginVersion: record.pluginVersion } },
+      context: { schemaVersion: 1, platform: 'claude', packageId: installed.id, revision: path.basename(installed.resourceRoot) },
+    });
+    await fs.rm(path.join(installed.resourceRoot, '.aw', 'command-runtime-config.mjs'));
+    expect(await invoke(['run', `${selector}/claude`, '--', 'read']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandRuntimeConfigMissing:') });
+
+    await fs.writeFile(path.join(installed.resourceRoot, '.aw-command-producer.json'), '{broken');
+    expect(await invoke(['run', selector, '--', 'unknown']))
+      .toMatchObject({ exitCode: 1, stdout: '', stderr: expect.stringContaining('aw: commandUnavailable:') });
   });
 
   // Test Value Gate: a route update can change what an existing host approval runs.
@@ -338,13 +409,16 @@ console.log(JSON.stringify({ version: 2, artifacts: [{
     expect(invalid.stdout).toBe('');
     expect(invalid.stderr).toContain('aw: invalidArguments:');
     await expect(fs.lstat(report)).rejects.toMatchObject({ code: 'ENOENT' });
-    const ran = await invoke(['run', id, '--', '--json', '-h', '', '换行\n参数'], { INPUT: '', AW_SUBAGENT_WORKER: 'preserved', AW_PLUGIN_CONTEXT: 'removed' });
+    const ran = await invoke(['run', id, '--', '--json', '-h', '', '换行\n参数'], {
+      INPUT: '', AW_SUBAGENT_WORKER: 'preserved', AW_PLUGIN_CONTEXT: 'removed', AW_COMMAND_RUNTIME_CONFIG: '{stale',
+    });
     expect(ran.exitCode).toBe(17);
     expect(ran.stdout).toBe('');
     expect(ran.stderr).toBe('');
     const observed = JSON.parse(await fs.readFile(report, 'utf8'));
     expect(observed).toMatchObject({ args: ['', '--json', '-h', '', '换行\n参数'], cwd: (await resolveManagedCommand(id, isolated.env)).resourceRoot, source: '', worker: 'preserved', host: { schemaVersion: 1, nodeExecutable: process.execPath, awHome: await fs.realpath(isolated.layout.awHomeDir) } });
     expect(observed.author).toBeUndefined();
+    expect(observed.runtimeConfig).toBeUndefined();
   });
 
   // Protects producer lifecycle ownership and visible unavailability instead of silently accepting damaged definitions.
@@ -374,6 +448,7 @@ console.log(JSON.stringify({ version: 2, artifacts: [{
     const listed = await invoke(['list', '--json']);
     expect(listed.receipt.data.packages).toEqual([]);
     expect(listed.receipt.data.orphanedPackages).toEqual([expect.objectContaining({ packageId: installed.id, selector: 'retired/toolkit',
+      availability: 'unavailable', requiresPlatformContext: null,
       recoveryActions: [`aw command package remove ${installed.id} --yes`] })]);
     const ownerPath = path.join(packageRoot, 'owner.json');
     const owner = await fs.readFile(ownerPath, 'utf8');

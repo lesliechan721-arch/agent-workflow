@@ -1,7 +1,6 @@
 # Antigravity 适配器
 
-公共要求见 [配置与接入](configuration.md)、[Adapter v5](protocol.md) 和 [运行生命周期](runtime.md)。
-
+公共要求见 [配置与接入](configuration.md)、[Adapter v6](protocol.md) 和 [运行生命周期](runtime.md)。
 
 Antigravity 使用 PATH 中的 `agy --input-format stream-json --output-format stream-json`，保持同一进程与 stdin，workspace 是后端 cwd。model/effort 分别映射 --model/--effort，省略不传空值。adapter 拥有格式、prompt、会话续接/选择、cwd、结束控制、固定的 `--print-timeout 0` 和会话 `--settings`；raw args 不得覆盖它们，也不得包含 help/version、子命令、额外 prompt、--continue/--conversation。权限按 permissionMode 映射；其它 sandbox、agent 参数按实际 CLI 合同校验，不额外放宽沙箱或改写全局 MCP。任务 model/effort 与 args 同类选项重复时拒绝。
 
@@ -17,11 +16,11 @@ communication=true 使用 Guide 共享命令包的 `message` 子命令，transpo
 
 仅当 adapter 为 antigravity、communication=true、实际策略非 full-access，且 CLI 和必要安装资源可用时准备精确授权。default 的 raw args 已主动选择 full-access 时也不新增规则。communication=false 及已明确 full-access 都不读取通信权限配置、不生成或传入会话 settings。协商保持只读，授权属于随后准备阶段，必须先于正式 agy 加载 settings。不得以 --app_data_dir、--gemini_dir、改写 HOME、复制用户 home、临时全局 MCP、动态插件或额外 --add-dir 绕过模式或配置来源；保留真实登录、项目、模型、hooks、插件和会话根。
 
-Guide 的共享命令包声明 `message` 子命令，启动 `scripts/message.mjs` 处理 send、receive 和帮助。Codex 和 Claude Code 的 Guide 共用该子命令。
+8 个 Native 平台共用命令包的 `message` 子命令，由 `scripts/message.mjs` 处理 send、receive 和帮助。
 
 Guide 使用 `AW_COMMAND_HOST` 中核验过的 Node、AW CLI 和 `AW_HOME` 运行 `aw command show <来源>/agent-subagent --json`，核对 owner、插件版本、内容摘要、当前 revision 和 `message` 的精确启动定义。配置快照更新后，代码与来源一致时可将恢复绑定到当前 revision。主机或入口证据无效时报告错误，并指明可用的同步操作。
 
-实际调用使用固定的 Node、AW CLI entry 和 `command run <来源>/agent-subagent -- message`，随后传 `--bridge <当前私有绑定>` 及 send/receive 参数。提示和 allow 使用同一前缀。每次调用仍校验桥接文件、归属、关闭和大小。
+实际调用使用固定的 Node、AW CLI entry 和 `command run <来源>/agent-subagent/<平台> -- message`，随后传 `--bridge <当前私有绑定>` 及 send/receive 参数。提示和 allow 使用同一前缀。每次调用仍校验桥接文件、归属、关闭和大小。
 
 授权规则只在本次 agy 进程的 `--settings <私有执行目录>/antigravity-settings.json` 生效。token 前缀规则和整行 regex 规则均匹配到 `-- message`，支持裸写、单引号、双引号和后续字面量参数。规则校验拒绝更换调用目标、插入 Node 选项及 shell 展开、重定向、管道或串联动作。`start`、`stop` 等父侧动作保留宿主的原有权限检查。复杂主机路径及未验证平台返回 `communicationPermissionUnsupported`。
 

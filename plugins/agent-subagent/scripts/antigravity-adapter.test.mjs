@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { createChildBridge, createChildChannel, invokeChildTool } from '../commands/scripts/runtime/adapter-channel.mjs';
-import { executeAntigravity } from '../commands/scripts/adapters/antigravity-v5.mjs';
+import { executeAntigravity } from '../commands/scripts/adapters/antigravity-v6.mjs';
 import { deferred } from '../commands/scripts/adapters/common.mjs';
 import { antigravityArguments, checkAntigravityArguments } from '../commands/scripts/adapters/antigravity-arguments.mjs';
 import { antigravityPermissionRules } from '../commands/scripts/adapters/antigravity-permissions.mjs';
@@ -121,8 +121,8 @@ input.on('line',async line=>{
 input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
 `, { mode: 0o700 });
   const request = {
-    protocolVersion: 5, type: 'start', permissionMode: 'default', run: { id: randomBytes(8).toString('base64url'), name: 'agy-fixture', deadlineAt: null },
-    execution: { executor: 'fixture', model: 'chosen-model', reasoningEffort: 'high' }, mode: 'workspace', workspace,
+    protocolVersion: 6, type: 'start', permissionMode: 'default', run: { id: randomBytes(8).toString('base64url'), name: 'agy-fixture', deadlineAt: null },
+    execution: { executor: 'fixture', model: 'chosen-model', reasoningEffort: 'high' }, workspace,
     prompt: ' 原始任务\nKeep "quotes", `$()` and Unicode。\n', args: ['--mode', 'plan', '--sandbox'], communication: false, resume: true,
     runtime: { directory, toolkit: { command: process.execPath, module: path.join(installed, 'runtime/adapter-channel.mjs'), messageScript: path.join(installed, 'message.mjs'), mcpScript: path.join(installed, 'message-mcp.mjs') } },
   };
@@ -131,7 +131,7 @@ input.on('close',()=>setImmediate(()=>process.exit(scenario==='nonzero'?7:0)));
     LANG: 'C.UTF-8', AW_SUBAGENT_PROCESS_TOKEN: randomBytes(24).toString('hex'), FIXTURE_CAPTURE: capture, FIXTURE_SCENARIO: scenario,
     FIXTURE_API_KEY: 'fixture-private-api-key',
   };
-  const selector = 'one/agent-subagent';
+  const selector = 'one/agent-subagent/antigravity';
   const cliEntry = path.join(root, 'aw.mjs');
   await fs.writeFile(cliEntry, `import {spawn} from 'node:child_process';
 const args=process.argv.slice(2);
@@ -141,7 +141,7 @@ child.on('error',()=>process.exit(1));child.on('exit',code=>process.exit(code??1
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: root };
   Object.assign(environment, communicationEnvironment(host, { selector }));
   const commandBinding = JSON.parse(environment.AW_SUBAGENT_COMMUNICATION_COMMAND);
-  const child = spawn(process.execPath, [path.join(installed, 'adapters/antigravity-v5.mjs')], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  const child = spawn(process.execPath, [path.join(installed, 'adapters/antigravity-v6.mjs')], { cwd: workspace, env: environment, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   const frames = [], waiters = new Set();
   let diagnostic = '', closed = false;
   child.stdin.on('error', () => {});
@@ -154,7 +154,7 @@ child.on('error',()=>process.exit(1));child.on('exit',code=>process.exit(code??1
     await exit;
     await fs.rm(root, { recursive: true, force: true });
   });
-  const send = (value) => child.stdin.write(`${JSON.stringify({ protocolVersion: 5, ...value })}\n`);
+  const send = (value) => child.stdin.write(`${JSON.stringify({ protocolVersion: 6, ...value })}\n`);
   const waitFor = (type) => new Promise((resolve, reject) => {
     let timer;
     const finish = (error, frame) => { clearTimeout(timer); waiters.delete(check); if (error) reject(error); else resolve(frame); };
@@ -318,13 +318,13 @@ for (const scenario of ['failure', 'initialization failure']) test(`Antigravity:
   assert.ok(result.message.isWellFormed());
   assert.ok(Buffer.byteLength(result.message) <= 512);
   let report = '';
-  for await (const chunk of finalChunks({ handle: 'aw5-fixture', result, meta: {}, snapshot: { ready: true } }, [], false)) report += chunk;
+  for await (const chunk of finalChunks({ handle: 'aw6-fixture', result, meta: {}, snapshot: { ready: true } }, [], false)) report += chunk;
   assert.match(report, /摘要失败/);
   assert.match(report, /\[truncated\]/);
   assert.ok(!report.includes('diagnosticOmitted'));
   assert.ok(!report.includes('fixture-private-api-key'));
   if (scenario === 'initialization failure') {
-    const startup = diagnostic(result.code, `${result.message} Continue with this handle through wait, result, or stop.`, 'aw5-fixture');
+    const startup = diagnostic(result.code, `${result.message} Continue with this handle through wait, result, or stop.`, 'aw6-fixture');
     assert.match(startup, /摘要失败/);
     assert.match(startup, /\[truncated\]/);
     assert.ok(!startup.includes('diagnosticOmitted'));

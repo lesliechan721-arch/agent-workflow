@@ -419,7 +419,7 @@ describe('public plugin lifecycle', () => {
     expect(data.commandResults?.map((entry) => entry.producer.pluginName).sort(), JSON.stringify(result)).toEqual(['active', 'retired']);
     for (const { packageId, selector } of packages) {
       expect(data.commandResults).toContainEqual({ packageId, selector, action: 'unchanged', availability: 'ready',
-        subcommands: ['run'], hasFallback: false, state: 'completed', blockerCodes: [],
+        subcommands: ['run'], hasFallback: false, invocationSelectors: [selector], state: 'completed', blockerCodes: [],
         producer: { sourceId: 'team', sourceIdentity, pluginName: selector.split('/')[1] } });
       expect(result.nextActions).toContainEqual(expect.objectContaining({ kind: 'command',
         argv: ['aw', 'command', 'package', 'remove', packageId], requiresConfirmation: true }));

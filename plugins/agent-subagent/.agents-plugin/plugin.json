@@ -1,8 +1,8 @@
 {
   "schemaVersion": 4,
   "name": "agent-subagent",
-  "version": "0.1.0",
-  "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
+  "version": "0.2.0",
+  "description": "组织已授权的通用子代理委派、原生与外部执行器自省、执行配置与跨平台调度。",
   "platforms": [
     "codex",
     "claude",
@@ -19,7 +19,8 @@
     "tags": [
       "subagent",
       "delegation",
-      "execution"
+      "execution",
+      "introspection"
     ],
     "strict": true,
     "policy": {
@@ -29,7 +30,7 @@
   },
   "interface": {
     "displayName": "Agent Subagent",
-    "shortDescription": "通用子代理委派与执行配置",
+    "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
     "capabilities": [
       "Skills",
       "Agents"
@@ -63,12 +64,14 @@
         "./scripts/codex-profile.test.mjs",
         "./scripts/antigravity-adapter.test.mjs",
         "./scripts/subagent-adapter-common.test.mjs",
-        "./scripts/subagent-protocol-v5.test.mjs",
-        "./scripts/subagent-bridge-v5.test.mjs",
+        "./scripts/subagent-protocol-v6.test.mjs",
+        "./scripts/subagent-bridge-v6.test.mjs",
+        "./scripts/subagent-introspection.test.mjs",
+        "./scripts/builtin-introspection.test.mjs",
+        "./scripts/config-suggestions.test.mjs",
         "./scripts/subagent-platform.test.mjs",
         "./scripts/subagent-platform-failures.test.mjs",
         "./scripts/subagent-storage.test.mjs",
-        "./scripts/file-selection.test.mjs",
         "./scripts/adapters-integration-inputs.test.mjs",
         "./scripts/adapters-integration-protocol.test.mjs",
         "./scripts/adapters-integration-control.test.mjs",
@@ -78,6 +81,13 @@
         "./scripts/communication-command.test.mjs",
         "./scripts/communication-permissions.test.mjs"
       ]
+    },
+    "config": {
+      "suggestions": {
+        "runner": "node",
+        "path": "./scripts/config-suggestions.mjs",
+        "timeoutMs": 10000
+      }
     },
     "node": {
       "packageRoot": "./scripts",
@@ -90,76 +100,29 @@
   "config": {
     "schemaVersion": 5,
     "definitions": {
-      "agentProfile": {
-        "type": "object",
-        "properties": {
-          "executor": {
-            "$ref": "#/config/definitions/agentExecutor"
-          }
+      "agentExecutor": {
+        "type": "string",
+        "title": "执行器",
+        "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+        "valueRef": {
+          "field": "subagentCommands",
+          "key": "key",
+          "include": [
+            "native"
+          ]
         },
-        "additionalProperties": false,
-        "variants": {
-          "discriminator": "executor",
-          "missing": "native",
-          "cases": {
-            "native": {
-              "properties": {
-                "model": {
-                  "$ref": "#/config/definitions/nativeAgentModel"
-                },
-                "reasoningEffort": {
-                  "$ref": "#/config/definitions/nativeAgentReasoningEffort"
-                }
-              }
-            }
-          },
-          "otherwise": {
-            "properties": {
-              "model": {
-                "$ref": "#/config/definitions/agentModel"
-              },
-              "reasoningEffort": {
-                "$ref": "#/config/definitions/agentReasoningEffort"
-              }
-            }
-          }
+        "validation": {
+          "minLength": 1
         }
       },
       "agentModel": {
         "type": "string",
-        "choices": {
-          "allowCustom": true,
-          "presets": [            
-            {
-              "id": "gpt-6.2-astra",
-              "title": "gpt-6.2-astra",
-              "value": "gpt-6.2-astra"
-            },
-            {
-              "id": "gpt-6-astra",
-              "title": "gpt-6-astra",
-              "value": "gpt-6-astra"
-            },
-            {
-              "id": "gpt-6.2-sol",
-              "title": "gpt-6.2-sol",
-              "value": "gpt-6.2-sol"
-            },
-            {
-              "id": "gpt-6.1-sol",
-              "title": "gpt-6.1-sol",
-              "value": "gpt-6.1-sol"
-            },
-            {
-              "id": "gpt-6.1-terra",
-              "title": "gpt-6.1-terra",
-              "value": "gpt-6.1-terra"
-            },
-            {
-              "id": "gpt-6-luna",
-              "title": "gpt-6-luna",
-              "value": "gpt-6-luna"
-            }
+        "title": "模型",
+        "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+        "suggestions": {
+          "provider": "executor-models",
+          "dependsOn": [
+            "executor"
           ]
         },
         "validation": {
@@ -168,6 +131,8 @@
       },
       "agentReasoningEffort": {
         "type": "string",
+        "title": "推理强度",
+        "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
         "choices": {
           "allowCustom": true,
           "presets": [
@@ -195,58 +160,109 @@
               "id": "max",
               "title": "max",
               "value": "max"
-            },
-            {
-              "id": "ultra",
-              "title": "ultra",
-              "value": "ultra"
-            },
-            {
-              "id": "pro",
-              "title": "pro",
-              "value": "pro"
             }
           ]
         },
-        "validation": {
-          "minLength": 1
-        },
-        "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。"
-      },
-      "agentExecutor": {
-        "type": "string",
-        "title": "执行器",
-        "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
-        "valueRef": {
-          "field": "subagentCommands",
-          "key": "key",
-          "include": [
-            "native"
+        "suggestions": {
+          "provider": "executor-efforts",
+          "dependsOn": [
+            "executor",
+            "model"
           ]
         },
         "validation": {
           "minLength": 1
         }
       },
-      "nativeAgentModel": {
+      "agentProfile": {
+        "type": "object",
+        "properties": {
+          "executor": {
+            "$ref": "#/config/definitions/agentExecutor"
+          },
+          "model": {
+            "$ref": "#/config/definitions/agentModel"
+          },
+          "reasoningEffort": {
+            "$ref": "#/config/definitions/agentReasoningEffort"
+          }
+        },
+        "additionalProperties": false
+      },
+      "permissionMode": {
         "type": "string",
-        "validation": {
-          "minLength": 1
+        "title": "权限模式",
+        "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "default",
+              "title": "默认",
+              "value": "default",
+              "recommended": true
+            },
+            {
+              "id": "auto",
+              "title": "自动",
+              "value": "auto"
+            },
+            {
+              "id": "full-access",
+              "title": "完整权限",
+              "value": "full-access"
+            }
+          ]
         }
       },
-      "nativeAgentReasoningEffort": {
-        "type": "string",
-        "validation": {
-          "minLength": 1
+      "executorModelItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "模型 ID",
+            "required": true,
+            "validation": {
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "description": {
+            "type": "string",
+            "title": "适用说明",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "efforts": {
+            "type": "array",
+            "title": "支持的推理强度",
+            "items": {
+              "type": "string",
+              "validation": {
+                "minLength": 1,
+                "maxLength": 64
+              }
+            },
+            "validation": {
+              "maxItems": 16,
+              "uniqueItems": true
+            }
+          },
+          "default": {
+            "type": "boolean",
+            "title": "默认模型"
+          }
         },
-        "description": "宿主原生执行器的推理强度；省略时沿用宿主默认。"
+        "additionalProperties": false
       }
     },
     "fields": {
       "simpleTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "简单任务配置",
-        "description": "简单任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "description": "simple 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
         "default": {
           "executor": "native"
         },
@@ -255,7 +271,7 @@
       "generalTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "常规任务配置",
-        "description": "常规任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "description": "general 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
         "default": {
           "executor": "native"
         },
@@ -264,7 +280,7 @@
       "complexTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "复杂任务配置",
-        "description": "复杂任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "description": "complex 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
         "default": {
           "executor": "native"
         },
@@ -273,7 +289,7 @@
       "advancedTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
         "title": "高难任务配置",
-        "description": "高难任务 调度的执行器、模型与推理强度偏好，仅支持 user scope。",
+        "description": "advanced 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
         "default": {
           "executor": "native"
         },
@@ -282,7 +298,7 @@
       "subagentCommands": {
         "type": "array",
         "title": "外部执行器",
-        "description": "注册可信内建或自定义适配器；key 大小写敏感，native 为保留值。配置不替代任务授权。",
+        "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。配置不替代任务授权。",
         "items": {
           "type": "object",
           "properties": {
@@ -315,11 +331,6 @@
                     "value": "antigravity"
                   },
                   {
-                    "id": "oracle",
-                    "title": "oracle",
-                    "value": "oracle"
-                  },
-                  {
                     "id": "custom",
                     "title": "custom",
                     "value": "custom"
@@ -330,6 +341,48 @@
                     "value": "custom-managed"
                   }
                 ]
+              }
+            },
+            "description": {
+              "type": "string",
+              "title": "执行器说明",
+              "description": "给主代理参考的定位或选型提示，会渲染在选型与自省的可用执行器表中。",
+              "validation": {
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "modelsPolicy": {
+              "type": "string",
+              "title": "模型目录策略",
+              "description": "省略时为 merge（动态自省与静态 models 合并补充）；设为 override 且 models 非空时，直接以静态 models 为生效目录并跳过动态探测。",
+              "choices": {
+                "allowCustom": false,
+                "presets": [
+                  {
+                    "id": "merge",
+                    "title": "合并补充（默认）",
+                    "value": "merge",
+                    "recommended": true
+                  },
+                  {
+                    "id": "override",
+                    "title": "静态白名单覆盖",
+                    "value": "override"
+                  }
+                ]
+              }
+            },
+            "models": {
+              "type": "array",
+              "title": "静态模型声明",
+              "description": "可选。内建执行器可留空由动态自省获取；填写后在 merge 模式下补充/覆盖说明并作为离线兜底，在 override 模式下作为生效白名单。",
+              "items": {
+                "$ref": "#/config/definitions/executorModelItem"
+              },
+              "validation": {
+                "uniqueBy": "id",
+                "maxItems": 64
               }
             },
             "communication": {
@@ -394,14 +447,10 @@
             "cases": {
               "codex": {
                 "properties": {
-                  "mode": {
-                    "type": "string",
-                    "const": "workspace"
-                  },
                   "codexProfile": {
                     "type": "string",
                     "title": "Codex 配置 Profile",
-                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，完整传递配置；已知不生效或与 AW 控制冲突的配置报错。已确认在线程生效的字段优先通过 thread/start 传入，其余通过启动 -c 传入。不自动启用严格模式。不保留原生用户配置层身份，可能覆盖项目配置。AW 显式 model/effort 仍优先。",
+                    "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，完整传递配置；AW 显式 model/effort 仍优先。",
                     "validation": {
                       "minLength": 1,
                       "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$",
@@ -411,7 +460,7 @@
                   "codexCliSource": {
                     "type": "string",
                     "title": "Codex CLI 来源",
-                    "description": "省略时使用 auto：先查 PATH，仅没有可执行入口时查 App 内嵌 CLI。cli 只查 PATH；app 只查 App。选定入口失败后不切换来源。",
+                    "description": "省略时使用 auto：先查 PATH，仅没有可执行入口时查 App 内嵌 CLI。cli 只查 PATH；app 只查 App。",
                     "choices": {
                       "allowCustom": false,
                       "presets": [
@@ -437,154 +486,29 @@
                   "codexBypassHookTrust": {
                     "type": "boolean",
                     "title": "跳过 Codex Hook 信任检查",
-                    "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook，范围不限于所选 profile；仍保留禁用状态和管理策略。它不授予工具审批或沙箱绕过权限。"
+                    "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook；不授予工具审批或沙箱绕过权限。"
                   },
                   "permissionMode": {
-                    "type": "string",
-                    "title": "权限模式",
-                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "default",
-                          "title": "默认",
-                          "value": "default",
-                          "recommended": true
-                        },
-                        {
-                          "id": "auto",
-                          "title": "自动",
-                          "value": "auto"
-                        },
-                        {
-                          "id": "full-access",
-                          "title": "完整权限",
-                          "value": "full-access"
-                        }
-                      ]
-                    }
+                    "$ref": "#/config/definitions/permissionMode"
                   }
                 }
               },
               "claude-code": {
                 "properties": {
-                  "mode": {
-                    "type": "string",
-                    "const": "workspace"
-                  },
                   "permissionMode": {
-                    "type": "string",
-                    "title": "权限模式",
-                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "default",
-                          "title": "默认",
-                          "value": "default",
-                          "recommended": true
-                        },
-                        {
-                          "id": "auto",
-                          "title": "自动",
-                          "value": "auto"
-                        },
-                        {
-                          "id": "full-access",
-                          "title": "完整权限",
-                          "value": "full-access"
-                        }
-                      ]
-                    }
+                    "$ref": "#/config/definitions/permissionMode"
                   }
                 }
               },
               "antigravity": {
                 "properties": {
-                  "mode": {
-                    "type": "string",
-                    "const": "workspace"
-                  },
                   "permissionMode": {
-                    "type": "string",
-                    "title": "权限模式",
-                    "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "default",
-                          "title": "默认",
-                          "value": "default",
-                          "recommended": true
-                        },
-                        {
-                          "id": "auto",
-                          "title": "自动",
-                          "value": "auto"
-                        },
-                        {
-                          "id": "full-access",
-                          "title": "完整权限",
-                          "value": "full-access"
-                        }
-                      ]
-                    }
-                  }
-                }
-              },
-              "oracle": {
-                "properties": {
-                  "mode": {
-                    "type": "string",
-                    "const": "bundle"
-                  },
-                  "oracleEngine": {
-                    "type": "string",
-                    "title": "Oracle 引擎",
-                    "description": "browser 使用已登录浏览器会话，api 使用服务 API。留空跟随 Oracle；设置 reasoningEffort 时须明确选择引擎。安装和登录由 Oracle 管理。",
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "browser",
-                          "title": "浏览器",
-                          "value": "browser",
-                          "recommended": true
-                        },
-                        {
-                          "id": "api",
-                          "title": "API",
-                          "value": "api"
-                        }
-                      ]
-                    }
+                    "$ref": "#/config/definitions/permissionMode"
                   }
                 }
               },
               "custom": {
                 "properties": {
-                  "mode": {
-                    "type": "string",
-                    "required": true,
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "workspace",
-                          "title": "workspace",
-                          "value": "workspace"
-                        },
-                        {
-                          "id": "bundle",
-                          "title": "bundle",
-                          "value": "bundle"
-                        }
-                      ]
-                    }
-                  },
                   "command": {
                     "type": "string",
                     "required": true,
@@ -606,31 +530,13 @@
               },
               "custom-managed": {
                 "properties": {
-                  "mode": {
-                    "type": "string",
-                    "required": true,
-                    "choices": {
-                      "allowCustom": false,
-                      "presets": [
-                        {
-                          "id": "workspace",
-                          "title": "workspace",
-                          "value": "workspace"
-                        },
-                        {
-                          "id": "bundle",
-                          "title": "bundle",
-                          "value": "bundle"
-                        }
-                      ]
-                    }
-                  },
                   "commandId": {
                     "type": "string",
                     "title": "托管命令名称或 ID",
+                    "description": "支持 <来源>/<插件>、<来源>/<插件>/<平台>（目标包需配置时）或用户命令 cmdu_… ID。",
                     "required": true,
                     "validation": {
-                      "pattern": "^(?:[a-z][a-z0-9-]{0,31}/[a-z0-9]+(?:-[a-z0-9]+)*|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+                      "pattern": "^(?:[a-z][a-z0-9-]{0,31}/[a-z0-9]+(?:-[a-z0-9]+)*(?:/(?:codex|claude|antigravity|cursor|opencode|pi|copilot|grok))?|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
                       "maxLength": 256
                     }
                   },
@@ -669,7 +575,7 @@
       "taskCustomProfiles": {
         "type": "array",
         "title": "通用委派自定义配置",
-        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位，仅支持 user scope。",
+        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
         "items": {
           "type": "object",
           "properties": {
@@ -683,35 +589,15 @@
             },
             "executor": {
               "$ref": "#/config/definitions/agentExecutor"
+            },
+            "model": {
+              "$ref": "#/config/definitions/agentModel"
+            },
+            "reasoningEffort": {
+              "$ref": "#/config/definitions/agentReasoningEffort"
             }
           },
-          "additionalProperties": false,
-          "variants": {
-            "discriminator": "executor",
-            "missing": "native",
-            "cases": {
-              "native": {
-                "properties": {
-                  "model": {
-                    "$ref": "#/config/definitions/nativeAgentModel"
-                  },
-                  "reasoningEffort": {
-                    "$ref": "#/config/definitions/nativeAgentReasoningEffort"
-                  }
-                }
-              }
-            },
-            "otherwise": {
-              "properties": {
-                "model": {
-                  "$ref": "#/config/definitions/agentModel"
-                },
-                "reasoningEffort": {
-                  "$ref": "#/config/definitions/agentReasoningEffort"
-                }
-              }
-            }
-          }
+          "additionalProperties": false
         },
         "default": [],
         "required": true
@@ -755,16 +641,19 @@
             }
           ],
           "separator": "/",
-          "missing": "未设置"
+          "missing": "默认"
         },
-        "executorKey": {
+        "executorSummary": {
           "kind": "join",
           "parts": [
             {
               "path": "/key"
+            },
+            {
+              "path": "/adapter"
             }
           ],
-          "separator": "",
+          "separator": " · ",
           "missing": "未设置"
         }
       },
@@ -782,96 +671,7 @@
           "summary": "modelAndEffort"
         },
         "subagentCommands": {
-          "itemSummary": "executorKey"
-        }
-      }
-    },
-    "platforms": {
-      "codex": {
-        "definitions": {
-          "nativeAgentModel": {
-            "type": "string",
-            "choices": {
-              "allowCustom": true,
-              "presets": [
-                {
-                  "id": "gpt-6.2-astra",
-                  "title": "gpt-6.2-astra",
-                  "value": "gpt-6.2-astra"
-                },
-                {
-                  "id": "gpt-6-astra",
-                  "title": "gpt-6-astra",
-                  "value": "gpt-6-astra"
-                },
-                {
-                  "id": "gpt-6.2-sol",
-                  "title": "gpt-6.2-sol",
-                  "value": "gpt-6.2-sol"
-                },
-                {
-                  "id": "gpt-6.1-sol",
-                  "title": "gpt-6.1-sol",
-                  "value": "gpt-6.1-sol"
-                },
-                {
-                  "id": "gpt-6.1-terra",
-                  "title": "gpt-6.1-terra",
-                  "value": "gpt-6.1-terra"
-                },
-                {
-                  "id": "gpt-6-luna",
-                  "title": "gpt-6-luna",
-                  "value": "gpt-6-luna"
-                }
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "nativeAgentReasoningEffort": {
-            "type": "string",
-            "choices": {
-              "allowCustom": true,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                },
-                {
-                  "id": "ultra",
-                  "title": "ultra",
-                  "value": "ultra"
-                }
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            },
-            "description": "Codex Native 推理强度；具体模型是否支持由宿主决定。"
-          }
+          "itemSummary": "executorSummary"
         }
       }
     }
@@ -886,6 +686,7 @@
       "subagentCommands"
     ],
     "sourceDirs": [
+      "./shared",
       "./skills/spawn-subagent"
     ]
   },
@@ -893,8 +694,11 @@
     "aw": {
       "capabilities": [
         "aw.plugin-config.v5",
+        "aw.plugin-config-array.v1",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
+        "aw.plugin-config-summary.v1",
+        "aw.plugin-config-suggestions.v1",
         "aw.managed-commands.v2",
         "aw.cli-output.v2",
         "aw.native-tools.v3"
@@ -914,10 +718,6 @@
   },
   "command": {
     "sourceDir": "./commands",
-    "platforms": [
-      "codex",
-      "claude"
-    ],
     "mode": "static",
     "runtimeConfig": {
       "keys": [
@@ -968,6 +768,14 @@
           ]
         },
         {
+          "name": "inspect",
+          "runner": "node",
+          "entry": "scripts/subagent.mjs",
+          "args": [
+            "inspect"
+          ]
+        },
+        {
           "name": "message",
           "runner": "node",
           "entry": "scripts/message.mjs",
@@ -983,9 +791,7 @@
         "allow": [
           {
             "argsPrefix": [
-              "start",
-              "--platform",
-              "codex"
+              "start"
             ]
           },
           {
@@ -1007,48 +813,13 @@
             "argsPrefix": [
               "stop"
             ]
-          }
-        ],
-        "agentOverrides": {
-          "claude": {
-            "allow": [
-              {
-                "argsPrefix": [
-                  "start",
-                  "--platform",
-                  "claude"
-                ]
-              },
-              {
-                "argsPrefix": [
-                  "send"
-                ]
-              },
-              {
-                "argsPrefix": [
-                  "wait"
-                ]
-              },
-              {
-                "argsPrefix": [
-                  "result"
-                ]
-              },
-              {
-                "argsPrefix": [
-                  "stop"
-                ]
-              }
-            ]
           },
-          "antigravity": null,
-          "cursor": null,
-          "opencode": null,
-          "pi": null,
-          "copilot": null,
-          "grok": null,
-          "generic": null
-        }
+          {
+            "argsPrefix": [
+              "inspect"
+            ]
+          }
+        ]
       }
     ]
   },

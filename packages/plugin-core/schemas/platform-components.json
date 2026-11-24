@@ -4207,10 +4207,10 @@
                 "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configScalar"
               },
               {
-                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV4ObjectValue"
+                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV5ObjectValue"
               },
               {
-                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV4ArrayValue"
+                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV5ArrayValue"
               }
             ]
           }

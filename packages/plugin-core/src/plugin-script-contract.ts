@@ -7,6 +7,9 @@ import { AW_RUNTIME_CONFIG_READER_PATH } from './runtime-config.js';
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
+export const CONFIG_SUGGESTIONS_TIMEOUT_DEFAULT_MS = 10_000;
+export const CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS = 1_000;
+export const CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS = 30_000;
 
 function normalizePluginTestEntryPath(value: string): string {
   const withoutDotSlash = value.startsWith('./') ? value.slice(2) : value;

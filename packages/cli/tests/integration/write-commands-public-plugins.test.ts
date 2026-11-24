@@ -21,7 +21,7 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { SKILL_OWNER_MARKER, type SkillOwnerMarker } from '../../src/utils/ownership.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
-import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
+import { prepareSubagentForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -127,8 +127,11 @@ describe('five namespaced write commands', () => {
       owner: { kind: 'plugin', producer: { sourceId: 'staged', sourceIdentity: expect.any(String), pluginName: 'agent-subagent' } },
       runtimeConfigPlatforms: ['codex'],
     })]);
+    const guideSkill = path.join(nativePackage(runtime, 'agent-subagent').root, 'skills/spawn-subagent');
+    await expect(fs.pathExists(path.join(guideSkill, 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(guideSkill, 'references'))).resolves.toBe(false);
     const guideRules = path.join(rules, 'aw-staged-agent-subagent-subagent-commands.rules');
-    const start = ['aw', 'command', 'run', guide, '--', 'start', '--platform', 'codex'];
+    const start = ['aw', 'command', 'run', `${guide}/codex`, '--', 'start'];
     expect(await fs.readFile(guideRules, 'utf8')).toContain(JSON.stringify(start));
     expect((await fs.readdir(rules)).sort()).toEqual([path.basename(guideRules), path.basename(foreign)].sort());
 
@@ -139,8 +142,8 @@ describe('five namespaced write commands', () => {
     await expect(run(['command', 'list'])).resolves.toEqual(list);
   }, 120_000);
 
-  it.each(['codex', 'claude'] as const)('runs the installed %s Guide command with its applied snapshot in a local v5 backend', async (platform) => {
-    // Test Value Gate: real installation connects the rendered call and permission to AW and a live fake v5 backend.
+  it.each(['codex', 'claude'] as const)('runs the installed %s Guide command with its applied snapshot in a local v6 backend', async (platform) => {
+    // Test Value Gate: real installation connects the rendered call and permission to AW and a live fake v6 backend.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex', 'claude'] });
@@ -152,7 +155,7 @@ describe('five namespaced write commands', () => {
     const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     const runtimeSourceRoot = path.join(isolation.layout.fixtureCwd, 'guide-runtime-source');
     await fs.copy(path.join(repositoryRoot, 'plugins/agent-subagent'), runtimeSourceRoot);
-    await stubCodexFileSelectionForNativeFixture(runtimeSourceRoot);
+    await prepareSubagentForNativeFixture(runtimeSourceRoot);
     await preparePluginNativeTools(runtimeSourceRoot, (await readPluginManifest(runtimeSourceRoot)).manifest);
     const helpers = await import(pathToFileURL(path.join(runtimeSourceRoot, 'scripts/fixtures/subagent-integration.mjs')).href);
     const { openRun, storeContext } = await import(pathToFileURL(path.join(
@@ -189,27 +192,29 @@ describe('five namespaced write commands', () => {
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('close', (exitCode) => { clearTimeout(timer); resolve({ exitCode, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }); });
     });
-    const invokeGuide = (args: string[]) => invoke(['command', 'run', guideSelector, '--', ...args]);
+    const invokeGuide = (args: string[]) => invoke(['command', 'run', `${guideSelector}/${platform}`, '--', ...args]);
     let run: string | undefined;
     try {
       const adapterSource = path.join(isolation.layout.fixtureCwd, 'public-adapter');
       await fs.ensureDir(adapterSource);
       await fs.copyFile(path.join(fixture.directory, 'fake-adapter.mjs'), path.join(adapterSource, 'adapter.mjs'));
-      const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v5-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
+      const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v6-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
       expect(adapter.exitCode).toBe(0);
       const adapterId = (adapter.payload.data as { commands: Array<{ id: string }> }).commands[0]!.id;
       const saveRegistry = (target: 'codex' | 'claude', argument: string) => runPublic([
         'plugin', 'config', 'set', guideSelector, 'subagentCommands', '--context', 'user', '--platform', target,
-        '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: [argument] }]),
+        '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', commandId: adapterId, args: [argument],
+          modelsPolicy: 'override', models: [{ id: `${target}-fixture-model`, efforts: ['medium'] }] }]),
       ]);
       for (const target of ['codex', 'claude'] as const) {
         expect(await saveRegistry(target, `${target}-applied`)).toMatchObject({ exitCode: 0 });
       }
       const preview = await installWriteCommand([guideSelector], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
+      expect(preview.operationPlan, JSON.stringify(preview.targetResults)).toBeDefined();
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/agent-subagent', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({
         title: '命令路由与审批',
-        description: expect.stringContaining(`aw command run ${guideSelector} -- start`),
+        description: expect.stringContaining(`aw command run ${guideSelector}/codex -- start`),
       }));
       const installed = await runPublic(['plugin', 'install', guideSelector, '--scope', 'project', '--target', 'codex', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
@@ -226,33 +231,52 @@ describe('five namespaced write commands', () => {
         hasFallback: false,
       });
       expect([...guideCommand.runtimeConfigPlatforms].sort()).toEqual(appliedPlatforms);
-      expect([...guideCommand.subcommands].sort()).toEqual(['message', 'result', 'send', 'start', 'stop', 'wait']);
-      const allowed = ['aw', 'command', 'run', guideSelector, '--', 'start', '--platform', 'codex'];
+      expect([...guideCommand.subcommands].sort()).toEqual(['inspect', 'message', 'result', 'send', 'start', 'stop', 'wait']);
+      const allowed = ['aw', 'command', 'run', `${guideSelector}/codex`, '--', 'start'];
       expect(review.changes).toContainEqual(expect.objectContaining({
         title: expect.stringMatching(/^Codex 权限规则/u), description: expect.stringContaining(JSON.stringify(allowed)),
       }));
       const permission = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex/rules/aw-team-agent-subagent-subagent-commands.rules'), 'utf8');
       const prefixes = [...permission.matchAll(/prefix_rule\(pattern = (\[.*\]), decision = "allow"\)/gu)]
         .map(([, prefix]) => JSON.parse(prefix!));
-      const command = allowed.slice(0, 5);
+      const command = allowed.slice(0, -1);
       expect(prefixes).toEqual(expect.arrayContaining([
-        allowed, ...['send', 'wait', 'result', 'stop'].map((route) => [...command, route]),
+        allowed, ...['send', 'wait', 'result', 'stop', 'inspect'].map((route) => [...command, route]),
       ]));
-      expect(prefixes).toHaveLength(5);
-      const reference = path.join(nativePackage(platform === 'claude' ? claude : runtime, 'agent-subagent').root,
-        'skills/spawn-subagent/references/external-delegation.md');
-      const installedReference = await fs.readFile(reference, 'utf8');
-      const publishedStart = installedReference.match(/^aw command run [a-z0-9/-]+ -- start --platform (?:codex|claude)(?= --executor )/mu)?.[0];
-      expect(publishedStart).toBe(`aw command run ${guideSelector} -- start --platform ${platform}`);
+      expect(prefixes).toHaveLength(6);
+      const references = path.join(nativePackage(platform === 'claude' ? claude : runtime, 'agent-subagent').root,
+        'skills/spawn-subagent/references');
+      const installedReference = await fs.readFile(path.join(references, 'external-execution.md'), 'utf8');
+      const publishedStart = installedReference.match(/^aw command run [a-z0-9/-]+ -- start(?= --executor )/mu)?.[0];
+      expect(publishedStart).toBe(`aw command run ${guideSelector}/${platform} -- start`);
+      expect(await fs.readFile(path.join(references, 'executor-selection.md'), 'utf8'))
+        .toContain(`aw command run ${guideSelector}/${platform} -- inspect --executor`);
       if (!publishedStart) throw new Error('The installed Skill did not publish a start command.');
       if (platform === 'claude') {
         const settings = await fs.readJson(path.join(project, '.claude', 'settings.local.json'));
         expect(settings.permissions.allow).toContain(`Bash(${publishedStart} *)`);
       }
       expect(await saveRegistry(platform, `${platform}-saved-only`)).toMatchObject({ exitCode: 0 });
+      const inspected = await invokeGuide(['inspect', '--executor', 'fixture', '--json']);
+      expect(inspected, inspected.stderr).toMatchObject({ exitCode: 0 });
+      expect(JSON.parse(inspected.stdout)).toMatchObject({
+        executor: 'fixture', source: 'configured', environment: 'skipped',
+        models: [{ id: `${platform}-fixture-model`, efforts: ['medium'] }],
+      });
+      const schema = await invoke(['plugin', 'config', 'schema', guideSelector, '--platform', platform, '--json']);
+      expect(schema.exitCode, schema.stderr).toBe(0);
+      expect(JSON.parse(schema.stdout)).toMatchObject({ data: { fields: {
+        simpleTaskProfile: { properties: { model: { suggestions: { provider: 'executor-models', dependsOn: ['executor'] } } } },
+      } } });
+      const suggestions = await invoke(['plugin', 'config', 'suggestions', guideSelector, 'simpleTaskProfile.model',
+        '--platform', platform, '--dep', 'executor=fixture', '--json']);
+      expect(suggestions.exitCode, suggestions.stderr).toBe(0);
+      expect(JSON.parse(suggestions.stdout)).toMatchObject({ data: {
+        status: 'ok', items: [{ value: `${platform}-fixture-model` }],
+      } });
       await fs.writeFile(path.join(project, 'prompt.txt'), 'Public installation task.\n');
       const started = await invoke([
-        ...publishedStart.split(' ').slice(1), '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt',
+        ...publishedStart.split(' ').slice(1), '--executor', 'fixture', '--workspace', fixture.workspace, '--prompt-file', 'prompt.txt', '--instructions-file', '',
       ]);
       run = helpers.field(started.stdout, 'run');
       expect(started, JSON.stringify(started)).toMatchObject({ exitCode: 0, stderr: '' });
@@ -276,6 +300,8 @@ describe('five namespaced write commands', () => {
         expect(final).toMatchObject({ exitCode: 0 });
       } while (!helpers.terminalPattern.test(final.stdout) && Date.now() < deadline);
       expect(final.stdout).toContain('Public Guide final result.');
+      const result = await invokeGuide(['result', '--run', run!]);
+      expect(result).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('Public Guide final result.') });
     } finally {
       try {
         if (run) {
@@ -346,26 +372,25 @@ describe('five namespaced write commands', () => {
     expect(piSettings.packages).toHaveLength(1);
     const piPackage = path.resolve(cwd, '.pi', piSettings.packages[0]);
     expect(await fs.readdir(path.join(piPackage, 'agents'))).toEqual([expect.stringMatching(/-subagent\.md$/u)]);
-    await expect(fs.pathExists(path.join(piPackage, 'skills', 'spawn-subagent'))).resolves.toBe(false);
-    expect((await listManagedCommandPackages(env)).packages).toEqual([]);
+    await expect(fs.pathExists(path.join(piPackage, 'skills', 'spawn-subagent', 'SKILL.md'))).resolves.toBe(true);
+    const piCommand = await installedGuidePackage(env);
+    expect(piCommand.runtimeConfigPlatforms).toEqual(['pi']);
     await install('codex');
     const codexPackage = await installedGuidePackage(env);
-    expect(codexPackage.runtimeConfigPlatforms).toEqual(['codex']);
+    expect([...codexPackage.runtimeConfigPlatforms].sort()).toEqual(['codex', 'pi']);
     await install('claude', claudeRoot);
     const sharedPackage = await installedGuidePackage(env);
-    expect(sharedPackage.packageId).toBe(codexPackage.packageId);
-    expect([...sharedPackage.runtimeConfigPlatforms].sort()).toEqual(['claude', 'codex']);
-    const codexSkill = path.join(nativePackage(codex, 'agent-subagent').root,
-      'skills/spawn-subagent/references/external-delegation.md');
-    const claudeSkill = path.join(nativePackage(claude, 'agent-subagent').root,
-      'skills/spawn-subagent/references/external-delegation.md');
-    const launch = `aw command run ${guideSelector} --`;
-    expect(await fs.readFile(codexSkill, 'utf8')).toContain(`${launch} start --platform codex`);
-    expect(await fs.readFile(claudeSkill, 'utf8')).toContain(`${launch} start --platform claude`);
+    expect(sharedPackage.packageId).toBe(piCommand.packageId);
+    expect([...sharedPackage.runtimeConfigPlatforms].sort()).toEqual(['claude', 'codex', 'pi']);
+    for (const runtime of [codex, claude]) {
+      const skill = path.join(nativePackage(runtime, 'agent-subagent').root, 'skills/spawn-subagent');
+      await expect(fs.pathExists(path.join(skill, 'SKILL.md'))).resolves.toBe(true);
+      await expect(fs.pathExists(path.join(skill, 'references'))).resolves.toBe(false);
+    }
     const claudeSettings = await fs.readJson(path.join(claudeRoot, '.claude', 'settings.local.json'));
     const allowed: string[] = claudeSettings.permissions.allow;
-    expect(new Set(allowed)).toEqual(new Set(['start --platform claude', 'send', 'wait', 'result', 'stop']
-      .map((args) => `Bash(${launch} ${args} *)`)));
+    expect(new Set(allowed)).toEqual(new Set(['start', 'send', 'wait', 'result', 'stop', 'inspect']
+      .map((route) => `Bash(aw command run ${guideSelector}/claude -- ${route} *)`)));
 
     const snapshots = (resourceRoot: string) => Promise.all((['codex', 'claude'] as const).map((platform) =>
       fs.readJson(path.join(resourceRoot, commandRuntimeConfigSnapshotPath(platform)))));

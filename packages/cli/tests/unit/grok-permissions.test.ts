@@ -371,10 +371,10 @@ it('reads relevant native shell rules from the default or overridden User config
   await fs.outputFile(config, source);
   await fs.outputFile(managed, '[permission]\ndeny = ["Bash(aw command run catalog/guide -- export *)", "Bash(other)"]\n');
 
-  expect(await inspectGrokPermissionConfig(ctx, argv)).toEqual({
+  expect(await inspectGrokPermissionConfig(ctx, [argv])).toEqual({
     rules: [{ path: defaults, action: 'deny', pattern: '*' }], readFailures: [],
   });
-  expect(await inspectGrokPermissionConfig({ ...ctx, env: { ...env, GROK_HOME: override } }, argv)).toEqual({
+  expect(await inspectGrokPermissionConfig({ ...ctx, env: { ...env, GROK_HOME: override } }, [argv])).toEqual({
     rules: [
       { path: config, action: 'allow', pattern: 'aw command run catalog/guide -- *' },
       { path: config, action: 'deny', pattern: '*catalog/guide*' },
@@ -383,7 +383,7 @@ it('reads relevant native shell rules from the default or overridden User config
     ], readFailures: [],
   });
   await fs.writeFile(managed, '[permission]\nrules = [\n');
-  expect((await inspectGrokPermissionConfig({ ...ctx, env: { ...env, GROK_HOME: override } }, argv)).readFailures).toEqual([managed]);
+  expect((await inspectGrokPermissionConfig({ ...ctx, env: { ...env, GROK_HOME: override } }, [argv])).readFailures).toEqual([managed]);
   expect(await fs.readFile(config, 'utf8')).toBe(source);
 });
 
@@ -394,27 +394,27 @@ it('leaves absent projects quiet and reads project TOML only after an explicit s
   const config = path.join(project, '.grok', 'config.toml');
   const trust = path.join(host, 'trusted_folders.toml');
   const ctx = { cwd: project, env: { ...env, GROK_HOME: host } };
-  expect(await inspectGrokPermissionConfig(ctx, argv, project)).toEqual({ rules: [], readFailures: [] });
+  expect(await inspectGrokPermissionConfig(ctx, [argv], project)).toEqual({ rules: [], readFailures: [] });
 
   const malformed = '[permission]\nrules = [\n';
   await fs.outputFile(config, malformed);
   const unverified = { rules: [], readFailures: [], unverifiedProjectPath: config };
-  expect(await inspectGrokPermissionConfig(ctx, argv, project)).toEqual(unverified);
+  expect(await inspectGrokPermissionConfig(ctx, [argv], project)).toEqual(unverified);
   expect(await fs.pathExists(trust)).toBe(false);
 
   const exactRoot = await fs.realpath(project);
   const denied = `[folders.${JSON.stringify(exactRoot)}]\ntrusted = false\ndecided_at = 1700000000\n`;
   await fs.outputFile(trust, denied);
-  expect(await inspectGrokPermissionConfig(ctx, argv, project)).toEqual(unverified);
+  expect(await inspectGrokPermissionConfig(ctx, [argv], project)).toEqual(unverified);
   expect(await fs.readFile(trust, 'utf8')).toBe(denied);
   expect(await fs.readFile(config, 'utf8')).toBe(malformed);
 
   const granted = `[folders.${JSON.stringify(exactRoot)}]\ntrusted = true\ndecided_at = 1700000000\n`;
   await fs.outputFile(trust, granted);
-  expect(await inspectGrokPermissionConfig(ctx, argv, project)).toEqual({ rules: [], readFailures: [config] });
+  expect(await inspectGrokPermissionConfig(ctx, [argv], project)).toEqual({ rules: [], readFailures: [config] });
   const source = '# Project matcher\n[[permission.rules]]\naction = "ask"\ntool = "bash"\npattern = "aw command run catalog/guide -- *"\n';
   await fs.outputFile(config, source);
-  expect(await inspectGrokPermissionConfig(ctx, argv, project)).toEqual({
+  expect(await inspectGrokPermissionConfig(ctx, [argv], project)).toEqual({
     rules: [{ path: config, action: 'ask', pattern: 'aw command run catalog/guide -- *' }], readFailures: [],
   });
   expect(await fs.readFile(config, 'utf8')).toBe(source);

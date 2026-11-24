@@ -9,6 +9,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.plugin-config.v3',
   'aw.plugin-config.v4',
   'aw.plugin-config.v5',
+  'aw.plugin-config-suggestions.v1',
   'aw.plugin-config-array.v1',
   'aw.plugin-config-unique-by.v1',
   'aw.plugin-config-value-ref.v1',

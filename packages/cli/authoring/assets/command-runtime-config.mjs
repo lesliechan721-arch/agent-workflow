@@ -1,12 +1,15 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const platforms = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'];
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
+const packageIdPattern = /^pkg_[0-9a-f]{64}$/u;
+const revisionPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const uniqueKeys = (keys) => Array.isArray(keys) && keys.length > 0
-  && keys.every((key) => typeof key === 'string' && key.length > 0) && new Set(keys).size === keys.length;
+  && [...keys].every((key) => typeof key === 'string' && key.length > 0) && new Set(keys).size === keys.length;
 
 function validConfigValue(value) {
   if (typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value)) return true;
@@ -16,7 +19,10 @@ function validConfigValue(value) {
 }
 
 function fail(code = 'commandRuntimeConfigInvalid') {
-  const error = new Error(`${code}. Refresh the command package with aw plugin sync or aw command package sync.`);
+  const recovery = code === 'commandRuntimeConfigContextMissing'
+    ? 'Launch through aw command run <source/plugin/platform> -- [args...].'
+    : 'Refresh the command package with aw plugin sync or aw command package sync.';
+  const error = new Error(`${code}. ${recovery}`);
   error.code = code;
   throw error;
 }
@@ -45,22 +51,34 @@ function sameProducer(left, right) {
     && left.pluginName === right.pluginName && left.sourceIdentity === right.sourceIdentity;
 }
 
+function readContext() {
+  const raw = process.env.AW_COMMAND_RUNTIME_CONFIG;
+  if (raw === undefined) fail('commandRuntimeConfigContextMissing');
+  const context = JSON.parse(raw);
+  if (!record(context) || Object.keys(context).length !== 4 || context.schemaVersion !== 1
+    || !platforms.includes(context.platform) || typeof context.packageId !== 'string' || !packageIdPattern.test(context.packageId)
+    || typeof context.revision !== 'string' || !revisionPattern.test(context.revision)) fail();
+  return context;
+}
+
 /** Read selected applied values from the immutable revision containing this module. */
 export async function readCommandRuntimeConfig(options = {}) {
   try {
-    const { from, platform, keys } = options;
-    if (!platforms.includes(platform)) fail();
-    if (!uniqueKeys(keys)) fail('commandRuntimeConfigKeyDenied');
+    if (!record(options) || Reflect.ownKeys(options).some((key) => key !== 'from' && key !== 'keys')) fail();
+    const { from, keys } = options;
+    const { platform, packageId, revision } = readContext();
     const reader = await regularFile(fileURLToPath(import.meta.url));
-    const revisionRoot = path.dirname(path.dirname(reader));
+    const readerDirectory = path.dirname(reader);
+    const revisionRoot = path.dirname(readerDirectory);
     const revisions = path.dirname(revisionRoot);
     const packageRoot = path.dirname(revisions);
-    if (path.basename(revisions) !== 'revisions'
-      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(path.basename(revisionRoot))
-      || !/^pkg_[0-9a-f]{64}$/u.test(path.basename(packageRoot))) fail();
+    if (path.basename(readerDirectory) !== '.aw' || path.basename(reader) !== 'command-runtime-config.mjs'
+      || path.basename(revisions) !== 'revisions'
+      || path.basename(revisionRoot) !== revision || path.basename(packageRoot) !== packageId) fail();
     const caller = typeof from === 'string' && path.isAbsolute(from) ? from : fileURLToPath(from);
     const relative = path.relative(revisionRoot, await regularFile(caller));
     if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) fail();
+    if (!uniqueKeys(keys)) fail('commandRuntimeConfigKeyDenied');
     const owner = await readRecord(path.join(packageRoot, 'owner.json'));
     const receipt = await readRecord(path.join(revisionRoot, '.aw-command-producer.json'));
     const producer = owner.producer;
@@ -74,9 +92,16 @@ export async function readCommandRuntimeConfig(options = {}) {
       || receipt.runtimeConfigPlatforms.some((name) => !platforms.includes(name))
       || new Set(receipt.runtimeConfigPlatforms).size !== receipt.runtimeConfigPlatforms.length
       || !uniqueKeys(receipt.runtimeConfigKeys)) fail();
+    // These keys follow the package identity's canonical lexicographic order.
+    const identity = JSON.stringify({ pluginName: producer.pluginName, schemaVersion: 2,
+      sourceId: producer.sourceId, sourceIdentity: producer.sourceIdentity });
+    if (`pkg_${createHash('sha256').update(identity).digest('hex')}` !== packageId) fail();
     if (!receipt.runtimeConfigPlatforms.includes(platform)) fail('commandRuntimeConfigMissing');
     if (keys.some((key) => !receipt.runtimeConfigKeys.includes(key))) fail('commandRuntimeConfigKeyDenied');
-    const snapshot = await readRecord(path.join(revisionRoot, '.aw', 'runtime-config', `${platform}.json`));
+    const snapshot = await readRecord(path.join(revisionRoot, '.aw', 'runtime-config', `${platform}.json`)).catch((error) => {
+      if (error?.code === 'ENOENT') fail('commandRuntimeConfigMissing');
+      throw error;
+    });
     if (Object.keys(snapshot).length !== 8 || snapshot.schemaVersion !== 1 || snapshot.kind !== 'aw-command-runtime-config' || snapshot.platform !== platform
       || !sameProducer(producer, snapshot.producer) || snapshot.pluginVersion !== receipt.pluginVersion
       || snapshot.sourceContentDigest !== receipt.sourceContentDigest || !uniqueKeys(snapshot.allowedKeys)
@@ -94,6 +119,6 @@ export async function readCommandRuntimeConfig(options = {}) {
     };
   } catch (error) {
     if (error?.code?.startsWith('commandRuntimeConfig')) throw error;
-    fail(error?.code === 'ENOENT' ? 'commandRuntimeConfigMissing' : 'commandRuntimeConfigInvalid');
+    fail();
   }
 }

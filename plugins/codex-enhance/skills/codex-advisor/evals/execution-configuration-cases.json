@@ -41,7 +41,7 @@
       "assertions": [
         "两个自定义项均匹配时选择数组第一项：native、gpt-6.1-sol、high；不选择后面的 gpt-6-astra max。",
         "保持 codex-advisor 角色及本 Skill 的任务边界。",
-        "交给 Guide 的配置保持已选值；若进入 Guide，不读取其 execution-profiles.md，也不被其通用自定义项覆盖。"
+        "交给 Guide 的配置保持已选值；若进入 Guide，不读取其 executor-selection.md，也不被其通用自定义项覆盖。"
       ]
     },
     {

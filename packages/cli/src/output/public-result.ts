@@ -10,6 +10,7 @@ import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
+import type { ConfigSuggestionItemV1 } from '../utils/plugin-config-suggestion-runner.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, HOST_PERMISSION_ADDITIONAL_IMPACT, isDeliveryNoticeCode, isInstallationAdvisory,
@@ -82,8 +83,10 @@ function commandPackageLines(result: PublicCommandProducerResult): string[] {
   const { selector, action, availability, state, subcommands, hasFallback, blockerCodes } = result;
   return [
     `Command package ${selector}: ${action}, ${availability} (${state})${blockerCodes.length ? ` [${blockerCodes.join(', ')}]` : ''}`,
-    ...subcommands.map((name) => `  aw command run ${selector} -- ${name}`),
-    ...(hasFallback ? [`  Fallback · aw command run ${selector} --`] : []),
+    ...(result.invocationSelectors ?? [selector]).flatMap((invocationSelector) => [
+      ...subcommands.map((name) => `  aw command run ${invocationSelector} -- ${name}`),
+      ...(hasFallback ? [`  Fallback · aw command run ${invocationSelector} --`] : []),
+    ]),
   ];
 }
 
@@ -95,9 +98,9 @@ export interface Confirmation {
 
 export function inactiveCommandPermissionEffects(deployment: FrozenDeploymentPlan): Confirmation['effects'] {
   const { plugin, platform, scope } = deployment.binding;
-  return reviewedInactivePermissions(deployment.binding, deployment.evidence.managedCommandReview).map(({ action, argsPrefix }) => ({
+  return reviewedInactivePermissions(deployment.binding, deployment.evidence.managedCommandReview).map(({ action, invocationSelector, argsPrefix }) => ({
     code: 'retainInactiveCommandRestriction',
-    message: `Keep the ${action} rule for ${['aw', 'command', 'run', plugin.pluginId, '--', ...argsPrefix].join(' ')}. No handler is currently reachable for this prefix.`,
+    message: `Keep the ${action} rule for ${['aw', 'command', 'run', invocationSelector, '--', ...argsPrefix].join(' ')}. No handler is currently reachable for this prefix.`,
     impact: 'selected-scope',
     subject: { pluginId: plugin.pluginId, target: platform, scope: scope.kind },
   }));
@@ -124,6 +127,13 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   const data = result.data as Record<string, unknown>;
   const configMutation = result.command?.startsWith('plugin.config.') && typeof data.configWrite === 'string';
   const lines = [`${result.status.toUpperCase()}  ${(result.command ?? 'Command').replaceAll('.', ' ')}`];
+  if (result.command === 'plugin.config.suggestions' && Array.isArray(data.items)) {
+    lines.push(`${Array.isArray(data.fieldPath) ? data.fieldPath.join('.') : ''} · ${data.profile} · ${data.status}`);
+    if (typeof data.message === 'string') lines.push(data.message);
+    for (const { value, title, description, recommended } of data.items as ConfigSuggestionItemV1[]) {
+      lines.push(`- ${title} (${JSON.stringify(value)})${recommended ? ' · recommended' : ''}${description ? ` · ${description}` : ''}`);
+    }
+  }
   const request = data.request as { plugins?: string[]; scope?: string; context?: string; targets?: string[]; mode?: string } | undefined;
   if (request) {
     if (request.plugins?.length) lines.push(`Plugins: ${request.plugins.join(', ')}`);
@@ -206,6 +216,7 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   const changes = data.changes;
   if (changes && !Array.isArray(changes) && typeof changes === 'object') for (const [key, value] of Object.entries(changes)) if (value !== 'none') lines.push(`${key}: ${String(value)}`);
   for (const key of ['items', 'sources', 'entries', 'commands', 'packages', 'orphanedPackages', 'targetResults', 'checks', 'inventory', 'extraObserved', 'skills']) {
+    if (key === 'items' && result.command === 'plugin.config.suggestions') continue;
     const entries = data[key];
     if (!Array.isArray(entries)) continue;
     if (entries.length === 0 && key !== 'extraObserved' && key !== 'orphanedPackages') lines.push(`${key}: none`);

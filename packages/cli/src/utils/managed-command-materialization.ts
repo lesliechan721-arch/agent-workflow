@@ -276,7 +276,6 @@ async function readPreviousSnapshots(previous?: InstalledPackage): Promise<Map<P
 async function prepareRuntimeConfig(options: PreparedManagedCommandPackageOptions & {
   record: InstalledCommandProducer;
   previous?: InstalledPackage;
-  packageExists: boolean;
 }): Promise<{
   snapshots: Map<PlatformName, CommandRuntimeConfigSnapshot>;
   changes: RuntimeConfigChange[];
@@ -291,7 +290,7 @@ async function prepareRuntimeConfig(options: PreparedManagedCommandPackageOption
   const evidence = new Map<PlatformName, string>();
   const commonDigests: Partial<Record<PlatformName, string>> = {};
   const refresh = new Set(operation.kind === 'explicit-sync'
-    ? options.packageExists ? oldPlatforms : command.platforms
+    ? previous?.record.runtimeConfigKeys ? oldPlatforms : command.platforms
     : 'platforms' in operation ? operation.platforms : []);
   if (keys) for (const platform of command.platforms) {
     const old = oldSnapshots.get(platform);
@@ -433,7 +432,7 @@ export async function prepareManagedCommandPackage(options: PreparedManagedComma
     ...(declaration.runtimeConfig ? { runtimeConfigKeys: declaration.runtimeConfig.keys } : {}),
     runtimeConfigPlatforms: [],
   };
-  const runtime = await prepareRuntimeConfig({ ...options, record, previous, packageExists: view !== undefined });
+  const runtime = await prepareRuntimeConfig({ ...options, record, previous });
   record.runtimeConfigPlatforms = [...runtime.snapshots.keys()];
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-command-package-'));

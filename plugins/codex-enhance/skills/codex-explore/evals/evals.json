@@ -35,7 +35,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-6-luna",
             "reasoning_effort": "medium",
             "fork_turns": "none"
@@ -83,7 +83,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-6-luna",
             "reasoning_effort": "high",
             "fork_turns": "none"
@@ -131,7 +131,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-6-luna",
             "reasoning_effort": "high",
             "fork_context": false,
@@ -183,7 +183,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-6-luna",
             "reasoning_effort": "xhigh",
             "fork_turns": "none"
@@ -231,7 +231,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-5.6-sol",
             "reasoning_effort": "xhigh",
             "fork_turns": "none"
@@ -279,7 +279,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "gpt-5.6-sol",
             "reasoning_effort": null,
             "fork_turns": "none"
@@ -327,7 +327,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": null,
             "reasoning_effort": "xhigh",
             "fork_turns": "none"
@@ -380,7 +380,7 @@
             "must match the configured schema"
           ],
           "arguments": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": null,
             "reasoning_effort": null,
             "fork_turns": "none"
@@ -397,7 +397,7 @@
           "text": "无硬要求时隐藏字段不阻止canonical role启动",
           "grader": "script",
           "criticality": "major",
-          "allowed_variance": "允许已声明的环境 schema 错误；发生调用时 agent_type 必须为 codex-explore。"
+          "allowed_variance": "允许已声明的环境 schema 错误；发生调用时 agent_type 必须为 aw-eval-source-codex-enhance-codex-explore。"
         },
         {
           "text": "调用中不存在 model 与 reasoning_effort",
@@ -539,7 +539,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "subagent",
+            "agent_type": "aw-eval-source-agent-subagent-subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_context": false,
@@ -552,7 +552,7 @@
             "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore",
+            "child_agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "child_initial_message": "为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。",
             "expect_early_termination": true,
             "forbid_root_child_followup": true,
@@ -609,7 +609,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "subagent",
+            "agent_type": "aw-eval-source-agent-subagent-subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_turns": "none"
@@ -622,7 +622,7 @@
             "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore",
+            "child_agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "child_initial_encrypted_link": true,
             "expect_early_termination": true,
             "forbid_root_child_followup": true,
@@ -679,7 +679,7 @@
             "max": 1
           },
           "arguments": {
-            "agent_type": "subagent",
+            "agent_type": "aw-eval-source-agent-subagent-subagent",
             "model": "gpt-6-astra",
             "reasoning_effort": "high",
             "fork_turns": "none"
@@ -692,7 +692,7 @@
             "root_skill": "spawn-subagent",
             "root_skill_explicitly_invoked": true,
             "child_skill": "codex-explore",
-            "child_agent_type": "codex-explore",
+            "child_agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "grandchild_spawn_calls": {
               "min": 1,
               "max": 4
@@ -749,7 +749,7 @@
             "max": 1
           },
           "arguments_if_called": {
-            "agent_type": "codex-explore",
+            "agent_type": "aw-eval-source-codex-enhance-codex-explore",
             "model": "definitely-unavailable-model",
             "reasoning_effort": "turbo"
           },

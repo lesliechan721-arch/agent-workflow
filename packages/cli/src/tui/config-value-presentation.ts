@@ -13,6 +13,8 @@ import {
   type PluginConfigScalar,
 } from '@lesliechan721/aw-plugin-core';
 
+import { isNestedConfigObjectArray } from './config-array-draft.js';
+
 export interface ValuePresentation {
   text: string;
   state: 'value' | 'unset' | 'invalid' | 'sensitive';
@@ -59,6 +61,7 @@ export function presentConfigValue(options: {
   full?: boolean;
   summary?: PluginConfigJoinSummary;
   itemSummary?: PluginConfigJoinSummary;
+  nestedArray?: boolean;
 }): ValuePresentation {
   const { definition, value } = options;
   const configured = options.configured ?? value !== undefined;
@@ -79,6 +82,27 @@ export function presentConfigValue(options: {
   };
   if (definition.type === 'array') {
     const items = value as PluginConfigArray;
+    if (options.nestedArray) {
+      const count = `${items.length} 项`;
+      const key = definition.validation?.uniqueBy;
+      if (key === undefined || items.length === 0) return boundedValue(count);
+      const separator = ' · ';
+      const previews = (items as PluginConfigObject[]).slice(0, 2).map((item) => scalarText(item[key] as PluginConfigScalar));
+      const byteLimit = Math.floor((PLUGIN_CONFIG_SUMMARY_MAX_CODE_POINTS
+        - Buffer.byteLength(count + separator.repeat(previews.length))) / previews.length);
+      const text = [count, ...previews.map((preview) => {
+        if (Buffer.byteLength(preview) <= byteLimit) return preview;
+        let shortened = '';
+        let bytes = Buffer.byteLength('…');
+        for (const point of preview) {
+          bytes += Buffer.byteLength(point);
+          if (bytes > byteLimit) break;
+          shortened += point;
+        }
+        return `${shortened}…`;
+      })].join(separator);
+      return { text, state: 'value', complete: false };
+    }
     if (items.length === 0) return boundedValue('空列表');
     const previews = items.slice(0, 2).map((item) => presentConfigValue({
       definition: definition.items,
@@ -120,7 +144,7 @@ export function presentConfigValue(options: {
   const previews = keys.slice(0, 2).map((key) => {
     const child = properties[key] ?? (definition.additionalProperties === false ? undefined : definition.additionalProperties);
     const title = child?.title ?? key;
-    const preview = child ? presentConfigValue({ definition: child, value: object[key] })
+    const preview = child ? presentConfigValue({ definition: child, value: object[key], nestedArray: isNestedConfigObjectArray(child) })
       : { text: safeConfigText(JSON.stringify(object[key])), complete: true };
     return { text: `${safeConfigText(title)}=${preview.text}`, complete: preview.complete };
   });

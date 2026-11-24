@@ -1,20 +1,23 @@
 import {
-  LIMITS, fields, fail, messageId, identifier, validateDelivery, validateMessageText,
+  ADAPTER_PROTOCOL_VERSION, LIMITS, fields, fail, messageId, identifier, validateDelivery, validateMessageText,
   validateRequest, validateResult, validateInitialization, validateDiagnostics,
 } from './contracts.mjs';
 import { isDeepStrictEqual } from 'node:util';
+import { INTROSPECTION_MAX_BYTES, validateIntrospectionRequest } from '../introspection/protocol.mjs';
 
 const required = (value, keys, optional = []) => fields(value, [...keys, ...optional]) && keys.every((key) => Object.hasOwn(value, key));
 const invalid = (message) => fail('protocolInvalid', message);
-const frameLimit = (type) => type === 'start' ? LIMITS.requestBytes : type === 'result' ? LIMITS.resultBytes : type === 'message' ? LIMITS.messageFrameBytes : type === 'delivery' ? LIMITS.deliveryFrameBytes : LIMITS.controlFrameBytes;
+const frameLimit = (type) => type === 'start' ? LIMITS.requestBytes : type === 'result' ? LIMITS.resultBytes : type === 'message' ? LIMITS.messageFrameBytes : type === 'delivery' ? LIMITS.deliveryFrameBytes : type === 'introspect' ? INTROSPECTION_MAX_BYTES : LIMITS.controlFrameBytes;
 
 /** direction identifies the sender: worker inputs or adapter events. */
 export function validateFrame(frame, direction) {
   if (!['worker', 'adapter'].includes(direction)) invalid('The frame direction must be worker or adapter.');
-  if (!fields(frame, Object.keys(frame ?? {})) || frame.protocolVersion !== 5 || typeof frame.type !== 'string') invalid('Use an Adapter v5 object frame.');
+  if (!fields(frame, Object.keys(frame ?? {})) || frame.protocolVersion !== ADAPTER_PROTOCOL_VERSION || typeof frame.type !== 'string') invalid('Use an Adapter v6 object frame.');
   let maximum;
   if (direction === 'worker' && frame.type === 'start') {
     validateRequest(frame); maximum = LIMITS.requestBytes;
+  } else if (direction === 'worker' && frame.type === 'introspect') {
+    validateIntrospectionRequest(frame); maximum = INTROSPECTION_MAX_BYTES;
   } else if (frame.type === 'message') {
     const keys = direction === 'worker' ? ['protocolVersion', 'type', 'id', 'text'] : ['protocolVersion', 'type', 'text'];
     if (!required(frame, keys) || (direction === 'worker' && !messageId(frame.id))) invalid('The message frame identity or fields are invalid.');
@@ -47,7 +50,7 @@ export function validateFrame(frame, direction) {
 /** One connection owns one state. Validate before committing each frame. */
 export function createProtocolState() {
   let started = false; let ready = false; let closing = false; let result = false;
-  let initialization = null; let mode; let requestedCommunication; let requestedResume; let expectedSession; let sessionId = null; let resume = null; let stopReason = null;
+  let initialization = null; let requestedCommunication; let requestedResume; let expectedSession; let sessionId = null; let resume = null; let stopReason = null;
   const seenInputs = new Set(); const awaitingDelivery = new Set();
   const checkResume = (value) => {
     const capability = value.capabilities.resume;
@@ -59,7 +62,6 @@ export function createProtocolState() {
     checkResume(value);
     const communication = value.capabilities.communication;
     if (!communication) return;
-    if (mode === 'bundle' && communication.status === 'enabled') invalid('Bundle runs cannot enable communication.');
     if (!requestedCommunication && communication.status !== 'disabled' || requestedCommunication && communication.status === 'disabled') invalid('Initialization must preserve the requested communication setting.');
   };
   return {
@@ -74,9 +76,10 @@ export function createProtocolState() {
       if (result) invalid('Task input is not allowed after the result.');
       if (!started) {
         if (frame.type !== 'start') invalid('The first worker frame must be start.');
-        started = true; mode = frame.mode; requestedCommunication = frame.communication; requestedResume = frame.resume; expectedSession = frame.sessionId; return frame;
+        started = true; requestedCommunication = frame.communication; requestedResume = frame.resume; expectedSession = frame.sessionId; return frame;
       }
       if (frame.type === 'start') invalid('Start must occur exactly once.');
+      if (frame.type === 'introspect') invalid('Introspection requires a separate connection.');
       if (frame.type === 'stop') { stopReason ??= frame.reason; return frame; }
       if (!ready || initialization.capabilities.communication.status !== 'enabled') invalid('Parent messages require ready with communication enabled.');
       if (seenInputs.has(frame.id)) invalid('Parent message IDs must be unique in this connection.');

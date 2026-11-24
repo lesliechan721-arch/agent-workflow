@@ -3,20 +3,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 /** Prepare a copied plugin for native ownership/projection tests, without staging dependencies. */
-export async function stubCodexFileSelectionForNativeFixture(pluginRoot: string): Promise<void> {
-  // Keep the real renderer and roles. The external parser and its build closure belong
-  // to smoke tests; fail immediately if an ownership test starts to use parser behavior.
-  await fs.writeFile(path.join(pluginRoot,
-    'commands/scripts/file-selection/selection.mjs'), [
-    "export { LIMITS } from './contracts.mjs';",
-    "function fail() { throw new Error('File selection is outside the native ownership fixture.'); }",
-    'export const resolveFiles = fail;',
-    'export const assertNativeSelectionReadable = fail;',
-    '',
-  ].join('\n'));
+export async function prepareSubagentForNativeFixture(pluginRoot: string): Promise<void> {
+  // The renderer and managed command stay live. This fixture does not query a real Codex profile.
   const profilePath = path.join(pluginRoot, 'commands/scripts/adapters/codex-profile.mjs');
   const profile = await fs.readFile(profilePath, 'utf8');
-  await fs.writeFile(profilePath, profile.replace("import { parse, stringify } from 'smol-toml';",
+  await fs.writeFile(profilePath, profile.replace("import { parse, stringify } from '../../../scripts/toml.mjs';",
     "function parse() { throw new Error('TOML parsing is outside the native ownership fixture.'); }\nconst stringify = parse;"));
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest: { scripts?: { node?: unknown }; buildConfig?: { cacheable?: boolean } } =

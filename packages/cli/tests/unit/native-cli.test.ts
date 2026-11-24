@@ -1752,6 +1752,45 @@ describe('native-cli', () => {
     }
   });
 
+  it.each([false, true])('waits to verify Darwin group exit after a denied probe (persistent: %s)', async (persistent) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321, exitCode: 0, signalCode: null, kill: vi.fn(),
+      });
+      const denied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      let probeCount = 0;
+      let complete: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
+      const runner = createExecFileNativeCliRunner({
+        platform: 'darwin',
+        execFile: (_command, _args, _options, callback) => { complete = callback; return child; },
+        killProcess: (_pid, signal) => {
+          if (signal !== 0) return true;
+          if (++probeCount <= 2 || persistent) throw denied;
+          throw Object.assign(new Error('missing process group'), { code: 'ESRCH' });
+        },
+      });
+      const settled = vi.fn();
+      const running = runner({ command: 'claude', args: [] });
+      void running.then(settled, settled);
+      complete!(null, 'complete stdout', '');
+
+      await vi.advanceTimersByTimeAsync(125);
+      expect(probeCount).toBeGreaterThan(0);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4_200);
+      if (persistent) {
+        await expect(running).rejects.toMatchObject({
+          cleanupError: expect.objectContaining({ cause: denied }),
+        });
+      } else {
+        await expect(running).resolves.toEqual(result('complete stdout', ''));
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('discovers and terminates a trusted Windows CLI tree only after abort', async () => {
     const controller = new AbortController();
     const child = Object.assign(new EventEmitter(), {

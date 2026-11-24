@@ -6,17 +6,16 @@ import os from 'node:os';
 import { PassThrough } from 'node:stream';
 import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
 import { createChildBridge, invokeChildTool } from '../commands/scripts/runtime/adapter-channel.mjs';
-import { executeClaude, negotiateClaudeCommunication, claudeArguments } from '../commands/scripts/adapters/claude-code-v5.mjs';
+import { executeClaude, negotiateClaudeCommunication, claudeArguments } from '../commands/scripts/adapters/claude-code-v6.mjs';
 import { deferred } from '../commands/scripts/adapters/common.mjs';
-import { fixture, windows, supported, testTimeoutMs, answer, scripts, sourceEntries } from './fixtures/adapter-v5.mjs';
+import { fixture, supported, testTimeoutMs, answer, scripts, sourceEntries } from './fixtures/adapter-v6.mjs';
 
-for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed v5 preserves input, configuration and real exit`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+for (const backend of ['codex', 'claude']) test(`${backend}: installed v6 preserves input, configuration and real exit`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend);
   f.request.execution = { ...f.request.execution, model: 'chosen-model', reasoningEffort: 'high' };
-  f.request.args = backend === 'codex' ? ['-c', 'shell_environment_policy.inherit="all"', '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'] : backend === 'claude' ? ['--permission-mode', 'default', '--settings', '{"env":{"SETTING":"value"}}'] : ['--engine', 'api'];
-  if (backend === 'oracle' && !windows) f.request.fileSelectors = ['main.ts', 'main.ts'];
+  f.request.args = backend === 'codex' ? ['-c', 'shell_environment_policy.inherit="all"', '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'] : ['--permission-mode', 'default', '--settings', '{"env":{"SETTING":"value"}}'];
   const run = f.start(); run.send(f.request);
-  assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, backend === 'oracle' ? 'unsupported' : 'enabled');
+  assert.equal((await run.waitFor('ready')).initialization.capabilities.communication.status, 'enabled');
   const result = await run.waitFor('result');
   const closed = await run.exit;
   assert.equal(closed.code, 0, closed.diagnostic);
@@ -38,13 +37,9 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: installed
     const turn = captured.find((value) => value.input?.method === 'turn/start').input.params;
     assert.equal(turn.effort, 'high'); assert.ok(turn.input[0].text.startsWith(f.request.prompt));
     assert.equal(start.config.shell_environment_policy.inherit, 'all');
-  } else if (backend === 'claude') {
+  } else {
     const prompt = captured.find((value) => value.input?.type === 'user').input.message.content[0].text;
     assert.ok(prompt.startsWith(f.request.prompt)); assert.ok(captured[0].args.includes('--permission-mode')); assert.ok(captured[0].args.includes('--mcp-config'));
-  } else {
-    assert.equal(captured[1].input, f.request.prompt);
-    assert.equal(captured[0].args.filter((argument) => argument === '--file').length, f.request.fileSelectors.length);
-    assert.equal(captured[0].args.filter((argument) => argument === 'main.ts').length, f.request.fileSelectors.length);
   }
   assert.equal(closed.diagnostic, '');
 });
@@ -159,7 +154,7 @@ test('Codex: more than 64 parent messages retain each delivery without replay', 
 
 // Test Value Gate: a disabled run must reach the real adapter process and backend
 // with the exact caller prompt and no AW bridge directory or tool configuration.
-for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: communication disabled preserves the ordinary task`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+for (const backend of ['codex', 'claude']) test(`${backend}: communication disabled preserves the ordinary task`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend);
   f.request.communication = false;
   const run = f.start(); run.send(f.request);
@@ -170,8 +165,8 @@ for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: communica
   const captured = await f.captured();
   assert.equal(captured[0].communicationDirectory, false);
   assert.equal(captured[0].args.some((value) => value === '--mcp-config' || value.includes('aw_parent_')), false);
-  const first = captured.find((value) => backend === 'codex' ? value.input?.method === 'turn/start' : backend === 'claude' ? value.input?.type === 'user' : typeof value.input === 'string');
-  const prompt = backend === 'codex' ? first.input.params.input[0].text : backend === 'claude' ? first.input.message.content[0].text : first.input;
+  const first = captured.find((value) => backend === 'codex' ? value.input?.method === 'turn/start' : value.input?.type === 'user');
+  const prompt = backend === 'codex' ? first.input.params.input[0].text : first.input.message.content[0].text;
   assert.equal(prompt, f.request.prompt);
 });
 
@@ -237,7 +232,7 @@ for (const source of ['argv', 'inline settings', 'settings file']) test(`Claude:
 
 // Test Value Gate: a valid but foreign backend configuration must not silently
 // start a task with different settings. Check the actual adapter JSONL boundary.
-for (const backend of ['codex', 'claude', 'oracle']) test(`${backend}: rejects misplaced Codex configuration before negotiation`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+for (const backend of ['codex', 'claude']) test(`${backend}: rejects misplaced Codex configuration before negotiation`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend);
   if (backend === 'codex') delete f.request.codex;
   else f.request.codex = { cliSource: 'app', bypassHookTrust: true, profile: 'unrelated' };

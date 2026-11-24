@@ -107,6 +107,7 @@ export async function materializeProfilePluginComponents(options: {
   scriptTimeoutMs?: number;
 }): Promise<{
   skills: Array<{ id: string; name: string; path: string; dynamic: boolean }>;
+  codexRoleFiles: string[];
   preparation: ComponentPreparationBinding[];
 }> {
   const sourceId = options.plugin.sourceId ?? 'authoring';
@@ -135,6 +136,7 @@ export async function materializeProfilePluginComponents(options: {
   if (!binding) throw new Error('authorProfileLayoutMissing');
   const preparation: ComponentPreparationBinding[] = [];
   const skills: Array<{ id: string; name: string; path: string; dynamic: boolean }> = [];
+  const codexRoleFiles: string[] = [];
   const preparedUnits: Array<{ unit: RenderUnit; capabilities: PlatformCapabilitiesV2;
     finalized: Awaited<ReturnType<typeof finalizePlatformSkillProducers>> }> = [];
   try {
@@ -187,6 +189,9 @@ export async function materializeProfilePluginComponents(options: {
         resources: current.resources,
         policy: finalized.invocationPolicy.policy,
       });
+      if (options.platform === 'codex' && unit.output === 'supplement' && projection) {
+        codexRoleFiles.push(...projection.supplements.map(({ stagingPath }) => stagingPath));
+      }
       const outputs = projection && await fs.pathExists(nativeRoot)
         ? [{ path: relativeNativeRoot, digest: await computeCanonicalDirectoryDigest(nativeRoot) }] : [];
       for (const skill of finalized.skills) {
@@ -230,7 +235,7 @@ export async function materializeProfilePluginComponents(options: {
         || unit.omitted.some((entry) => entry.kind === 'skill' && entry.id === `skill:${selected}`))) continue;
     throw new Error(`Selected Skill was not produced by the complete component set: ${selected}.`);
   }
-  return { skills, preparation };
+  return { skills, codexRoleFiles, preparation };
 }
 
 export async function createIsolatedSkillEnv(

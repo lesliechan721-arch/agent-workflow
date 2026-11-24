@@ -11,7 +11,7 @@ import { assertHookMatcherAllowed, assertNoDuplicateHookHandlers } from './hooks
 import { compilePluginConfigDefinition, getPluginConfigDependencyKeys } from './plugin-config.js';
 import { applyPlatformOverride } from './platform-entries.js';
 import { supportsPlatform } from './platform-support.js';
-import { assertManagedCommandPlatform, normalizeCommandRelativeFile, parseManagedCommandPlaceholders, type PermissionCommand, type ManagedCommandPermission } from './managed-commands.js';
+import { assertManagedCommandPlatform, normalizeCommandSelector, normalizeCommandRelativeFile, parseManagedCommandPlaceholders, type PermissionCommand, type ManagedCommandPermission } from './managed-commands.js';
 import { resolveCanonicalRuntimeSourceIdentity } from './runtime-export-source.js';
 import { isSkillAuthorOnlyPath, isAuthorOnlySkillDirectory } from './skill-authoring.js';
 import { validatePortableSkillName } from './portable-skill-validation.js';
@@ -62,7 +62,11 @@ export interface ResolvedPermissionDefinition {
   name: string; allow?: PermissionCommand[]; ask?: PermissionCommand[]; deny?: PermissionCommand[];
   sandbox?: { excludedCommands: ManagedCommandPermission[] };
 }
-export interface ResolvedInvocationPolicy { platform: PlatformId; permissions: ResolvedPermissionDefinition[] }
+export interface ResolvedInvocationPolicy {
+  platform: PlatformId;
+  permissions: ResolvedPermissionDefinition[];
+  invocationSelector?: string;
+}
 export interface CapabilityFact { status: Support; reasonCodes: string[] }
 export interface PlatformCapabilitiesV2 {
   schemaVersion: 2; platform: PlatformId; scope: Scope; basis: 'local' | 'profile';
@@ -501,11 +505,25 @@ async function staticSkillFiles(root: string, directory: string): Promise<Record
   await walk('');
   return files;
 }
-export function resolveInvocationPolicy(manifest: NormalizedPluginManifest, platform: PlatformId): ResolvedInvocationPolicy {
-  return { platform, permissions: (manifest.extensions?.permissions ?? []).flatMap((permission) => {
+export function resolveInvocationPolicy(manifest: NormalizedPluginManifest, platform: PlatformId, packageSelector?: string): ResolvedInvocationPolicy {
+  const command = manifest.command;
+  let invocationSelector: string | undefined;
+  if (packageSelector !== undefined && platform !== 'generic' && command?.platforms.includes(platform)) {
+    normalizeCommandSelector(packageSelector);
+    invocationSelector = command.runtimeConfig ? `${packageSelector}/${platform}` : packageSelector;
+  }
+  return { platform, ...(invocationSelector === undefined ? {} : { invocationSelector }), permissions: (manifest.extensions?.permissions ?? []).flatMap((permission) => {
     const resolved = applyPlatformOverride(permission, platform);
     if (!resolved) return [];
     const { agentOverrides: _, ...entry } = resolved;
+    if (command && platform === 'generic' && permission.agentOverrides?.generic === undefined) {
+      const generic: ResolvedPermissionDefinition = { name: entry.name };
+      for (const action of ['allow', 'ask', 'deny'] as const) {
+        const rules = entry[action]?.filter((rule) => typeof rule === 'string');
+        if (rules?.length) generic[action] = rules;
+      }
+      return generic.allow || generic.ask || generic.deny ? [generic] : [];
+    }
     return [entry];
   }) };
 }

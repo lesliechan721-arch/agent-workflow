@@ -4,38 +4,36 @@
 
 ## 职责与源码入口
 
-`subagent.mjs` 固定安装配置和输入，启动一个长期 worker；worker 持续管理一个 v5 adapter、父侧队列、快照、停止及最终结果。adapter 拥有后端会话、子侧工具及收件调度。一个执行连接不自动重连或重放。已结束的 run 可通过 send 显式恢复原 session；同一用户可跨父会话凭原句柄串行操作，恢复始终绑定原执行配置。
+`subagent.mjs` 固定安装配置和输入，启动一个长期 worker；worker 持续管理一个 v6 adapter、父侧队列、快照、停止及最终结果。adapter 拥有后端会话、子侧工具及收件调度。一个执行连接不自动重连或重放。已结束的 run 可通过 send 显式恢复原 session；同一用户可跨父会话凭原句柄串行操作，恢复始终绑定原执行配置。
 
 | 入口 | 责任 |
 | --- | --- |
-| `commands/scripts/subagent.mjs` | start/send/wait/result/stop 参数、安装 reader、英文文字输出和退出码。 |
+| `commands/scripts/subagent.mjs` | start/send/wait/result/stop/inspect 参数、安装 reader、英文文字输出和退出码。 |
 | `commands/scripts/worker.mjs` | 本次持续执行和收尾；宿主须允许 start 返回后存活。 |
-| `commands/scripts/runtime/plan.mjs` / `commands/scripts/runtime/runner.mjs` | 精确选择 executor、入口、模式、输入和环境。 |
+| `commands/scripts/runtime/plan.mjs` / `commands/scripts/runtime/runner.mjs` | 精确选择 executor、入口、输入和环境。 |
 | `commands/scripts/runtime/managed-host.mjs` | 核验受保护 AW 主机，查询已安装命令及固定通信绑定。 |
-| `commands/scripts/runtime/protocol.mjs` | 严格 v5 JSONL、大小及状态合同。 |
+| `commands/scripts/runtime/protocol.mjs` | 严格 v6 JSONL、大小及状态合同。 |
 | `commands/scripts/runtime/adapter-channel.mjs` | 子侧发送、显式收件和自动输入共用调度。 |
 | `commands/scripts/message.mjs` / `commands/scripts/message-mcp.mjs` | 脚本与 MCP 工具包装，不拥有另一份队列。 |
 | `commands/scripts/runtime/processes.mjs` / `commands/scripts/runtime/platform.mjs` | 本机安全启动、私有资源、进程归属和停止；Windows 使用同产物的 `commands/scripts/runtime/windows-native.mjs` 和当前架构的 `aw-windows-job.exe` 持有本次 Job。 |
-| `commands/scripts/resolve-files.mjs` | bundle 公共文件选择 v1；通用运行层不扫描材料。 |
 | `commands/scripts/runtime/contracts.mjs` / `commands/scripts/runtime/files.mjs` | 限值、路径、原子文件及安全诊断。 |
-| 内建 `adapters/*-v5.mjs` | Codex、Claude Code、Oracle、Antigravity 后端映射；真实支持范围分别验证。 |
+| 内建 `adapters/*-v6.mjs` | Codex、Claude Code、Antigravity 后端映射；真实支持范围分别验证。 |
 
-Guide 保留调用方角色和任务约束。调用方先选定 executor/model/reasoningEffort，运行层只消费传入值；省略指令文件时不猜测默认角色。原生 Advisor/Explore 角色的局部禁止重复同一委派段落不注入共享资源或外部 prompt。
+Guide 保留调用方角色和任务约束。调用方先选定 executor/model/reasoningEffort，运行层只消费传入值；省略指令文件时使用命令包内的中性默认角色。原生 Advisor/Explore 角色的局部禁止重复同一委派段落不注入共享资源或外部 prompt。
 
 ## 配置、呈现与生效
 
 配置声明由 [plugin manifest](https://github.com/lesliechan721-arch/agent-workflow/blob/main/plugins/agent-subagent/.agents-plugin/plugin.json) 拥有。subagentCommands 每项具有 key、adapter；key 大小写敏感、唯一，native 为保留值。配置中的 executor 精确引用 key；运行入口必须显式传入 executor。key 只在 Guide 自身的安装配置中查找，其他插件的调用不扩大注册表来源。
 
-| adapter | mode | 用户配置入口 |
-| --- | --- | --- |
-| codex | 固定 workspace | permissionMode、codexProfile、codexCliSource、codexBypassHookTrust，以及 args、env、envFrom。 |
-| claude-code | 固定 workspace | permissionMode、args、env、envFrom；不配置 wrapper command/entrypoint。 |
-| oracle | 固定 bundle | args、env、envFrom；不配置 wrapper command/entrypoint。 |
-| antigravity | 固定 workspace | PATH 中的 agy；permissionMode、args、env、envFrom；不增加专用认证字段。 |
-| custom | 必填 workspace 或 bundle | 绝对 command、可选绝对 entrypoint，加上相同的 args/env/envFrom。 |
-| custom-managed | 必填 workspace 或 bundle | `commandId` 选择插件命令或用户命令，`subcommand` 可选择插件的精确子命令。执行 Adapter v5，支持 args、env 和 envFrom。 |
+| adapter | 用户配置入口 |
+| --- | --- |
+| codex | permissionMode、codexProfile、codexCliSource、codexBypassHookTrust，以及 args、env、envFrom。 |
+| claude-code | permissionMode、args、env、envFrom。 |
+| antigravity | PATH 中的 agy；permissionMode、args、env、envFrom。 |
+| custom | 绝对 command、可选绝对 entrypoint，以及 args、env、envFrom。 |
+| custom-managed | `commandId` 选择插件命令或用户命令，`subcommand` 可选择插件的精确子命令。执行 Adapter v6，支持 args、env 和 envFrom。 |
 
-内建 mode 可以在原值中省略，显式错误值必须拒绝。command/entrypoint 不属于内建分支，不仅在 TUI 隐藏，也由共享校验器拒绝。切换 adapter 只修改草稿；不适用字段的移除和固定 mode 的变化须在保存前可见，取消不改原配置。args 是实际服务 argv 数组，env 是普通字符串 KV，envFrom 是宿主变量引用 KV，不把容器塞成 JSON 字符串。
+所有执行器基于工作区运行。command/entrypoint 属于 custom 分支。切换 adapter 只修改草稿，不适用字段的移除须在保存前可见，取消保留原配置。args 是实际服务 argv 数组，env 是普通字符串 KV，envFrom 是宿主变量引用 KV，不把容器塞成 JSON 字符串。
 
 所有分支均可设置独立的布尔 `communication` 和 `resume`，两者缺省均为 true。resume 请求恢复能力，实际由适配器确认；关闭通信但启用恢复合法，不增加每次命令的恢复覆盖参数。communication 表达用户意图，不证明后端支持通讯。关闭后仍检查环境并应用权限模式，保留 start/wait/result/stop 和最终结果缓存，只跳过 AW 桥、工具绑定、通讯说明及父输入自动调度；用户已有 MCP、插件和工具继续由后端管理。不增加每次 start 的通讯开关。
 
@@ -50,15 +48,8 @@ Codex 的 `codexCliSource` 为 auto/cli/app，缺省 auto；`codexBypassHookTrus
     { "key": "claude-local", "adapter": "claude-code" },
     { "key": "agy-task", "adapter": "antigravity", "communication": false },
     {
-      "key": "oracle-review",
-      "adapter": "oracle",
-      "args": ["--engine", "api"],
-      "envFrom": { "OPENAI_API_KEY": "REVIEW_OPENAI_API_KEY" }
-    },
-    {
       "key": "custom-review",
       "adapter": "custom",
-      "mode": "bundle",
       "command": "/absolute/path/to/node",
       "entrypoint": "/absolute/path/to/custom-adapter.mjs",
       "args": ["--region", "example-region"]
@@ -71,11 +62,11 @@ Codex 的 `codexCliSource` 为 auto/cli/app，缺省 auto；`codexBypassHookTrus
 
 Config Definition v5 的有限对象分支、标量 const 和叶级数组/KV 由 Core 统一实现，CLI、TUI、生效值与物化共用。正式字段合同见 [Plugin Manifest 与配置声明合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/reference/manifest-and-config.md)。
 
-renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 key、mode；不展示未经本次初始化的能力，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 省略值显示“宿主默认”。Guide 的四个档位默认均为 native，表位于按需读取的 execution-profiles reference。Advisor/Explore 专用配置属于 codex-enhance，其 executor 引用同 source 的 agent-subagent 注册表；注册表不复制到专用 Skill。
+`references/executor-selection.md` 展示宿主原生能力、已配置的外部执行器、静态模型提示和选型规则。四个通用档位默认均为 native。仅在需要选型时阅读；没有外部执行器且档位为默认值时，渲染器省略选型与外部执行参考。Advisor/Explore 专用配置由 codex-enhance 维护，executor 引用同 source 的 agent-subagent 注册表。
 
-Codex 和 Claude Code 共用一个 `<来源>/agent-subagent` 命令包。AW 在包内注入 `.aw/command-runtime-config.mjs` 和 `.aw/runtime-config/<platform>.json`。`start --platform <codex|claude>` 读取对应平台已应用的 `subagentCommands` 和 `subagentRetentionHours`，其余父侧操作按 run 记录的平台读取保留期。只保存配置时仍使用已应用快照。同一 `AW_HOME` 下，同一平台的各安装共享快照。缺失或损坏可通过 `aw plugin sync` 或 `aw command package sync <来源>/agent-subagent` 恢复。
+八个原生目标使用同一个 `<来源>/agent-subagent` 命令包。AW 在包内注入 `.aw/command-runtime-config.mjs` 和 `.aw/runtime-config/<platform>.json`。运行时使用 `aw command run <来源>/agent-subagent/<平台> -- <子命令>`，读取选定平台的已应用快照。只保存配置时仍使用已应用快照。同一 `AW_HOME` 下的各安装可共享相同平台快照。缺失或损坏可通过 `aw plugin sync` 或 `aw command package sync <来源>/agent-subagent` 恢复。
 
-Guide 为共享包声明 Windows 下必需的 Job 工具。AW 在命令启动前校验当前 Node 架构的工具，后台 worker、adapter 和扫描器继承准备好的上下文。缓存有效时可离线运行。工具取得失败时，命令在业务副作用前停止，可通过 AW 的离线导入或显式预取恢复。仅安装角色的平台无需此命令包或 Windows Job。更新、重装或删除命令包前，先结束活跃任务。
+Guide 为共享包声明 Windows 下必需的 Job 工具。AW 在命令启动前校验当前 Node 架构的工具，后台 worker、adapter 和扫描器继承准备好的上下文。缓存有效时可离线运行。工具取得失败时，命令在业务副作用前停止，可通过 AW 的离线导入或显式预取恢复。通用目标仅交付 Skill。更新、重装或删除命令包前，先结束活跃任务。
 
 ## 资料保留与恢复配置
 
@@ -83,21 +74,21 @@ Guide 为共享包声明 Windows 下必需的 Job 工具。AW 在命令启动前
 
 run 资料放在用户 home 下的 `~/.aw-subagent`。恢复只保留最新执行，先导出所需旧结果；执行记录按 terminalAt 计算当前 TTL，入口元数据另用严格超过 max(2 × TTL, 24 小时) 的 mtime 间隔。扫描是静默的独立子进程，同 run 分轮清理，不影响调度。完整目录、恢复提交与清理边界见 [用户目录、恢复与过期](runtime.md#1-用户目录恢复与过期)。
 
-首次 start 保存 executor、adapter、来源、插件版本、内容摘要、平台及本次执行配置，包括 workspace、显式 model/effort、args、权限和 Codex 设置、通信与恢复开关、env/envFrom、执行期限和 bundle 选择。恢复复用这些配置和原后端 session。配置快照切换后，只要来源和代码一致，恢复会重新绑定当前包中的 worker、内建 adapter 和通信入口；版本或内容摘要变化时返回 `resumeExecutionChanged`。恢复时重新解析 envFrom 引用的宿主值，并按原 deadlineMs 计算本次时限。bundle 复用原选择配置。
+首次 start 保存 executor、adapter、来源、插件版本、内容摘要、平台及本次执行配置，包括 workspace、显式 model/effort、args、权限和 Codex 设置、通信与恢复开关、env/envFrom 和执行期限。恢复复用这些配置和原后端 session。配置快照切换后，只要来源和代码一致，恢复会重新绑定当前包中的 worker、内建 adapter 和通信入口；版本或内容摘要变化时返回 `resumeExecutionChanged`。恢复时重新解析 envFrom 引用的宿主值，并按原 deadlineMs 计算本次时限。
 
 ## 托管 custom adapter
 
-`custom-managed` 沿用 Adapter v5。`commandId` 填已安装的 `<来源>/<插件>` 或 `aw command install` 返回的用户命令 `cmdu_…`。插件命令可用 `subcommand` 选择精确命名入口，省略时要求该包有 `fallback`。用户命令使用自身入口，必须省略 `subcommand`。mode 必填，保存核对语法，启动时核对该入口的真实可用性。
+`custom-managed` 沿用 Adapter v6。`commandId` 填已安装的 `<来源>/<插件>` 或 `aw command install` 返回的用户命令 `cmdu_…`。插件命令可用 `subcommand` 选择精确命名入口，省略时要求该包有 `fallback`。用户命令使用自身入口，必须省略 `subcommand`。使用平台快照的插件命令填 `<来源>/<插件>/<平台>`，其余插件命令填 `<来源>/<插件>`。保存核对语法，启动时核对实际入口。
 
-Guide 用经过校验的 `AW_COMMAND_HOST` 和固定的 `AW_HOME` 执行嵌套 AW。缺少或无效的主机分别返回 `managedCommandHostMissing` 或 `managedCommandHostInvalid`。命名子命令使用 `aw command run <来源>/<插件> --no-fallback -- <子命令>`。插件 fallback 和用户命令使用 `aw command run <名称或ID> --`。入口的固定参数进入 adapter argv，executor 的 args 进入 Adapter v5 start 帧。
+Guide 用经过校验的 `AW_COMMAND_HOST` 和固定的 `AW_HOME` 执行嵌套 AW。缺少或无效的主机分别返回 `managedCommandHostMissing` 或 `managedCommandHostInvalid`。命名子命令使用 `aw command run <绑定 ID> --no-fallback -- <子命令>`。插件 fallback 和用户命令使用 `aw command run <名称或ID> --`。入口的固定参数进入 adapter argv，executor 的 args 进入 Adapter v6 start 帧。
 
-Guide 先应用 executor env/envFrom，再启动嵌套 AW，所选路由的 env/envFrom 随后覆盖。AW 和 Guide 控制项由受保护的主机上下文注入。`AW_COMMAND_HOST` 由 worker 和嵌套 AW 使用。路由可声明 `cwd: resource`，v5 workspace 仍使用任务值。主机、环境和 runner 见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/reference/managed-commands.md)。
+Guide 先应用 executor env/envFrom，再启动嵌套 AW，所选路由的 env/envFrom 随后覆盖。AW 和 Guide 控制项由受保护的主机上下文注入。`AW_COMMAND_HOST` 由 worker 和嵌套 AW 使用。路由可声明 `cwd: resource`，v6 workspace 仍使用任务值。主机、环境和 runner 见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/reference/managed-commands.md)。
 
-启动和恢复均通过同一主机的 `aw command show <名称或ID> --json` 核对入口。恢复要求 owner、所选路由和启动配置一致。用户命令还核对资源 revision，插件命令核对插件版本和内容摘要。执行相关信息发生变化时返回 `resumeExecutionChanged`。
+启动和恢复均通过同一主机的 `aw command show <包选择器或用户命令 ID> --json` 核对入口。包选择器使用两段。恢复要求 owner、所选路由和启动配置一致。用户命令还核对资源 revision，插件命令核对插件版本和内容摘要。执行相关信息发生变化时返回 `resumeExecutionChanged`。
 
 ## 执行器权限模式
 
-Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / full-access，缺省 default，显示名为“默认”“自动”“完整权限”。Oracle/custom/custom-managed 显式携带时拒绝；native 使用宿主权限。它读取本产物已安装配置，不增加每次 start 开关，不改变 execution 的 executor/model/reasoningEffort 含义。
+Codex、Claude Code、Antigravity 的 `permissionMode` 可选 default / auto / full-access，缺省 default，显示名为“默认”“自动”“完整权限”。custom/custom-managed 显式携带时拒绝；native 使用宿主权限。它读取本产物已安装配置，不增加每次 start 开关，不改变 execution 的 executor/model/reasoningEffort 含义。
 
 | 模式 | Codex app-server | Claude Code | Antigravity |
 | --- | --- | --- | --- |
@@ -115,25 +106,27 @@ default 保留用户 args、profile 及后端正常加载的用户、项目和�
 
 参数可解析不证明模式生效。用已知版本合同及有界、无模型的公开信息检查可提前取得的限制；明确不可用返回 `permissionModeUnavailable`，不改用其它模式。仅在启动后出现 auto 不可用或回退信号时立即停止，保存真实提交/停止证据，不重发；已提交输入不能写 generationStarted=false。不为账户或模型资格增加每次模型探针。本机 agy 1.4.7 已有账户不能使用 auto、回退 default 的真实证据，不能将该路径算作 auto 通过。
 
-## Prompt 与模式
+## 任务和指令
 
 CLI 必填 --executor，且必须只提供 --prompt TEXT 或 --prompt-file PATH 中的一项。父侧 send 和子侧 send 同理使用 --text TEXT 或 --text-file PATH。命令不读取 stdin；缺参、互斥、重复单值参数、未知或跨命令参数，以及 --prompt -、--text - 和文件参数值 - 均在创建/提交前返回参数错误，父侧为 argumentsInvalid，子侧为 invalidArguments，退出 2。需要单字符 - 使用内容为 - 的普通文件；名为 - 的文件使用 ./- 或绝对路径。
 
 相对输入/输出路径按 caller cwd 解析，不相对 --workspace 或 producer root。输入只读取一次，必须为普通文件且最后一段不是 symlink，按严格 UTF-8 校验，不去 BOM、不 trim，拒绝全空白和 NUL。prompt-file 与 instructions-file 各最多 256 KiB，text-file 最多 24 KiB（24,576 UTF-8 字节）；长消息通过文件写入能力创建后使用 --text-file，argv 仍受宿主命令行限制；合成 prompt 最多 524352 bytes。文件错误、大小及输出合同见 [文件输入与输出](runtime.md#文件输入与输出)。--instructions-file PATH 可选；native、未知 key、重复 key 和无效配置在后端启动前报错，通过 config、sync 或 reinstall 修复。
 
-不传指令文件时，协议 prompt 保留任务原文，不添加默认角色或空标题。显式传入时要求非空、可读 UTF-8 文件，runner 读取一次后组合为“执行指令”和“本次任务”两个段落。保留原文本，不截断，不向 adapter 发送指令文件路径让它再次打开。显式坏文件不能当成省略。指令与任务各最多 256 KiB，组合结果不套用单份上限。adapter 只在通讯已就绪时追加相应说明；无指令文件也可追加，调用方不预读或拼接这份说明。
+省略 `--instructions-file` 时读取命令包内的中性默认角色。传入显式空字符串时保留任务原文。传入非空路径时读取一次该文件，并将指令与任务合成为一个 prompt。显式坏文件报错；指令正文和任务正文各限 256 KiB。通信就绪时 adapter 可另行追加通信说明。外部适配器消费单一 prompt，指令和任务仍受实际任务授权与宿主权限约束。
 
-所有适配器都消费一个 prompt，不需要独立 instruction channel 能力声明。提示词拼接不提供 system/developer 权限，不代替业务授权或技术隔离。native 的角色通道不受影响。
+工作区仅提供执行目录，关注的文件或目录写入任务提示。未知参数会在创建运行或启动适配器之前报错。
 
-workspace 只提供工作目录和任务，CLI 出现任何 --file 均在扫描和适配器启动前失败，code 为 filesNotAllowedInWorkspace，退出 2；包括 --file ''。关注文件写进 prompt，不能作为隐藏的材料参数传递。
+## 自省和模型建议
 
-bundle 提供 fileSelectors 原值数组和 fileResolver 命令描述。runner 只校验输入形状、NUL 与空选择项，不展开、不读取材料元数据或 ignore 文件。无 --file 则 []，不隐式增加材料。需要路径的适配器可调用公共解析器；原生消费必须符合相同的 AW 文件选择协议 v1。Oracle 在符合协议时直接消费原值，不调用 helper 或构建投影。完整协议与失败处理见 [文件选择与公共解析器](file-selection.md#文件选择与公共解析器)。
+`aw command run <来源>/agent-subagent/<平台> -- inspect --executor <key>` 返回该执行器的环境、模型、推理强度和来源。无参调用离线列出执行器，加 `--json` 读取指定执行器的结构化输出。只读探针的时限为 10 秒。模型目录超过 32 KiB 时，输出会省略部分条目，保留主要诊断并标示截断。后端入口缺失时，环境显示 `unavailable`，仍可查看已配置的模型。登录、额度、账户策略和模型生成以实际任务的反馈为准。
+
+执行器可配置 `description`、`modelsPolicy` 与 `models[]`。模型项包含 `id`，可提供 `description`、`efforts` 与 `default`。同一执行器只能将一项标为 `default: true`，否则查询返回 `executorInvalid`。默认 `merge` 将静态配置与探针合并。`override` 使用静态模型清单作为白名单。配置编辑器通过 `executor-models` 和 `executor-efforts` 提供建议。探针使用 AW 为该次查询提供的时限，并预留时间返回已配置的候选项。自定义值仍可按字段合同填写。
 
 ## 参数和环境
 
 args 中每项是一个真实后端 argv 值，不执行 shell split、变量插值或 shell。空字符串 argv 合法，NUL 非法。后端入口按最终 PATH 解析；不自动下载，不使用 Codex 专属 binary 环境变量替代通用配置。
 
-内建 wrapper 拥有启动子命令、prompt stdin、工作目录、结构化输出、bundle 文件输入和等待参数。args 与这些控制项冲突时明确拒绝，包括公开别名；不得让 args 把调用变成帮助、预览、仅入队、续接其它会话或多次生成。Oracle 的 --file/-f 及文件选择别名也不能通过 args 在 fileSelectors 之外追加来源。
+内建 wrapper 拥有启动子命令、prompt stdin、工作目录、结构化输出和等待参数。args 与这些控制项冲突时明确拒绝，包括公开别名；不得让 args 把调用变成帮助、预览、仅入队、续接其它会话或多次生成。
 
 CLI 已传入 model 或 effort 时，args 不能再次设置同一后端控制项；没有解析值时，args 可以设置或沿用后端默认。检查只覆盖 wrapper 拥有的参数，不复制完整后端 parser 或建立通用功能黑名单。显式不支持的参数报告真实错误，不忽略或重试其它模型。
 

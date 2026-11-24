@@ -23,7 +23,7 @@ import fs from 'fs-extra';
 import { fileURLToPath } from 'node:url';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } from './catalog-source-fixture.js';
 import { createSyntheticEmbeddedRoot } from './embedded-root.js';
-import { stubCodexFileSelectionForNativeFixture } from './codex-enhance-native-fixture.js';
+import { prepareSubagentForNativeFixture } from './codex-enhance-native-fixture.js';
 import { createCommandTestTiming } from './command-timing.js';
 import type { CommandEvent } from '../../src/output/model.js';
 import {
@@ -369,7 +369,7 @@ export async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnTyp
   const sourceSubagentPluginRoot = path.join(repositoryRoot, 'plugins', 'agent-subagent');
   const copiedSubagentPluginRoot = path.join(authoringRoot, 'plugins', 'agent-subagent');
   await measure('fixture-step', 'copy.agent-subagent', () => fs.copy(sourceSubagentPluginRoot, copiedSubagentPluginRoot));
-  await measure('fixture-step', 'stub.file-selection', () => stubCodexFileSelectionForNativeFixture(copiedSubagentPluginRoot));
+  await measure('fixture-step', 'prepare.guide-source', () => prepareSubagentForNativeFixture(copiedSubagentPluginRoot));
   const sourceRoot = await measure('fixture-step', 'bundle.plugins', () => createSyntheticEmbeddedRoot(authoringRoot));
   await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
     schemaVersion: 1,

@@ -350,6 +350,7 @@ describe('platform projection', () => {
   it('freezes OpenCode rules and reports only actions that the host could not deliver', async () => {
     const { root, input, ctx } = await fixture('opencode', [skill]);
     ctx.platform = 'linux';
+    input.policy.invocationSelector = 'source/example';
     input.policy.permissions = [{ name: 'checks', allow: ['git', { argsPrefix: ['show'] }],
       deny: ['git show #note'], ask: ['node check'] }];
     const destination = path.join(root, 'client-home/opencode.json');
@@ -381,9 +382,22 @@ describe('platform projection', () => {
       detail: { reasonCode: 'permission-config-path-unconfirmed', skippedPermissionActions: ['allow'] } }));
   });
 
+  it('projects the platform-qualified invocation into Grok Bash permissions', async () => {
+    const { input, ctx, root } = await fixture('grok', [skill]);
+    ctx.env!.GROK_HOME = path.join(root, 'client-home');
+    input.policy.invocationSelector = 'source/example/grok';
+    input.policy.permissions = [{ name: 'checks', deny: [{ argsPrefix: ['blocked'] }] }];
+    const result = await projectPlatform(ctx, input);
+    const contribution = result.supplements.find(({ mergeKey }) => mergeKey?.startsWith('grok-permissions:'));
+    expect(contribution).toBeDefined();
+    const staged = await fs.readJson(contribution!.stagingPath);
+    expect(staged.effective).toContainEqual({ action: 'shell', resource: 'aw command run source/example/grok -- blocked', effect: 'deny' });
+  });
+
   it('freezes Claude scope-specific permissions while preserving shared package bytes and command prefix semantics', async () => {
     const { input, ctx, root } = await fixture('claude', [skill]);
     const permission = { argsPrefix: ['--check'] };
+    input.policy.invocationSelector = 'source/example';
     input.policy.permissions = [{ name: 'checks', allow: [permission], sandbox: { excludedCommands: [permission] } }];
     const result = await projectPlatform(ctx, input);
     const contribution = result.supplements[0]!;

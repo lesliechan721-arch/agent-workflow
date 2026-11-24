@@ -1,46 +1,14 @@
-import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { workflowRoles } from './codex-workflow-adapter.mjs';
 import {
   setupTriggerWorkspace,
   TRIGGER_WORKSPACE_FIXTURES,
 } from './trigger-fixture.mjs';
 
 const SKILL_KEY = 'spawn-subagent';
-const GUIDE_ROLE_NAMES = [
-  'subagent',
-];
-
-function parseTomlString(source, key, file) {
-  const match = source.match(new RegExp(`^${key}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*")\\s*$`, 'mu'));
-  if (!match) throw new Error(`${file} is missing ${key}.`);
-  return JSON.parse(match[1]);
-}
-
-async function readMaterializedRoles(root) {
-  const roleRoot = path.join(root, '.codex', 'agents');
-  const files = (await readdir(roleRoot)).filter((file) => file.endsWith('.toml')).sort();
-  const roles = await Promise.all(files.map(async (file) => {
-    const rolePath = path.join(roleRoot, file);
-    const source = await readFile(rolePath, 'utf8');
-    const name = parseTomlString(source, 'name', file);
-    return {
-      roleFile: { name },
-      roleDescription: parseTomlString(source, 'description', file),
-      rolePath,
-    };
-  }));
-  return GUIDE_ROLE_NAMES.map((name) => {
-    const matches = roles.filter((role) => role.roleFile.name === name);
-    if (matches.length !== 1) {
-      throw new Error(
-        `Materialized spawn-subagent must contain role ${name} exactly once, got ${matches.length}.`,
-      );
-    }
-    return matches[0];
-  });
-}
 
 export async function createEvalWorkspace({
   withSkill = true,
@@ -60,7 +28,11 @@ export async function createEvalWorkspace({
     await cp(sourceRoot, root, { recursive: true, force: true });
     const skillRoot = path.join(root, '.agents', 'skills', SKILL_KEY);
     const skillPath = path.join(skillRoot, 'SKILL.md');
-    const roles = await readMaterializedRoles(root);
+    const roles = (await workflowRoles(root)).map(({ name, description, configFile }) => ({
+      roleFile: { name },
+      roleDescription: description,
+      rolePath: path.join(root, configFile),
+    }));
     await rm(path.join(root, '.codex', 'config.toml'), { force: true });
     if (!withSkill) await rm(skillRoot, { recursive: true, force: true });
     await setupTriggerWorkspace({

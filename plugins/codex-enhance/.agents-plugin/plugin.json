@@ -173,18 +173,13 @@
               "id": "ultra",
               "title": "ultra",
               "value": "ultra"
-            },
-            {
-              "id": "pro",
-              "title": "pro",
-              "value": "pro"
             }
           ]
         },
         "validation": {
           "minLength": 1
         },
-        "description": "推理强度偏好；pro 可用于 Oracle ChatGPT 浏览器模式，其他后端和模型是否支持由其自身决定。"
+        "description": "推理强度偏好；可用档位由执行器与模型决定。"
       },
       "agentExecutor": {
         "type": "string",

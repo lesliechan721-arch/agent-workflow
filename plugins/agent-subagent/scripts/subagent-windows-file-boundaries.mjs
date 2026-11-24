@@ -139,7 +139,7 @@ async function main() {
         const location = path.join(container, execution);
         const meta = JSON.parse(await fs.readFile(path.join(location, 'owner.json'), 'utf8'));
         requireTrue(meta.id === id && /^[A-Za-z0-9_-]{22}$/.test(meta.key ?? ''));
-        runDirectories.add(location); handles.add(`aw5-${id}-${meta.key}`);
+        runDirectories.add(location); handles.add(`aw6-${id}-${meta.key}`);
       }
     }
   }
@@ -167,11 +167,18 @@ async function main() {
     await fs.cp(source, scripts, { recursive: true });
     const adapterFile = path.join(directory, 'fake-adapter.mjs');
     await fs.writeFile(adapterFile, qualificationAdapter);
-    const configuration = { installedIdentity: { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginName: 'agent-subagent', pluginId: 'fixture/agent-subagent', platform: 'codex', pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64) }, resourceRoot: installed,
-      values: { subagentCommands: [{ key: 'fixture', adapter: 'custom', mode: 'workspace', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
+    const configuration = { installedIdentity: { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginName: 'agent-subagent', pluginId: 'fixture/agent-subagent', platform: 'codex', pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64) }, resourceRoot: installed, platform: 'codex',
+      values: { subagentCommands: [{ key: 'fixture', adapter: 'custom', command: await fs.realpath(process.execPath), entrypoint: adapterFile }] } };
     await fs.writeFile(path.join(installed, 'effective.json'), JSON.stringify(configuration));
     await fs.mkdir(path.join(installed, '.aw'));
-    await fs.writeFile(path.join(installed, '.aw', 'command-runtime-config.mjs'), "import fs from 'node:fs/promises';export async function readCommandRuntimeConfig(){return JSON.parse(await fs.readFile(new URL('../effective.json',import.meta.url),'utf8'));}\n");
+    await fs.writeFile(path.join(installed, '.aw', 'command-runtime-config.mjs'), `import fs from 'node:fs/promises';
+export async function readCommandRuntimeConfig({ from, keys }) {
+  if (from !== new URL('../scripts/subagent.mjs', import.meta.url).href) throw new Error('Unexpected configuration reader caller');
+  const snapshot = JSON.parse(await fs.readFile(new URL('../effective.json', import.meta.url), 'utf8'));
+  snapshot.values = Object.fromEntries(keys.filter((key) => Object.hasOwn(snapshot.values, key)).map((key) => [key, snapshot.values[key]]));
+  return snapshot;
+}
+`);
     const environment = { ...Object.fromEntries(Object.entries(process.env).map(([name, value]) => [name.toUpperCase(), value])), HOME: directory, USERPROFILE: directory, CODEX_HOME: directory,
       AW_HOME: directory, AW_CODEX_HOME: directory, AW_CLAUDE_HOME: directory, TMPDIR: temporary, TMP: temporary, TEMP: temporary, FIXTURE_OBSERVED: observed, FIXTURE_INPUT: input, FIXTURE_FINISH: finish };
     command = (args, stdin) => new Promise((resolve, reject) => {
@@ -185,7 +192,7 @@ async function main() {
         clearTimeout(timeout);
         if (timedOut) { reject(Object.assign(new Error(), { code: 'commandTimeout' })); return; }
         const stdout = Buffer.concat(chunks).toString('utf8');
-        const handle = field(stdout, 'run'); if (/^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
+        const handle = field(stdout, 'run'); if (/^aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
         resolve({ exit, stdout, stderr: Buffer.concat(errors).toString('utf8'), handle });
       });
     });
@@ -194,7 +201,8 @@ async function main() {
     const final = '跨卷最终答案。\r\n第二行。\n';
     const promptFile = path.join(directory, 'prompt.txt'), messageFile = path.join(directory, 'message.txt');
     await fs.writeFile(promptFile, prompt); await fs.writeFile(messageFile, message);
-    const started = await command(['start', '--platform', 'codex', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
+    const startArgs = ['start', '--executor', 'fixture', '--workspace', workspace, '--instructions-file', '', '--prompt-file', promptFile];
+    const started = await command(startArgs);
     requireTrue(!!started.handle);
     const handle = started.handle;
     await waitForCommunication(started, command);
@@ -223,7 +231,7 @@ async function main() {
     emit('cross-volume.result-export', true, 'ok', await checkQualificationExport(exported, outputFile, final));
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
-    const active = await command(['start', '--platform', 'codex', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);
+    const active = await command(startArgs);
     requireTrue(!!active.handle);
     await waitForCommunication(active, command);
     const stopped = await command(['stop', '--run', active.handle]);

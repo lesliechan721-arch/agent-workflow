@@ -123,7 +123,7 @@ export function managedCommandPlanChanges(actions: readonly OperationAction[], n
     for (const permission of reviewedInactivePermissions(plan.binding, evidence)) {
       const { pluginId } = plan.binding.plugin;
       changes.push({ kind: 'keep', group: 'runtime', pluginId, title: `保留 ${permission.action} 规则`,
-        description: `aw command run ${pluginId} --${permission.argsPrefix.length ? ` ${permission.argsPrefix.join(' ')}` : ''} · 当前无可达处理程序 · ${agentLabel(plan.binding.platform)} · ${scopeLabel(plan.binding.scope.kind)}` });
+        description: `aw command run ${permission.invocationSelector} --${permission.argsPrefix.length ? ` ${permission.argsPrefix.join(' ')}` : ''} · 当前无可达处理程序 · ${agentLabel(plan.binding.platform)} · ${scopeLabel(plan.binding.scope.kind)}` });
     }
   }
   for (const change of operationPlanNativeToolChanges({ actions: [...actions], nativeToolChanges })) {
@@ -322,7 +322,7 @@ function sourceCommandRebindingChange(sourceId: string): OperationReviewChange {
   return {
     kind: 'warning',
     title: '同名插件会沿用已有命令审批',
-    description: `安装新来源的同名插件后，已有的 aw command run ${sourceId}/<插件> -- 审批可能放行新代码。本次检查限于当前用户与项目，其他项目也可能保留匹配规则。`,
+    description: `安装新来源的同名插件后，已有的 aw command run ${sourceId}/<插件>[/<平台>] -- 审批可能放行新代码。本次检查限于当前用户与项目，其他项目也可能保留匹配规则。`,
   };
 }
 

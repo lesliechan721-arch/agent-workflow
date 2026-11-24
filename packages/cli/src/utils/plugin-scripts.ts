@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import {
   type ProcessTreeObservation,
   type WindowsJobInvocation,
 } from './process-tree.js';
+import { terminateNativeCliProcessGroup } from './native-cli.js';
 import { resolveAwHome } from './paths.js';
 import { readEnvironmentValue } from './state-paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
@@ -29,6 +31,7 @@ export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
+const POSIX_STDIO_CLOSE_GRACE_MS = 100;
 const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
 // The --config helper can also propagate a plugin's exit code, so these are ambiguous.
 const WINDOWS_JOB_CONTAINMENT_FAILURE = 250;
@@ -50,6 +53,8 @@ interface DefaultPluginProcessRunOptions {
   signal?: AbortSignal;
   sensitiveValues?: readonly string[];
   maxStdoutBytes?: number;
+  /** Use the detached process group or Job without injecting a tracking variable. */
+  markerFreeContainment?: boolean;
   /** Internal diagnostics only. Callback failures cannot change process execution. */
   onSpawn?(child: { pid: number }): void;
 }
@@ -354,25 +359,65 @@ export function createDefaultPluginProcessRunner(
       : undefined;
     return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
-      const marker = randomUUID();
+      const marker = options.markerFreeContainment ? undefined : randomUUID();
+      const waitForStdioClose = options.markerFreeContainment && platform !== 'win32';
       // Keep long Catalog snapshot directories accessible to libuv's Windows cwd resolution.
       const cwd = platform === 'win32' ? path.win32.toNamespacedPath(invocation.cwd) : invocation.cwd;
-      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
+      const env = marker === undefined ? invocation.env : { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker };
+      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       if (child.pid !== undefined) {
         try { options.onSpawn?.({ pid: child.pid }); } catch { /* Diagnostic only. */ }
       }
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
       let stdoutBytes = 0; let stdoutTruncated = false;
+      const stdoutChunks: Buffer[] = [];
       let inputCompleted = child.stdin === null; let inputError: unknown;
       let childExited = false; let cleanupCompleted = false;
+      let streamsClosed = !waitForStdioClose;
+      const streamsReady = waitForStdioClose ? new Promise<void>((resolve) => {
+        child.once('close', () => {
+          streamsClosed = true;
+          resolve();
+          settleIfComplete();
+        });
+      }) : undefined;
       let completedExitCode: number | null = null; let completedSignal: NodeJS.Signals | null = null;
+      let stdioCloseTimer: NodeJS.Timeout | undefined;
       let windowsJobCloseTimer: NodeJS.Timeout | undefined;
       const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
-      let observation: ProcessTreeObservation | undefined; if (!windowsJobInvocation && child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
-      const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
-      const abort = (): void => { aborted = true; terminate(); };
-      const cleanup = (): void => { clearTimeout(timer); if (windowsJobCloseTimer) clearTimeout(windowsJobCloseTimer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
-      const result = (): PluginProcessResult => ({ exitCode: completedExitCode, signal: completedSignal, stdout, stderr, timedOut, ...(stdoutTruncated ? { stdoutTruncated: true } : {}) });
+      let observation: ProcessTreeObservation | undefined;
+      if (!options.markerFreeContainment && !windowsJobInvocation && child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
+      const closeStdio = (): void => {
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      };
+      const stop = (): void => {
+        if (waitForStdioClose) closeStdio();
+        terminate();
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        stop();
+      }, options.timeoutMs);
+      const abort = (): void => {
+        aborted = true;
+        stop();
+      };
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        clearTimeout(stdioCloseTimer);
+        clearTimeout(windowsJobCloseTimer);
+        options.signal?.removeEventListener('abort', abort);
+        observation?.dispose();
+      };
+      const result = (): PluginProcessResult => {
+        if (options.maxStdoutBytes !== undefined) {
+          const bytes = Buffer.concat(stdoutChunks);
+          stdout = options.markerFreeContainment && !isUtf8(bytes) ? '' : bytes.toString('utf8');
+        }
+        return { exitCode: completedExitCode, signal: completedSignal, stdout, stderr, timedOut, ...(stdoutTruncated ? { stdoutTruncated: true } : {}) };
+      };
       const settleImmediately = (error: unknown): void => {
         if (settled) return;
         settled = true;
@@ -380,6 +425,7 @@ export function createDefaultPluginProcessRunner(
         reject(error);
       };
       const failCleanup = (cause: unknown): void => {
+        if (options.markerFreeContainment) closeStdio();
         const failure = new Error(cause instanceof Error ? cause.message : 'Plugin process cleanup could not be confirmed.', { cause });
         const diagnostics = observation?.diagnostics;
         if (diagnostics?.length) Object.assign(failure, {
@@ -391,7 +437,7 @@ export function createDefaultPluginProcessRunner(
         }));
       };
       const settleIfComplete = (): void => {
-        if (settled || !childExited || !cleanupCompleted || !inputCompleted) return;
+        if (settled || !childExited || !cleanupCompleted || !inputCompleted || !streamsClosed) return;
         settled = true;
         cleanup();
         if (aborted) {
@@ -427,9 +473,17 @@ export function createDefaultPluginProcessRunner(
         }
         let termination: Promise<unknown>;
         try {
-          termination = child.pid === undefined
-            ? Promise.resolve(direct('SIGKILL'))
-            : terminateProcessTreeImpl(
+          if (child.pid === undefined) {
+            termination = Promise.resolve(direct('SIGKILL'));
+          } else if (streamsReady) {
+            const normalExit = childExited && completedExitCode === 0 && completedSignal === null;
+            termination = terminateNativeCliProcessGroup(child.pid, process.kill, {
+              platform,
+              inspectLinuxGroup: platform === 'linux',
+              successfulOutput: normalExit ? { ready: streamsReady, canEndGrace: () => streamsClosed } : undefined,
+            }).finally(() => direct('SIGKILL'));
+          } else {
+            termination = terminateProcessTreeImpl(
                 child.pid,
                 direct,
                 {},
@@ -441,34 +495,47 @@ export function createDefaultPluginProcessRunner(
                     : {}),
                 },
               );
+          }
         } catch (error) {
           failCleanup(error);
           return;
         }
         void Promise.resolve(termination).then(
-          () => { cleanupCompleted = true; settleIfComplete(); },
+          () => {
+            if (settled) return;
+            cleanupCompleted = true;
+            if (!streamsClosed) {
+              // Give queued output time to arrive. An out-of-group process can keep the pipes open.
+              stdioCloseTimer = setTimeout(closeStdio, POSIX_STDIO_CLOSE_GRACE_MS);
+            }
+            settleIfComplete();
+          },
           failCleanup,
         );
       }
-      child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => {
-        if (options.maxStdoutBytes === undefined) {
+      child.stderr?.setEncoding('utf8');
+      if (options.maxStdoutBytes === undefined) {
+        child.stdout?.setEncoding('utf8');
+        child.stdout?.on('data', (chunk: string) => {
           if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length);
-          return;
-        }
-        const bytes = Buffer.from(chunk, 'utf8');
-        const remaining = Math.max(0, options.maxStdoutBytes - stdoutBytes);
-        stdout += bytes.subarray(0, remaining).toString('utf8');
-        stdoutBytes += bytes.length;
-        if (stdoutBytes > options.maxStdoutBytes) {
-          stdoutTruncated = true;
-          terminate(true);
-        }
-      });
+        });
+      } else {
+        const limit = options.maxStdoutBytes;
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const remaining = Math.max(0, limit - stdoutBytes);
+          if (remaining > 0) stdoutChunks.push(chunk.subarray(0, remaining));
+          stdoutBytes += chunk.length;
+          if (stdoutBytes > limit) {
+            stdoutTruncated = true;
+            child.stdout?.destroy();
+            terminate(true);
+          }
+        });
+      }
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
       child.on('error', (error) => {
         if (terminating && windowsJobInvocation) failCleanup(error);
-        else if (!terminating) settleImmediately(error);
+        else if (!terminating || child.pid === undefined) settleImmediately(error);
       });
       const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
         if (settled) return;
@@ -504,6 +571,9 @@ export function createDefaultPluginProcessRunner(
         };
         child.stdin.once('error', completeInput);
         child.stdin.once('finish', completeInput);
+        child.stdin.once('close', () => {
+          if (!inputCompleted) completeInput(new Error('Plugin process input closed before writing completed.'));
+        });
         try {
           child.stdin.end(invocation.stdin ?? '', completeInput);
         } catch (error) {

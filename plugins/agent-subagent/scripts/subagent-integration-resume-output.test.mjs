@@ -122,7 +122,7 @@ test('managed resume retains its original command host and rejects execution cha
   const commandId = 'fixture/managed-adapter';
   const fixed = { runner: 'node', entry: 'fake-adapter.mjs', args: ['fixed'], env: { FIXED: 'yes' }, envFrom: {}, cwd: 'caller' };
   const command = { selector: commandId, owner: { kind: 'plugin', producer: { sourceId: 'fixture', pluginName: 'managed-adapter', sourceIdentity: 'sha256:' + 'a'.repeat(64) } },
-    pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64), availability: 'ready', resourceRoot: f.directory,
+    pluginVersion: '1.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64), availability: 'ready', resourceRoot: f.directory, requiresPlatformContext: false, runtimeConfigPlatforms: [],
     routes: { subcommands: [{ name: 'execute', ...fixed }], fallback: { ...fixed, args: ['fallback'] } } };
   await fs.writeFile(launchFile, JSON.stringify(command));
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';
@@ -130,7 +130,7 @@ if(process.argv[3]==='show') console.log(JSON.stringify({schemaVersion:2,command
 else {await fs.appendFile(${JSON.stringify(invoked)},JSON.stringify({argv:process.argv.slice(2),awHome:process.env.AW_HOME})+'\\n');await import(${JSON.stringify(pathToFileURL(path.join(f.directory, 'fake-adapter.mjs')).href)});}
 `);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };
-  f.snapshot.values.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId, subcommand: 'execute' }]; await f.save();
+  f.snapshot.values.subagentCommands = [{ key: 'fixture', adapter: 'custom-managed', commandId, subcommand: 'execute' }]; await f.save();
   const first = await f.start({ resume: true, finishImmediately: true }, { env: { AW_COMMAND_HOST: JSON.stringify(host) } });
   await f.stopped(first.run);
   command.resourceRoot = f.workspace; await fs.writeFile(launchFile, JSON.stringify(command));

@@ -9,6 +9,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { safeError } from '../commands/scripts/runtime/contracts.mjs';
+import { resolveProbeExecutable, runProbeProcess } from '../commands/scripts/introspection/process.mjs';
 
 // Replace only the native host boundary before the runtime captures execFile.
 // This file runs in its own Node test process; the native platform tests use the
@@ -44,6 +45,88 @@ function windowsHostFixture(t, execute) {
   return api;
 }
 
+// Test Value Gate: a package-manager installation may link its declared bin directory.
+test('Windows task launch resolves a linked pnpm package and verifies the canonical bin', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-pnpm-shim-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const packageRoot = path.join(root, 'store', 'fixture-cli');
+  const packageLink = path.join(root, 'node_modules', 'fixture-cli');
+  const packageJson = path.join(packageRoot, 'package.json');
+  const entrypoint = path.join(packageRoot, 'cli.js');
+  const shim = path.join(root, 'fixture.cmd');
+  const node = path.join(root, 'node.exe');
+  await fs.mkdir(packageRoot, { recursive: true });
+  await fs.mkdir(path.dirname(packageLink));
+  await fs.symlink(packageRoot, packageLink, process.platform === 'win32' ? 'junction' : 'dir');
+  await fs.writeFile(packageJson, JSON.stringify({ name: 'fixture-cli', bin: { fixture: 'cli.js' } }));
+  await fs.writeFile(entrypoint, '');
+  await fs.writeFile(node, '');
+  await fs.writeFile(shim, [
+    '@SETLOCAL', '@IF EXIST "%~dp0\\node.exe" (',
+    '  "%~dp0\\node.exe"  "%~dp0\\node_modules\\fixture-cli\\cli.js" %*',
+    ') ELSE (', '  @SET PATHEXT=%PATHEXT:;.JS;=;%',
+    '  node  "%~dp0\\node_modules\\fixture-cli\\cli.js" %*', ')', '',
+  ].join('\r\n'));
+  const api = windowsHostFixture(t, async () => ({ result: true }));
+  const options = { cwd: root, env: {}, packageName: 'fixture-cli', binName: 'fixture' };
+  const invocation = await api.resolveSafeCommand(shim, ['argument with spaces'], options);
+  assert.equal(invocation.command, await fs.realpath(node));
+  assert.deepEqual(invocation.args, [await fs.realpath(entrypoint), 'argument with spaces']);
+  await fs.writeFile(packageJson, JSON.stringify({ name: 'fixture-cli', bin: { fixture: 'other.js' } }));
+  await assert.rejects(api.resolveSafeCommand(shim, [], options), { code: 'executableShimUnsupported' });
+});
+
+// Test Value Gate: pnpm can put its declared bin behind a package junction.
+// Probe with real files and Node, including the trailing separator in %~dp0.
+test('a Windows pnpm probe runs only the declared bin behind a package link', async (t) => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-pnpm-probe-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const packageRoot = path.join(root, 'store', 'fixture-cli');
+  const packageLink = path.join(root, 'node_modules', '@fixture', 'cli');
+  const bin = path.join(root, 'node_modules', '.bin');
+  const dependencies = path.join(bin, 'fixture-dependencies');
+  const shim = path.join(bin, 'fixture.cmd');
+  const metadata = path.join(packageRoot, 'package.json');
+  const entrypoint = path.join(packageRoot, 'bin', 'cli.cjs');
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  await fs.mkdir(path.dirname(entrypoint), { recursive: true });
+  await fs.mkdir(path.dirname(packageLink), { recursive: true });
+  await fs.mkdir(path.join(dependencies, 'probe-dependency'), { recursive: true });
+  await fs.symlink(packageRoot, packageLink, linkType);
+  await fs.writeFile(path.join(dependencies, 'probe-dependency', 'index.js'), 'module.exports = "found";');
+  await fs.writeFile(metadata, JSON.stringify({ name: '@fixture/cli', bin: { fixture: 'bin/cli.cjs' } }));
+  await fs.writeFile(entrypoint, 'console.log(JSON.stringify([require("probe-dependency"), ...process.argv.slice(2)]));');
+  const nodePath = '%~dp0fixture-dependencies';
+  const target = '..\\@fixture\\cli\\bin\\cli.cjs';
+  const options = { cwd: root, platform: 'win32', packageName: '@fixture/cli', binName: 'fixture',
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:path|node_path)$/i.test(key))), PATH: bin } };
+  const args = ['中文', '& echo injected > unwanted'];
+  for (const dp0 of ['%~dp0\\', '%~dp0']) {
+    await fs.writeFile(shim, [
+      '@SETLOCAL', '@IF NOT DEFINED NODE_PATH (', `  @SET "NODE_PATH=${nodePath}"`, ') ELSE (',
+      `  @SET "NODE_PATH=${nodePath};%NODE_PATH%"`, ')', `@IF EXIST "${dp0}node.exe" (`,
+      `  "${dp0}node.exe"  "${dp0}${target}" %*`,
+      ') ELSE (', '  @SET PATHEXT=%PATHEXT:;.JS;=;%',
+      `  node  "${dp0}${target}" %*`, ')', '',
+    ].join('\r\n'));
+    const invocation = await resolveProbeExecutable('fixture', args, options);
+    assert.equal(invocation.command, process.execPath);
+    const result = await runProbeProcess(invocation, options);
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), ['found', ...args]);
+    await assert.rejects(fs.stat(path.join(root, 'unwanted')), { code: 'ENOENT' });
+  }
+  await assert.rejects(resolveProbeExecutable('fixture', [], { ...options, packageName: 'different' }),
+    { code: 'executableShimUnsupported' });
+  await fs.writeFile(metadata, JSON.stringify({ name: '@fixture/cli', bin: { fixture: 'other.cjs' } }));
+  await assert.rejects(resolveProbeExecutable('fixture', [], options), { code: 'executableShimUnsupported' });
+  await fs.writeFile(metadata, JSON.stringify({ name: '@fixture/cli', bin: { fixture: 'bin/cli.cjs' } }));
+  const redirected = path.join(root, 'redirected-bin');
+  await fs.rename(path.dirname(entrypoint), redirected);
+  await fs.symlink(redirected, path.dirname(entrypoint), linkType);
+  await assert.rejects(resolveProbeExecutable('fixture', [], options), { code: 'executableShimUnsupported' });
+});
+
 const sourceIdentity = { sourceId: 'fixture', sourceIdentity: 'sha256:' + 'a'.repeat(64), pluginId: 'fixture/agent-subagent', pluginName: 'agent-subagent',
   pluginVersion: '1.0.0', platform: 'codex', sourceContentDigest: 'sha256:' + 'b'.repeat(64) };
 
@@ -54,12 +137,12 @@ async function ownedExecution(root, owner, id, overrides = {}) {
   const directory = path.join(containerDirectory, executionId);
   await fs.mkdir(directory, { recursive: true });
   for (const part of ['events', 'outbox', 'gaps', 'adapter']) await fs.mkdir(path.join(directory, part));
-  const meta = { schema: 5, id, key: 'd'.repeat(22), name: 'fixture', executionId, installedIdentity: sourceIdentity,
+  const meta = { schema: 6, id, key: 'd'.repeat(22), name: 'fixture', executionId, installedIdentity: sourceIdentity,
     token: 'e'.repeat(48), owner, processes: [], terminalAt: Date.now(), ...overrides };
   const { key, name, installedIdentity } = meta;
-  await fs.writeFile(path.join(entryDirectory, 'current.json'), JSON.stringify({ schema: 5, id, key, name, installedIdentity, owner, executionId }));
+  await fs.writeFile(path.join(entryDirectory, 'current.json'), JSON.stringify({ schema: 6, id, key, name, installedIdentity, owner, executionId }));
   await fs.writeFile(path.join(directory, 'owner.json'), JSON.stringify(meta));
-  return { directory, entryDirectory, containerDirectory, meta, handle: `aw5-${id}-${key}` };
+  return { directory, entryDirectory, containerDirectory, meta, handle: `aw6-${id}-${key}` };
 }
 
 // Test Value Gate: one transient identity failure must not poison later callers.
@@ -700,7 +783,7 @@ test('stop waits for worker exit after a final result', async (t) => {
       const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-stop-process-'));
       t.after(() => fs.rm(root, { recursive: true, force: true }));
       const worker = { pid: 424242, ppid: process.pid, pgid: null, started: '10' };
-      const final = { protocolVersion: 5, type: 'result', state: 'cancelled', generationStarted: true, backendExitCode: 0,
+      const final = { protocolVersion: 6, type: 'result', state: 'cancelled', generationStarted: true, backendExitCode: 0,
         text: '', code: 'fixtureStopped', remoteStopConfirmed: true };
       let workerAlive = true;
       const api = windowsHostFixture(t, async (_command, _args, _options, request) => {

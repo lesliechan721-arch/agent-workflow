@@ -77,7 +77,7 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 安装就绪只要求该路由需要的包、登记、启用和组件产物。已确认的输入或内容漂移作为 warning 且目标待同步，附精确插件、目标和范围的同步操作。明确禁用或缺少必要输出也待处理。必要事实无法观察时保持未知，实际归属冲突和安全门禁继续阻断。加载诊断可见，OpenCode 的可选加载及其诊断对目录交付和汇总无影响。
 
-包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。原生包输入摘要考虑组件 renderer 的 configKeys。共享命令包独立核对已应用的路由输入及按平台快照。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
+包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。原生包输入摘要考虑组件 renderer 的 configKeys，并纳入适用的托管命令调用选择器。增删包级运行配置会改变该选择器，即使插件版本和静态 Skill 源文件都未变化，状态也会提示同步。共享命令包独立核对已应用的路由输入及按平台快照。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
 静态组件的输入摘要采用该类别的写入方式和所需字段的交付映射。显式跨类别前提仍采用宿主运行资格，动态 renderer 仍绑定完整的能力输入。Pi 角色已就绪时，状态根据现场扩展更新执行提示，单纯的扩展变动不要求同步角色文件。
 
@@ -220,6 +220,8 @@ sequenceDiagram
   - 普通保存保护授权来源中原先有效的引用，包括尚未安装的消费者。
   - apply 通过联合恢复计划刷新既有受影响的原生平台、generic 与共享命令包。缺失输出提示同步。命令包发布前复核 Active 版本、现有归属、安装证据、资源与可见权限影响。证据变动时重新准备 Review。失败阻断相关消费者，独立目标继续。apply 沿用现有 Intent 与目标。
   - 平台共享影响以实际渲染单元和组件为依据。命令包单独记录路由变化和按平台的配置快照差异。带 `--platform` 的应用只可能更新该平台快照。公共配置改变时可刷新动态路由和已受影响的快照。完整条件见[命令包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。
+
+配置编辑器与 CLI 的动态建议只读当前来源、profile 及非敏感配置，TUI 可叠加同插件草稿。查询无需写锁，候选与失败诊断均不进入 Store、有效值计算、Review 或 stale 证据。[配置建议脚本](../../reference/plugin-runtime.md#配置建议脚本)
 
 ### 4.3 配置变更命令行为与显式恢复（Set / Unset / Reset）
 

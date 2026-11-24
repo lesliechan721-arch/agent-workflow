@@ -14,6 +14,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
+import { focusAction } from '../helpers/tui-console-app-input.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({ status: vi.fn() }));
@@ -34,11 +35,36 @@ async function keys(ui: ReturnType<typeof render>, ...values: string[]): Promise
   }
 }
 const down = '\u001b[B';
+const up = '\u001b[A';
 const esc = '\u001b';
 
-async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
+async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }, withSuggestions = false) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-source');
+  const probeModePath = path.join(isolation.layout.fixtureCwd, 'probe-mode');
+  if (withSuggestions) {
+    await fs.outputFile(probeModePath, fieldKey === 'suggested' ? 'slow' : 'ok');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'arrays', 'scripts', 'suggestions.mjs'), `
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+const request = JSON.parse(readFileSync(0, 'utf8'));
+const mode = readFileSync(join(request.cwd, 'probe-mode'), 'utf8');
+if (mode === 'slow') await delay(8000);
+if (mode === 'invalid') {
+  while (!existsSync(join(request.cwd, 'release-suggestions'))) await delay(10);
+}
+const id = request.dependencyValues.id ?? 'top';
+const provider = request.providerConfigValues.providers?.[0]?.id ?? 'unknown';
+const value = id + '/' + provider;
+console.log(JSON.stringify(mode === 'offline'
+  ? { schemaVersion: 1, status: 'unavailable', items: [], message: 'Provider offline' }
+  : { schemaVersion: 1, status: 'ok', items: [{
+    value: mode === 'invalid' ? 123 : value,
+    title: mode === 'invalid' ? 'Wrong model type' : value,
+  }] }));
+`);
+  }
   const v4 = fieldKey === 'subagentCommands' || fieldKey === 'advisorProfile';
   await createCatalogSnapshotFixture(sourceRoot, 'arrays', [], 'array fixture', (manifest) => {
     manifest.config = { schemaVersion: 5, fields: {
@@ -57,6 +83,39 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
       summaries: { profile: { kind: 'join', parts: [{ path: '/model' }, { path: '/effort' }], separator: '/', missing: '未设置' } },
       fieldViews: { pipeline: { itemSummary: 'profile' } },
     } };
+    if (fieldKey === 'workers' || fieldKey === 'worker' || withSuggestions) {
+      const suggestion = {
+        type: 'string' as const, title: 'Model picker', suggestions: { provider: 'model-list' },
+        choices: { allowCustom: true, presets: [{ id: 'baseline', title: 'Static model', value: 'baseline' }] },
+      };
+      const item = {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string' as const, required: true },
+          models: {
+            type: 'array' as const,
+            validation: { minItems: 1, uniqueBy: 'id' },
+            items: { type: 'object' as const, properties: {
+              id: { type: 'string' as const, required: true },
+              efforts: { type: 'array' as const, items: { type: 'string' as const } },
+              enabled: { type: 'boolean' as const },
+              ...(withSuggestions ? { model: { ...suggestion, suggestions: { provider: 'model-list', dependsOn: ['id'] } } } : {}),
+            } },
+          },
+        },
+      };
+      const initial = { name: 'worker', models: [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }] };
+      manifest.config = { schemaVersion: 5, fields: {
+        workers: { type: 'array', items: item, default: [initial] },
+        worker: { ...item, default: initial },
+        ...(withSuggestions ? {
+          suggested: suggestion,
+          providers: { type: 'array' as const, items: { type: 'object' as const, properties: { id: { type: 'string' as const } } },
+            default: [{ id: 'stock' }] },
+        } : {}),
+      } };
+      if (withSuggestions) manifest.scripts = { config: { suggestions: { runner: 'node', path: './scripts/suggestions.mjs' } } };
+    }
     if (v4) {
       const definition = createConfigV4Definition();
       const commands = definition.fields.subagentCommands!;
@@ -87,15 +146,30 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   const captured: OperationIntent[] = [];
   const prepare = dependencies.prepareReviewEvidence!;
   dependencies.prepareReviewEvidence = async (intent, ...args) => { captured.push(intent); return prepare(intent, ...args); };
+  const probeRuns: Array<{ path: (string | number)[]; signal?: AbortSignal }> = [];
+  const getSuggestions = dependencies.getConfigSuggestions;
+  if (withSuggestions && getSuggestions) {
+    dependencies.getConfigSuggestions = (lookup, run, signal) => getSuggestions(lookup, (prepared) => run({
+      ...prepared,
+      run: (runSignal) => {
+        probeRuns.push({ path: lookup.fieldPath, signal: runSignal });
+        return prepared.run(runSignal);
+      },
+    }), signal);
+  }
   const controller = new TuiController(dependencies);
   await controller.load();
   controller.push({ name: 'configFields', pluginId: 'team/arrays', layer: { profile: 'codex' } });
-  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey, editor: fieldKey === 'advisorProfile' ? 'object' : 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
+  const objectField = fieldKey === 'advisorProfile' || fieldKey === 'worker';
+  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey,
+    editor: fieldKey === 'suggested' ? 'string' : objectField ? 'object' : 'array',
+    ...(fieldKey === 'fixed' || fieldKey === 'suggested' ? { mode: 'choices' as const } : {}) });
   const ui = render(<ConsoleAppV4 controller={controller} size={size} />);
   await vi.waitFor(() => {
     const frame = ui.lastFrame();
     if (fieldKey === 'fixed') expect(frame).toContain('第一方案');
-    else if (fieldKey === 'advisorProfile') expect(frame).toContain('使用此完整对象');
+    else if (fieldKey === 'suggested') expect(frame).toContain('Static model');
+    else if (objectField) expect(frame).toContain('使用此完整对象');
     else {
       expect(frame).toContain('添加一项');
       // The add action is visible before initial rows load; a real first row proves editing is ready.
@@ -122,7 +196,7 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   const store = async (profile: 'common' | 'codex') => {
     const platform = profile === 'common' ? undefined : profile;
     const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false,
-      groups: [{ scope: 'user', platform, updates: v4 ? { subagentCommands: [] } : { labels: ['safe'] } }] });
+      groups: [{ scope: 'user', platform, removeKeys: [fieldKey] }] });
     return readPluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope: 'user', platform, cwd: isolation.layout.fixtureCwd, env: isolation.env });
   };
   const record = async (name: string) => {
@@ -132,10 +206,156 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
     }, { spaces: 2 });
   };
   await record(`list-${fieldKey}`);
-  return { ui, controller, dependencies, captured, isolation, store, record };
+  return { ui, controller, dependencies, captured, isolation, store, record, probeRuns, probeModePath };
 }
 
 describe('array editor with real config runtime', () => {
+  it('edits a nested model list, validates exact paths and saves the confirmed ordered value', async () => {
+    const { ui, captured, store } = await setup('workers', { columns: 80, rows: 24 });
+    await keys(ui, '\r');
+    expect(ui.lastFrame()).toContain('3 项 · alpha · beta');
+    expect(ui.lastFrame()).not.toContain('gamma');
+    await keys(ui, down, '\r');
+    expect(ui.lastFrame()).toContain('03  id=gamma');
+
+    // Add a duplicate and confirm the error points to the new row's id.
+    await keys(ui, 'a', '\r', '\r', 'alpha', '\r', 'c', 'c');
+    expect(ui.lastFrame()).toContain('workers[0].models[3].id');
+    expect((await store('codex')).exists).toBe(false);
+
+    // Repair the new row, and add a scalar array and boolean in its object editor.
+    await keys(ui, '\r', '\r', '\r', '\u0015', 'delta', '\r',
+      down, '\r', 'a', '\r', 'high', '\r', 'c', down, '\r', '\r', 'c');
+    expect(ui.lastFrame()).not.toContain('workers[0].models[3].id');
+
+    // Move delta up and back down, then remove beta.
+    await keys(ui, 'a', down, '\r', '\r');
+    expect(ui.lastFrame()).toContain('03  id=delta');
+    await keys(ui, 'a', down, '\r', down, '\r');
+    expect(ui.lastFrame()).toContain('04  id=delta');
+    await keys(ui, up, up, 'a', down, '\r', down, down, '\r');
+    await keys(ui, 'c');
+    expect(ui.lastFrame()).toContain('3 项 · alpha · gamma');
+    expect((await store('codex')).exists).toBe(false);
+    await keys(ui, 'c', 'c');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
+    expect((await store('codex')).exists).toBe(false);
+    await keys(ui, 's');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
+    const value = [{ name: 'worker', models: [{ id: 'alpha' }, { id: 'gamma' }, {
+      id: 'delta', efforts: ['high'], enabled: true,
+    }] }];
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [{ updates: { workers: value } }] });
+    expect((await store('codex')).values.workers).toEqual(value);
+  });
+
+  it('cancels a nested model list while retaining parent and overview drafts', async () => {
+    const { ui, store } = await setup('worker');
+    await keys(ui, '\r', '\r', '\u0015', 'staged', '\r', 'c');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
+    await keys(ui, '\r', '\r', '\r', '\u0015', 'parent', '\r');
+    await keys(ui, down, '\r', 'a', down, '\r', down, down, '\r');
+    expect(ui.lastFrame()).toContain('02  id=gamma');
+    await keys(ui, esc);
+    expect(ui.lastFrame()).toContain('parent');
+    expect(ui.lastFrame()).toContain('3 项 · alpha · beta');
+    await keys(ui, esc);
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('staged'));
+    expect((await store('codex')).exists).toBe(false);
+  });
+
+  it('keeps manual input available during slow suggestions and aborts when the field closes', async () => {
+    const { ui, controller, dependencies, probeRuns, probeModePath, store } = await setup('suggested', { columns: 70, rows: 20 }, true);
+    await vi.waitFor(() => {
+      expect(probeRuns).toHaveLength(1);
+      expect(ui.lastFrame()).toContain('正在获取动态建议');
+    });
+    expect(ui.lastFrame()).toContain('Static model');
+    await keys(ui, '\r', 'manual-r', '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
+    expect(probeRuns[0]!.signal?.aborted).toBe(true);
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
+    await keys(ui, 's');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
+    expect((await store('codex')).values.suggested).toBe('manual-r');
+
+    // Simulate the result of a provider finishing after the cancellation arrived.
+    await keys(ui, esc);
+    const getSuggestions = dependencies.getConfigSuggestions!;
+    let delayed: { signal?: AbortSignal; deliver: () => void } | undefined;
+    dependencies.getConfigSuggestions = (lookup, run, signal) => getSuggestions(lookup,
+      (prepared) => run({ ...prepared, run: (runSignal) => new Promise((resolve) => {
+        delayed = { signal: runSignal, deliver: () => resolve({
+          schemaVersion: 1, status: 'ok', items: [{ title: 'Expired model', value: 'expired' }],
+        }) };
+      }) }), signal);
+    const openSuggestions = () => controller.push({
+      name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' },
+      fieldKey: 'suggested', editor: 'string', mode: 'choices',
+    });
+    openSuggestions();
+    await vi.waitFor(() => expect(delayed).toBeDefined(), { timeout: 5000 });
+    await keys(ui, esc);
+    expect(delayed!.signal?.aborted).toBe(true);
+    dependencies.getConfigSuggestions = getSuggestions;
+    await fs.writeFile(probeModePath, 'ok');
+    openSuggestions();
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('top/stock'), { timeout: 5000 });
+    delayed!.deliver();
+    await turn();
+    expect(ui.lastFrame()).toContain('top/stock');
+    expect(ui.lastFrame()).not.toContain('Expired model');
+  });
+
+  it('uses live sibling and unsaved provider values and refreshes cached suggestions', async () => {
+    const { ui, controller, probeRuns, probeModePath, store } = await setup('workers', { columns: 80, rows: 24 }, true);
+    const openArray = async (fieldKey: string, value: string) => {
+      controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey, editor: 'array' });
+      await vi.waitFor(() => expect(ui.lastFrame()).toContain(`01  ${value}`));
+      await focusAction(ui, `01  ${value}`);
+    };
+    await keys(ui, esc);
+    await openArray('providers', 'id=stock');
+    await keys(ui, '\r', '\r', '\r', '\u0015', 'drafted', '\r', 'c', 'c');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
+    expect((await store('codex')).exists).toBe(false);
+    await openArray('workers', 'name=worker');
+    await keys(ui, '\r', down, '\r', '\r', down, down, down, '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('alpha/drafted'), { timeout: 5000 });
+    expect(ui.lastFrame()).not.toContain('Static model');
+    expect(probeRuns.map((run) => run.path)).toEqual([['workers', 0, 'models', 0, 'model']]);
+
+    await keys(ui, esc, '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('alpha/drafted'), { timeout: 5000 });
+    expect(probeRuns).toHaveLength(1);
+    await keys(ui, esc, up, up, up, '\r', '\r', '\u0015', 'changed', '\r', down, down, down, '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('changed/drafted'), { timeout: 5000 });
+    expect(probeRuns).toHaveLength(2);
+
+    await fs.writeFile(probeModePath, 'offline');
+    await keys(ui, 'r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('Provider offline'), { timeout: 5000 });
+    expect(ui.lastFrame()).toContain('Static model');
+    expect(probeRuns).toHaveLength(3);
+    await fs.writeFile(probeModePath, 'ok');
+    await keys(ui, esc, '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('changed/drafted'), { timeout: 5000 });
+    expect(probeRuns).toHaveLength(4);
+    await focusAction(ui, 'changed/drafted');
+    await keys(ui, '\r');
+    expect(ui.lastFrame()).toContain('changed/drafted');
+    expect((await store('codex')).exists).toBe(false);
+
+    await fs.writeFile(probeModePath, 'invalid');
+    await keys(ui, '\r', '\r', 'r');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('正在获取动态建议'));
+    await focusAction(ui, 'Static model');
+    await fs.ensureFile(path.join(path.dirname(probeModePath), 'release-suggestions'));
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('没有动态建议'), { timeout: 5000 });
+    expect(ui.lastFrame()).toMatch(/› [○●◆] Static model/u);
+    expect(ui.lastFrame()).not.toContain('Wrong model type');
+  });
+
   it('previews branch removals, cancels a switch and saves a builtin without injecting its fixed mode', async () => {
     const { ui, controller, captured, store } = await setup('subagentCommands', { columns: 80, rows: 24 });
     await keys(ui, '\r', down, down, '\r', '\r', '\r');

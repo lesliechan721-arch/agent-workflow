@@ -109,6 +109,8 @@ export async function resolvePluginConfigReferenceContext(options: {
   env?: NodeJS.ProcessEnv;
   plugins?: readonly PluginMeta[];
   storeOverrides?: ReadonlyMap<string, Partial<Record<Scope, PluginConfigStore>>>;
+  /** Suggestions may proceed with no referenced values from a damaged or unreadable Store. */
+  allowInvalidStores?: boolean;
 }): Promise<{ context: PluginConfigReferenceContext; evidence: PluginConfigReferenceEvidence[] }> {
   options = { ...options, scope: options.context ?? options.scope };
   const workContext = options.context ? await resolveWorkContext({ cwd: options.cwd, context: options.context }) : undefined;
@@ -144,8 +146,16 @@ export async function resolvePluginConfigReferenceContext(options: {
       const overrides = options.storeOverrides?.get(plugin.manifest.name);
       const storeEvidence = (store: PluginConfigStore) => ({ exists: store.exists, state: store.state,
         ...(store.rawDigest ? { rawDigest: store.rawDigest } : {}) });
-      const user = overrides?.user ?? await readPluginConfigStore({ ...identity, scope: 'user', platform: options.platform });
-      entry.stores.user = storeEvidence(user);
+      const user = overrides?.user ?? await readPluginConfigStore({ ...identity, scope: 'user', platform: options.platform })
+        .catch((error: unknown) => {
+          if (!options.allowInvalidStores) throw error;
+          return undefined;
+        });
+      if (user) entry.stores.user = storeEvidence(user);
+      if (!user || (options.allowInvalidStores && user.state === 'invalid')) {
+        entries[plugin.manifest.name] = { ...entries[plugin.manifest.name]!, values: {} };
+        continue;
+      }
       const effective = await resolveEffectivePluginConfigFromStores({ manifest: plugin.manifest,
         targetScope: options.scope, platform: options.platform, projectRoot,
         stores: { user },

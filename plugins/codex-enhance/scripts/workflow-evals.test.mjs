@@ -17,6 +17,8 @@ import { inspectExploreRoleContract } from '../skills/codex-explore/evals/codex-
 import workflowCorpusDocument from '../skills/codex-explore/evals/workflow-evals.json' with { type: 'json' };
 import outputContractCorpusDocument from '../skills/codex-explore/evals/output-contract-evals.json' with { type: 'json' };
 
+const exploreRole = 'aw-eval-source-codex-enhance-codex-explore';
+
 const lifecycleContract = {
   minimum_initial_wait_timeout_ms: 600_000,
   allow_liveness_probe: false,
@@ -278,7 +280,7 @@ function versionedRun() {
     tool: 'spawn_agent',
     call_id: 'spawn-versioned',
     arguments: {
-      agent_type: 'codex-explore',
+      agent_type: exploreRole,
       message: '调查 docs/ 中的 timeout 演进。',
       fork_turns: 'none',
     },
@@ -306,7 +308,7 @@ function versionedRun() {
     leaf_trace: {
       child_threads: [{
         thread_id: childId,
-        agent_role: 'codex-explore',
+        agent_role: exploreRole,
         initial_user_message: null,
         initial_opaque_link: { linkedCallId: 'spawn-versioned' },
       }],
@@ -765,25 +767,22 @@ async function testRoleAvailability() {
   const agentsRoot = path.join(root, '.codex', 'agents');
   try {
     await mkdir(agentsRoot, { recursive: true });
-    for (const name of [
-      'codex-explore',
-    ]) {
-      await writeFile(
-        path.join(agentsRoot, `${name}.toml`),
-        `name = ${JSON.stringify(name)}\ndescription = ${JSON.stringify(`${name} role`)}\ndeveloper_instructions = "Inspect evidence."\n`,
-        'utf8',
-      );
-    }
-    const initial = await inspectExploreRoleContract(root);
-    assert.deepEqual(initial.roles.map((role) => role.name), [
-      'codex-explore',
-    ]);
+    const roleFile = path.join(agentsRoot, `${exploreRole}.toml`);
     await writeFile(
-      path.join(agentsRoot, 'codex-explore.toml'),
-      'name = "codex-explore"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n',
+      roleFile,
+      `name = "${exploreRole}"\ndescription = "standard role"\ndeveloper_instructions = "Inspect evidence."\n`,
+      'utf8',
+    );
+    const initial = await inspectExploreRoleContract(root);
+    assert.deepEqual(initial.roles, [{ name: exploreRole, path: `.codex/agents/${exploreRole}.toml` }]);
+    await writeFile(
+      roleFile,
+      `name = "${exploreRole}"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n`,
       'utf8',
     );
     assert.deepEqual(await inspectExploreRoleContract(root), initial);
+    await writeFile(roleFile, 'name = "codex-explore"\ndescription = "wrong role"\n');
+    await assert.rejects(inspectExploreRoleContract(root), /must declare role/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

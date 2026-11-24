@@ -37,9 +37,8 @@ import {
 const snapshotTool = [
   "import fs from 'node:fs';",
   "import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';",
-  "const [platform, ...args] = process.argv.slice(2);",
-  "const { values, installedIdentity } = await readCommandRuntimeConfig({ from: import.meta.url, platform, keys: ['mode'] });",
-  "fs.writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ mode: values.mode, version: installedIdentity.pluginVersion, args }));",
+  "const { values, installedIdentity, platform } = await readCommandRuntimeConfig({ from: import.meta.url, keys: ['mode'] });",
+  "fs.writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ mode: values.mode, version: installedIdentity.pluginVersion, platform, args: process.argv.slice(2) }));",
 ].join('\n');
 
 function invokePublicCommand(nativeCliRunner: NativeCliRunner) {
@@ -64,10 +63,10 @@ async function readCommandSnapshot(cwd: string, selector: string, platform: 'cod
   const capture = path.join(cwd, `command-${platform}.json`);
   await fs.remove(capture);
   const captured = createCapturedCliIo();
-  const result = await runCli(['command', 'run', selector, '--', 'check', platform, 'payload'],
+  const result = await runCli(['command', 'run', `${selector}/${platform}`, '--', 'check', 'payload'],
     { cwd, env: { ...env, CAPTURE_FILE: capture }, io: captured.io, interactive: false });
   expect({ exitCode: result, stderr: captured.readStderr() }).toEqual({ exitCode: 0, stderr: '' });
-  expect(await fs.readJson(capture)).toEqual({ ...value, args: ['payload'] });
+  expect(await fs.readJson(capture)).toEqual({ ...value, platform, args: ['payload'] });
 }
 
 describe('five namespaced write commands', () => {
@@ -389,6 +388,11 @@ describe('five namespaced write commands', () => {
     expectPublication(await run(cwd, ['plugin', 'install', selector, '--scope', 'user', '--yes']), 'created', 'ready');
     const first = await show();
     expect(first).toMatchObject({ selector, runtimeConfigPlatforms: ['codex'] });
+    await fs.writeFile(path.join(first.resourceRoot, '.aw/runtime-config/codex.json'), '{broken');
+    expect(await show()).toMatchObject({ availability: 'unavailable', requiresPlatformContext: null });
+    const repair = await run(cwd, ['plugin', 'sync', selector, '--target', 'codex', '--context', 'user', '--yes']);
+    expect(repair, JSON.stringify(repair)).toMatchObject({ exitCode: 0 });
+    expect(await show()).toMatchObject({ availability: 'ready', requiresPlatformContext: true });
     await readCommandSnapshot(cwd, selector, 'codex', { mode: 'old-codex', version: '1.0.0' });
 
     await writePreferences(preferences, { ...createEmptyPreferences(), targets: ['codex', 'claude'] });
@@ -400,8 +404,8 @@ describe('five namespaced write commands', () => {
     expect(installed.payload.data.packages).toEqual([expect.objectContaining({ packageId: first.packageId, selector })]);
     const codexOutput = [...codex.packageRoots.values()][0]!;
     const claudeOutput = [...claude.packageRoots.values()][0]!;
-    for (const root of [codexOutput, claudeOutput]) {
-      expect(await fs.readFile(path.join(root, 'skills/shared/SKILL.md'), 'utf8')).toContain(`aw command run ${selector} -- check`);
+    for (const [platform, root] of [['codex', codexOutput], ['claude', claudeOutput]] as const) {
+      expect(await fs.readFile(path.join(root, 'skills/shared/SKILL.md'), 'utf8')).toContain(`aw command run ${selector}/${platform} -- check`);
     }
     const untouchedClaude = await snapshotRegularTree(claudeOutput);
     for (const platform of ['codex', 'claude']) {
@@ -445,7 +449,7 @@ describe('five namespaced write commands', () => {
     const skill = path.join(pluginRoot, 'skills', 'shared-native');
     const trace = path.join(cwd, 'shared-command-render.jsonl');
     await fs.outputFile(path.join(skill, 'SKILL.md'),
-      '---\nname: shared-native\ndescription: Shared Claude fixture.\n---\n{{aw.command}} check claude payload\n');
+      '---\nname: shared-native\ndescription: Shared Claude fixture.\n---\n{{aw.command}} check payload\n');
     await fs.outputFile(path.join(skill, 'README.md'), '# Shared Claude\n');
     await fs.outputFile(path.join(pluginRoot, 'tools/tool.mjs'), snapshotTool);
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
@@ -482,7 +486,7 @@ describe('five namespaced write commands', () => {
 
     const readPackage = async () => (await run(cwd, ['command', 'show', selector])).payload.data.commands[0];
     const checkRun = (cwd: string) => readCommandSnapshot(cwd, selector, 'claude', { mode: 'configured', version: '1.0.0' });
-    const rule = `Bash(aw command run ${selector} -- check *)`;
+    const rule = `Bash(aw command run ${selector}/claude -- check *)`;
     let packageId: string | undefined;
     for (const [scope, project] of [['user', cwd], ['project', projects[0]!], ['project', projects[1]!]] as const) {
       const installed = await run(project, ['plugin', 'install', selector, '--scope', scope, '--yes']);
@@ -498,7 +502,7 @@ describe('five namespaced write commands', () => {
     expect(records).toHaveLength(3);
     expect(new Set(records.map(({ installPath }) => installPath)).size).toBe(1);
     expect(await fs.readFile(path.join(records[0]!.installPath, 'skills/shared-native/SKILL.md'), 'utf8'))
-      .toContain(`aw command run ${selector} -- check claude payload`);
+      .toContain(`aw command run ${selector}/claude -- check payload`);
     const renders = (await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(renders.length).toBeGreaterThan(0);
     const sharedInput = {

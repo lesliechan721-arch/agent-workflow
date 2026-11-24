@@ -1,4 +1,6 @@
 import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
+import type { ConfigSuggestionLookup } from './config-suggestions.js';
+import type { ConfigSuggestionsResponseV1, PreparedConfigSuggestions } from '../utils/plugin-config-suggestions.js';
 import { isPlatformTarget, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import { agentLabel } from './glossary.js';
 import crypto from 'node:crypto';
@@ -973,6 +975,12 @@ export interface TuiControllerDependencies {
   getConfigReferenceContext?: (
     pluginId: string, options: ConfigProfileOptions, draft: ConfigReferenceDraft, signal: AbortSignal,
   ) => Promise<ConfigReferenceContext>;
+  getConfigSuggestions?: (
+    lookup: ConfigSuggestionLookup,
+    run: (prepared: Pick<PreparedConfigSuggestions, 'cacheKey' | 'project' | 'run'>) =>
+      Promise<ConfigSuggestionsResponseV1>,
+    signal: AbortSignal,
+  ) => Promise<ConfigSuggestionsResponseV1>;
   getConfigResetAvailability?: (
     pluginId: string,
     options: ConfigProfileOptions,
@@ -1704,6 +1712,7 @@ export class TuiController {
   #taskRetryIntent?: PluginWriteTaskIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
+  readonly #configSuggestions = new Map<string, ConfigSuggestionsResponseV1>();
   #lastRecordedResultId?: string;
   readonly #operationDiagnostics = new Map<string, {
     diagnostics: SafeOperationDiagnostic[];
@@ -1842,6 +1851,7 @@ export class TuiController {
   }
 
   attachOperationHistory(history: OperationHistoryStore, epoch: number): void {
+    if (epoch !== this.#sessionEpoch) this.#configSuggestions.clear();
     this.#operationHistory = history;
     this.#sessionEpoch = epoch;
   }
@@ -2604,9 +2614,14 @@ export class TuiController {
     this.#normalizeCurrentRoute();
   }
 
+  #beginCatalogSession(options?: { reuseValidatedGenerations?: boolean }): void {
+    this.#configSuggestions.clear();
+    this.dependencies.beginCatalogSession?.(options);
+  }
+
   async load(): Promise<void> {
     this.#assertAcceptingActions();
-    this.dependencies.beginCatalogSession?.();
+    this.#beginCatalogSession();
     const generation = ++this.#generation;
     this.#scopedRefreshToken.user += 1;
     this.#scopedRefreshToken.project += 1;
@@ -4299,7 +4314,7 @@ export class TuiController {
   async reloadCatalog(options: { sourceId: string }): Promise<boolean> {
     this.#assertAcceptingActions();
     if (this.catalogActivationBlockReason()) return false;
-    this.dependencies.beginCatalogSession?.();
+    this.#beginCatalogSession();
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
@@ -4388,6 +4403,39 @@ export class TuiController {
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigReferenceContext(
       pluginId, structuredClone(options), structuredClone(draft), combined,
     )));
+  }
+
+  async getConfigSuggestions(
+    lookup: ConfigSuggestionLookup, refresh: boolean, signal: AbortSignal,
+  ): Promise<ConfigSuggestionsResponseV1> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.getConfigSuggestions) return { schemaVersion: 1, status: 'unavailable', items: [] };
+    const combined = AbortSignal.any([this.#abort.signal, signal]);
+    const frameId = this.#router.snapshot.currentFrameId;
+    const epoch = this.#sessionEpoch;
+    const generation = this.#generation;
+    const verifyRequest = (): void => {
+      combined.throwIfAborted();
+      if (generation !== this.#generation || epoch !== this.#sessionEpoch || frameId !== this.#router.snapshot.currentFrameId) {
+        throw new DOMException('Config field changed', 'AbortError');
+      }
+    };
+    return this.#trackRead(this.dependencies.getConfigSuggestions(structuredClone(lookup), async (prepared) => {
+      verifyRequest();
+      if (!refresh) {
+        const cached = this.#configSuggestions.get(prepared.cacheKey);
+        if (cached) {
+          // Once a value is recognized as sensitive, keep it out of this shared cache entry.
+          const redacted = cloneFrozen(prepared.project(cached, 'cache'));
+          this.#configSuggestions.set(prepared.cacheKey, redacted);
+          return cloneFrozen(prepared.project(redacted));
+        }
+      } else this.#configSuggestions.delete(prepared.cacheKey);
+      const response = cloneFrozen(await prepared.run(combined));
+      verifyRequest();
+      if (response.status === 'ok') this.#configSuggestions.set(prepared.cacheKey, response);
+      return cloneFrozen(prepared.project(response));
+    }, combined));
   }
 
   async saveConfigDraft(
@@ -5132,7 +5180,7 @@ export class TuiController {
       generation = ++this.#generation;
       if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration'
         || ticket.intent.kind === 'catalogSourcesRecovery') {
-        this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'sourceMutation' ? {
+        this.#beginCatalogSession(ticket.intent.kind === 'sourceMutation' ? {
           reuseValidatedGenerations: true,
         } : undefined);
         try {
@@ -5589,7 +5637,7 @@ export class TuiController {
     currentEvidence?: OperationEvidence,
     generation = this.#generation,
   ): Promise<OperationExecuteResult> {
-    this.dependencies.beginCatalogSession?.();
+    this.#beginCatalogSession();
     generation = ++this.#generation;
     try {
       const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
@@ -5750,6 +5798,7 @@ export class TuiController {
     this.#cancelInstallPlacementRequest();
     this.#catalogSourcesSession.dispose();
     this.#abort.abort();
+    this.#configSuggestions.clear();
     this.#progressUnsubscribe?.();
     this.#tickets.clear();
     this.#phase = 'disposed';

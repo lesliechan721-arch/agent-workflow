@@ -51,7 +51,7 @@ aw dev eval prepare agent-subagent spawn-subagent --suite trigger-dev-build --pr
 
 `provider-evals.json` 的 42 个独立 case 覆盖四档复杂度 profile、复杂只读任务不误入 simple、范围有限的 plan/review 使用 general、高难系统任务使用 advanced、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史与 model/effort 字段的版本差异、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。Engine 每次只把一个 case、variant 和 attempt 交给 adapter。prepare 只生成 `CodexWorkflowRequest v1`；grade 只使用 Engine normalized evidence。显式 `$skill` 从 case 机械重建；隐式加载只接受 `skillLoads` evidence。spawn 路由只用 normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 评分，不根据 query、最终说明或调用摘要猜测证据。零 spawn 仍是阻断用例的硬门禁；解释只检查非空，并用单行 `ROUTING_BLOCK_REASON=<枚举>` 记录结构化原因。Engine 或 grade 失败会停止 batch，不重试。
 
-canonical task role 为 `subagent`。四个通用档位默认均为 native；普通 V1/V2 调用省略未配置的 model/effort，不主动覆盖宿主选择。明确配置或本次要求的值按字段传递，保留 task role。V2 全历史继承省略 model/effort，硬参数与全历史冲突时继续阻断。默认配置下，role 或模型参数不能区分复杂度档位；配置选择用例使用显式自定义项和非默认配置取证。
+Codex Eval 中的任务角色为 `aw-eval-source-agent-subagent-subagent`。四个通用档位默认均为 native；普通 V1/V2 调用省略未配置的 model/effort，不主动覆盖宿主选择。明确配置或本次要求的值按字段传递，保留 task role。V2 全历史继承省略 model/effort，硬参数与全历史冲突时继续阻断。默认配置下，role 或模型参数不能区分复杂度档位；配置选择用例使用显式自定义项和非默认配置取证。
 
 ```bash
 aw dev eval prepare agent-subagent spawn-subagent --suite routing --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-routing --json
@@ -82,7 +82,7 @@ aw dev eval prepare agent-subagent spawn-subagent --suite lifecycle-timeout --pr
 
 ## 运行调度与角色边界
 
-`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。外部任务使用 `aw command run <来源>/<插件> -- start --platform codex`，传入 `--executor` 和 `--prompt-file` 或 `--prompt`，并按需要提供 `--instructions-file`。后续用原句柄 wait/result。用例前提、输入和证据范围见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。
+`joint-workflow`、`joint-guide-only`、`executor-instructions` 分别覆盖联合工作流、Guide 单独可用和直接执行者。外部任务使用 `aw command run <来源>/<插件>/codex -- start`，传入 `--executor` 和 `--prompt-file` 或 `--prompt`，并按需要提供 `--instructions-file`。后续用原句柄 wait/result。用例前提、输入和证据范围见 [ROLE-BOUNDARY.md](ROLE-BOUNDARY.md)。
 
 以下检查使用已编译 CLI、pnpm 的已有依赖缓存、隔离 Home 和本地 Adapter。它执行公开 Eval prepare、Catalog 构建、安装、配置应用和命令回执读取，覆盖 J11、J12、J15、J16、J17。将 `npm_config_store_dir` 指向已缓存插件构建依赖的 pnpm store 基目录。
 

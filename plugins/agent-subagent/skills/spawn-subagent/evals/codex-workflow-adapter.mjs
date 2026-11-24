@@ -1,13 +1,11 @@
 import { lstatSync, realpathSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
-const ROLE_NAMES = [
-  'subagent',
-];
+export const GUIDE_ROLE_NAME = 'aw-eval-source-agent-subagent-subagent';
 
 export const ROOT_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
@@ -140,25 +138,28 @@ function parseTomlString(source, key, file) {
 }
 
 export async function workflowRoles(workspace, omitted = []) {
-  const omittedNames = new Set(omitted);
   const roleRoot = path.join(workspace, '.codex', 'agents');
   const files = (await readdir(roleRoot)).filter((file) => file.endsWith('.toml')).sort();
-  const found = new Map();
+  const roles = [];
   for (const file of files) {
     const source = await readFile(path.join(roleRoot, file), 'utf8');
     const name = parseTomlString(source, 'name', file);
-    if (!ROLE_NAMES.includes(name)) continue;
-    found.set(name, {
+    if (name !== GUIDE_ROLE_NAME) continue;
+    roles.push({
       name,
       description: parseTomlString(source, 'description', file),
       configFile: path.posix.join('.codex', 'agents', file),
     });
   }
-  return ROLE_NAMES.filter((name) => !omittedNames.has(name)).map((name) => {
-    const role = found.get(name);
-    if (!role) throw new Error(`attempt workspace is missing role ${name}.`);
-    return role;
-  });
+  if (omitted.includes(GUIDE_ROLE_NAME)) {
+    // Codex can discover role files in the trusted attempt workspace.
+    for (const { configFile } of roles) await rm(path.join(workspace, configFile));
+    return [];
+  }
+  if (roles.length !== 1) {
+    throw new Error(`Materialized spawn-subagent must contain role ${GUIDE_ROLE_NAME} exactly once, got ${roles.length}.`);
+  }
+  return roles;
 }
 
 export function workflowProfile(profile) {

@@ -11,6 +11,7 @@ const defaults = Object.fromEntries(Object.entries(manifest.config.fields)
 export function context(values = {}, platform = 'codex', kinds = ['skill', 'agent']) {
   const scope = 'user';
   return { schemaVersion: 2, surface: 'agent-plugin', platform, scope,
+    plugin: { pluginId: 'aw-official/codex-enhance' },
     allowedOutputKinds: kinds, changedConfigKeys: [], previousComponents: [],
     config: { values: { ...structuredClone(defaults), ...values } },
     platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile', deliveryFeatures: [],

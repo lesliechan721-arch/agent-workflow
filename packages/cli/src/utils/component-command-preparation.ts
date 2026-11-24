@@ -81,7 +81,8 @@ export async function finalizePlatformSkillProducers(options: {
     }
   }
 
-  const policy = resolveInvocationPolicy(plugin.manifest, platform);
+  const policy = resolveInvocationPolicy(plugin.manifest, platform,
+    plugin.sourceId ? `${plugin.sourceId}/${plugin.manifest.name}` : undefined);
   const hasManagedPermissions = policy.permissions.some((permission) =>
     [permission.allow, permission.ask, permission.deny, permission.sandbox?.excludedCommands]
       .some((entries) => entries?.some((entry) => typeof entry !== 'string')));
@@ -119,8 +120,7 @@ export async function finalizePlatformSkillProducers(options: {
         requiredFeatures: [], reasonCode: COMMAND_ROUTE_UNREACHABLE }))];
   for (const skill of retainedSkills) {
     for (const file of skill.referencedFiles) {
-      const { sourceId, pluginName } = commandRecord!.producer;
-      const text = replaceManagedCommandPlaceholders(skill.tree.files[file]!.toString('utf8'), `${sourceId}/${pluginName}`);
+      const text = replaceManagedCommandPlaceholders(skill.tree.files[file]!.toString('utf8'), policy.invocationSelector!);
       skill.tree.files[file] = Buffer.from(text);
     }
     skill.tree.files['aw-plugin-requirements.json'] = receipt;

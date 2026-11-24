@@ -1,6 +1,6 @@
 # Claude Code 适配器
 
-公共要求见 [配置与接入](configuration.md)、[Adapter v5](protocol.md) 和 [运行生命周期](runtime.md)。
+公共要求见 [配置与接入](configuration.md)、[Adapter v6](protocol.md) 和 [运行生命周期](runtime.md)。
 
 Claude Code 固定 workspace，通过持续输入及已配置的 MCP 接入，使用 mcp / turn-boundary，同时提供主动收件。
 

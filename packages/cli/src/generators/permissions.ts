@@ -5,7 +5,7 @@ import type { PermissionDefinition } from '../types.js';
 import { buildGeneratedName, dedupe } from './shared.js';
 import type { GeneratedTextArtifact } from './instructions.js';
 import {
-  normalizeCommandSelector,
+  normalizeCommandInvocationSelector,
   normalizeManagedCommandPermission,
   parsePermissionCommand,
   type CommandRoutes,
@@ -18,6 +18,7 @@ export { parsePermissionCommand } from '@lesliechan721/aw-plugin-core/manifest';
 export interface InactiveManagedCommandPermission {
   name: string;
   action: 'ask' | 'deny';
+  invocationSelector: string;
   argsPrefix: string[];
 }
 
@@ -65,7 +66,9 @@ export function selectPlatformInvocationPolicy(policy: ResolvedInvocationPolicy,
     if (skipped.length) warn(`permissions.${name}`, COMMAND_ROUTE_UNREACHABLE, skipped);
     for (const action of ['ask', 'deny'] as const) {
       for (const entry of permission[action] ?? []) {
-        if (typeof entry !== 'string' && !hasRoute(entry)) inactivePermissions.push({ name, action, argsPrefix: [...entry.argsPrefix] });
+        if (typeof entry !== 'string' && policy.invocationSelector && !hasRoute(entry)) {
+          inactivePermissions.push({ name, action, invocationSelector: policy.invocationSelector, argsPrefix: [...entry.argsPrefix] });
+        }
       }
     }
     if (!allow?.length && !ask?.length && !deny?.length && !excludedCommands?.length) return [];
@@ -85,11 +88,10 @@ function permissionTokens(value: PermissionCommand, selector?: string): string[]
   if (typeof value === 'string') return parsePermissionCommand(value).tokens;
   const permission = normalizeManagedCommandPermission(value);
   if (!selector) throw new Error('commandReferenceInvalid: managed command permission requires a verified selector.');
-  normalizeCommandSelector(selector);
-  return ['aw', 'command', 'run', selector, '--', ...permission.argsPrefix];
+  return ['aw', 'command', 'run', normalizeCommandInvocationSelector(selector), '--', ...permission.argsPrefix];
 }
 
-export function hostPermissionClaims(permissions: PermissionDefinition[], selector: string): PermissionClaim[] {
+export function hostPermissionClaims(permissions: PermissionDefinition[], selector?: string): PermissionClaim[] {
   return permissions.flatMap((permission) => (['allow', 'ask', 'deny'] as const).flatMap((effect) =>
     (permission[effect] ?? []).map((entry) => ({ name: permission.name, effect, tokens: permissionTokens(entry, selector) }))));
 }

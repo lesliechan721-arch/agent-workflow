@@ -434,8 +434,10 @@ export function renderRebuildReceipt(
       ...((command === 'cleanup' || command === 'uninstall') && result.action === 'unchanged' ? [
         `  保留命令包 ${result.packageId}，所有项目共用。`,
       ] : []),
-      ...result.subcommands.map((name) => `  aw command run ${result.selector} -- ${name}`),
-      ...(result.hasFallback ? [`  通用入口 · aw command run ${result.selector} --`] : []),
+      ...(result.invocationSelectors ?? [result.selector]).flatMap((invocationSelector) => [
+        ...result.subcommands.map((name) => `  aw command run ${invocationSelector} -- ${name}`),
+        ...(result.hasFallback ? [`  通用入口 · aw command run ${invocationSelector} --`] : []),
+      ]),
       ...result.errors.map((error) => `  ${error.code}: ${error.message}`),
     ]),
     ...receipt.recoveryActions.map((recovery) => `恢复：${recovery}`),

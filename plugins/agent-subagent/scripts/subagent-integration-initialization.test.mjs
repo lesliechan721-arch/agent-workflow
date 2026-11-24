@@ -7,7 +7,7 @@ import { fixture, eventually, terminalPattern, windows, testTimeoutMs, blocks, f
 // Test Value Gate: pending is not false; late ready must survive fast closing and
 // be delivered with the first subsequent state or terminal observation.
 test('late ready capability survives terminal snapshot merging', { timeout: windows ? 120000 : 35000 }, async (t) => {
-  const f = await fixture(t, 'workspace', { diagnostics: true });
+  const f = await fixture(t, { diagnostics: true });
   const clock = await f.clock(['start'], { stepMs: 1000 });
   const finalText = 'Late capability final.\n';
   const diagnostics = [{ code: 'profileFieldIgnored', field: 'features.unknown', message: 'Unsupported override; base settings remain active.' }];
@@ -19,7 +19,7 @@ test('late ready capability survives terminal snapshot merging', { timeout: wind
     const diagnostic = JSON.stringify({ phase: 'lateReadyStart', case: index === 0 ? 'communicationFalse' : 'communicationTrue',
       code: started.code, elapsedMs: started.elapsedMs, stdout: started.stdout, stderr: started.stderr });
     if (process.env.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS === '1') t.diagnostic(`AW_SUBAGENT_COMMUNICATION_TEST ${diagnostic}`);
-    assert.equal(started.code, 1, diagnostic); assert.match(started.stdout, /^starting aw5-/, diagnostic);
+    assert.equal(started.code, 1, diagnostic); assert.match(started.stdout, /^starting aw6-/, diagnostic);
     assert.equal(field(started.stdout, 'communication'), undefined);
     assert.equal(field(started.stderr, 'code'), index === 1 ? 'startupNotReady' : undefined);
   }

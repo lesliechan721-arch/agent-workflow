@@ -131,7 +131,7 @@ Codex 使用 `$dev-workflow`（或 `$dev-design` / `$dev-build` / `$dev-review-l
 
 ### 托管命令
 
-插件托管命令通过 `aw command run <来源/插件> -- …` 调用。[托管命令参考合同](docs/reference/managed-commands.md) · [宿主审批验证范围](docs/reference/managed-commands.md#宿主审批验证范围)
+插件托管命令通过 `aw command run <来源/插件> -- …` 调用。声明了运行配置的命令包使用 `<来源/插件/平台>`。[托管命令参考合同](docs/reference/managed-commands.md) · [宿主审批验证范围](docs/reference/managed-commands.md#宿主审批验证范围)
 
 ### User 与 Project 插件恢复
 

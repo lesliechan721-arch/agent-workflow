@@ -102,7 +102,7 @@ Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、term
 
 `evals.json` 的真实工作流用例覆盖：
 
-- 根据任务复杂度选择 quick、standard 或 deep profile；使用同一个 canonical `codex-explore` role，公开字段可用时显式传递该 profile 的 `model` / `reasoning_effort`。
+- 根据任务复杂度选择 quick、standard 或 deep profile；使用同一个角色 `aw-eval-source-codex-enhance-codex-explore`，公开字段可用时显式传递该 profile 的 `model` / `reasoning_effort`。嵌套委派用例还会注册依赖的 `aw-eval-source-agent-subagent-subagent` 角色。
 - 用户同时或逐字段显式指定时保留 canonical role，只透传本次显式字段。
 - schema 隐藏覆盖字段且没有硬参数要求时，canonical role 可启动；省略字段只能证明当前调用可接受，不能证明 profile 的模型档位生效。用户显式字段不可满足时则阻断。
 - 无效显式值不删除字段、不换用默认值后重试。
@@ -121,4 +121,4 @@ aw dev eval prepare codex-enhance codex-explore --suite model-selection --profil
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。
 
-调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 native/workspace/bundle 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../../../agent-subagent/skills/spawn-subagent/evals/ROLE-BOUNDARY.md)。
+调度简化后不以 role digest、精确宿主角色版本或 developer 授权布尔作为普通调用门禁。角色可用性、实际原生参数、干净上下文、只读叶子行为和引用合同继续验证。Guide/Advisor/Explore 的 原生和外部工作区 代表性入口以及真实服务证据要求见 [联合 Eval 迁移说明](../../../../agent-subagent/skills/spawn-subagent/evals/ROLE-BOUNDARY.md)。

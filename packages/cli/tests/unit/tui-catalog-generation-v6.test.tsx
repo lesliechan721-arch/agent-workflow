@@ -85,6 +85,23 @@ describe('TUI Active Catalog session', () => {
     expect(loadStatus).toHaveBeenCalledTimes(2);
   });
 
+  it('reads suggestions from the reloaded Catalog when the provider keeps its version', async () => {
+    const run = vi.fn(async () => ({ schemaVersion: 1 as const, status: 'ok' as const, items: [] }));
+    const controller = new TuiController(dependencies(async () => ({ payload, pluginSummaries: [] }), {
+      getConfigSuggestions: async (_lookup, use) => use({ cacheKey: 'same-provider', run, project: (response) => response }),
+    }));
+    const lookup = { pluginId: 'local/demo', options: {}, fieldPath: ['model'] };
+    const read = () => controller.getConfigSuggestions(lookup, false, new AbortController().signal);
+    await controller.load();
+    await read();
+    await read();
+    expect(run).toHaveBeenCalledTimes(1);
+    await controller.reloadCatalog({ sourceId: 'local' });
+    await read();
+    expect(run).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
   it('shows a checked candidate update without replacing the current Active', async () => {
     const readyPayload: StatusV6Payload = {
       ...payload,

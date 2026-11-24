@@ -748,6 +748,12 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   addPreApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
+  const configSuggestions = plugin.manifest.scripts?.config?.suggestions;
+  if (configSuggestions) {
+    const filePath = stripDotSlash(configSuggestions.path);
+    rootFiles.add(filePath);
+    nodeEntries.add(filePath);
+  }
   if (plugin.manifest.nativeTools) {
     rootFiles.add(stripDotSlash(plugin.manifest.nativeTools.reader));
   }

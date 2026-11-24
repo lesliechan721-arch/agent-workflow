@@ -147,6 +147,14 @@ macOS 和 Linux 上，默认处理 `SIGINT` 或 `SIGTERM` 时，CLI 先清理当
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
 
+要在命令行查询配置字段的动态候选，可运行下例。命令使用本机 Active Catalog 和已保存的配置，无需先安装插件。
+
+```sh
+aw plugin config suggestions official/agent-subagent simpleTaskProfile.model --platform codex --dep executor=native --json
+```
+
+字段路径按点分段，数组路径可省略数字索引。省略任一数组索引时，建议只使用 `--dep` 提供的依赖值。`--platform` 缺省为 common，`--context` 默认为 user。`--dep key=value` 可重复，按第一个等号分割并按声明类型解析。路径定位到已有配置对象时，未覆盖的依赖取该对象中的有效值。`--timeout-ms` 接受由 `0` 到 `9` 组成的十进制整数，取值范围为 1000 至 30000 毫秒。结果的 `data` 含 `pluginId`、`fieldPath`、`profile`、`provider`、`providerPluginId`、`status` 与 `items`。有效建议或提供方报告 `unsupported` 时退出 0，提供方不可用或运行失败时退出 1，参数或目标字段无效时返回空 `data` 并退出 2。提供方附带的诊断保留在 `data.diagnostics`，并映射到顶层 `diagnostics`。`unsupported` 时顶层警告仅来自提供方诊断。
+
 `plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 八个原生目标的 User 和 Project 安装会交付当前入口可保真表达的组件，并报告其余能力缺口。`generic` 只交付作者提供的通用 Skill 和资源。适用组件全部交付后，仅有能力提示的目标仍正常完成。所有请求项都因能力缺口跳过时，目标为 `satisfaction: "not-applicable"`、`installedComponentCount: 0`。需求仍保留，安装或同步可以返回 `success`、退出码 0。真实依赖缺失、无效声明、写入失败或冲突继续按实际结果报告。
@@ -282,5 +290,5 @@ CLI 升级后，使用 v1 的已安装插件脚本须重新部署。先运行 `a
 
 **两个必要的协议边界：**
 
-1. `aw command run <来源/插件> [--no-fallback] -- [args...]` 与 `aw command run <cmdu-id> -- [args...]` 透传 stdin/stdout/stderr、二进制或流式字节和子程序退出码。AW 根据 `--` 后的首词匹配插件子命令，剩余参数按原 argv 传入业务入口。启动前错误使用安全英文 stderr，语法和路由错误退出码为 2，其他启动错误退出码为 1。[调用与路由](managed-commands.md#调用与路由)
+1. 有运行配置的插件使用 `来源/插件/平台`，其他插件使用 `来源/插件`。`aw command run <调用选择器> [--no-fallback] -- [args...]` 与 `aw command run <cmdu-id> -- [args...]` 透传 stdin/stdout/stderr、二进制或流式字节和子程序退出码。AW 根据 `--` 后的首词匹配插件子命令，剩余参数按原 argv 传入业务入口。启动前错误使用安全英文 stderr，语法和路由错误退出码为 2，其他启动错误退出码为 1。[调用与路由](managed-commands.md#调用与路由)
 2. TUI 是单独的交互呈现，不把画面输出视为 CLI 机器协议。`aw tui --json` 是无效组合，不启动界面；TUI 继续直接使用共享领域服务和 Review 证据。

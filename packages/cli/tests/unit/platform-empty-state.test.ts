@@ -187,16 +187,20 @@ describe('native intentional empty currentness', () => {
   });
 
   // Test Value Gate: only capability facts that affect static delivery mark its inputs stale.
-  it('tracks static resource bytes, writer support and explicit cross-kind prerequisites', async () => {
+  it('tracks static resource bytes, command invocation, writer support and explicit cross-kind prerequisites', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const rootDir = path.join(isolation.layout.fixtureCwd, 'static-platform');
     const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
+    const commandRoutes = normalizeCommandRoutes({ subcommands: [{ name: 'read', runner: 'node', entry: 'read.mjs' }] });
     const plugin: PluginMeta = { rootDir, manifestPath, pluginId: 'local/static', sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
       manifest: { schemaVersion: 4, name: 'static', version: '1.0.0', description: 'Static', platforms: ['codex'], skills: './skills',
+        command: { sourceDir: './commands', platforms: ['codex'], mode: 'static', routes: commandRoutes },
+        config: { schemaVersion: 5, fields: { mode: { type: 'string' } }, platforms: {} },
+        requires: { aw: { capabilities: ['aw.managed-commands.v2'] } },
         marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } } };
     await fs.outputJson(manifestPath, plugin.manifest);
     const skill = path.join(rootDir, 'skills/demo/SKILL.md');
-    await fs.outputFile(skill, '---\nname: demo\ndescription: Demo\ndisable-model-invocation: true\n---\nRead me.\n');
+    await fs.outputFile(skill, '---\nname: demo\ndescription: Demo\ndisable-model-invocation: true\n---\nRun `{{aw.command}} read`.\n');
     const attachment = path.join(rootDir, 'skills/demo/attachment.bin');
     await fs.outputFile(attachment, Buffer.from([0xff, 0x01]));
     const adapter = getAgentPluginAdapter('codex');
@@ -216,9 +220,13 @@ describe('native intentional empty currentness', () => {
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
-    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding,
+    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding, commandRoutes,
       units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
     const before = await digest();
+    // Runtime configuration changes the command in the delivered Skill even at the same version.
+    plugin.manifest.command!.runtimeConfig = { keys: ['mode'] };
+    expect(await digest()).not.toBe(before);
+    delete plugin.manifest.command!.runtimeConfig;
     await fs.outputFile(path.join(rootDir, 'unrelated.txt'), 'surplus bundle data');
     const modelInvocation = profile.skillInvocation!.features.find(({ feature }) => feature === 'skill.invocation.model')!;
     modelInvocation.values = ['false'];

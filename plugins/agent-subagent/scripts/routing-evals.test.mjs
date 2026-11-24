@@ -239,7 +239,7 @@ function testMechanicalAssertions() {
   const expected = {
     spawn_calls: { min: 1, max: 1 },
     arguments: {
-      agent_type: 'subagent',
+      agent_type: 'aw-eval-source-agent-subagent-subagent',
       model: null,
       reasoning_effort: null,
       fork_turns: '2',
@@ -254,7 +254,7 @@ function testMechanicalAssertions() {
     exit_code: null,
     spawn_calls: [{
       arguments: {
-        agent_type: 'subagent',
+        agent_type: 'aw-eval-source-agent-subagent-subagent',
         message: 'verify',
         fork_turns: '2',
       },

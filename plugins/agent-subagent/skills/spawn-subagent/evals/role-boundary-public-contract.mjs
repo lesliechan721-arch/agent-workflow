@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -98,7 +98,7 @@ async function main() {
     const entrypoint = path.join(root, 'adapter.mjs');
     await Promise.all([mkdir(bin), mkdir(temp), mkdir(home)]);
     await writeFile(path.join(bin, 'aw'), `#!${process.execPath}\nimport { spawnSync } from 'node:child_process';\nconst result=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(cli)},...process.argv.slice(2)],{stdio:'inherit'});if(result.error)throw result.error;process.exitCode=result.status??1;\n`, { mode: 0o700 });
-    for (const backend of ['codex', 'claude', 'oracle', 'agy']) {
+    for (const backend of ['codex', 'claude', 'agy']) {
       await writeFile(path.join(bin, backend), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv.length === 3 && process.argv[2] === '--version') {\n  console.log(${JSON.stringify(`${backend === 'codex' ? 'codex-cli' : backend} 0.140.0`)});\n} else {\n  writeFileSync(${JSON.stringify(forbidden)},'unexpected model CLI');process.exitCode=127;\n}\n`, { mode: 0o700 });
     }
     await writeFile(entrypoint, `import { appendFile, stat } from 'node:fs/promises';
@@ -110,7 +110,7 @@ lines.once('line', async (line) => {
   const request = JSON.parse(line);
   const revision = process.env.FIXTURE_REVISION;
   await appendFile(${JSON.stringify(capture)}, JSON.stringify({ request, revision, environmentValue: process.env.FIXTURE_TARGET }) + '\\n');
-  const emit = (event) => process.stdout.write(JSON.stringify({ protocolVersion: 5, ...event }) + '\\n');
+  const emit = (event) => process.stdout.write(JSON.stringify({ protocolVersion: 6, ...event }) + '\\n');
   emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: {
     communication: { status: request.communication ? 'unsupported' : 'disabled' },
     resume: { status: request.resume ? 'unsupported' : 'disabled' },
@@ -134,7 +134,7 @@ lines.once('line', async (line) => {
       ...(process.env.npm_config_store_dir && { npm_config_store_dir: process.env.npm_config_store_dir }),
       PUBLIC_FIXTURE_VALUE: 'explicit-local-value' };
     const agentSubagent = {
-      subagentCommands: [{ key: 'fixture-external', adapter: 'custom', mode: 'workspace', command: process.execPath, entrypoint,
+      subagentCommands: [{ key: 'fixture-external', adapter: 'custom', command: process.execPath, entrypoint,
         env: { FIXTURE_REVISION: 'original' }, envFrom: { FIXTURE_TARGET: 'PUBLIC_FIXTURE_VALUE' }, communication: false },
       { key: 'fixture-builtin', adapter: 'codex' }],
       generalTaskProfile: { executor: 'fixture-external' },
@@ -144,6 +144,11 @@ lines.once('line', async (line) => {
     const guideOnly = await prepareSpec(root, env, { 'agent-subagent': agentSubagent }, 'joint-guide-only', 'project-default');
     for (const id of ['J11', 'J17']) {
       const current = await fixture(root, env, composition, id);
+      assert.deepEqual(current.request.roles.map(({ name }) => name).sort(), [
+        'aw-eval-source-agent-subagent-subagent',
+        'aw-eval-source-codex-enhance-codex-advisor',
+        'aw-eval-source-codex-enhance-codex-explore',
+      ]);
       const state = await action(current, current.request.evaluation.setupActions[0]);
       const options = invocation(current, state);
       const installed = await inspectGuideCommand(current.workspace, state.commandSelector, options.env);
@@ -153,7 +158,6 @@ lines.once('line', async (line) => {
       const manifest = await json(path.join(current.workspace, '.role-boundary-fixture', 'catalog', 'plugins', 'role-boundary-lab', '.agents-plugin', 'plugin.json'));
       assert.equal(manifest.schemaVersion, 4);
       assert.equal(manifest.config.schemaVersion, 5);
-      assert.equal(manifest.config.fields.subagentCommands.default.find(({ adapter }) => adapter === 'codex').mode, undefined);
 
       const args = ['start', '--executor', state.execution.executor, '--prompt-file', state.promptFile, '--instructions-file', state.instructionsFile];
       const prompt = await readFile(state.promptFile, 'utf8');
@@ -186,12 +190,11 @@ lines.once('line', async (line) => {
       assert.deepEqual(observed.map(({ revision }) => revision), ['original', 'updated']);
       for (const [index, expected] of [transitioned.instructionsBefore, transitioned.instructionsAfter].entries()) {
         const { request, environmentValue } = observed[index];
-        assert.equal(request.protocolVersion, 5);
+        assert.equal(request.protocolVersion, 6);
         assert.equal(request.prompt, `Instructions:\n${expected}\n\nTask:\n${prompt}`);
         assert.equal(request.execution.model, undefined);
         assert.equal(request.execution.reasoningEffort, undefined);
         assert.equal(environmentValue, 'explicit-local-value');
-        assert.equal(request.fileSelectors, undefined);
       }
       await mkdir(path.join(current.workspace, 'provided'), { recursive: true });
       await writeFile(path.join(current.workspace, 'provided', 'original-result.txt'), original.stdout);
@@ -205,6 +208,7 @@ lines.once('line', async (line) => {
 
     const j15 = await fixture(root, env, guideOnly, 'J15');
     assert.deepEqual(j15.request.roles, []);
+    assert.deepEqual(await readdir(path.join(j15.workspace, '.codex', 'agents')), []);
     const custom = await action(j15, j15.request.evaluation.setupActions[0]);
     await assert.rejects(readFile(path.join(j15.workspace, '.agents', 'skills', 'codex-advisor', 'SKILL.md')), { code: 'ENOENT' });
     await writeFile(path.join(j15.workspace, '.role-boundary-fixture', 'finish'), '');
@@ -219,9 +223,9 @@ lines.once('line', async (line) => {
     const j16 = await fixture(root, env, composition, 'J16');
     const rejected = await action(j16, j16.request.evaluation.setupActions[0]);
     assert.equal(rejected.preflight.exitCode, 2);
-    assert.equal(rejected.preflight.code, 'filesNotAllowedInWorkspace');
+    assert.equal(rejected.preflight.code, 'argumentsInvalid');
     assert.equal(rejected.adapterExecutionCounter, null);
-    checks.push('J16 public start rejects the empty workspace file selector before adapter execution');
+    checks.push('J16 public start rejects the retired file option before adapter execution');
 
     const j12 = await fixture(root, env, composition, 'J12');
     const partial = await action(j12, j12.request.evaluation.setupActions[0]);

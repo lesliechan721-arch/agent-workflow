@@ -21,18 +21,29 @@ export interface ConfigRouteLayer {
   context?: Scope;
 }
 
+interface ConfigArrayItemRoute {
+  rowId?: string;
+}
+
+export interface ConfigArrayEditorScope {
+  arrayItem?: ConfigArrayItemRoute;
+  nestedArray?: {
+    propertyKey: string;
+    parentItem?: ConfigArrayItemRoute;
+  };
+}
+
 export type ConfigResumeRoute =
   | { name: 'configFields'; pluginId: string; layer: ConfigRouteLayer }
-  | {
+  | (ConfigArrayEditorScope & {
       name: 'configFieldEditor';
       pluginId: string;
       layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
-      arrayItem?: { rowId?: string };
-    }
-  | {
+    })
+  | (ConfigArrayEditorScope & {
       name: 'configObjectPropertyEditor';
       pluginId: string;
       layer: ConfigRouteLayer;
@@ -40,8 +51,7 @@ export type ConfigResumeRoute =
       propertyKey?: string;
       dynamic: boolean;
       stage: 'key' | 'action' | 'choices' | 'custom';
-      arrayItem?: { rowId?: string };
-    }
+    })
   | {
       name: 'configFieldAction';
       pluginId: string;
@@ -125,16 +135,15 @@ export type TuiRoute =
       layer: ConfigRouteLayer;
       view?: 'options' | 'values';
     }
-  | {
+  | (ConfigArrayEditorScope & {
       name: 'configFieldEditor';
       pluginId: string;
       layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
-      arrayItem?: { rowId?: string };
-    }
-  | {
+    })
+  | (ConfigArrayEditorScope & {
       name: 'configObjectPropertyEditor';
       pluginId: string;
       layer: ConfigRouteLayer;
@@ -142,8 +151,7 @@ export type TuiRoute =
       propertyKey?: string;
       dynamic: boolean;
       stage: 'key' | 'action' | 'choices' | 'custom';
-      arrayItem?: { rowId?: string };
-    }
+    })
   | {
       name: 'configFieldAction';
       pluginId: string;

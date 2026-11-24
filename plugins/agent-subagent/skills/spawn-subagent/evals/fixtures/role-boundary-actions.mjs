@@ -69,7 +69,7 @@ function labEnvironment(workspace) {
 }
 async function awAvailable(env, cwd) {
   const describe = await jsonCommand('aw', ['self', 'describe', '--json'], { env, cwd });
-  const required = ['aw.cli-output.v2', 'aw.self-check.v2', 'aw.plugin-authoring.v2', 'aw.catalog-authoring.v2', 'aw.catalog-source.v3', 'aw.plugin-recovery.v2', 'aw.plugin-manifest.v4', 'aw.platform-components.v3', 'aw.plugin-config.v4', 'aw.managed-commands.v2', 'aw.native-tools.v3'];
+  const required = ['aw.cli-output.v2', 'aw.self-check.v2', 'aw.plugin-authoring.v2', 'aw.catalog-authoring.v2', 'aw.catalog-source.v3', 'aw.plugin-recovery.v2', 'aw.plugin-manifest.v4', 'aw.platform-components.v3', 'aw.plugin-config.v5', 'aw.managed-commands.v2', 'aw.native-tools.v3'];
   const missing = required.filter((item) => !describe.capabilities?.includes(item));
   if (missing.length) throw new Error(`fixtureEnvironmentUnsupported: PATH aw lacks ${missing.join(', ')}`);
   return describe;
@@ -93,11 +93,11 @@ function guideOutput(text) {
 export function parseGuideObservation(stdout, stderr = '', exitCode = null) {
   const { controls, blocks } = guideOutput(stdout);
   const { blocks: errors } = guideOutput(stderr);
-  const controlsWithHandle = /^(started|starting|start_failed|ready|deferred|stopped|stopping) (aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?= |$)(.*)$/;
+  const controlsWithHandle = /^(started|starting|start_failed|ready|deferred|stopped|stopping) (aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?= |$)(.*)$/;
   const control = controls.map((line) => line.match(controlsWithHandle)).find(Boolean);
   const terminal = /^(completed|failed|cancelled|unknown)$/;
   const results = blocks.filter(({ kind, attrs }) => kind === 'result' && terminal.test(attrs.state ?? '')
-    && /^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(attrs.run ?? ''));
+    && /^aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(attrs.run ?? ''));
   const result = results.length === 1 ? results[0].attrs : undefined;
   const reported = result?.state ?? ({ started: 'running', starting: 'starting', ready: 'running' }[control?.[1]])
     ?? (control?.[1] === 'start_failed' ? control[3].match(/\bstate=(failed|cancelled|unknown)(?= |$)/)?.[1] : undefined);
@@ -113,10 +113,9 @@ export function parseGuideObservation(stdout, stderr = '', exitCode = null) {
     ...(code ? { code } : !recognized ? { code: 'guideOutputUnrecognized' } : {}) };
 }
 export async function guide(workspace, args, { selector, env = process.env, allowFailure = false, follow = true }) {
-  const invocation = ['command', 'run', selector, '--'];
-  const [action, ...options] = args;
-  const requested = action === 'start' ? [action, '--platform', 'codex', ...options] : args;
-  let result = await processResult('aw', [...invocation, ...requested], { cwd: workspace, env });
+  const invocation = ['command', 'run', selector + '/codex', '--'];
+  const [action] = args;
+  let result = await processResult('aw', [...invocation, ...args], { cwd: workspace, env });
   const start = parseGuideObservation(result.stdout, result.stderr, result.code);
   const handle = follow && action === 'start' && start.run;
   if (handle && !result.outputOverflow) {
@@ -142,24 +141,22 @@ export async function inspectGuideCommand(workspace, selector, env = process.env
   return data.commands?.length === 1 ? data.commands[0] : undefined;
 }
 export async function observeGuideProjection(workspace) {
-  const reference = await file(workspace, '.agents/skills/spawn-subagent/references/external-delegation.md');
-  const source = await readFile(reference, 'utf8');
-  const selectors = [...source.matchAll(/^aw command run ([a-z][a-z0-9-]{0,31}\/agent-subagent) -- start --platform codex(?: |$)/gm)];
-  if (selectors.length !== 1) throw new Error('fixtureRuntimeProjectionUnavailable');
+  const root = '.agents/skills/spawn-subagent/references/';
+  const read = async (name) => readFile(await file(workspace, root + name, true), 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  const source = await read('external-execution.md');
   const modes = new Map();
-  const lines = source.split('\n');
-  const header = lines.indexOf('| key | mode |');
-  if (header >= 0) {
-    if (lines[header + 1] !== '| --- | --- |') throw new Error('fixtureExecutorTableInvalid');
-    for (const line of lines.slice(header + 2)) {
-      if (!line.startsWith('|')) break;
-      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
-      if (cells.length !== 2 || cells.some((cell) => !cell.startsWith('`') || !cell.endsWith('`'))) throw new Error('fixtureExecutorTableInvalid');
-      const [key, mode] = cells.map((cell) => JSON.parse(cell.slice(1, -1)));
-      if (typeof key !== 'string' || !key || modes.has(key) || !['workspace', 'bundle'].includes(mode)) throw new Error('fixtureExecutorTableInvalid');
-      modes.set(key, mode);
-    }
+  if (!source) return { selector: null, modes };
+  const selectors = [...source.matchAll(/^aw command run ([a-z][a-z0-9-]{0,31}\/agent-subagent)\/codex -- start(?: |$)/gm)];
+  if (selectors.length !== 1) throw new Error('fixtureRuntimeProjectionUnavailable');
+  const selection = await read('executor-selection.md');
+  for (const [, key] of selection.matchAll(/^\| `([A-Za-z0-9][A-Za-z0-9._-]*)` \| `(?:codex|claude-code|antigravity|custom|custom-managed)` \|/gm)) {
+    if (modes.has(key)) throw new Error('fixtureExecutorTableInvalid');
+    modes.set(key, 'workspace');
   }
+  if (!modes.size) throw new Error('fixtureExecutorTableInvalid');
   return { selector: selectors[0][1], modes };
 }
 export async function observeInstalledRuntimeConfig({ packageView, selector, keys, env = process.env }) {
@@ -187,7 +184,7 @@ export async function observeInstalledRuntimeConfig({ packageView, selector, key
 }
 // Read only the published tables for caller-side selection. Profiles are not runtime config.
 export const PROFILE_ROWS = {
-  'spawn-subagent/references/execution-profiles.md': { simple: 'simpleTaskProfile', general: 'generalTaskProfile', complex: 'complexTaskProfile', advanced: 'advancedTaskProfile' },
+  'spawn-subagent/references/executor-selection.md': { simple: 'simpleTaskProfile', general: 'generalTaskProfile', complex: 'complexTaskProfile', advanced: 'advancedTaskProfile' },
   'codex-explore/SKILL.md': { quick: 'quickProfile', standard: 'standardProfile', deep: 'deepProfile' },
   'codex-advisor/SKILL.md': { general: 'advisorGeneralProfile', advanced: 'advisorAdvancedProfile', expert: 'advisorExpertProfile' },
 };
@@ -216,7 +213,7 @@ export async function observeInstalledProfiles(workspace) {
       const profile = {};
       for (const [index, field] of ['executor', 'model', 'reasoningEffort'].entries()) {
         const cell = cells[index + 2];
-        if (['后端默认', '宿主默认'].includes(cell) && field !== 'executor') continue;
+        if (['后端默认', '后端默认（按需 inspect 选型）', '宿主默认'].includes(cell) && field !== 'executor') continue;
         if (!cell.startsWith('`') || !cell.endsWith('`')) throw new Error('fixtureProfileTableInvalid');
         const value = JSON.parse(cell.slice(1, -1));
         if (typeof value !== 'string' || !value.trim()) throw new Error('fixtureProfileTableInvalid');
@@ -225,6 +222,9 @@ export async function observeInstalledProfiles(workspace) {
       values[key] = profile;
     }
   }
+  for (const key of Object.values(PROFILE_ROWS['spawn-subagent/references/executor-selection.md'])) {
+    values[key] ??= { executor: 'native' };
+  }
   return values;
 }
 async function readInstalled(workspace, selector, env) {
@@ -232,7 +232,7 @@ async function readInstalled(workspace, selector, env) {
   return observeInstalledRuntimeConfig({ packageView, selector, env, keys: ['subagentCommands', 'subagentRetentionHours'] });
 }
 /** A public synthetic installation proves source/apply behavior, never model support. */
-async function installLab(workspace, fixtures, operation, materials) {
+async function installLab(workspace, fixtures, operation) {
   const lab = path.join(workspace, LAB), catalog = path.join(lab, 'catalog'), project = path.join(lab, 'project');
   const env = labEnvironment(workspace);
   await Promise.all([mkdir(project, { recursive: true }), mkdir(catalog, { recursive: true })]);
@@ -249,11 +249,11 @@ async function installLab(workspace, fixtures, operation, materials) {
   const profileKey = localControl || operation === 'custom-instructions-install' ? 'generalTaskProfile' : 'advisorGeneralProfile';
   const execution = localControl ? { executor: 'fixture-control' } : values[profileKey];
   const commands = localControl
-    ? [{ key: execution.executor, adapter: 'custom', mode: 'workspace', command: process.execPath, entrypoint: await file(fixtures, 'fixtures/single-write-disconnect.mjs') }]
+    ? [{ key: execution.executor, adapter: 'custom', command: process.execPath, entrypoint: await file(fixtures, 'fixtures/single-write-disconnect.mjs') }]
     : prepared.effectiveValues.subagentCommands;
   const executor = commands.find((item) => item.key === execution?.executor);
   const mode = localControl ? 'workspace' : projection.modes.get(execution?.executor);
-  if (!mode || !executor || !['codex', 'claude-code', 'oracle', 'antigravity', 'custom'].includes(executor.adapter)) {
+  if (!mode || !executor || !['codex', 'claude-code', 'antigravity', 'custom'].includes(executor.adapter)) {
     throw new Error(`fixtureEnvironmentUnsupported: configured external ${profileKey} required`);
   }
   await jsonCommand('aw', ['dev', 'catalog', 'create', '--workspace-root', catalog, '--owner-name', 'Foreground Eval', '--owner-url', 'https://example.invalid/foreground-eval', '--display-name', 'Isolated Foreground Eval', '--json'], { env, cwd: project });
@@ -297,7 +297,6 @@ async function installLab(workspace, fixtures, operation, materials) {
   const state = { version: 1, operation, project, catalog, plugin, snapshot, guideRoot: sourceGuide, instructionsFile, promptFile,
     sourceId: 'role-boundary-eval', pluginId: selector,
     installedIdentity: active.installedIdentity, execution, mode, originalInstructions: instructions,
-    materials: mode === 'bundle' ? await Promise.all((materials ?? []).map(async (name) => { await file(workspace, name); return name; })) : [],
     unrelatedSkillRoot: unrelated ? path.join(workspace, '.agents', 'skills', 'fixture-unrelated') : null,
     publicAwCapabilityDigest: capability.capabilitySetDigest };
   await put(workspace, `${LAB}/state.json`, JSON.stringify(state, null, 2));
@@ -367,16 +366,16 @@ export async function executeFixtureAction(payload) {
   if (input.operation === 'verify-foreground') return foregroundObservations(workspace);
   if (['apply-configuration', 'apply-instructions'].includes(input.operation)) return { version: 1, completed: true, ...await applyChange(workspace, input.operation === 'apply-instructions') };
   if (!['custom-instructions-install', 'foreground-install', 'instruction-update-install', 'single-write-disconnect', 'invalid-workspace-files'].includes(input.operation)) throw new Error('fixtureOperationUnsupported');
-  const { state, env } = await installLab(workspace, fixtures, input.operation, input.materials);
+  const { state, env } = await installLab(workspace, fixtures, input.operation);
   const evidence = { operation: input.operation, installedIdentity: state.installedIdentity, guideRoot: state.guideRoot,
-    instructionsFile: state.instructionsFile, promptFile: state.promptFile, execution: state.execution, mode: state.mode, files: state.materials,
+    instructionsFile: state.instructionsFile, promptFile: state.promptFile, execution: state.execution, mode: state.mode,
     commandSelector: state.pluginId, commandEnvironment: { AW_HOME: env.AW_HOME, HOME: env.HOME },
     publicAwCapabilityDigest: state.publicAwCapabilityDigest };
   const artifacts = [];
   if (input.operation === 'invalid-workspace-files') {
     const rejected = await guide(state.project, ['start', '--executor', 'fixture-control', '--instructions-file', state.instructionsFile,
       '--prompt-file', state.promptFile, '--file', ''], { selector: state.pluginId, env, allowFailure: true });
-    if (rejected.exitCode !== 2 || rejected.value.code !== 'filesNotAllowedInWorkspace') throw new Error('fixtureInputRejectionMissing');
+    if (rejected.exitCode !== 2 || rejected.value.code !== 'argumentsInvalid') throw new Error('fixtureInputRejectionMissing');
     evidence.preflight = rejected.value;
     evidence.adapterExecutionCounter = await readFile(path.join(state.project, LAB, 'counter.json'), 'utf8').then(JSON.parse).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
     if (evidence.adapterExecutionCounter !== null) throw new Error('fixtureRejectedInputExecuted');

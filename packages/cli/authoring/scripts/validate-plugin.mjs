@@ -10,9 +10,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   assertPluginConfigReferenceSchemas,
+  assertPluginConfigSuggestionProviders,
   AW_RUNTIME_CONFIG_READER_PATH,
   createNativeToolReaderSource,
   getCommandPackageInjectedReaders,
+  getPluginConfigSuggestions,
   isInjectedCommandReaderImport,
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
@@ -1678,7 +1680,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
 
   const scripts = expectRecord(manifest.scripts, 'scripts');
   if (!scripts) return null;
-  validateAllowedKeys(scripts, 'scripts', ['preApply', 'helpers', 'node', 'artifacts', 'tests']);
+  validateAllowedKeys(scripts, 'scripts', ['preApply', 'helpers', 'node', 'artifacts', 'config', 'tests']);
 
   const runtimeNodeEntries = [];
   let artifactRenderEntry = null;
@@ -1714,6 +1716,14 @@ function validateScriptsLightweight(pluginDir, manifest) {
       }
       if (preApplyPath) runtimeNodeEntries.push({ path: preApplyPath, fieldName: 'scripts.preApply.path' });
     }
+  }
+
+  const configSuggestions = scripts.config?.suggestions;
+  if (configSuggestions) {
+    // Core owns the shape, timeout and path contract for this normalized declaration.
+    const fieldName = 'scripts.config.suggestions.path';
+    validateDeclaredScriptFile(pluginDir, configSuggestions.path, fieldName);
+    runtimeNodeEntries.push({ path: configSuggestions.path, fieldName });
   }
 
   if (scripts.node !== undefined) {
@@ -2084,7 +2094,9 @@ async function validatePluginDir(pluginDir, options) {
     // No installed plugin or user config can complete an author fixture.
     if (manifest.config) {
       let plugins = [{ manifest, rootDir: pluginDir }];
-      if (hasCrossPluginValueRef(sourceConfig)) {
+      const hasCrossPluginSuggestions = getPluginConfigSuggestions(manifest.config, sourceConfig)
+        .some((declaration) => declaration.plugin !== undefined);
+      if (hasCrossPluginValueRef(sourceConfig) || hasCrossPluginSuggestions) {
         if (!options.repoRoot) throw new Error('Cross-plugin config validation requires the canonical same-source Workspace.');
         const workspace = await readCatalogWorkspace(options.repoRoot, {
           reservedImports: cliManifestTools.reservedImports,
@@ -2096,6 +2108,7 @@ async function validatePluginDir(pluginDir, options) {
         plugins = workspace.plugins;
       }
       referencePlugins = plugins;
+      if (hasCrossPluginSuggestions) assertPluginConfigSuggestionProviders(manifest, plugins, sourceConfig);
       referenceContext = {
         plugin: manifest.name,
         dependencies: manifest.dependencies ?? [],

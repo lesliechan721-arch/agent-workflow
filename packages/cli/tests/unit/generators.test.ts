@@ -785,7 +785,7 @@ describe('local-plugin generator', () => {
     expect(mergeClaudePermissions([{ name: 'sandbox-only', sandbox: { excludedCommands: [entry] } }], selector).allow)
       .toEqual([]);
     expect(() => mergeClaudePermissions(permissions)).toThrow('commandReferenceInvalid');
-    expect(() => mergeClaudePermissions(permissions, 'other')).toThrow('Invalid command selector');
+    expect(() => mergeClaudePermissions(permissions, 'other')).toThrow('Invalid command invocation selector');
     expect(() => mergeClaudePermissions([{ name: 'unsafe', allow: [{ argsPrefix: ['wait *'] }] }], selector))
       .toThrow();
   });

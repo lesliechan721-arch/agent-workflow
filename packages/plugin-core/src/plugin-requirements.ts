@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import fs from 'fs-extra'
 
-import { normalizePluginConfigDefinition } from './plugin-config.js'
+import { getPluginConfigSuggestions, normalizePluginConfigDefinition } from './plugin-config.js'
 import {
   computeAwCapabilitySetDigest,
   normalizeAwCapabilities,
@@ -57,19 +57,22 @@ export function deriveAwCapabilitiesFromManifest(
     if (manifest.config.schemaVersion === 4 || manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v4')
     if (manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v5')
     const definition = normalizePluginConfigDefinition(manifest.config)
+    if (getPluginConfigSuggestions(definition, manifest.config).length > 0) capabilities.push('aw.plugin-config-suggestions.v1')
     const profiles = definition.schemaVersion === 5 ? Object.values(definition.platforms ?? {}) : []
     const configFields: PluginConfigSchemaField[] = [definition, ...profiles].flatMap((profile) => Object.values(profile.fields))
-    const hasArray = (field: PluginConfigSchemaField): boolean => {
-      if (field.type === 'array') return true
+    const hasArray = (field: PluginConfigSchemaField, uniqueBy = false): boolean => {
+      if (field.type === 'array') {
+        return !uniqueBy || field.validation?.uniqueBy !== undefined || hasArray(field.items, uniqueBy)
+      }
       if (field.type !== 'object' || field.properties === undefined) return false
       return [field.properties, ...Object.values(field.variants?.cases ?? {}).map((variant) => variant.properties),
         ...(field.variants?.otherwise === undefined ? [] : [field.variants.otherwise.properties])]
-        .some((properties) => Object.values(properties).some((property) => hasArray(property as PluginConfigSchemaField)))
+        .some((properties) => Object.values(properties).some((property) => hasArray(property, uniqueBy)))
     }
-    if (configFields.some(hasArray)) {
+    if (configFields.some((field) => hasArray(field))) {
       capabilities.push('aw.plugin-config-array.v1')
     }
-    if (configFields.some((field) => field.type === 'array' && field.validation?.uniqueBy !== undefined)) {
+    if (configFields.some((field) => hasArray(field, true))) {
       capabilities.push('aw.plugin-config-unique-by.v1')
     }
     const hasValueRef = (field: typeof configFields[number], crossPlugin = false): boolean => {
@@ -99,6 +102,7 @@ export function deriveAwCapabilitiesFromManifest(
     capabilities.push('aw.managed-commands.v2', 'aw.claude.sandbox-exclusions.v1')
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
+  if (manifest.scripts?.config?.suggestions) capabilities.push('aw.plugin-config-suggestions.v1')
   if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v2')
   if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
@@ -145,6 +149,8 @@ function commandCapabilities(group: string, command: string | undefined, tail: s
   } else if (group === 'plugin' && command === 'config'
     && ['get', 'schema', 'set', 'unset', 'reset', 'apply'].includes(subcommand)) {
     capability = 'aw.plugin-config.v2'
+  } else if (group === 'plugin' && command === 'config' && subcommand === 'suggestions') {
+    capability = 'aw.plugin-config-suggestions.v1'
   } else if (group === 'command'
     && (['list', 'show', 'install', 'update', 'remove', 'run'].includes(command)
       || command === 'package' && ['sync', 'remove'].includes(subcommand))) {

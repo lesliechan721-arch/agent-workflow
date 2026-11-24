@@ -8,6 +8,7 @@ import { resolveAwHomeCanonical } from './state-paths.js';
 import { prepareNativeToolContext, type NativeToolContext } from './native-tool-context.js';
 import type { prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
 import { ManagedCommandError, resolveManagedCommand } from './managed-command-store.js';
+import type { CommandRuntimeConfigContext } from './managed-command-snapshots.js';
 
 export interface CommandHost {
   schemaVersion: 1;
@@ -22,6 +23,7 @@ export function buildManagedCommandEnvironment(options: {
   host: CommandHost;
   platform?: NodeJS.Platform;
   nativeContext?: NativeToolContext;
+  runtimeConfigContext?: CommandRuntimeConfigContext;
 }): NodeJS.ProcessEnv {
   const platform = options.platform ?? process.platform;
   try { validateCommandEnvironment(options.launch.env, options.launch.envFrom, platform); }
@@ -50,6 +52,7 @@ export function buildManagedCommandEnvironment(options: {
   if (options.nativeContext && Object.keys(options.nativeContext.tools).length > 0) put('AW_NATIVE_TOOL_CONTEXT', JSON.stringify(options.nativeContext));
   put('AW_HOME', options.host.awHome);
   put('AW_COMMAND_HOST', JSON.stringify(options.host));
+  if (options.runtimeConfigContext) put('AW_COMMAND_RUNTIME_CONFIG', JSON.stringify(options.runtimeConfigContext));
   return result;
 }
 
@@ -67,14 +70,14 @@ export interface ManagedCommandRunOptions {
 
 export async function prepareManagedCommandRun(options: ManagedCommandRunOptions): Promise<{ executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> {
   const hostEnvironment = { ...(options.env ?? process.env) };
-  const awHome = await resolveAwHomeCanonical(hostEnvironment);
-  const { launch, resourceRoot, producer, args } = await resolveManagedCommand(options.id, hostEnvironment, {
+  const { launch, resourceRoot, producer, runtimeConfigContext, args } = await resolveManagedCommand(options.id, hostEnvironment, {
     args: options.args,
     noFallback: options.noFallback,
   });
+  const awHome = await resolveAwHomeCanonical(hostEnvironment);
   // Reject invalid bindings before native preparation or consumer startup.
   const host: CommandHost = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry: path.resolve(options.cliEntry), awHome };
-  const environment = buildManagedCommandEnvironment({ launch, hostEnvironment, host, platform: options.platform });
+  const environment = buildManagedCommandEnvironment({ launch, hostEnvironment, host, platform: options.platform, runtimeConfigContext });
   let nativeContext: NativeToolContext;
   try {
     nativeContext = await prepareNativeToolContext({ closure: producer?.nativeTools, kind: 'plugin-command',

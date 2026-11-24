@@ -229,8 +229,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             options.signal?.throwIfAborted();
             observation.deploymentObservations!.push({ bindingId: binding.id, products: binding.consumers, after: live });
             if (isPermissionHost(platform)) {
-              const { policy } = selectPlatformInvocationPolicy(resolveInvocationPolicy(plugin.manifest, platform), subject, commandRoutes ?? null);
-              const claims = hostPermissionClaims(policy.permissions, binding.plugin.pluginId);
+              const { policy } = selectPlatformInvocationPolicy(resolveInvocationPolicy(plugin.manifest, platform, root.pluginId), subject, commandRoutes ?? null);
+              const claims = hostPermissionClaims(policy.permissions, policy.invocationSelector);
               const previous = inventory.some(({ ownedComponent }) => ownedComponent?.kind === 'shared-config'
                 && ownedComponent.locator.kind === 'host-permissions' && ownedComponent.identity.pluginId === root.pluginId
                 && ownedComponent.identity.sourceIdentity === binding.plugin.sourceIdentity && ownedComponent.identity.platform === platform

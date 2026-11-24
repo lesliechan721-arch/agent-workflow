@@ -63,8 +63,9 @@ function configField(value: RecordValue): RecordValue {
   return data;
 }
 function configDefinition(value: RecordValue): RecordValue {
-  const data = pick(value, ['type', 'title', 'description', 'default', 'required', 'sensitive', 'const', 'valueRef', 'choices', 'validation', 'properties', 'additionalProperties', 'variants', 'items']);
+  const data = pick(value, ['type', 'title', 'description', 'default', 'required', 'sensitive', 'const', 'valueRef', 'suggestions', 'choices', 'validation', 'properties', 'additionalProperties', 'variants', 'items']);
   mapField(data, 'valueRef', (entry) => pick(entry, ['plugin', 'field', 'key', 'label', 'include']));
+  mapField(data, 'suggestions', (entry) => pick(entry, ['plugin', 'provider', 'dependsOn']));
   mapField(data, 'choices', (entry) => ({ allowCustom: entry.allowCustom, presets: list(entry.presets).map((preset) => pick(preset, ['id', 'title', 'description', 'value', 'recommended'])) }));
   mapField(data, 'validation', (entry) => {
     const validation = pick(entry, ['minLength', 'maxLength', 'pattern', 'format', 'integer', 'minimum', 'maximum', 'multipleOf', 'minProperties', 'maxProperties', 'key', 'minItems', 'maxItems', 'uniqueItems', 'uniqueBy']);
@@ -103,7 +104,7 @@ function commandResults(values: CommandProducerResult[], diagnostics: Diagnostic
   return values.map((entry) => {
     const subject = { pluginId: entry.selector, scope: 'user' as const };
     diagnostics.push(...entry.errors.map((error) => diagnostic(error, 'error', subject)));
-    return { ...pick(entry, ['state', 'packageId', 'selector', 'action', 'availability', 'subcommands', 'hasFallback']),
+    return { ...pick(entry, ['state', 'packageId', 'selector', 'action', 'availability', 'subcommands', 'hasFallback', 'invocationSelectors']),
       producer: producer(record(entry.producer)), errors: entry.errors.map((error) => issue(record(error))), blockerCodes: entry.errors.map((error) => error.code) };
   });
 }
@@ -379,7 +380,7 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
         const owner = record(entry.owner);
         if (owner.kind === 'plugin') {
           const result: RecordValue = {
-            ...pick(entry, ['selector', 'packageId', 'pluginVersion', 'sourceContentDigest', 'availability', 'resourceRoot', 'routes', 'runtimeConfigPlatforms', 'nativeTools']),
+            ...pick(entry, ['selector', 'packageId', 'pluginVersion', 'sourceContentDigest', 'availability', 'resourceRoot', 'routes', 'runtimeConfigPlatforms', 'requiresPlatformContext', 'nativeTools']),
             ...withStatus(entry),
             owner: { kind: 'plugin', producer: producer(record(owner.producer)) },
           };
@@ -399,7 +400,7 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
         return result;
       });
       const packageSummary = (entry: RecordValue) => ({
-        ...pick(entry, ['selector', 'packageId', 'availability', 'subcommands', 'hasFallback']),
+        ...pick(entry, ['selector', 'packageId', 'availability', 'subcommands', 'hasFallback', 'requiresPlatformContext']),
         ...withStatus(entry),
       });
       mapField(data, 'packages', packageSummary);

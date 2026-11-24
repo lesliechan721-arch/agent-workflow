@@ -7,9 +7,9 @@ import { describe, expect, it } from 'vitest';
 import {
   assertManagedCommandPlatform, assertPluginManifestStructure, deriveAwCapabilitiesFromManifest, getAwCapabilityRegistry,
   getCommandPackageId, getManagedCommandArtifactTargets, isUserCommandId,
-  normalizeCommandLaunch, normalizeCommandRoutesArtifact, normalizeCommandSelector,
+  normalizeCommandInvocationSelector, normalizeCommandLaunch, normalizeCommandRoutesArtifact, normalizeCommandSelector,
   normalizeInstalledCommandProducer, normalizeUserCommandDefinition,
-  parseManagedCommandPlaceholders, replaceManagedCommandPlaceholders,
+  parseCommandInvocationSelector, parseManagedCommandPlaceholders, replaceManagedCommandPlaceholders, resolveInvocationPolicy,
   validateCommandEntryFiles, validateCommandEnvironment, validatePluginManifest, validateSourcePluginManifest,
   type ProducerIdentity,
 } from '../../src/manifest.js';
@@ -166,12 +166,39 @@ describe('shared plugin command author contract', () => {
     }
   });
 
-  it('expands exact Skill placeholders using source/plugin and rejects old and unavailable references', () => {
+  it('skips inherited managed permissions on generic only when the plugin declares a command', () => {
+    const permissions = [{ name: 'tools', allow: [{ argsPrefix: ['wait'] }] },
+      { name: 'mixed', ask: ['git status', { argsPrefix: ['wait'] }], deny: [{ argsPrefix: ['stop'] }] },
+      { name: 'disabled', allow: ['git diff'], agentOverrides: { generic: null } },
+      { name: 'override', deny: [{ argsPrefix: ['stop'] }], agentOverrides: { generic: { deny: ['git reset'] } } }];
+    const input = { platforms: ['generic', 'codex'], extensions: { permissions } };
+    const command = { ...staticCommand, platforms: ['codex'] };
+    const normalized = validatePluginManifest('/plugin', manifest({ ...input, command }));
+    expect(resolveInvocationPolicy(normalized, 'generic', 'official/example-plugin')).toEqual({ platform: 'generic', permissions: [
+      { name: 'mixed', ask: ['git status'] }, { name: 'override', deny: ['git reset'] },
+    ] });
+    expect(resolveInvocationPolicy(normalized, 'codex', 'official/example-plugin').permissions).toMatchObject([
+      { name: 'tools', allow: [{ argsPrefix: ['wait'] }] }, { name: 'mixed', ask: ['git status', { argsPrefix: ['wait'] }] },
+      { name: 'disabled', allow: ['git diff'] }, { name: 'override', deny: [{ argsPrefix: ['stop'] }] },
+    ]);
+    expect(() => validatePluginManifest('/plugin', manifest({ ...input, platforms: ['generic'] })))
+      .toThrow(/generic.*requires a command declaration/u);
+    expect(() => validatePluginManifest('/plugin', manifest({ ...input, command, extensions: { permissions: [
+      { ...permissions[0], agentOverrides: { generic: { allow: [{ argsPrefix: ['wait'] }] } } },
+    ] } }))).toThrow(/generic.*outside command.platforms/u);
+    expect(() => validatePluginManifest('/plugin', manifest({ ...input, command, platforms: ['generic', 'codex', 'claude'] })))
+      .toThrow(/claude.*outside command.platforms/u);
+  });
+
+  it('expands exact Skill placeholders using package and invocation selectors', () => {
     const input = 'Run `{{aw.command}}`\n{{aw.command}} wait';
     expect(parseManagedCommandPlaceholders(input).map(({ start, end }) => input.slice(start, end)))
       .toEqual(['{{aw.command}}', '{{aw.command}}']);
     expect(replaceManagedCommandPlaceholders(input, 'official/example-plugin')).toBe(
       'Run `aw command run official/example-plugin --`\naw command run official/example-plugin -- wait',
+    );
+    expect(replaceManagedCommandPlaceholders(input, 'official/example-plugin/claude')).toBe(
+      'Run `aw command run official/example-plugin/claude --`\naw command run official/example-plugin/claude -- wait',
     );
     for (const malformed of ['{{aw.command:tools/check}}', '{{aw.command.tools.check.default}}', '{{aw.command}']) {
       expect(() => parseManagedCommandPlaceholders(malformed)).toThrow(/commandReferenceInvalid/u);
@@ -180,6 +207,18 @@ describe('shared plugin command author contract', () => {
     expect(() => assertManagedCommandPlatform(normalized, 'codex', 'Skill')).not.toThrow();
     expect(() => assertManagedCommandPlatform(normalized, 'claude', 'Skill')).toThrow(/outside command.platforms/u);
     expect(() => assertManagedCommandPlatform({}, 'codex', 'Skill')).toThrow(/requires a command declaration/u);
+  });
+
+  it('parses optional Native context only for invocation selectors', () => {
+    const packageSelector = 'official/example-plugin';
+    expect(parseCommandInvocationSelector(packageSelector)).toEqual({ packageSelector });
+    expect(parseCommandInvocationSelector(`${packageSelector}/opencode`)).toEqual({ packageSelector, platform: 'opencode' });
+    expect(normalizeCommandInvocationSelector(`${packageSelector}/opencode`)).toBe(`${packageSelector}/opencode`);
+    expect(() => normalizeCommandSelector(`${packageSelector}/opencode`)).toThrow();
+    for (const invalid of [`${packageSelector}/generic`, `${packageSelector}/unknown`, `${packageSelector}/`,
+      `${packageSelector}/codex/other`, '/example-plugin/codex', 'official//codex']) {
+      expect(() => parseCommandInvocationSelector(invalid)).toThrow();
+    }
   });
 
   it('reserves injected .aw content and requires the chosen entry to be an ordinary source file', async () => {

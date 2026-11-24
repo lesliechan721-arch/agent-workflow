@@ -365,7 +365,7 @@ async function policyContributions(ctx: StageContext, input: ProjectionInput, fi
   if (!input.policy.permissions.length || input.renderUnit.output !== 'package') return [];
   const platform = input.binding.platform;
   const resourceKey = getDeploymentResourceKey(input.binding.plugin);
-  const selector = input.binding.plugin.pluginId;
+  const selector = input.policy.invocationSelector;
   if (platform === 'codex') {
     const layout = await getDeploymentLayout(ctx, input.binding);
     if (input.policy.permissions.some((permission) => permission.sandbox?.excludedCommands.length)) throw new Error('platformProjectionInvocationPolicyUnsupported');
@@ -418,7 +418,7 @@ async function policyContributions(ctx: StageContext, input: ProjectionInput, fi
       const safetyCheck = claim.effect !== 'allow' ? ''
         : program === 'find' ? ' Claude Code can still require approval for find actions such as -exec and -delete.'
           : ['watch', 'setsid', 'ionice', 'flock'].includes(program) ? ` Claude Code can still require approval for commands run through ${program}.` : '';
-      return { ...claim, pluginId: selector, resource, reasonCode: 'claude-bash-wrapper-matching',
+      return { ...claim, pluginId: input.binding.plugin.pluginId, resource, reasonCode: 'claude-bash-wrapper-matching',
         message: 'Claude Code matches this written prefix with or without additional arguments and inside recognized shell wrappers such as timeout and time. ' + extra + safetyCheck };
     });
     diagnostics.push(...hostPermissionImpactDiagnostics(adjusted, platform, input.binding.scope.kind, destination));

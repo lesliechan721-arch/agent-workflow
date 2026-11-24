@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
-import { canonicalizeIdentityValue, type CommandLaunch, type CommandRoutes } from '@lesliechan721/aw-plugin-core/manifest';
+import { canonicalizeIdentityValue, type CommandLaunch, type CommandRoutes, type PlatformName } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { managedCommandRouteIsReachable } from '../generators/permissions.js';
 import { antigravityCommandTokens, readAntigravityGlobalPermissions } from '../platforms/antigravity-permissions.js';
-import { inspectGrokPermissionConfig } from '../platforms/grok-permission-config.js';
+import { grokPermissionMayApply, inspectGrokPermissionConfig } from '../platforms/grok-permission-config.js';
 import { getOpenCodePermissionRoot } from '../platforms/layout.js';
 import { openCodePermissionMayMatch, readOpenCodePermissionChain } from '../platforms/opencode-permissions.js';
+import { readInstalledCommandProducer, type ManagedCommandPackageView } from './managed-command-store.js';
 import { getClaudeHome, getCodexHome, resolveRepoRoot } from './state-paths.js';
 
 type LaunchReview = Pick<CommandLaunch, 'runner' | 'entry' | 'args' | 'cwd'> & { route: 'subcommand' | 'fallback' };
@@ -205,25 +206,54 @@ function readCodexPrefixRules(contents: string): { rules: CodexPrefixRule[]; inc
   return { rules, incomplete };
 }
 
+export function reviewInvocationPlatforms(record?: {
+  runtimeConfigKeys?: readonly string[];
+  requiresPlatformContext?: boolean | null;
+  runtimeConfigPlatforms: PlatformName[];
+}): readonly PlatformName[] | undefined {
+  return record && (record.requiresPlatformContext || record.runtimeConfigKeys?.length)
+    ? record.runtimeConfigPlatforms : undefined;
+}
+
+/** A broken snapshot hides public availability but leaves its verified producer routes reviewable. */
+export async function reviewInstalledInvocationPlatforms(view?: ManagedCommandPackageView): Promise<readonly PlatformName[] | undefined> {
+  if (view?.requiresPlatformContext === null && view.routes && view.resourceRoot) {
+    return reviewInvocationPlatforms(await readInstalledCommandProducer(view.resourceRoot));
+  }
+  return reviewInvocationPlatforms(view);
+}
+
 export async function inspectManagedCommandRouteChanges(options: {
   selector: string;
   before?: CommandRoutes;
+  beforePlatforms?: readonly PlatformName[];
   after?: CommandRoutes;
+  afterPlatforms?: readonly PlatformName[];
   cwd: string;
   userOnly?: boolean;
   inspectInactiveRestrictions?: boolean;
   env: NodeJS.ProcessEnv;
 }): Promise<ManagedCommandRouteReview> {
   const { selector, before, after, cwd, env } = options;
-  const argv = ['aw', 'command', 'run', selector, '--'];
-  const names = new Set([...before?.subcommands ?? [], ...after?.subcommands ?? []].map(({ name }) => name));
-  const changed = (word: string | undefined): boolean =>
-    canonicalizeIdentityValue(selectLaunch(before, word)) !== canonicalizeIdentityValue(selectLaunch(after, word));
-  const routeChanges = [...[...names].sort(), undefined].filter(changed).map((word) => ({
-    argv: word === undefined ? argv : [...argv, word],
-    before: showLaunch(selectLaunch(before, word)),
-    after: showLaunch(selectLaunch(after, word)),
-  }));
+  const selectors = (platforms?: readonly PlatformName[]) => platforms
+    ? platforms.map((platform) => `${selector}/${platform}`) : [selector];
+  const oldSelectors = new Set(before && selectors(options.beforePlatforms));
+  const newSelectors = new Set(after && selectors(options.afterPlatforms));
+  const names = [...new Set([...before?.subcommands ?? [], ...after?.subcommands ?? []].map(({ name }) => name))].sort();
+  const invocations = [...new Set([...oldSelectors, ...newSelectors])].map((invocation) => {
+    const oldRoutes = oldSelectors.has(invocation) ? before : undefined;
+    const newRoutes = newSelectors.has(invocation) ? after : undefined;
+    const argv = ['aw', 'command', 'run', invocation, '--'];
+    const changed = (word: string | undefined): boolean =>
+      canonicalizeIdentityValue(selectLaunch(oldRoutes, word)) !== canonicalizeIdentityValue(selectLaunch(newRoutes, word));
+    const changes = [...names, undefined].filter(changed).map((word) => ({
+      argv: word === undefined ? argv : [...argv, word],
+      before: showLaunch(selectLaunch(oldRoutes, word)),
+      after: showLaunch(selectLaunch(newRoutes, word)),
+    }));
+    return { argv, changed, changes, newRoutes };
+  });
+  const routeChanges = invocations.flatMap(({ changes }) => changes);
   const review: ManagedCommandRouteReview = {
     routeChanges,
     affectedPermissions: [],
@@ -235,14 +265,18 @@ export async function inspectManagedCommandRouteChanges(options: {
   if (routeChanges.length === 0 && !options.inspectInactiveRestrictions) return review;
 
   function add(platform: PermissionReview['platform'], file: string, action: PermissionReview['action'], tokens: unknown, resourcePattern?: string): void {
-    if (!Array.isArray(tokens) || !argv.slice(0, tokens.length).every((token, index) => token === tokens[index])) return;
-    const argsPrefix = tokens.slice(argv.length);
-    if (argsPrefix.some((token) => typeof token !== 'string' || (platform !== 'codex' && !/^[A-Za-z0-9_./:@%+=,-]+$/u.test(token)))) return;
-    const inactive = options.inspectInactiveRestrictions && tokens.length >= argv.length
-      && (action === 'ask' || action === 'deny') && !managedCommandRouteIsReachable(after ?? null, argsPrefix);
-    if (inactive || (routeChanges.length > 0 && (argsPrefix.length === 0 || changed(argsPrefix[0])))) {
-      review.affectedPermissions.push({ platform, path: file, action, argvPrefix: tokens,
-        ...(inactive ? { handlerUnavailable: true } : {}), ...(resourcePattern === undefined ? {} : { resourcePattern }) });
+    if (!Array.isArray(tokens)) return;
+    for (const { argv, newRoutes, changes, changed } of invocations) {
+      if (!argv.slice(0, tokens.length).every((token, index) => token === tokens[index])) continue;
+      const argsPrefix = tokens.slice(argv.length);
+      if (argsPrefix.some((token) => typeof token !== 'string' || (platform !== 'codex' && !/^[A-Za-z0-9_./:@%+=,-]+$/u.test(token)))) continue;
+      const inactive = options.inspectInactiveRestrictions && tokens.length >= argv.length
+        && (action === 'ask' || action === 'deny') && !managedCommandRouteIsReachable(newRoutes ?? null, argsPrefix);
+      if (inactive || (changes.length > 0 && (argsPrefix.length === 0 || changed(argsPrefix[0])))) {
+        review.affectedPermissions.push({ platform, path: file, action, argvPrefix: tokens,
+          ...(inactive ? { handlerUnavailable: true } : {}), ...(resourcePattern === undefined ? {} : { resourcePattern }) });
+        return;
+      }
     }
   }
   function readFailure(error: unknown, file: string): void {
@@ -291,16 +325,21 @@ export async function inspectManagedCommandRouteChanges(options: {
         const { rules, incomplete } = readCodexPrefixRules(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
         if (incomplete) review.permissionReadFailures.push(file);
         for (const { action, pattern } of rules) {
-          const fixed = argv.slice(0, pattern.length);
-          if (!fixed.every((word, index) => typeof pattern[index] === 'string'
-            ? pattern[index] === word : pattern[index]?.includes(word))) continue;
-          const [first, ...rest] = pattern.slice(argv.length);
-          const resourcePattern = pattern.some(Array.isArray) ? JSON.stringify(pattern) : undefined;
-          if (first === undefined) add('codex', file, action, fixed, resourcePattern);
-          else {
-            const tail = rest.map((token) => typeof token === 'string' ? token : token[0]!);
-            for (const word of typeof first === 'string' ? [first] : new Set(first)) {
-              add('codex', file, action, [...fixed, word, ...tail], resourcePattern);
+          const matchingPrefixes = new Map<string, string[]>();
+          for (const { argv } of invocations) {
+            const fixed = argv.slice(0, pattern.length);
+            if (fixed.every((word, index) => typeof pattern[index] === 'string'
+              ? pattern[index] === word : pattern[index]?.includes(word))) matchingPrefixes.set(fixed.join(' '), fixed);
+          }
+          for (const fixed of matchingPrefixes.values()) {
+            const [first, ...rest] = pattern.slice(fixed.length);
+            const resourcePattern = pattern.some(Array.isArray) ? JSON.stringify(pattern) : undefined;
+            if (first === undefined) add('codex', file, action, fixed, resourcePattern);
+            else {
+              const tail = rest.map((token) => typeof token === 'string' ? token : token[0]!);
+              for (const word of typeof first === 'string' ? [first] : new Set(first)) {
+                add('codex', file, action, [...fixed, word, ...tail], resourcePattern);
+              }
             }
           }
         }
@@ -308,6 +347,8 @@ export async function inspectManagedCommandRouteChanges(options: {
     }
   }
   if (hasCodexEvidence) review.codexRulesDigest = codexEvidence.digest('hex');
+  const preferredArgv = (platform: string) => (invocations.find(({ argv }) => argv[3] === `${selector}/${platform}`) ?? invocations[0])!.argv;
+  if (!invocations.length) return review;
   const ctx = { cwd, env };
   const antigravity = await readAntigravityGlobalPermissions(ctx);
   if (antigravity) {
@@ -317,15 +358,22 @@ export async function inspectManagedCommandRouteChanges(options: {
       if (literal) add('antigravity', antigravity.path, effect, literal);
       else if (resource.startsWith('command(') && routeChanges.length) {
         const resourcePattern = resource === 'command(*)' ? resource : 'configured command pattern';
-        review.affectedPermissions.push({ platform: 'antigravity', path: antigravity.path, action: effect, argvPrefix: argv, resourcePattern });
+        review.affectedPermissions.push({ platform: 'antigravity', path: antigravity.path, action: effect, argvPrefix: preferredArgv('antigravity'), resourcePattern });
       }
     }
   }
-  const grok = await inspectGrokPermissionConfig(ctx, argv, projectRoot);
-  for (const rule of grok.rules) review.affectedPermissions.push({ platform: 'grok', action: rule.action,
-    path: rule.path, argvPrefix: argv, resourcePattern: rule.pattern });
-  review.permissionReadFailures.push(...grok.readFailures);
-  if (grok.unverifiedProjectPath) review.unverifiedGrokProjectPath = grok.unverifiedProjectPath;
+  const changedArgv = invocations.filter(({ changes }) => changes.length > 0).map(({ argv }) => argv);
+  if (changedArgv.length) {
+    const grok = await inspectGrokPermissionConfig(ctx, changedArgv, projectRoot);
+    const grokArgv = changedArgv.find((argv) => argv[3] === `${selector}/grok`);
+    for (const rule of grok.rules) {
+      const matches = (argv: string[]) => grokPermissionMayApply(rule.pattern, argv.join(' '));
+      const argvPrefix = grokArgv && matches(grokArgv) ? grokArgv : changedArgv.find(matches);
+      if (argvPrefix) review.affectedPermissions.push({ platform: 'grok', action: rule.action, path: rule.path, argvPrefix, resourcePattern: rule.pattern });
+    }
+    review.permissionReadFailures.push(...grok.readFailures);
+    if (grok.unverifiedProjectPath) review.unverifiedGrokProjectPath = grok.unverifiedProjectPath;
+  }
   const hostConfigRoot = getOpenCodePermissionRoot(ctx);
   const destinationRoot = projectRoot ?? hostConfigRoot;
   if (!destinationRoot) {
@@ -342,12 +390,12 @@ export async function inspectManagedCommandRouteChanges(options: {
       }
       const { action, effect, resource = '*' } = rule as Record<string, unknown>;
       if (effect !== 'allow' && effect !== 'ask' && effect !== 'deny' || typeof resource !== 'string') continue;
-      if (!openCodePermissionMayMatch(rule, argv)) continue;
+      if (!invocations.some(({ argv }) => openCodePermissionMayMatch(rule, argv))) continue;
       const literal = resource.replace(/ \*$/u, '').split(' ');
       if ((action === 'shell' || action === '*') && literal.every((word) => /^[A-Za-z0-9_./:@%+=,-]+$/u.test(word))) {
         add('opencode', file, effect, literal);
       } else if (routeChanges.some((change) => openCodePermissionMayMatch(rule, change.argv))) {
-        review.affectedPermissions.push({ platform: 'opencode', path: file, action: effect, argvPrefix: argv, resourcePattern: resource });
+        review.affectedPermissions.push({ platform: 'opencode', path: file, action: effect, argvPrefix: preferredArgv('opencode'), resourcePattern: resource });
       }
     }
   } catch (error) {

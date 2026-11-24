@@ -37,6 +37,21 @@ describe('array configuration presentation', () => {
     expect(presentConfigValue({ definition, value: [value[0]], itemSummary }).complete).toBe(false);
     expect(presentConfigValue({ definition, value: [{ model: 'fast' }] }).text).toBe('model=fast');
   });
+
+  it('summarizes a nested object array by count and the first two unique keys in its parent preview', () => {
+    const definition: PluginConfigArrayField = { type: 'array', items: {
+      type: 'object', properties: {
+        models: {
+          type: 'array', validation: { uniqueBy: 'id' },
+          items: { type: 'object', properties: { id: { type: 'string', required: true } } },
+        },
+      },
+    } };
+    const value = [{ models: [{ id: 'first' }, { id: 'second' }, { id: 'third' }] }];
+    expect(presentConfigValue({ definition, value })).toMatchObject({
+      text: 'models=3 项 · first · second', complete: false,
+    });
+  });
 });
 
 describe('array working copy', () => {

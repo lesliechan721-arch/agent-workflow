@@ -203,7 +203,7 @@ describe('public config command', () => {
     const installed = await run(['plugin', 'install', selector, '--scope', 'project', '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0 });
     const settings = path.join(cwd, '.claude/settings.local.json');
-    const invocation = 'aw command run team/demo -- check';
+    const invocation = 'aw command run team/demo/claude -- check';
     expect((await fs.readJson(settings)).permissions.allow).toContain('Bash(' + invocation + ' *)');
     const renderCount = async () => (await fs.readFile(trace, 'utf8')).trim().split('\n').length;
     const initialRenders = await renderCount();

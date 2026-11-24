@@ -208,11 +208,39 @@ export const sensitiveFieldRejectsConst: PluginConfigScalarField = {
 
 export const sourceConfigV5: NonNullable<PluginManifestSourceV4['config']> = {
   schemaVersion: 5,
-  definitions: { profile: { type: 'object', properties: { executor: { type: 'string' } } } },
-  fields: { profile: { $ref: '#/config/definitions/profile', default: { executor: 'native' } } },
+  definitions: {
+    model: { type: 'object', properties: { id: { type: 'string', required: true } } },
+    profile: { type: 'object', properties: {
+      executor: { type: 'string' },
+      models: { type: 'array', items: { $ref: '#/config/definitions/model' }, validation: { uniqueBy: 'id' } },
+    } },
+  },
+  fields: { profile: { $ref: '#/config/definitions/profile', default: { executor: 'native', models: [{ id: 'default' }] } } },
   platforms: {
     cursor: { definitions: { profile: { type: 'object', properties: { executor: { type: 'string', const: 'native' } } } } },
     generic: { fields: { genericOnly: { type: 'boolean', default: false } }, presentation: {} },
+  },
+}
+
+export const nestedArray: import('../../src/types.js').PluginConfigNestedObjectArrayField = {
+  type: 'array',
+  items: { type: 'object', properties: {
+    id: { type: 'string', required: true },
+    efforts: { type: 'array', items: { type: 'string' } },
+  } },
+  validation: { uniqueBy: 'id' },
+}
+
+export const nestedItemRejectsVariants: import('../../src/types.js').PluginConfigNestedObjectField = {
+  ...nestedArray.items,
+  // @ts-expect-error Nested fixed objects do not declare variants.
+  variants: { discriminator: 'id', cases: {} },
+}
+
+export const nestedItemRejectsNestedObjectArrays: import('../../src/types.js').PluginConfigNestedObjectField = {
+  type: 'object', properties: {
+    // @ts-expect-error Nested fixed objects have leaf properties only.
+    models: nestedArray,
   },
 }
 
