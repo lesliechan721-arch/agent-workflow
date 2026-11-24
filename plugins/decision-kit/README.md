@@ -13,7 +13,7 @@ aw plugin install decision-kit --scope user
 
 安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
 
-安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-for-review`。普通短问题仍直接说明，不强制制作阅读页。
+安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-clearly`。普通短问题仍直接说明，不强制制作阅读页。
 
 ## 包含的 Skill
 
@@ -24,7 +24,7 @@ aw plugin install decision-kit --scope user
 | [`decision-prototype`](skills/decision-prototype/) | 用早期候选、操作演示或实验校准布局、行为、状态关系及可行性 |
 | [`project-context`](skills/project-context/) | 澄清领域概念与关系，及时维护已确认词义和重要决定的理由 |
 
-四个 Skill 都可以直接调用。`decision-shape` 负责整体需求覆盖、方法选择与对齐完成判断，协调问答、原型和知识维护，并按需使用 `explain-for-review` 呈现已有复杂材料。方向变化时只重新打开受影响的决定；范围内尚未展开的主题不会被当成已经排除。三个叶子能力可独立完成本职工作，不反向依赖 Shape。完整开发设计可使用 dev-workflow 插件的 `dev-design`，由它衔接对齐、规格和审查。
+四个 Skill 都可以直接调用。`decision-shape` 负责整体需求覆盖、方法选择与对齐完成判断，协调问答、原型和知识维护，并按需使用 `explain-clearly` 呈现已有复杂材料。方向变化时只重新打开受影响的决定；范围内尚未展开的主题不会被当成已经排除。三个叶子能力可独立完成本职工作，不反向依赖 Shape。完整开发设计可使用 dev-workflow 插件的 `dev-design`，由它衔接对齐、规格和审查。
 
 `decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式，不必等文字讨论失败。Review Shell 负责呈现证据和收集输入。Shape 保留当前答案、接受范围、成立条件、必要风险和证据指针；Context 将确需长期保留且已确认的知识更新到既有位置。
 
@@ -65,7 +65,7 @@ aw plugin install decision-kit --scope user
 
 ## Skill 导出
 
-四个 Skill 可按所选目标导出；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
+四个 Skill 可按所选目标导出；完整依赖闭包同时提供 Human Content 的 `explain-clearly`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
 
 ## Review 默认期限
 

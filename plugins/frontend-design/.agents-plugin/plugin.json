@@ -1,8 +1,8 @@
 {
   "schemaVersion": 4,
   "name": "frontend-design",
-  "version": "0.1.0-beta.7",
-  "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+  "version": "0.1.0-beta.8",
+  "description": "面向网页与产品界面的前端设计与实现，涵盖页面模式工艺、反模板方向探索、交互动效、只读诊断与真实渲染核查。",
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -25,7 +25,7 @@
   ],
   "interface": {
     "displayName": "Frontend Design",
-    "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+    "shortDescription": "按页面模式探索视觉方向，打磨排版布局、交互动效并核查真实渲染",
     "capabilities": [
       "Skills"
     ]

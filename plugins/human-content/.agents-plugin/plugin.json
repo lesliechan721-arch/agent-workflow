@@ -1,14 +1,15 @@
 {
   "schemaVersion": 4,
   "name": "human-content",
-  "version": "0.1.0-beta.7",
-  "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
+  "version": "0.1.0-beta.8",
+  "description": "面向人类理解的保真内容呈现：用清晰受控文本、结构图、一次性交互 HTML 或定制讲解视频把复杂材料讲透。",
   "marketplace": {
     "category": "workflow",
     "tags": [
       "explanation",
-      "reading",
-      "review"
+      "readability",
+      "visualization",
+      "comprehension"
     ],
     "strict": true,
     "policy": {
@@ -30,7 +31,7 @@
   ],
   "interface": {
     "displayName": "Human Content",
-    "shortDescription": "清楚理解、查证与反馈已有复杂材料",
+    "shortDescription": "将复杂需求、规格与机制转为易懂、可查证的清晰呈现",
     "capabilities": [
       "Skills"
     ]

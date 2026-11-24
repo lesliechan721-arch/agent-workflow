@@ -128,10 +128,10 @@
     {
       "name": "browser-use",
       "source": "./plugins/browser-use",
-      "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+      "description": "面向前端开发与日常网页的轻量浏览器技能：预览、多视口截图核查、交互与按需调试，桥接原生 agent-browser CLI。",
       "interface": {
         "displayName": "Browser Use",
-        "shortDescription": "轻量网页预览、浏览、交互与检查",
+        "shortDescription": "前端网页预览、截图核查、交互与按需调试",
         "capabilities": [
           "Skills"
         ]
@@ -232,10 +232,10 @@
     {
       "name": "frontend-design",
       "source": "./plugins/frontend-design",
-      "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+      "description": "面向网页与产品界面的前端设计与实现，涵盖页面模式工艺、反模板方向探索、交互动效、只读诊断与真实渲染核查。",
       "interface": {
         "displayName": "Frontend Design",
-        "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+        "shortDescription": "按页面模式探索视觉方向，打磨排版布局、交互动效并核查真实渲染",
         "capabilities": [
           "Skills"
         ]
@@ -254,10 +254,10 @@
     {
       "name": "git-toolkit",
       "source": "./plugins/git-toolkit",
-      "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
+      "description": "提供本地 Git 提交，以及覆盖 merge、rebase 与 cherry-pick 的冲突解决与语义协调工作流。",
       "interface": {
         "displayName": "Git Toolkit",
-        "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
+        "shortDescription": "精确创建本地提交，或协调 Git merge、rebase 与 cherry-pick 的冲突与语义交互",
         "capabilities": [
           "Skills"
         ]
@@ -266,8 +266,9 @@
       "tags": [
         "git",
         "commit",
-        "worktree",
         "merge",
+        "rebase",
+        "cherry-pick",
         "conflicts"
       ],
       "strict": true,
@@ -283,10 +284,10 @@
     {
       "name": "human-content",
       "source": "./plugins/human-content",
-      "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
+      "description": "面向人类理解的保真内容呈现：用清晰受控文本、结构图、一次性交互 HTML 或定制讲解视频把复杂材料讲透。",
       "interface": {
         "displayName": "Human Content",
-        "shortDescription": "清楚理解、查证与反馈已有复杂材料",
+        "shortDescription": "将复杂需求、规格与机制转为易懂、可查证的清晰呈现",
         "capabilities": [
           "Skills"
         ]
@@ -294,8 +295,9 @@
       "category": "workflow",
       "tags": [
         "explanation",
-        "reading",
-        "review"
+        "readability",
+        "visualization",
+        "comprehension"
       ],
       "strict": true,
       "policy": {

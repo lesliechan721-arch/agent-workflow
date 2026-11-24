@@ -1,6 +1,6 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.18",
+  "version": "0.1.0-beta.19",
   "description": "创建、修改、重构和只读评审 Agent Skill 与多 Skill 组合架构，并独立审核 Skill Eval。",
   "interface": {
     "displayName": "Agent Skill Toolkit",

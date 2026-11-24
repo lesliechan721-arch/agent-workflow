@@ -1,0 +1,7 @@
+interface:
+  display_name: git-reconcile
+  short_description: "协调 Git merge、rebase 与 cherry-pick 的文本冲突及跨分支语义交互"
+  default_prompt: "使用 $git-reconcile 协调当前 Git 整合中的文本冲突与跨分支语义交互，并验证组合结果。"
+
+policy:
+  allow_implicit_invocation: true

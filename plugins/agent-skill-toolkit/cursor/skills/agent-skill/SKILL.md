@@ -44,7 +44,7 @@ node scripts/init-skill.mjs <new-directory> --description "说明该技能处理
 
 评审单个 Skill、跨 Skill 工作流或插件公开面时，用与创作相同的质量标准诊断：
 
-1. **沿真实路径走查**：挑 1 条代表性输入与 1 条边界输入，顺着入口、正文、指针和交接走完，标出执行者在哪一步必须猜测、哪一步会产生多余跳转或误做动作。
+1. **沿真实路径走查**：挑 1 条代表性输入与 1 条边界输入，顺着入口、正文、指针和交接走完，标出执行者在哪一步必须猜测、哪一步会产生多余跳转或误做动作；若某条过细规则在边界反复出特例，先评估删除并退回结果不变量，而非继续打补丁。
 2. **检查内容增量与抓手**：用 `agent-content` 查抽象空话、重复免责尾巴和过深跳转；用 `references/design-and-validation.md` 查是否真的对抗模型默认失败模式、移植外部方法时是否保留了硬机制。
 3. **检查组合与工具**：涉及多 Skill 交接或公开入口时读 `references/skill-composition.md`；涉及触发时读 `references/skill-invocation.md`；需要深度审核 Eval Oracle 时用 `audit-agent-skill-evals`。
 4. **运行静态包检查**（若目录可读）：执行下方 `check-skill.mjs`，结合实际源码/运行包形态解释诊断。

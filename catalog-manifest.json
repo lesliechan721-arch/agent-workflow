@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.81",
+  "catalogVersion": "0.1.0-beta.82",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "1f1b105434608cfa56d4782cf650440a6717f9e8"
+    "sourceHead": "c2a337c652c57abb648d369c291c1b006374660e"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.12",
+      "version": "0.1.0-beta.13",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -55,9 +55,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:66295384adf565b4c689bccb2ff6347c91dbe4d639fb56d18418cc7cf8204a78",
-      "manifestDigest": "sha256:f750cccdb1eb78722b17dc799afb6e986f4080298f1b40299045826cf42ff2ad",
-      "contentDigest": "sha256:9bdb814aa41149c25e154f6e2add484e5609657e8e8d77652c7157ec2e7db042"
+      "artifactDigest": "sha256:14eb74c770d22dfccce6e02f56a362fe0947d7b3d4f5723b455225904e7ae3d8",
+      "manifestDigest": "sha256:53b2b415dc21dac6e60857391dc4308af6aa780c56768f725c8de20672c8f515",
+      "contentDigest": "sha256:9e966e3e69fc1a2b061a8b73d616050893f61eec62290ef3de582c2c9cb9a824"
     },
     {
       "name": "agent-skill-toolkit",
@@ -80,7 +80,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.18",
+      "version": "0.1.0-beta.19",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -94,9 +94,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:b65402e78c5cbb49919e3d0d907d16f6fd4422ed4dd1d613a8a531087318ff2f",
-      "manifestDigest": "sha256:07bf2948ca7884339e9f1160b9c49f2d9b82a6a421258c9ee1c3c53c4815e7b8",
-      "contentDigest": "sha256:027f0e2c4124925c8eb54065065bffea68e75c6ad899fb360db79e75752ca629"
+      "artifactDigest": "sha256:712b398f3c653a2e4f7bfba82781ccd517a2691fc00fa029126178c27eded99d",
+      "manifestDigest": "sha256:057eb4437f6be70135ab1d8921430b462be92d1543fac3f72ecef93d59490a3d",
+      "contentDigest": "sha256:852af3544ca3419fcaba0e946dad05bbf2adc2a091cc83ff533045a6b017e883"
     },
     {
       "name": "agent-subagent",
@@ -249,10 +249,10 @@
     {
       "name": "browser-use",
       "source": "./plugins/browser-use",
-      "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+      "description": "面向前端开发与日常网页的轻量浏览器技能：预览、多视口截图核查、交互与按需调试，桥接原生 agent-browser CLI。",
       "interface": {
         "displayName": "Browser Use",
-        "shortDescription": "轻量网页预览、浏览、交互与检查",
+        "shortDescription": "前端网页预览、截图核查、交互与按需调试",
         "capabilities": [
           "Skills"
         ]
@@ -267,7 +267,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -279,9 +279,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3bd0e43daa41148e77a575358284a61fa5ef10a5487c888bf5dda81981085629",
-      "manifestDigest": "sha256:e88b9b258790b3509952f59b58618b3a94410d587a3febbab80377b520f7f1e1",
-      "contentDigest": "sha256:a90c8de3ae40061e2effbd6c0c1d0d4bbc6a5db17693c808075aeae9bd5208d8"
+      "artifactDigest": "sha256:682e5b6f46537263b099124709d5be55686301cf9c8474ec13564e1884e1444c",
+      "manifestDigest": "sha256:2c69aba3ddb5724de7c6dbb32c554ef64b3d874766bb7246a0df76bb8ffb11ed",
+      "contentDigest": "sha256:982bd5f948e25332bd327293ebd0215e6c146dc054a743b547f00ad6f3ec8269"
     },
     {
       "name": "codex-enhance",
@@ -361,7 +361,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.12",
+      "version": "0.1.0-beta.13",
       "dependencies": [
         "human-content"
       ],
@@ -374,9 +374,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:77217726fb5198635b369a0c6eddc286028aa72b13d88bdfdc7f9c627e8c9026",
-      "manifestDigest": "sha256:0c7bff4c09cbe28b138982f45d84a2f4b89eeb74b0303925c99c5926099614e4",
-      "contentDigest": "sha256:65ba097a32f4d94fd080549ae03c078eddc579fcbffdfa90f83f372d91d2e2a2"
+      "artifactDigest": "sha256:75d7fd6208ce228b865a06b8da2be980aa1aaf820be11db71d606b8048606a41",
+      "manifestDigest": "sha256:1e3fdadd7eecfa163632e4ecf9696d39f7cc177faa1f4dbbe7e71589209fc121",
+      "contentDigest": "sha256:8a62dac440e5f576424fccecfc113a3640bbf91d1122d86368f007169f015440"
     },
     {
       "name": "dev-workflow",
@@ -405,7 +405,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.22",
+      "version": "0.1.0-beta.23",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -420,17 +420,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:82d0034be107dcfa19a9e6a588d3b1778098029236e8804488f6dcfc5681321c",
-      "manifestDigest": "sha256:9596ae9ea882702f1ec1996eda146a8802b1a39dced1855d7eb86178565cc5c3",
-      "contentDigest": "sha256:1b3ec04fe032322667f85a2eb050951513f63ffbd2a9a4a0699d3b8acfd09e04"
+      "artifactDigest": "sha256:70a7f2eb849575a78b4a06d659ba8ce68d41599702014ea40499ddb1a8de2880",
+      "manifestDigest": "sha256:747a40d40f54044e47680bd6bb951baeda526dba6ad9852ad1d37b3da9943db1",
+      "contentDigest": "sha256:90d86037b4a5fc3208b028b2b43d9ee16e02cf7b541018f53cb0067101b2d375"
     },
     {
       "name": "frontend-design",
       "source": "./plugins/frontend-design",
-      "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
+      "description": "面向网页与产品界面的前端设计与实现，涵盖页面模式工艺、反模板方向探索、交互动效、只读诊断与真实渲染核查。",
       "interface": {
         "displayName": "Frontend Design",
-        "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
+        "shortDescription": "按页面模式探索视觉方向，打磨排版布局、交互动效并核查真实渲染",
         "capabilities": [
           "Skills"
         ]
@@ -445,7 +445,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -456,17 +456,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3b4479a6d7f3104d56d612d4c43c41f57942192765cf5df2ddd50873846005f0",
-      "manifestDigest": "sha256:a06883abfb489cd6a92c1d611765a484ff6c096f4d6ea252bf74be8641c38580",
-      "contentDigest": "sha256:e4fd1c16b98814e8ef13c09af07fca7116af52320a4927f15eb481966bc03874"
+      "artifactDigest": "sha256:5a32dac856c5a41f86848a320dfe5c3d12015ef581592a0371400ec84ef2775e",
+      "manifestDigest": "sha256:1ec84befe1b12553efd93b1d411e07c3fb80566a343246bbbf6691db36c69892",
+      "contentDigest": "sha256:4c10b189e34733ac33891cc8a596eeefe3d714bdd87463fed0cfaf457daf02d3"
     },
     {
       "name": "git-toolkit",
       "source": "./plugins/git-toolkit",
-      "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
+      "description": "提供本地 Git 提交，以及覆盖 merge、rebase 与 cherry-pick 的冲突解决与语义协调工作流。",
       "interface": {
         "displayName": "Git Toolkit",
-        "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
+        "shortDescription": "精确创建本地提交，或协调 Git merge、rebase 与 cherry-pick 的冲突与语义交互",
         "capabilities": [
           "Skills"
         ]
@@ -475,8 +475,9 @@
       "tags": [
         "git",
         "commit",
-        "worktree",
         "merge",
+        "rebase",
+        "cherry-pick",
         "conflicts"
       ],
       "strict": true,
@@ -488,7 +489,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -499,17 +500,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3b7f4a7ced2044ec760768d94f99cc79fe79b55d47e9feeef78335bdb10e882d",
-      "manifestDigest": "sha256:d1684dbc37833fa0bf1bcd25c501213bb7416cce76e3f3bc07f654d39fd53cf6",
-      "contentDigest": "sha256:5b4514f3bbd0205a6c6ced9968ca4b3b6b640f13205551e2e8db526cd571a8e0"
+      "artifactDigest": "sha256:fb587670ec2b59738fabffe7a8a33648b60bd9744c5f677463c564a0a8c85c9f",
+      "manifestDigest": "sha256:5adc7b7a399352ebd6845a9efbe8c23f69a279843ed172421d4f0293dec7b94a",
+      "contentDigest": "sha256:48b87c511cd9dde2f35c4b7c19672a77843a18b936192098908cd000b9a106f9"
     },
     {
       "name": "human-content",
       "source": "./plugins/human-content",
-      "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
+      "description": "面向人类理解的保真内容呈现：用清晰受控文本、结构图、一次性交互 HTML 或定制讲解视频把复杂材料讲透。",
       "interface": {
         "displayName": "Human Content",
-        "shortDescription": "清楚理解、查证与反馈已有复杂材料",
+        "shortDescription": "将复杂需求、规格与机制转为易懂、可查证的清晰呈现",
         "capabilities": [
           "Skills"
         ]
@@ -517,8 +518,9 @@
       "category": "workflow",
       "tags": [
         "explanation",
-        "reading",
-        "review"
+        "readability",
+        "visualization",
+        "comprehension"
       ],
       "strict": true,
       "policy": {
@@ -529,7 +531,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -540,9 +542,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:e2ccb0cff5ce26416130cb55e091723a830027a88811aa61d60d195ec883b541",
-      "manifestDigest": "sha256:9583c44ae8e289530de1166ee4ee1e839f93e6fc9188ab4454779c7c9f753256",
-      "contentDigest": "sha256:9090c90bc7aa112272322f7672a00d209ef5a6578edc78efebea2a1479d2f2a3"
+      "artifactDigest": "sha256:7f94286f3a9319cfc587bb3a534547f192d6fe39371a8ccf7850ab54ab1d7fb4",
+      "manifestDigest": "sha256:6377c73565a18c56debadfd9bdad6ece03206942551820f2102007ebaef186ba",
+      "contentDigest": "sha256:0e49e04d389435f92ff72625ff1f6273538a247bc83a16cf8da49ff82cf89b34"
     }
   ]
 }

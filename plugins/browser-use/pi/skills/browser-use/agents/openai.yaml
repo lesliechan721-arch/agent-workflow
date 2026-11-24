@@ -1,6 +1,6 @@
 interface:
   display_name: "Browser Use"
-  short_description: "打开网页预览、读取渲染内容、完成页面交互、截图，并按需检查日志和网络问题"
+  short_description: "打开网页预览、多视口截图核查、页面交互，并按需排查前端日志与网络问题"
   default_prompt: "使用 $browser-use 完成当前任务需要的浏览器操作。"
 policy:
   allow_implicit_invocation: true

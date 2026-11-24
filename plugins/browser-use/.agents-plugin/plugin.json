@@ -1,8 +1,8 @@
 {
   "schemaVersion": 4,
   "name": "browser-use",
-  "version": "0.1.0-beta.7",
-  "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+  "version": "0.1.0-beta.8",
+  "description": "面向前端开发与日常网页的轻量浏览器技能：预览、多视口截图核查、交互与按需调试，桥接原生 agent-browser CLI。",
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -25,7 +25,7 @@
   ],
   "interface": {
     "displayName": "Browser Use",
-    "shortDescription": "轻量网页预览、浏览、交互与检查",
+    "shortDescription": "前端网页预览、截图核查、交互与按需调试",
     "capabilities": [
       "Skills"
     ]

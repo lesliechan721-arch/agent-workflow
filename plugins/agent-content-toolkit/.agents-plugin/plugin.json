@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-content-toolkit",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "description": "编写、重构或只读评价给 Agent 读取的内容；强化具象机制、反抽象压缩、去免责剪枝、读取指针、信息层级与多跳控制。",
   "marketplace": {
     "category": "workflow",
