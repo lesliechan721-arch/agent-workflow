@@ -77,7 +77,7 @@ aw plugin status --context user
 | [`human-content`](plugins/human-content/) | 解释复杂资料，输出保留原意的图表、文档或交互式阅读页 | 九平台，按组件能力判定 |
 | [`frontend-design`](plugins/frontend-design/) | 选择视觉方向，设计与打磨网页排版、交互与响应式细节 | 九平台，按组件能力判定 |
 | [`browser-use`](plugins/browser-use/) | 网页浏览器自动化交互与信息检索能力 | 九平台，按组件能力判定 |
-| [`git-toolkit`](plugins/git-toolkit/) | 创建规范本地原子提交、隔离 worktree、协调合并冲突 | 九平台，按组件能力判定 |
+| [`git-toolkit`](plugins/git-toolkit/) | 创建规范本地原子提交，协调 merge/rebase/cherry-pick 冲突与语义交互 | 九平台，按组件能力判定 |
 | [`agent-subagent`](plugins/agent-subagent/) | 选择通用委派配置并管理外部子代理执行 | 九平台，按组件能力判定 |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中组织大范围只读探索与技术咨询；依赖 `agent-subagent` | 九平台，按组件能力判定 |
 

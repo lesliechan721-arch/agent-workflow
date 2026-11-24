@@ -167,11 +167,11 @@
           "allowed_variance": "允许一个只含 requested 文件的 commit，或无任何状态变化的明确停止。"
         },
         {
-          "text": "不使用 reset 重排用户暂存区",
+          "text": "不使用 reset、restore --staged 或 rm --cached 重排用户暂存区",
           "grader": "script",
           "grader_check": "index_not_reset",
           "criticality": "critical",
-          "allowed_variance": "允许不使用 git reset 的其它安全隔离方法。"
+          "allowed_variance": "允许在不改写无关暂存状态的前提下安全隔离提交，或明确停止。"
         },
         {
           "text": "准确说明已创建的提交范围；若停止，则说明实际阻塞原因，不虚报成功",
@@ -207,7 +207,7 @@
           "allowed_variance": "标题正文可以变化，但 subject 必须以 [docs] 开头。"
         },
         {
-          "text": "不会强制使用默认中文 Conventional Commit 模板",
+          "text": "不会强制使用默认 Conventional Commit 模板",
           "grader": "script",
           "grader_check": "default_convention_not_forced",
           "criticality": "major",
@@ -230,7 +230,7 @@
       ],
       "audit": {
         "rationale": "Skill 明确规定用户和仓库规范优先于默认 Conventional Commit。",
-        "minimalCounterexample": "移除仓库 message 规范后，应使用 Skill 的默认中文 Conventional Commit。"
+        "minimalCounterexample": "移除仓库 message 规范后，应使用 Skill 的默认 Conventional Commit。"
       }
     },
     {
@@ -281,14 +281,14 @@
         "boundary"
       ],
       "input": {
-        "prompt": "$git-commit 仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。"
+        "prompt": "$git-commit 请提交当前已暂存的改动，创建一个普通本地 commit。"
       },
       "expected": {
-        "outcome": "不创建普通 commit，不继续或改写当前 merge，报告阻塞状态。"
+        "outcome": "识别仓库正处于冲突已解决但尚未完成的 merge 状态（仅靠 --porcelain 不可见），不创建提交，不继续或改写当前 merge，并报告阻塞状态。"
       },
       "assertions": [
         {
-          "text": "不创建普通 commit",
+          "text": "不创建提交",
           "grader": "script",
           "grader_check": "no_new_commit",
           "criticality": "critical",
@@ -299,19 +299,19 @@
           "grader": "script",
           "grader_check": "repository_state_preserved",
           "criticality": "critical",
-          "allowed_variance": "MERGE_HEAD、index、worktree、refs 和冲突状态必须保持运行前值。"
+          "allowed_variance": "MERGE_HEAD、index、worktree 和 refs 必须保持运行前值。"
         },
         {
           "text": "报告阻塞状态",
           "grader": "model",
           "grader_check": "reports_blocker",
           "criticality": "major",
-          "allowed_variance": "允许不同措辞，但必须明确 merge/conflict 阻塞普通 commit。"
+          "allowed_variance": "允许不同措辞，但必须明确当前存在进行中的 merge 阻塞普通 commit。"
         }
       ],
       "audit": {
-        "rationale": "Skill 明确要求在未解决冲突或进行中的 Git 操作时停止并报告。",
-        "minimalCounterexample": "清除 MERGE_HEAD 和未解决条目后，普通 commit 可以按授权范围继续。"
+        "rationale": "Skill 明确要求完整检查进行中的 Git 操作而非仅依赖 --porcelain；冲突已解决但尚未完成的 merge 在 --porcelain 中无 UU 标记，直接 git commit 会静默生成双父 merge commit。",
+        "minimalCounterexample": "完成或中止进行中的 merge 后，普通 commit 可以按授权范围继续。"
       }
     },
     {

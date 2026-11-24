@@ -2,7 +2,7 @@
   "schemaVersion": 4,
   "name": "git-toolkit",
   "version": "0.1.0",
-  "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
+  "description": "提供本地 Git 提交，以及覆盖 merge、rebase 与 cherry-pick 的冲突解决与语义协调工作流。",
   "platforms": [
     "codex",
     "claude",
@@ -20,8 +20,9 @@
     "tags": [
       "git",
       "commit",
-      "worktree",
       "merge",
+      "rebase",
+      "cherry-pick",
       "conflicts"
     ],
     "strict": true,
@@ -32,7 +33,7 @@
   },
   "interface": {
     "displayName": "Git Toolkit",
-    "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
+    "shortDescription": "精确创建本地提交，或协调 Git merge、rebase 与 cherry-pick 的冲突与语义交互",
     "capabilities": [
       "Skills"
     ]

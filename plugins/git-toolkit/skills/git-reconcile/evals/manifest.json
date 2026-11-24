@@ -31,16 +31,6 @@
       "timeoutMs": 180000
     },
     {
-      "id": "router-diagnostic",
-      "kind": "trigger",
-      "cases": "trigger-diagnostic-cases.json",
-      "profiles": [
-        "project-default"
-      ],
-      "runs": 3,
-      "timeoutMs": 180000
-    },
-    {
       "id": "behavior",
       "kind": "custom-process",
       "cases": "evals.json",
@@ -53,7 +43,7 @@
         "type": "custom-process",
         "command": [
           "node",
-          "run-worktree-evals.mjs"
+          "run-reconcile-evals.mjs"
         ]
       }
     }

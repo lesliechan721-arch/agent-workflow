@@ -49,7 +49,7 @@ async function writeProjectFiles(root) {
     '.agents/\n.codex/\n.agent-workflows/\n',
     'utf8',
   );
-  await writeFile(path.join(root, 'README.md'), '# Merge trigger fixture\n', 'utf8');
+  await writeFile(path.join(root, 'README.md'), '# Reconcile trigger fixture\n', 'utf8');
   await writeFile(path.join(root, 'retention.py'), 'RETENTION_DAYS = 30\n', 'utf8');
   await writeFile(path.join(root, 'retry.py'), 'MAX_ATTEMPTS = 3\n', 'utf8');
   await writeFile(path.join(root, 'idempotency.py'), 'MODE = "legacy"\n', 'utf8');
@@ -69,14 +69,14 @@ async function initializeRepository(root, env) {
   await writeProjectFiles(root);
   await git(root, ['init', '--quiet'], env);
   await git(root, ['branch', '-M', 'main'], env);
-  await git(root, ['config', 'user.name', 'Merge Trigger Eval'], env);
-  await git(root, ['config', 'user.email', 'merge-trigger-eval@example.invalid'], env);
+  await git(root, ['config', 'user.name', 'Reconcile Trigger Eval'], env);
+  await git(root, ['config', 'user.email', 'reconcile-trigger-eval@example.invalid'], env);
   await git(root, [
     'add', '--', '.gitignore', 'README.md', 'retention.py', 'retry.py',
     'idempotency.py', 'permission_source.py', 'permission_consumer.py',
     'conflict.txt', 'change.txt', 'utils.py',
   ], env);
-  await git(root, ['commit', '--quiet', '-m', 'chore: initialize merge fixture'], env);
+  await git(root, ['commit', '--quiet', '-m', 'chore: initialize reconcile fixture'], env);
 }
 
 async function commitFile(root, env, file, content, message) {
@@ -153,7 +153,7 @@ async function setupIndependentCleanMerge(root, env) {
     root,
     env,
     'README.md',
-    '# Merge trigger fixture\n\nMain documentation update.\n',
+    '# Reconcile trigger fixture\n\nMain documentation update.\n',
     'docs: update main notes',
   );
 }
@@ -212,7 +212,7 @@ async function setupCherryPickConflict(root, env) {
 export async function setupTriggerWorkspace(context) {
   const fixture = context.evalCase.workspace_fixture ?? 'clean_main';
   if (!FIXTURES.has(fixture)) {
-    throw new Error(`Unsupported merge trigger fixture: ${fixture}`);
+    throw new Error(`Unsupported reconcile trigger fixture: ${fixture}`);
   }
   const environment = gitEnvironment(context);
   const env = { ...context.env };

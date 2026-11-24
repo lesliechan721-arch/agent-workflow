@@ -9,7 +9,7 @@ const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('ya
 
 export const officialSource = 'qualification-official';
 export const gitPluginId = `${officialSource}/git-toolkit`;
-export const ordinaryGitSkills = ['isolating-work-with-git-worktrees', 'reconciling-git-merges'];
+export const ordinaryGitSkills = ['git-reconcile'];
 
 export async function addOfficialCatalog(ctx) {
   const catalog = path.join(ctx.root, 'official-candidate');
