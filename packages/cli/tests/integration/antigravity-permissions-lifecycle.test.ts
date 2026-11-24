@@ -18,10 +18,10 @@ const user = ['--scope', 'user', '--context', 'user', '--target', 'antigravity']
 const project = ['--scope', 'project', '--context', 'project', '--target', 'antigravity'];
 const sharedAllow = 'command(aw-fixture text)';
 const manualAllow = 'command(aw-fixture manual)';
-const managedAllow = 'command(aw command run local/probe -- show)';
-const managedAsk = 'command(aw command run local/probe -- confirm)';
-const managedDeny = 'command(aw command run local/probe -- blocked)';
-const inactiveDeny = 'command(aw command run local/probe -- future)';
+const managedAllow = 'command(aw command run local/probe/antigravity -- show)';
+const managedAsk = 'command(aw command run local/probe/antigravity -- confirm)';
+const managedDeny = 'command(aw command run local/probe/antigravity -- blocked)';
+const inactiveDeny = 'command(aw command run local/probe/antigravity -- future)';
 
 async function fixture(extraPermission?: { name: string; ask: string[] }) {
   const { env, layout } = getCurrentSourceTestIsolation();
@@ -78,8 +78,9 @@ async function fixture(extraPermission?: { name: string; ask: string[] }) {
   await createDependencyCatalogSnapshotFixture(catalog, [{
     name: 'probe', configureManifest(manifest) {
       manifest.platforms = ['antigravity'];
+      manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'report' } } };
       manifest.command = normalizePluginCommand({
-        mode: 'static', sourceDir: './tools',
+        mode: 'static', sourceDir: './tools', runtimeConfig: { keys: ['mode'] },
         routes: { subcommands: ['show', 'confirm', 'blocked'].map((name) => ({ name, runner: 'node', entry: 'report.mjs' })) },
       }, manifest);
       manifest.extensions!.permissions = [{

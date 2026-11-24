@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import { protectPrivatePath } from '../commands/scripts/runtime/platform.mjs';
-import { fixture, scripts, supported, testTimeoutMs } from './fixtures/adapter-v5.mjs';
+import { fixture, scripts, supported, testTimeoutMs } from './fixtures/adapter-v6.mjs';
 
 const moduleTimeoutMs = 30000;
 const require = createRequire(import.meta.url);
@@ -34,11 +34,9 @@ function moduleResourcesForFile() {
       entry = path.join(root, 'scripts/fixtures/adapter-recovery.mjs');
       await fs.mkdir(path.dirname(entry), { recursive: true });
       await fs.copyFile(moduleEntry, entry);
-      for (const relative of ['file-selection/selection.mjs', 'adapters/codex-profile.mjs']) {
-        const target = path.join(installed, relative);
-        const bundled = await build({ entryPoints: [target], nodePaths: [fileURLToPath(new URL('./node_modules', import.meta.url))], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, legalComments: 'inline', logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
-        await fs.writeFile(target, bundled.outputFiles[0].contents);
-      }
+      const target = path.join(installed, 'adapters/codex-profile.mjs');
+      const bundled = await build({ entryPoints: [path.join(scripts, 'adapters/codex-profile.mjs')], nodePaths: [fileURLToPath(new URL('./node_modules', import.meta.url))], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, legalComments: 'inline', logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+      await fs.writeFile(target, bundled.outputFiles[0].contents);
     }
     const bin = path.join(root, 'bin');
     await fs.mkdir(bin);
@@ -48,7 +46,7 @@ function moduleResourcesForFile() {
       if (!['EXDEV', 'EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
       await fs.copyFile(process.execPath, executable);
     }
-    for (const backend of ['codex', 'claude', 'oracle']) await fs.link(executable, path.join(bin, `${backend}${process.platform === 'win32' ? '.exe' : ''}`));
+    for (const backend of ['codex', 'claude']) await fs.link(executable, path.join(bin, `${backend}${process.platform === 'win32' ? '.exe' : ''}`));
     return { entry, bin, template: path.join(scripts, '../assets/communication-instructions.md') };
   })();
   return moduleResources;
@@ -99,14 +97,13 @@ async function moduleFixture(t, backend, scenario = 'success', environment = {})
     waiters.add(check); timer = setTimeout(() => finish(missing()), moduleTimeoutMs); check();
   });
   const request = {
-    protocolVersion: 5, type: 'start', communication: true, resume: true,
-    ...(backend !== 'oracle' ? { permissionMode: 'default' } : {}),
+    protocolVersion: 6, type: 'start', communication: true, resume: true,
+    permissionMode: 'default',
     ...(backend === 'codex' ? { codex: { cliSource: 'cli', bypassHookTrust: false } } : {}),
     run: { id: randomBytes(8).toString('base64url'), name: 'recovery-fixture', deadlineAt: null },
-    execution: { executor: 'fixture' }, mode: backend === 'oracle' ? 'bundle' : 'workspace',
+    execution: { executor: 'fixture' },
     workspace: root, prompt: 'Original task.', args: [],
     runtime: { directory: root, toolkit: { command: process.execPath, module: moduleEntry, messageScript: moduleEntry, mcpScript: moduleEntry } },
-    ...(backend === 'oracle' ? { fileSelectors: [], fileResolver: { command: process.execPath, args: [moduleEntry] } } : {}),
   };
   return { request, frames, values, waitFor, exit, send: (value) => child.stdin.write(`${JSON.stringify(value)}\n`) };
 }
@@ -172,7 +169,7 @@ for (const scenario of ['resume rejection', 'resume mismatch', 'resume active'])
   assert.equal(run.frames.some((frame) => ['ready', 'session'].includes(frame.type)), false);
 });
 
-for (const [backend, args] of [['codex', ['--ephemeral']], ['claude', ['--no-session-persistence']], ['oracle', []]]) test(`${backend}: nonpersistent or one-shot execution reports unsupported without a session event`, { timeout: moduleTimeoutMs }, async (t) => {
+for (const [backend, args] of [['codex', ['--ephemeral']], ['claude', ['--no-session-persistence']]]) test(`${backend}: nonpersistent execution reports unsupported without a session event`, { timeout: moduleTimeoutMs }, async (t) => {
   const run = await moduleFixture(t, backend);
   run.send({ ...run.request, args });
   assert.deepEqual((await run.waitFor('ready')).initialization.capabilities.resume, { status: 'unsupported' });

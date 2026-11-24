@@ -6,9 +6,9 @@ export const fixtureAssetURL = import.meta.url;
 
 // Explicit failure injection, never a model or a successful worker answer.
 export async function runFailureControl(request) {
-if (request.protocolVersion !== 5 || request.type !== 'start' || typeof request.prompt !== 'string' || !request.prompt.trim() || request.mode !== 'workspace'
+if (request.protocolVersion !== 6 || request.type !== 'start' || typeof request.prompt !== 'string' || !request.prompt.trim()
   || !path.isAbsolute(request.workspace)) throw new Error('invalidFaultControl');
-const ready = { protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: {
+const ready = { protocolVersion: 6, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: {
   communication: { status: request.communication ? 'unsupported' : 'disabled' },
   resume: { status: request.resume ? 'unsupported' : 'disabled' },
 } } };
@@ -25,7 +25,7 @@ await writeFile(path.join(root, 'probe', 'once.txt'), 'Explicit Eval fault contr
 count.writes += 1;
 await writeFile(counterFile, JSON.stringify(count) + '\n');
 process.stderr.write('Explicit fault control: a partial write exists; no provider completion receipt is available.\n');
-// Exiting without a v5 result event is the controlled disconnect.
+// Exiting without a v6 result event is the controlled disconnect.
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

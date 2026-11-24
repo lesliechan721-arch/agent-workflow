@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { atomicJson, readJson } from './files.mjs';
-import { fail, safeError, identifier } from './contracts.mjs';
+import { NATIVE_PLATFORMS, fail, safeError, identifier } from './contracts.mjs';
 import { safeSpawn } from './platform.mjs';
 import { processTable, stopOwnedTree } from './processes.mjs';
 import { createRun, createExecution, publishRun, removeExecution, touchEntry, openRun, openRuns, observeRun, recordFiles, readRecord, saveGap, saveObservation,
@@ -120,15 +120,19 @@ export async function sendInput(context, request, dependencies = {}) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
-    if (context.forRun) context = await context.forRun(run);
-    const touched = run.meta.terminalAt !== null;
+    const originPlatform = run.meta.installedIdentity?.platform;
+    const samePlatform = originPlatform === context.sourceIdentity?.platform;
+    if (!samePlatform && !NATIVE_PLATFORMS.includes(originPlatform)) fail('runUnavailable', 'The run has no valid original platform. Start a new run.');
+    const touched = samePlatform && run.meta.terminalAt !== null;
     if (touched) await touchEntry(context, run).catch(() => {});
     run = await observeRun(context, run);
-    if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (terminal(run.snapshot.state)) {
+      if (!samePlatform) fail('resumePlatformMismatch', `Resume this run from its original platform ${originPlatform}, or start a new run here.`);
       if (!touched) await touchEntry(context, run).catch(() => {});
-      return await resumeRun(context, run, request, { ...dependencies, runtimeSnapshot: context.runtimeSnapshot });
+      return await resumeRun(context, run, request, dependencies);
     }
+    if (!samePlatform) fail('platformMismatch', `Send input to this run from its original platform ${originPlatform}.`);
+    if (run.snapshot.state === 'starting') fail('runNotReady', 'The run has not initialized.');
     if (run.snapshot.state !== 'running') fail('runClosed', 'The run no longer accepts input.');
     if (run.snapshot.initialization?.capabilities.communication?.status !== 'enabled') fail('communicationUnsupported', 'This run does not support communication.');
     const id = randomBytes(16).toString('hex');
@@ -194,7 +198,6 @@ export async function readResult(context, request) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
-    if (context.forRun) context = await context.forRun(run);
     run = await observeRun(context, run);
     if (!run.result) fail('resultNotReady', 'The run has not reached a terminal state.');
     await settleLateInputs(run);
@@ -258,7 +261,10 @@ function waitDiagnostics(groups, context) {
   if (!errors.length) return consumption ? readDiagnostic : '';
   let text = consumption ? readDiagnostic : '';
   for (const group of errors) {
-    const next = diagnostic(group.consumeError ?? group.error, 'This run could not be read or its notification could not be consumed. Retry wait or result.', group.handle);
+    const code = group.consumeError ?? group.error;
+    const message = code === 'runUnavailable' ? 'This run is unavailable. Use a current aw6 handle or start a new run.'
+      : 'This run could not be read or its notification could not be consumed. Retry wait or result.';
+    const next = diagnostic(code, message, group.handle);
     if (Buffer.byteLength(text + next) > 800) {
       text += diagnostic('diagnosticOmitted', 'Additional runs could not be read. Retry each requested handle.'); break;
     }
@@ -278,10 +284,7 @@ export async function waitRuns(context, request) {
       try {
         const entry = opened.get(handle);
         if (entry.error) throw entry.error;
-        const runContext = context.forRun ? await context.forRun(entry.run) : context;
-        const run = await observeRun(runContext, entry.run);
-        context.table = runContext.table;
-        context.tableEvidence = runContext.tableEvidence;
+        const run = await observeRun(context, entry.run);
         if (run.result) await settleLateInputs(run);
         const events = await recordFiles(run, 'events');
         const group = { run, handle, items: [], events, gaps: [], candidates: events.map((name) => ({ kind: 'message', name })), capability: needsInitialization(run), showDiagnostics: request.showDiagnostics };
@@ -372,7 +375,6 @@ export async function stopRun(context, request) {
   let run;
   try {
     run = await openRun(context, request.runs[0]);
-    if (context.forRun) context = await context.forRun(run);
     const refreshOwner = async () => {
       const { meta } = await openRun(context, run.handle);
       if (meta.token !== run.meta.token) fail('runUnavailable', 'The current execution changed.');

@@ -8,6 +8,7 @@ import {
   isCommandPackageId as isCoreCommandPackageId,
   isUserCommandId as isCoreUserCommandId,
   normalizeCommandSelector,
+  parseCommandInvocationSelector,
   normalizeCommandLaunch,
   normalizeInstalledCommandProducer as normalizeCoreProducer,
   normalizeUserCommandDefinition,
@@ -29,7 +30,11 @@ import { readCatalogSourcesConfig, resolveCatalogSourcesConfigPath } from './cat
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import { calculateManagedCommandResourceDigest } from './managed-command-closure.js';
 import { ManagedCommandError } from './managed-command-errors.js';
-import { validateManagedCommandRuntimeConfigFiles } from './managed-command-snapshots.js';
+import {
+  COMMAND_RUNTIME_CONFIG_DIRECTORY,
+  validateManagedCommandRuntimeConfigFiles,
+  type CommandRuntimeConfigContext,
+} from './managed-command-snapshots.js';
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import {
   canonicalizePathThroughExistingAncestor,
@@ -66,6 +71,7 @@ export interface ManagedCommandPackageView extends ManagedCommandViewBase {
   subcommands: string[];
   hasFallback: boolean;
   runtimeConfigPlatforms: PlatformName[];
+  requiresPlatformContext: boolean | null;
   nativeTools: NativeToolClosure | null;
 }
 export type ManagedCommandView = UserCommandView | ManagedCommandPackageView;
@@ -175,8 +181,11 @@ function contains(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
-export async function validateManagedCommandResource(resourceRoot: string, launch?: CommandLaunch): Promise<void> {
+export async function validateManagedCommandResource(
+  resourceRoot: string, launch?: CommandLaunch, options: { skipRuntimeConfigSnapshots?: boolean } = {},
+): Promise<void> {
   const root = path.resolve(resourceRoot);
+  const runtimeConfigDirectory = path.join(root, COMMAND_RUNTIME_CONFIG_DIRECTORY);
   await safePath(path.dirname(root), root);
   async function visit(directory: string): Promise<void> {
     const stat = await fs.lstat(directory).catch(() => null);
@@ -186,10 +195,13 @@ export async function validateManagedCommandResource(resourceRoot: string, launc
       throw error;
     });
     for (const entry of entries) {
+      const location = path.join(directory, entry.name);
+      // Run verifies the selected snapshot separately. Damage to another platform cannot stop it.
+      if (options.skipRuntimeConfigSnapshots && location === runtimeConfigDirectory) continue;
       if (entry.name === '.git' || entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) {
         fail('commandResourceInvalid', 'Command resources cannot contain links, special nodes, or .git directories.');
       }
-      if (entry.isDirectory()) await visit(path.join(directory, entry.name));
+      if (entry.isDirectory()) await visit(location);
     }
   }
   await visit(root);
@@ -454,6 +466,7 @@ function packageView(owner: PackageOwner, packageId: string, record?: InstalledC
     subcommands: routes?.subcommands.map((entry) => entry.name) ?? [],
     hasFallback: routes?.fallback !== undefined,
     runtimeConfigPlatforms: record?.runtimeConfigPlatforms ?? [],
+    requiresPlatformContext: record ? Boolean(record.runtimeConfigKeys?.length) : null,
     nativeTools: record?.nativeTools ?? null,
     errors: [],
     recoveryActions: [],
@@ -471,6 +484,7 @@ async function inspectOwnedPackage(owner: PackageOwner, id: string): Promise<Man
   } catch (error) {
     const view = packageView(owner, id, pinned?.record, resourceRoot);
     view.availability = 'unavailable';
+    view.requiresPlatformContext = null;
     view.errors.push(managedCommandDiagnostic(error));
     view.recoveryActions.push(`aw command package sync ${view.selector}`, `aw command package remove ${id} --force --yes`);
     return view;
@@ -682,7 +696,14 @@ async function lookupNamedPackage(selector: string, env: NodeJS.ProcessEnv): Pro
 
 export async function resolveManagedCommand(
   selector: string, env: NodeJS.ProcessEnv = process.env, options: { args: string[]; noFallback?: boolean } = { args: [] },
-): Promise<{ view: ManagedCommandView; launch: CommandLaunch; resourceRoot: string; producer?: InstalledCommandProducer; args: string[] }> {
+): Promise<{
+  view: ManagedCommandView;
+  launch: CommandLaunch;
+  resourceRoot: string;
+  producer?: InstalledCommandProducer;
+  runtimeConfigContext?: CommandRuntimeConfigContext;
+  args: string[];
+}> {
   if (isUserCommandId(selector)) {
     if (options.noFallback) throw new ManagedCommandError('invalidArguments', '--no-fallback requires a plugin command and a subcommand argument.', true);
     return { ...await resolveUserCommand(selector, env), args: options.args };
@@ -690,9 +711,27 @@ export async function resolveManagedCommand(
   if (options.noFallback && options.args.length === 0) {
     throw new ManagedCommandError('invalidArguments', '--no-fallback requires a subcommand argument.', true);
   }
-  const { packageId, owner } = await lookupNamedPackage(selector, env);
-  const pinned = await readPinnedPackage(owner, await currentResourceRoot(owner));
+  let invocation: ReturnType<typeof parseCommandInvocationSelector>;
+  try { invocation = parseCommandInvocationSelector(selector); }
+  catch { throw new ManagedCommandError('invalidArguments', 'A canonical source/plugin or source/plugin/platform selector is required.', true); }
+  const { packageSelector, platform } = invocation;
+  const { packageId, owner } = await lookupNamedPackage(packageSelector, env);
+  let pinned: PinnedPackage;
+  try { pinned = await readPinnedPackage(owner, await currentResourceRoot(owner)); }
+  catch (error) {
+    if (error instanceof ManagedCommandError && error.code === 'commandIdentityConflict') throw error;
+    fail('commandUnavailable', 'The installed command package revision is missing or invalid. Run aw command package sync or aw plugin sync.');
+  }
   const { resourceRoot, record } = pinned;
+  if (record.runtimeConfigKeys?.length) {
+    if (!platform) {
+      const published = record.runtimeConfigPlatforms.join(', ') || '(none)';
+      throw new ManagedCommandError('commandPlatformRequired',
+        `The command requires a source/plugin/platform selector. Published runtime config platforms: ${published}.`, true);
+    }
+  } else if (platform) {
+    throw new ManagedCommandError('commandPlatformUnexpected', 'This command does not accept a platform in its selector.', true);
+  }
   const subcommand = record.routes.subcommands.find((entry) => entry.name === options.args[0]);
   const fallback = options.noFallback ? undefined : record.routes.fallback;
   let launch: CommandLaunch;
@@ -706,9 +745,14 @@ export async function resolveManagedCommand(
     const hint = names.length ? `Available subcommands: ${names.join(', ')}.` : 'There are no enabled subcommands.';
     throw new ManagedCommandError('commandRouteNotFound', `No command route matched ${selector}. ${hint}`, true);
   }
-  await validateManagedCommandResource(resourceRoot, launch);
+  if (platform) await validateManagedCommandRuntimeConfigFiles(resourceRoot, record, platform);
+  await validateManagedCommandResource(resourceRoot, launch, { skipRuntimeConfigSnapshots: platform !== undefined });
   await validateInstalledNativeTools(pinned);
-  return { view: packageView(owner, packageId, record, resourceRoot), launch, resourceRoot, producer: record, args: subcommand ? options.args.slice(1) : options.args };
+  return {
+    view: packageView(owner, packageId, record, resourceRoot), launch, resourceRoot, producer: record,
+    ...(platform ? { runtimeConfigContext: { schemaVersion: 1, platform, packageId, revision: path.basename(resourceRoot) } } : {}),
+    args: subcommand ? options.args.slice(1) : options.args,
+  };
 }
 
 export async function inspectManagedCommand(selector: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandView> {
@@ -746,6 +790,7 @@ export async function listManagedCommandPackages(env: NodeJS.ProcessEnv = proces
       } else {
         const wasDamaged = view.availability === 'unavailable';
         view.availability = 'unavailable';
+        view.requiresPlatformContext = null;
         view.errors.push(sourceError ?? { code: 'commandNotFound', message: 'This command package belongs to a source that was removed or changed.' });
         view.recoveryActions = [`aw command package remove ${id}${wasDamaged ? ' --force' : ''} --yes`];
         orphanedPackages.push(view);

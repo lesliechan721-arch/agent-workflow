@@ -2,11 +2,11 @@
 
 [适配器文档索引](README.md)
 
-## Adapter v5 完整合同
+## Adapter v6 完整合同
 
 ### 1. 进程、通道及版本
 
-worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只含已注册的可选 entrypoint；custom-managed 通过同一 AW 主机的 command run 启动，绑定 fixed args 属于 adapter argv；两种分支的 executor args 都只放在 v5 start 请求中。cwd 缺省为本次绝对 workspace，托管 binding 可显式 cwd=resource；v5 workspace 值保持。stdin 持续打开用于控制，stdout 只输出本协议，stderr 是诊断。adapter 及后代继承本次受保护的进程归属 token；禁止重写该 token 或 AW 内部配置控制项。
+worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只含已注册的可选 entrypoint；custom-managed 通过同一 AW 主机的 command run 启动，绑定 fixed args 属于 adapter argv；两种分支的 executor args 都只放在 v6 start 请求中。cwd 缺省为本次绝对 workspace，托管 binding 可显式 cwd=resource；v6 workspace 值保持。stdin 持续打开用于控制，stdout 只输出本协议，stderr 是诊断。adapter 及后代继承本次受保护的进程归属 token；禁止重写该 token 或 AW 内部配置控制项。
 
 本合同同时适用于 macOS、Linux 和 Windows。worker 的后台存活、进程身份、停止及私有文件保护按 [操作系统与安装闭包](runtime.md#操作系统与安装闭包) 实现；`detached:false` 只描述 worker 与 adapter 的关系，不要求 worker 随短暂的 start 命令退出。Windows 的归属验证不能依赖 POSIX ps 或读取 Unix 进程环境；归属 token 不替代本机进程身份或受控进程边界。后端入口按本机安全启动方法解析，协议 args 保持 argv 数据，不拼为 shell 文本。
 
@@ -14,11 +14,11 @@ worker 以 `shell:false`、`detached:false` 启动 adapter。custom 的 argv 只
 
 每行是一个 UTF-8 JSON 对象，以 LF 结束；CRLF 可作为同一分隔，正文中的换行必须 JSON 转义。解析按字节缓冲，不假定一次 read 等于一行；可以一次收到半个对象、多个对象或拆开的多字节字符。拒绝 BOM、空行、非法 UTF-8、EOF 时残缺行、数组、null、顶层非对象。接收端使用标准 JSON 对象解析语义；发送端必须由对象序列化，不手工拼接重复 key。字段名、类型及必填规则严格检查；各对象拒绝未定义字段。
 
-每条消息必须有 `protocolVersion:5` 和 `type`。双方串行写入完整行并处理写回压，不能并发拼接 JSON 字节。一个流上的顺序是发送顺序，两个流之间没有全局顺序；不使用时间戳推测消息已经交付。
+每条消息必须有 `protocolVersion:6` 和 `type`。双方串行写入完整行并处理写回压，不能并发拼接 JSON 字节。一个流上的顺序是发送顺序，两个流之间没有全局顺序；不使用时间戳推测消息已经交付。
 
-每次连接的第一条 worker 输入必须是 start，而且只出现一次。adapter 的第一个事件可以是 session、ready，或第 4 节允许的初始化异常 result。session 可先绑定真实会话；有效 ready 之后才允许提交首次生成。ready 只出现一次；disabled/unsupported 是明确能力描述，缺失或错误不能折算成其中任何一种。
+执行连接的第一条 worker 输入必须是 start，而且只出现一次。adapter 的第一个事件可以是 session、ready，或第 4 节允许的初始化异常 result。session 可先绑定真实会话；有效 ready 之后才允许提交首次生成。ready 只出现一次；disabled/unsupported 是明确能力描述，缺失或错误不能折算成其中任何一种。
 
-stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负责转成明确的协议事件；调试信息只写 stderr。版本不符、未知事件、未知字段和顺序错误按照第 6 节结束，不猜测旧 v4 含义。
+stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负责转成明确的协议事件；调试信息只写 stderr。版本不符、未知事件、未知字段和顺序错误按照第 6 节结束，不猜测旧版含义。
 
 字段名、枚举、错误码、程序生成的说明和诊断、MCP/脚本工具描述及共享 API 说明均使用英文。task/message/result.text 等数据保持原语言和原文，允许中文，不为满足输出语言而翻译。外部原始诊断若需要引用，必须与程序说明分开，向模型展示时进入 diagnostic 块，不能拼到控制字段中。显示层的省略不改变本协议字段及内部结果证据。
 
@@ -64,10 +64,10 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "start",
   "run": {
-    "id": "0123456789abcdef0123456789abcdef",
+    "id": "FBRx5NKW1wI",
     "name": "api-review_2.1",
     "deadlineAt": null
   },
@@ -76,7 +76,6 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
     "model": "example-model",
     "reasoningEffort": "example-effort"
   },
-  "mode": "workspace",
   "workspace": "/absolute/project",
   "prompt": "Review the selected module. Ask the parent if needed.",
   "args": [],
@@ -102,30 +101,33 @@ stdout 不得透传后端日志、原始服务事件或 MCP stdout。adapter 负
 | --- | --- |
 | run | 只含 id、name、deadlineAt；id/name 在连接内固定。deadlineAt 必填，为 null 或 EpochMs；null 表示不设置执行期限。仅显式 start --deadline-ms N 时，由 worker 设为本次执行启动时刻加 N；恢复保留原 N 并计算新时刻；任何消息、等待和轮次不得重置。不能把 null 转成 0、30 分钟或其他默认计时 |
 | execution | executor 必填；model、reasoningEffort 可选且只在本次明确解析到值时出现；旧 execution.profile 字段必须拒绝。全部使用 Identifier；省略沿用后端默认，不生成空值 |
-| mode | 只能为 workspace 或 bundle |
 | workspace | 必须为已存在的绝对目录，是 adapter 和后端的工作目录；不赋予额外访问或写权限 |
-| prompt | 非空 Text，首次执行保留任务及显式指令合成后的完整内容；恢复时仅本次新消息；不重新打开指令文件 |
+| prompt | 非空 Text，首次执行保留任务及本次适用指令合成后的完整内容；是否有指令由父侧决定；恢复时仅本次新消息；不重新打开指令文件 |
 | args | Text 数组，可为空；是后端的实际 argv，不经 shell，不当作 wrapper argv。整帧上限提供累计限制 |
 | communication | 必填 boolean，由 plan 将已安装配置缺省归一化为 true；wire 不猜默认值，所有 adapter 均须识别 |
 | resume | 必填 boolean，由 plan 将已安装配置缺省归一化为 true；与 communication 独立。配置 false 必须报告 disabled；true 可报告 enabled 或 unsupported |
 | sessionId | 可选 Identifier；缺省表示首次执行，存在表示恢复绑定的原 session，不由主代理指定。恢复 prompt 仅为本次新消息，不重放初始任务、角色或旧输入 |
-| permissionMode | Codex/Claude/agy 请求必填 default / auto / full-access，由 plan 将配置省略值归一化为 default；Oracle/custom 不携带。各 adapter 按自身分支严格验证，不猜缺省或接收无关配置 |
+| permissionMode | Codex/Claude/agy 请求必填 default / auto / full-access，由 plan 将配置省略值归一化为 default；custom/custom-managed 不携带。各 adapter 按自身分支严格验证，不猜缺省或接收无关配置 |
 | codex | 仅 Codex 请求携带且必填；严格对象，必填 cliSource（auto/cli/app）与 bypassHookTrust（boolean），可选 profile（名称，不是路径）。其它 adapter 不携带或解析它；缺字段、类型错误和未知值按协议错误拒绝 |
 | runtime.directory | worker 创建的本次专属私有目录；POSIX 为 0700，Windows 使用等效的实际访问控制。只供 adapter 及其工具临时使用，不包含父侧消费游标或最终结果缓存 |
 | runtime.toolkit | 四个字段均为 AbsolutePath，由本安装 resourceRoot 解析。command 是 Node executable；其余是随本产物分发的 regular file。adapter 可选用共享工具方法，不在运行时下载依赖 |
-| fileSelectors | 仅首次 bundle 执行必填；恢复（有 sessionId）时必须省略，Text 数组，可以为 []；原样保留顺序、空格和重复，按 AW 文件选择协议 v1 校验选择表达式 |
-| fileResolver | 仅首次 bundle 执行必填；恢复（有 sessionId）时必须省略，严格对象 `{command: AbsolutePath, args: [AbsolutePath]}`，args 恰好一个安装内解析器入口；保持既有文件选择协议 v1 |
 
-workspace 必须完全省略 fileSelectors/fileResolver，传空数组也非法。恢复 bundle 的 mode 保持 bundle，但 wire 必须省略 fileSelectors/fileResolver，不能传 [] 触发重新解析；原选择只保存在冻结执行配置中，不重新扫描、扩大或重发材料，由原 session 保留上下文。bundle 不支持运行中消息，ready 的 capabilities.communication 只能为 disabled 或 unsupported。环境通过已解析进程环境传入，不增加 env 或 secret JSON 字段。adapter 不读取 AW store 或重新选择 executor。Codex 的 profile 选择由 codex.profile 进入 adapter，不在 plan 改写为 --profile。
+环境通过已解析进程环境传入，不增加 env 或 secret JSON 字段。adapter 不读取 AW store 或重新选择 executor。Codex 的 profile 选择由 codex.profile 进入 adapter，不在 plan 改写为 --profile。
 
 runtime.directory 是 adapter 的可写临时边界；result 经 stdout 返回，adapter 不写 worker 的结果缓存。目录路径和 toolkit 只供程序使用，不进入主代理 start 展示。
+
+##### introspect
+
+自省使用独立连接，首帧为 `{"protocolVersion":6,"type":"introspect","executor":"custom-local","workspace":"/absolute/project","args":[]}`。仅 Codex 携带与 start 同形的 `codex` 对象。发送完即关闭 stdin，适配器在 10 秒观测窗口内返回一行 `introspection`，关闭后端子进程并以 0 退出。该操作只查询环境和模型信息。
+
+响应包含 `protocolVersion:6`、`type:"introspection"`、`status:"supported"|"unsupported"` 和 `environment`。环境可用为 `{status:"available"}`，不可用带稳定 `code`。可选 `models` 最多 128 个唯一模型，每项必填 `id`，可含 `displayName`、`description`、`efforts`、`defaultEffort`、`isDefault`，默认模型至多一个。响应还可带 `supportedEfforts`、`defaultModel`、`defaultEffort` 和脱敏 `diagnostics`。整行响应上限为 1 MiB，计入行尾换行。缺少有效响应时调用方可以继续使用已配置的静态模型信息。普通生命周期由独立的 start 连接承担。
 
 ##### message
 
 只在已收到 ready 且 initialization.capabilities.communication.status=enabled、任务仍开放时正常发送：
 
 ```json
-{"protocolVersion":5,"type":"message","id":"11111111111111111111111111111111","text":"Check both callers."}
+{"protocolVersion":6,"type":"message","id":"11111111111111111111111111111111","text":"Check both callers."}
 ```
 
 字段 id 为 MessageId，text 为非空 Text。同一连接内 id 不重复，不根据正文去重。每条输入应得到一次 delivery；它是适配器的提交结论，不是模型 ACK。
@@ -137,7 +139,7 @@ worker 只把每条本地待发消息写到连接一次。断线、超时、未�
 ##### stop
 
 ```json
-{"protocolVersion":5,"type":"stop","reason":"requested"}
+{"protocolVersion":6,"type":"stop","reason":"requested"}
 ```
 
 reason 只能为 `requested`、`deadline`、`channelError`。在合法 start 之后任意非终态阶段都可发送，包括初始化中。重复 stop 等价于同一次停止，不能产生新生成；第一个原因用于主要诊断。
@@ -149,7 +151,7 @@ adapter 停止接受新任务输入，调用后端正式中断方法，结束子
 ##### ready
 
 ```json
-{"protocolVersion":5,"type":"ready","initialization":{"environment":{"status":"available"},"capabilities":{"communication":{"status":"enabled","transport":"mcp","passiveDelivery":"in-turn"},"resume":{"status":"enabled"}}}}
+{"protocolVersion":6,"type":"ready","initialization":{"environment":{"status":"available"},"capabilities":{"communication":{"status":"enabled","transport":"mcp","passiveDelivery":"in-turn"},"resume":{"status":"enabled"}}}}
 ```
 
 `initialization` 是必填严格对象，只含 environment、capabilities；替换旧顶层 communication，不兼容旧形状。environment 只能是 `{status:"available"}` 或 `{status:"unavailable",code:Code}`。available 表示已按本次选择规则找到可执行入口，不保证认证、网络、余额或模型资格。ready 只允许 available；capabilities 必须包含已确定的 communication 和 resume。未来只增加有定义并经验证的命名能力，不接收任意 JSON 或复制顶层布尔值。
@@ -162,7 +164,7 @@ adapter 停止接受新任务输入，调用后端正式中断方法，结束子
 | disabled | 仅 `{ "status": "disabled" }`；请求关闭，跳过通讯检查和准备，仍检查环境及权限模式，不建 AW 桥、不注入工具或通讯说明 |
 | unsupported | 仅 `{ "status": "unsupported" }`；已查询且后端无可用双向能力，继续普通任务 |
 
-enabled 必须同时支持子→父发送和主动接收；passiveDelivery 只控制自动输入与提示词，none 也保留 receive。旧 activeReceive 字段按未知字段拒绝。disabled/unsupported 不带其它字段；bundle 不得 enabled。communication=false 必须 disabled，不能 enabled；协议错、超时、缺字段或配置失败都不能报 unsupported。必须在首次模型提交之前完成 ready 写入；只有 enabled 注入按实际能力生成的说明。
+enabled 必须同时支持子→父发送和主动接收；passiveDelivery 只控制自动输入与提示词，none 也保留 receive。旧 activeReceive 字段按未知字段拒绝。disabled/unsupported 不带其它字段。communication=false 必须 disabled，不能 enabled；协议错、超时、缺字段或配置失败都不能报 unsupported。必须在首次模型提交之前完成 ready 写入；只有 enabled 注入按实际能力生成的说明。
 
 ready 可带 `diagnostics: [{ "code": "backendConfigWarning", "message": "Codex reported a configuration warning. Native defaults or fallback behavior may apply." }]`。每项严格为 `{code, field?, message}`：code 为 Code，field 可选且仅字段路径，message 是简短英文说明。不得包含值、令牌、header、命令参数、可信摘要或 profile 原文。按字段组汇总过量诊断并报告总数，仍须满足 ready 帧及输出预算。
 
@@ -177,7 +179,7 @@ worker 将完整 initialization、诊断及更新位置保存到已有最新快�
 ##### session：恢复绑定
 
 ```json
-{"protocolVersion":5,"type":"session","sessionId":"actual-backend-session"}
+{"protocolVersion":6,"type":"session","sessionId":"actual-backend-session"}
 ```
 
 只含 protocolVersion、type 和非空 Identifier sessionId，沿用 4 KiB 控制帧限制。允许 start 后、closing/result 前发送，包括 ready 前；获得真实可恢复 session 后及时发送，不等最终 result。一次执行只绑定一个 ID，相同 ID 重复可忽略，不同 ID 是协议错误；恢复执行只能确认传入的原 ID。
@@ -191,7 +193,7 @@ session 绑定仅供内部恢复使用，主代理不能传入任意 session 目
 ##### message：子代理发往父代理
 
 ```json
-{"protocolVersion":5,"type":"message","text":"Does the first caller still need the old parameter?"}
+{"protocolVersion":6,"type":"message","text":"Does the first caller still need the old parameter?"}
 ```
 
 只含 text；不接收模型填写的来源、目标或 id。worker 从连接绑定 run 身份，并生成私有消息文件名。只允许 enabled ready 之后、closing 之前发送。原始 stdout、阶段日志和最终正文都不能自动变成 message。
@@ -201,7 +203,7 @@ session 绑定仅供内部恢复使用，主代理不能传入任意 session 目
 ##### delivery
 
 ```json
-{"protocolVersion":5,"type":"delivery","id":"11111111111111111111111111111111","status":"submitted"}
+{"protocolVersion":6,"type":"delivery","id":"11111111111111111111111111111111","status":"submitted"}
 ```
 
 必填 id、status；可选 code 和 message。id 必须对应本连接已经收到的父消息。status 只能为：
@@ -219,7 +221,7 @@ session 绑定仅供内部恢复使用，主代理不能传入任意 session 目
 ##### closing
 
 ```json
-{"protocolVersion":5,"type":"closing","reason":"completed"}
+{"protocolVersion":6,"type":"closing","reason":"completed"}
 ```
 
 reason 只能为 `completed`、`failed`、`cancelled`、`error`。它说明收尾原因，不是终态证明。ready 后正常结束必须恰好一次 closing，result 随后输出；worker 收到后拒绝新的 send。worker 因 stop 或故障也可先在本地进入 closing。
@@ -230,7 +232,7 @@ adapter 必须在 closing 前停止子侧新发送入口、完成已经进入串
 
 ```json
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "type": "result",
   "state": "completed",
   "generationStarted": true,
@@ -311,21 +313,21 @@ cancelled 要求本次存在停止意图、本地执行已停止；已经提交�
 
 ### 7. 通用初始化与可复用的子侧工具桥接
 
-每次 adapter 初始化均调用 `descriptor.negotiate(context)`，替换 negotiateCommunication；所有 adapter、所有 communication 值均执行。context 包含本次 mode、安装配置、解析后的后端选项、有效环境及可检查资源。协商只读，不提交模型、不修改用户配置、不读最新 AW store。它同时返回环境与命名能力的候选；具体 executable、准备参数及权限规则计划只留在 adapter 内存，不加入 wire。
+每次 adapter 初始化均调用 `descriptor.negotiate(context)`，替换 negotiateCommunication；所有 adapter、所有 communication 值均执行。context 包含本次 workspace、安装配置、解析后的后端选项、有效环境及可检查资源。协商只读，不提交模型、不修改用户配置、不读最新 AW store。它同时返回环境与命名能力的候选；具体 executable、准备参数及权限规则计划只留在 adapter 内存，不加入 wire。
 
-环境检查确认所需 CLI/custom command 或托管绑定可按当前平台规则找到并执行。Codex 遵守 codexCliSource 的完整选择规则；Claude/agy/Oracle 使用有效 PATH；custom 保留绝对 command/entrypoint。缺失、不可执行、平台不支持分别返回稳定原因；不得以通讯 unsupported 代替。选定入口固定，失败不切换来源或重发。可执行有界无模型的原生初始化/查询，不建独立能力服务或持久健康缓存；该检查不证明认证或账户/模型资格。
+环境检查确认所需 CLI/custom command 或托管绑定可按当前平台规则找到并执行。Codex 遵守 codexCliSource 的完整选择规则；Claude/agy 使用有效 PATH；custom 保留绝对 command/entrypoint。缺失、不可执行、平台不支持分别返回稳定原因；不得以通讯 unsupported 代替。选定入口固定，失败不切换来源或重发。可执行有界无模型的原生初始化/查询，不建独立能力服务或持久健康缓存；该检查不证明认证或账户/模型资格。
 
-候选 capabilities 必须分别提供 communication 与 resume；resume 候选严格为 `{supported:boolean}`。公共 helper 校验环境及两项能力候选，仅环境可用才进入准备。恢复按请求 resume=false 映射 disabled，否则依候选映射 enabled/unsupported；传入 sessionId 而后端不支持时明确失败。communication=false 只跳过通讯检查、桥、工具及说明，不跳过环境或权限模式。明确无通讯实现的 Oracle 可继续普通任务；已知支持路径的权限、资源、查询或建桥失败必须保留实际错误并收尾，不能降为 unsupported。
+候选 capabilities 必须分别提供 communication 与 resume；resume 候选严格为 `{supported:boolean}`。公共 helper 校验环境及两项能力候选，仅环境可用才进入准备。恢复按请求 resume=false 映射 disabled，否则依候选映射 enabled/unsupported；传入 sessionId 而后端不支持时明确失败。communication=false 只跳过通讯检查、桥、工具及说明，不跳过环境或权限模式。已知支持路径的权限、资源、查询或建桥失败必须保留实际错误并收尾，不能降为 unsupported。
 
 候选 supported 不等于 ready。准备阶段才建立桥、按需通过会话 --settings 注入 agy 精确权限、完成后端无模型初始化、配置实际工具并生成说明；agy 在建桥前完成版本检查（稳定版本 >=1.4.10），会话 settings 在正式后端加载前完成，不写用户 settings。全部必要准备成功后才发送 enabled ready，再提交首次模型输入。custom 可采用公共 helper 或实现等价流程，声明、实际入口及说明必须一致。
 
 外部通讯 prose 的唯一来源为 `commands/assets/communication-instructions.md`。模板按公共、MCP/command、被动输入和主动收件片段组合，不在 common 中维护另一份文案。只在 enabled 时生成；模板或安装资源缺失按 runtime resource 错误失败，不退回旧固定文案。native 不注入这些外部桥指令。
 
-MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用；内建 agy 先以受保护启动上下文将入口绑定到同一 AW 中 Guide 共享包的 `message` 子命令，私有 bridge 参数保持当前实例，v5 帧及 custom toolkit 字段不变：@@SEND@@ 使用 send --text MESSAGE_TEXT，@@SENDFILE@@ 使用 send --text-file MESSAGE_FILE；移除 @@SENDSTDIN@@，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。通信启用时始终包含 active-receive 方法片段，提供默认 600000、最高 1800000 ms 的响应式等待；移除 no-active-receive 分支。需要父回复才能继续时保持任务开放，没有待处理输入及必要答复时正常关闭，不增加 idle 保活或周期拉取。
+MCP 片段使用实际注册工具名；command 片段使用 bridge.script.command/args 生成完整 send/receive 调用；内建 agy 先以受保护启动上下文将入口绑定到同一 AW 中当前平台的 Guide `message` 子命令，私有 bridge 参数保持当前实例，v6 帧及 custom toolkit 字段不变：@@SEND@@ 使用 send --text MESSAGE_TEXT，@@SENDFILE@@ 使用 send --text-file MESSAGE_FILE；移除 @@SENDSTDIN@@，保留私有 binding，不要求模型填 run ID 或路径。按实际命令工具 shell 正确引用；未知 shell 不使用伪通用引用。in-turn 明确当前上下文自动输入，turn-boundary 明确等当前轮结束，none 不承诺自动输入。通信启用时始终包含 active-receive 方法片段，提供默认 600000、最高 1800000 ms 的响应式等待；移除 no-active-receive 分支。需要父回复才能继续时保持任务开放，没有待处理输入及必要答复时正常关闭，不增加 idle 保活或周期拉取。
 
 公共片段保留 24 KiB（24,576 UTF-8 字节）单条上限、无累计额度、不自动拆分/截断/重发不明消息、自动输入不由 receive 重放、父消息不扩张授权，以及最终结果不能由过程消息替代。角色只含角色内容，初始任务组合一次；后续输入保留协作标识，不重复整份角色与说明。
 
-为了让内建与 custom 复用发送、显式收件及脚本/MCP，随安装产物提供 `runtime.toolkit.module`。这是可选接入方法，第三方可实现等价工具；不采用它不改变 v5 行为。
+为了让内建与 custom 复用发送、显式收件及脚本/MCP，随安装产物提供 `runtime.toolkit.module`。这是可选接入方法，第三方可实现等价工具；不采用它不改变 v6 行为。
 
 Node 适配器入口：
 
@@ -334,7 +336,7 @@ createChildBridge({
   directory,          // Private subdirectory of start.runtime.directory
   deadlineAt,         // EpochMs | null; null means no execution deadline
   toolkit,            // start.runtime.toolkit
-  emitParentMessage,  // async (text) => void; write v5 messages in order
+  emitParentMessage,  // async (text) => void; write v6 messages in order
   submitInput,        // Optional async ({id, text}, {signal}) => Delivery
   canSubmitInput      // Optional synchronous () => boolean
 }): Promise<ChildBridge>
@@ -358,11 +360,11 @@ interface ChildBridge {
 
 `emitParentMessage` 在本地 stdout 完整写入后 resolve，失败则 reject；工具显示提交到父侧通道，不声称父模型已收件。每次调用都形成一条消息，检查单条字节上限，不设置累计消息数量或字节额度。
 
-`acceptInput` 接受来自 v5 的唯一父消息。桥接器串行分配：已有显式等待者则交给该等待；否则在配置了 submitInput 且当前允许自动提交时分配给它；否则保留给下一次显式收件。返回的 Promise 表示最终 delivery，可能等待实际收件，不得阻塞适配器的控制读取循环。adapter 在 Promise 结束时输出唯一 delivery。
+`acceptInput` 接受来自 v6 的唯一父消息。桥接器串行分配：已有显式等待者则交给该等待；否则在配置了 submitInput 且当前允许自动提交时分配给它；否则保留给下一次显式收件。返回的 Promise 表示最终 delivery，可能等待实际收件，不得阻塞适配器的控制读取循环。adapter 在 Promise 结束时输出唯一 delivery。
 
 `canSubmitInput` 是可选的同步 readiness 检查，省略时保留已有自动提交行为。返回 false 时输入留在共享队列，显式 receive 仍可领取；返回 true 才能分配给 submitInput。桥接器在现有工具请求扫描中重新检查，不要求额外通知 API。若后端须等待当前 turn 的正式 result 才能提交新输入，应让该检查返回 false，不能先占用输入再等待轮次边界。
 
-`submitInput` 由适配器负责后端提交及明确未提交时的处理，不能阻塞 stop；桥接器通过 signal 取消等待。已经分配给后端的输入不能再交给 receive；后端回执不明时返回 unknown，不自动改道或重发。显式 receive 之后注册，也不能抢走已经提交或正在提交的同一输入。该 readiness 检查不改变 v5 wire 合同。
+`submitInput` 由适配器负责后端提交及明确未提交时的处理，不能阻塞 stop；桥接器通过 signal 取消等待。已经分配给后端的输入不能再交给 receive；后端回执不明时返回 unknown，不自动改道或重发。显式 receive 之后注册，也不能抢走已经提交或正在提交的同一输入。该 readiness 检查不改变 v6 wire 合同。
 
 `hasPendingInput()` 包括未分配及提交结果尚未确定的输入，用于决定是否结束本次 run，不是跨进程新消息的事务性保证。`close()` 幂等：拒绝新发送/收件/输入，唤醒等待工具为 closed，未分配输入返回 notSubmitted，已尝试输入依证据返回结果。关闭期限受剩余收尾宽限限制；不能无限等待后端或 MCP。待处理投递 promise 均结束后，adapter 输出剩余 delivery，再输出 result。
 
@@ -375,7 +377,7 @@ interface ChildBridge {
 | `send_parent` / `send --text TEXT` / `send --text-file PATH` | 非空正文；脚本只接受文本或文件，拒绝缺参、互斥和 -，不读取 stdin | `submitted` or an explicit error; no implicit wait |
 | `receive_parent` / `receive --timeout-ms N` | timeoutMs 可选，默认 600000，整数 0–1800000 | `received` with the assigned text, `timeout`, or `closed`; no cursor/history/replyTo |
 
-receive 在一条输入可分配时提前返回；有多个显式 receive 时只允许一个活跃调用，其余返回 `receiveAlreadyPending`，避免额外多消费者合同。MCP 和脚本均使用以上语义和 24 KiB 单条正文上限。子侧保留 v5 工具输出：首行为 `send_parent: <outcome>` 或 `receive_parent: <outcome>`，可选 code 和 JSON 字符串 message。received 正文保留原文，使用独立 `BEGIN_MESSAGE:TOKEN` / `END_MESSAGE:TOKEN` 行包围；TOKEN 是每次输出生成且不出现在该正文中的 8 位小写十六进制值，正文前后各有 framing LF，不 trim 原文。父侧五命令的语义标签不用于此子侧工具合同。MCP 标准 envelope 只由包装处理，不把父输入混入工具状态或说明。工具成功状态使用 submitted/received，空结果使用 timeout/closed，错误使用明确的英文 code。
+receive 在一条输入可分配时提前返回；有多个显式 receive 时只允许一个活跃调用，其余返回 `receiveAlreadyPending`，避免额外多消费者合同。MCP 和脚本均使用以上语义和 24 KiB 单条正文上限。子侧保留 v6 工具输出：首行为 `send_parent: <outcome>` 或 `receive_parent: <outcome>`，可选 code 和 JSON 字符串 message。received 正文保留原文，使用独立 `BEGIN_MESSAGE:TOKEN` / `END_MESSAGE:TOKEN` 行包围；TOKEN 是每次输出生成且不出现在该正文中的 8 位小写十六进制值，正文前后各有 framing LF，不 trim 原文。父侧运行命令的语义标签不用于此子侧工具合同。MCP 标准 envelope 只由包装处理，不把父输入混入工具状态或说明。工具成功状态使用 submitted/received，空结果使用 timeout/closed，错误使用明确的英文 code。
 
 MCP 始终注册 send/receive 两个工具，脚本也始终提供两个入口，不提供 send-only 模式。需要问答才能继续时保持任务开放并采用默认 10 分钟响应式收件；输入或 closed 提前返回，明确更短窗口及剩余 run 时限可缩短它，deadline 或 close 必须唤醒等待。工具 schema/help 拥有参数规则，单一模板补充生命周期和输入语义。
 
@@ -391,7 +393,7 @@ MCP 始终注册 send/receive 两个工具，脚本也始终提供两个入口�
 6. result 唯一且必须最后；日志、非空正文、单一退出码不能替代服务和本地收尾证据；completed 使用实际后端进程退出码；stderr 超过 8 MiB 后不能仍报告 completed。
 7. submitted 删除父正文；未提交/未知进入必要摘要；没有消息历史或自动重放。
 8. MCP/脚本/自动输入共用调度，关闭唤醒等待，未等待的消息不被两个入口重复消费。
-9. 不支持通讯的第三方只实现最小生命周期也可运行；bundle 文件选择与环境配置语义保留。
+9. 不支持通讯的第三方只实现最小生命周期也可运行。
 10. 从实际安装产物启动所有入口及工具；引用的模块/脚本闭包完整，不依赖开发源码路径。
 11. 在原生 Windows 上验证 argv、UTF-8/CRLF 保真、后台存活、双向工具、真实后端退出证据、stop/显式 deadline/EOF、默认无期限及所属后代清理；覆盖私有访问控制、文件占用和 junction/重解析链接保护。共享进程与 foreign 资源不受影响。
 12. wait/receive 的默认长等待和上下界有效；消息与关闭及时唤醒，较短的等待工具窗口只续等同一次工作，不重提。零等待排空不变成普通空轮询。

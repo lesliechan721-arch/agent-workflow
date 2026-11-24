@@ -15,11 +15,13 @@ import {
   getPluginConfigDependencyFields,
   matchPluginConfigPreset,
   redactPluginConfigValue,
+  resolvePluginConfigObjectProperties,
   stablePluginConfigStringify,
   validatePluginConfigCandidate,
   validatePluginConfigDocument,
   validatePluginConfigValue as validateCorePluginConfigValue,
   type PluginConfigReferenceContext,
+  type PluginConfigValidationIssue,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
@@ -601,32 +603,27 @@ function isPluginConfigScalar(value: unknown): value is string | number | boolea
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isPluginConfigObject(value: unknown): boolean {
+function isPluginConfigObject(value: unknown, objectArrayLevels: number): boolean {
   if (!isRecord(value)) return false;
   return Object.values(value).every((property) => {
     if (isPluginConfigScalar(property)) return true;
-    if (Array.isArray(property)) {
-      const elementType = typeof property[0];
-      return Object.keys(property).length === property.length
-        && property.every((item, index) => Object.hasOwn(property, index)
-          && typeof item === elementType
-          && isPluginConfigScalar(item));
-    }
+    if (Array.isArray(property)) return isPluginConfigArray(property, objectArrayLevels);
     return isRecord(property) && Object.values(property).every(isPluginConfigScalar);
   });
 }
 
+function isPluginConfigArray(value: unknown[], objectArrayLevels: number): boolean {
+  if (Object.keys(value).length !== value.length) return false;
+  const elementType = typeof value[0];
+  return value.every((item, index) => Object.hasOwn(value, index)
+    && typeof item === elementType
+    && (isPluginConfigScalar(item) || (objectArrayLevels > 0 && isPluginConfigObject(item, objectArrayLevels - 1))));
+}
+
 function isPluginConfigValue(value: unknown): value is PluginConfigValue {
-  if (isPluginConfigScalar(value)) return true;
-  if (Array.isArray(value)) {
-    if (Object.keys(value).length !== value.length) return false;
-    const first = value[0];
-    const elementType = isRecord(first) ? 'object' : typeof first;
-    return value.every((item, index) => Object.hasOwn(value, index)
-      && (isRecord(item) ? 'object' : typeof item) === elementType
-      && (isPluginConfigScalar(item) || isPluginConfigObject(item)));
-  }
-  return isPluginConfigObject(value);
+  return isPluginConfigScalar(value) || (Array.isArray(value)
+    ? isPluginConfigArray(value, 2)
+    : isPluginConfigObject(value, 1));
 }
 
 function invalidStore(
@@ -1319,6 +1316,36 @@ export async function resetPluginConfigStores(options: {
   return [await resetPluginConfigStore(options)];
 }
 
+export class PluginConfigValueValidationError extends Error {
+  constructor(issue: PluginConfigValidationIssue, readonly publicMessage?: string) {
+    super(formatPluginConfigIssue(issue));
+  }
+}
+
+function configValueIssuePublicMessage(
+  initialField: PluginConfigSchemaField,
+  input: unknown,
+  issue: PluginConfigValidationIssue,
+): string | undefined {
+  const segments = issue.path.segments;
+  if (segments === undefined || segments.length < 2 || initialField.sensitive === true) return undefined;
+  let field = initialField;
+  let value = input;
+  // User-supplied object keys may contain private text. Only report declared properties and row positions.
+  for (const segment of segments.slice(1)) {
+    if (typeof segment === 'number' && field.type === 'array' && Array.isArray(value)) {
+      field = field.items;
+      value = value[segment];
+    } else if (typeof segment === 'string' && field.type === 'object' && isRecord(value)) {
+      const { properties } = resolvePluginConfigObjectProperties(field, value);
+      if (!Object.hasOwn(properties, segment) || !/^[A-Za-z0-9_-]+$/u.test(segment)) return undefined;
+      field = properties[segment]!;
+      value = Object.hasOwn(value, segment) ? value[segment] : undefined;
+    } else return undefined;
+  }
+  return formatPluginConfigIssue(issue);
+}
+
 function coerceConfigValue(
   key: string,
   field: PluginConfigSchemaField,
@@ -1334,7 +1361,8 @@ function coerceConfigValue(
   }
   const issues = validateCorePluginConfigValue(field, coerced, key);
   if (issues.length > 0) {
-    throw new Error(formatPluginConfigIssue(issues[0]!));
+    const issue = issues[0]!;
+    throw new PluginConfigValueValidationError(issue, configValueIssuePublicMessage(field, coerced, issue));
   }
   return coerced as PluginConfigValue;
 }

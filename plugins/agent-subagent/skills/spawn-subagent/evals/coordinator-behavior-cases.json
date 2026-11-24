@@ -29,7 +29,7 @@
       "input": {
         "scriptedReplies": [],
         "workspaceFiles": {
-          "provided/plan.md": "mode=workspace；调用方提供独立指令文件；后端不支持指定native角色或精确历史继承。\n"
+          "provided/plan.md": "已选外部工作区执行器。调用方提供独立指令文件。该执行器不支持指定原生角色或精确继承历史。\n"
         }
       },
       "expected": {

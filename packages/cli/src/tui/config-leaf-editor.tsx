@@ -10,6 +10,7 @@ import {
   type PluginConfigScalarField,
   type PluginConfigScalarArray,
   type PluginConfigScalarObject,
+  type PluginConfigValidationIssue,
 } from '@lesliechan721/aw-plugin-core';
 
 import { ActionRow, ChoiceRow, InputCard } from './components.js';
@@ -47,6 +48,7 @@ export function ConfigLeafEditor(props: {
   onConfirm: (value: LeafValue) => boolean;
   onCancel: () => void;
   onDraftChange: (revision: string | undefined) => void;
+  formatIssue?: (issue: PluginConfigValidationIssue, item?: string | number) => string;
 }): React.JSX.Element {
   const [array, setArray] = useState(() => props.initialDraft?.array ?? createConfigArrayDraft(Array.isArray(props.value) ? props.value : undefined));
   const [object, setObject] = useState<PluginConfigScalarObject>(() =>
@@ -65,7 +67,8 @@ export function ConfigLeafEditor(props: {
       .map((key) => ({ id: key, title: key, value: object[key]! }));
   const issues = validatePluginConfigValue(props.definition, value);
   if (screen.kind === 'list' && rows[focus]) selectedRowId.current = rows[focus]!.id;
-  const issueText = (entries: typeof issues): string => entries.slice(0, 2).map((issue) => issue.message).join('；');
+  const issueText = (entries: typeof issues, item?: string | number): string => entries.slice(0, 2)
+    .map((issue) => props.formatIssue?.(issue, item) ?? issue.message).join('；');
   const revision = JSON.stringify(value) !== JSON.stringify(props.value ?? (isArray ? [] : {}))
     || screen.kind === 'key' && screen.input.length > 0
     || screen.kind === 'value' && (screen.key !== undefined
@@ -90,8 +93,13 @@ export function ConfigLeafEditor(props: {
       }
     }
     const invalid = validatePluginConfigValue(scalar, candidate);
-    if (invalid.length) { setError(issueText(invalid)); return; }
     if (screen.kind !== 'value') return;
+    if (invalid.length) {
+      const item = isArray ? screen.rowId === undefined ? rows.length : rows.findIndex((row) => row.id === screen.rowId)
+        : screen.key ?? screen.rowId;
+      setError(issueText(invalid, item));
+      return;
+    }
     if (props.definition.type === 'array') {
       const next = editConfigArrayDraft(array, { kind: 'set', rowId: screen.rowId, value: candidate });
       setArray(next);

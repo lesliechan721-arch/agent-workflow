@@ -1,13 +1,12 @@
 import { lstatSync, realpathSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
-const ROLE_NAMES = [
-  'codex-explore',
-];
+const EXPLORE_ROLE_NAME = 'aw-eval-source-codex-enhance-codex-explore';
+const GUIDE_ROLE_NAME = 'aw-eval-source-agent-subagent-subagent';
 
 export const EXPLORE_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
@@ -138,26 +137,21 @@ function parseTomlString(source, key, file) {
   return JSON.parse(match[1]);
 }
 
-export async function workflowRoles(workspace, omitted = []) {
-  const omittedNames = new Set(omitted);
-  const root = path.join(workspace, '.codex', 'agents');
-  const files = (await readdir(root)).filter((file) => file.endsWith('.toml')).sort();
-  const found = new Map();
-  for (const file of files) {
-    const source = await readFile(path.join(root, file), 'utf8');
-    const name = parseTomlString(source, 'name', file);
-    if (!ROLE_NAMES.includes(name)) continue;
-    found.set(name, {
+export async function workflowRoles(workspace, { includeGuide = false } = {}) {
+  const names = includeGuide ? [EXPLORE_ROLE_NAME, GUIDE_ROLE_NAME] : [EXPLORE_ROLE_NAME];
+  return Promise.all(names.map(async (name) => {
+    const file = `${name}.toml`;
+    const configFile = path.posix.join('.codex', 'agents', file);
+    const source = await readFile(path.join(workspace, configFile), 'utf8');
+    if (parseTomlString(source, 'name', file) !== name) {
+      throw new Error(`${file} must declare role ${name}.`);
+    }
+    return {
       name,
       description: parseTomlString(source, 'description', file),
-      configFile: path.posix.join('.codex', 'agents', file),
-    });
-  }
-  return ROLE_NAMES.filter((name) => !omittedNames.has(name)).map((name) => {
-    const role = found.get(name);
-    if (!role) throw new Error(`attempt workspace is missing role ${name}.`);
-    return role;
-  });
+      configFile,
+    };
+  }));
 }
 
 export function workflowProfile(evalCase) {

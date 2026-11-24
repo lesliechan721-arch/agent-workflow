@@ -3,24 +3,26 @@ import { Readable } from 'node:stream';
 
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { COMMAND_PRODUCER_RECORD_FILE, normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
+import { COMMAND_PRODUCER_RECORD_FILE, normalizePluginCommand, readPluginManifest } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { runCli } from '../../src/index.js';
 import * as platformDiscovery from '../../src/platforms/discovery.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { validateCatalogSnapshotComplete } from '../../src/utils/catalog-snapshot.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
-import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const discoverPlatforms = platformDiscovery.discoverPlatforms;
 
-async function fixture(kind: 'config' | 'skill' | 'command' = 'config') {
+async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' = 'config') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
@@ -78,6 +80,16 @@ async function fixture(kind: 'config' | 'skill' | 'command' = 'config') {
         presets: [{ id: 'fast', title: 'Common fast', value: 'common-fast' }] } },
       enabled: { type: 'boolean', default: true },
       token: { type: 'string', sensitive: true },
+      ...(kind === 'nested' ? {
+        subagentCommands: { type: 'array', items: { type: 'object', properties: {
+          key: { type: 'string', required: true },
+          models: { type: 'array', validation: { uniqueBy: 'id' }, items: { type: 'object', properties: {
+            id: { type: 'string', required: true },
+            efforts: { type: 'array', items: { type: 'string' } },
+            default: { type: 'boolean' },
+          } } },
+        } } },
+      } : {}),
       ...(kind === 'command' ? {
         region: { type: 'string', default: 'local', valueRef: { field: 'regions', key: 'name' } },
         regions: { type: 'array', default: [{ name: 'local' }], validation: { uniqueBy: 'name' }, items: {
@@ -302,6 +314,98 @@ describe('platform configuration CLI', () => {
       });
     expect((await fs.readJson(f.file)).common).toEqual({ mode: 'common-fast' });
     expect((await fs.readJson(f.file)).platforms).toEqual({});
+  });
+
+  // Public get and set must round-trip nested values with the existing envelope and preserve the last valid save.
+  it('saves and lists nested arrays after reading earlier Store v6 values without a migration', async () => {
+    const f = await fixture('nested');
+    const selector = 'team/demo';
+    const read = ['plugin', 'config', 'get', selector];
+    const set = (rows: unknown[]) => f.run([
+      'plugin', 'config', 'set', selector, 'subagentCommands', '--value-json', JSON.stringify(rows),
+    ]);
+    expect(await f.run(['plugin', 'config', 'set', selector, 'mode', '--preset', 'fast'])).toMatchObject({ exitCode: 0 });
+    const previousStore = await fs.readFile(f.file);
+    expect(await f.run([...read, 'mode'])).toMatchObject({
+      exitCode: 0, value: { data: { fields: [{ effectiveValue: 'common-fast', sourceLayer: 'common' }] } },
+    });
+    expect(await fs.readFile(f.file)).toEqual(previousStore);
+
+    const models = [{ id: 'example', efforts: ['low', 'high'], default: false }];
+    const rows = [{ key: 'custom', models }];
+    const saved = await set(rows);
+    expect(saved, saved.stdout).toMatchObject({ exitCode: 0, value: { data: { configWrite: 'succeeded' } } });
+    expect(await fs.readJson(f.file)).toEqual({
+      ...JSON.parse(previousStore.toString()), common: { mode: 'common-fast', subagentCommands: rows },
+    });
+    for (const args of [read, [...read, 'subagentCommands']]) {
+      expect(await f.run(args)).toMatchObject({
+        exitCode: 0, value: { schemaVersion: 2, data: { fields: expect.arrayContaining([
+          expect.objectContaining({ key: 'subagentCommands', effectiveValue: rows, sourceLayer: 'common' }),
+        ]) } },
+      });
+    }
+    const captured = createCapturedCliIo();
+    expect(await runCli(read, { cwd: f.cwd, env: f.env, interactive: false, io: captured.io })).toBe(0);
+    expect(captured.readStdout()).toContain('"models":[{"default":false,"efforts":["low","high"],"id":"example"}]');
+
+    const validStore = await fs.readFile(f.file);
+    const invalid = await set([{ key: 'custom', models: [...models, ...models] }]);
+    expect(invalid.exitCode).toBe(2);
+    expect(invalid.stdout).toContain('subagentCommands[0].models[1].id');
+    const unknownProperty = await set([{ key: 'custom', models: [{ ...models[0], 'private-user-key': 'private-user-value' }] }]);
+    expect(unknownProperty.exitCode).toBe(2);
+    expect(unknownProperty.stdout).not.toContain('private-user-key');
+    expect(await fs.readFile(f.file)).toEqual(validStore);
+  });
+
+  // Catalog validation links declared providers and the public schema exposes their nested consumer fields.
+  it('validates same-source suggestion providers, bundles their script closure, and projects nested suggestions', async () => {
+    const { env, layout: { fixtureCwd: cwd } } = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(cwd, 'suggestions-source');
+    const providerRoot = path.join(sourceRoot, 'plugins/provider');
+    const suggestions = { provider: 'model-list', plugin: 'provider', dependsOn: ['executor'] };
+    const createFixture = (withProvider: boolean) => createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'provider', configureManifest(manifest) {
+        if (withProvider) manifest.scripts = { config: { suggestions: { runner: 'node', path: './scripts/suggestions.mjs' } } };
+      } },
+      { name: 'consumer', dependencies: ['provider'], configureManifest(manifest) {
+        manifest.config = { schemaVersion: 5, fields: {
+          commands: { type: 'array', items: { type: 'object', properties: { models: {
+            type: 'array', items: { type: 'object', properties: {
+              model: { type: 'string', suggestions },
+              executor: { type: 'string' },
+            } },
+          } } } },
+        } };
+      } },
+    ]);
+    await createFixture(false);
+    await expect(validateCatalogSnapshotComplete(sourceRoot)).rejects.toThrow(/dependency "provider" requires scripts.config.suggestions/u);
+
+    await fs.outputFile(path.join(providerRoot, 'scripts/suggestions.mjs'), "import './providers.mjs';\n");
+    await fs.outputFile(path.join(providerRoot, 'scripts/providers.mjs'), 'export const models = [];\n');
+    await createFixture(true);
+    await expect(validateCatalogSnapshotComplete(sourceRoot)).resolves.toBeDefined();
+    const bundledRoot = path.join(cwd, 'bundled-provider');
+    await bundleLocalPlugin(await readPluginManifest(providerRoot), bundledRoot);
+    expect(await fs.readFile(path.join(bundledRoot, 'scripts/providers.mjs'), 'utf8')).toBe('export const models = [];\n');
+    expect((await readPluginManifest(bundledRoot, { mode: 'bundle' })).manifest.scripts?.config?.suggestions)
+      .toEqual({ runner: 'node', path: './scripts/suggestions.mjs' });
+
+    const snapshot = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ env, expectedDigest: snapshot.digest,
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] } });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    const captured = createCapturedCliIo();
+    expect(await runCli(['plugin', 'config', 'schema', 'team/consumer', '--json'], {
+      cwd, env, interactive: false, io: captured.io,
+    })).toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({ data: { fields: {
+      commands: { items: { properties: { models: { items: { properties: {
+        model: { type: 'string', suggestions },
+      } } } } } },
+    } } });
   });
 
   it.each([

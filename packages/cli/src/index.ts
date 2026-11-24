@@ -17,7 +17,10 @@ import { withNativeCliInterruption } from './utils/native-cli-interruption.js';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
-import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import {
+  compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS,
+  CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS, CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS,
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
@@ -68,6 +71,7 @@ import {
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
   listNamespacedPluginConfigStores,
+  PluginConfigValueValidationError,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
@@ -88,11 +92,18 @@ import {
 } from './utils/catalog-source-references.js';
 import {
   CatalogLeaseEscapeError,
+  CatalogPluginNotFoundError,
   parsePluginId,
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
+import {
+  ConfigSuggestionArgumentError,
+  parseConfigSuggestionDependencyOverrides,
+  parseConfigSuggestionFieldPath,
+  preparePluginConfigSuggestions,
+} from './utils/plugin-config-suggestions.js';
 import {
   sanitizeCatalogSourceError,
   sanitizeCatalogSourceErrorMessage,
@@ -2431,6 +2442,73 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const configPlatform = (rawOptions: RawConfigOptions): PlatformTarget | undefined => rawOptions.platform === undefined
     ? undefined : normalizeWriteRequest(() => parsePlatformTargetValue(rawOptions.platform));
 
+  configCommand(config.command('suggestions').description('Query dynamic configuration suggestions without saving'))
+    .argument('<plugin>', 'source-qualified plugin ID')
+    .argument('<field-path>', 'dot-separated field path, with optional array indices')
+    .option('--dep <key=value>', 'override a dependency value', (value: string, previous: string[] = []) => [...previous, value])
+    .addOption(strictValueOption('--timeout-ms <ms>', 'suggestion provider timeout in milliseconds'))
+    .action(async (selector: string, field: string, rawOptions: RawConfigOptions & { dep?: string[]; timeoutMs?: string }) => {
+      const command = 'plugin.config.suggestions';
+      const context = createActionContext(command, rawOptions);
+      const platform = configPlatform(rawOptions);
+      let parseValidSelector = false;
+      let fieldPath: ReturnType<typeof parseConfigSuggestionFieldPath> | undefined;
+      try {
+        const parsed = normalizeWriteRequest(() => parsePluginId(selector));
+        if (!parsed.sourceId) throw new ConfigSuggestionArgumentError('Use the source-qualified plugin ID.');
+        parseValidSelector = true;
+        const parts = parseConfigSuggestionFieldPath(field);
+        fieldPath = parts;
+        const dependencyOverrides = parseConfigSuggestionDependencyOverrides(rawOptions.dep ?? []);
+        const timeout = rawOptions.timeoutMs;
+        const timeoutMs = timeout === undefined ? undefined : (/^[0-9]+$/u.test(timeout) ? Number(timeout) : NaN);
+        if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS
+          || timeoutMs > CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS)) {
+          throw new ConfigSuggestionArgumentError(`Use a decimal integer between ${CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS} and ${CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS} milliseconds.`);
+        }
+        const work = await configContext(context, rawOptions, false);
+        const result = await runActionWithContext(context, () => withResolvedCatalogPlugin({
+          selector, cliVersion: resolveCliVersion(), env: context.env, signal: context.signal,
+          consume: async ({ plugin }) => {
+            const prepared = await preparePluginConfigSuggestions({
+              plugin, platform, context: work.context, cwd: context.cwd, env: context.env, fieldPath: parts,
+              dependencyOverrides, timeoutMs, signal: context.signal,
+            });
+            const { status, items, message, diagnostics } = prepared.project(await prepared.run());
+            const severity = status === 'unavailable' ? 'error' as const : status === 'unsupported' ? 'warning' as const : 'info' as const;
+            const entries = status === 'unavailable' && !diagnostics?.length ? [{
+              code: 'configSuggestionsUnavailable',
+              message: message || 'Suggestions are unavailable.',
+            }] : diagnostics ?? [];
+            return commandResult(command, { pluginId: prepared.pluginId, fieldPath: prepared.fieldPath, profile: prepared.profile,
+              provider: prepared.provider, providerPluginId: prepared.providerPluginId, status, items,
+              ...(message === undefined ? {} : { message }), ...(diagnostics === undefined ? {} : { diagnostics }) }, {
+              status: status === 'unavailable' ? 'failed' : 'success',
+              diagnostics: entries.map((entry) => ({ ...entry, severity, subject: {
+                pluginId: prepared.providerPluginId, ...(platform === undefined ? {} : { target: platform }), field,
+              } })),
+            });
+          },
+        }));
+        writeJsonReceipt(io.stdout, result);
+        commandExitState.exitCode = publicExitCode(result);
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        const argumentError = error instanceof ConfigSuggestionArgumentError || error instanceof WriteCommandRequestError
+          || error instanceof CatalogPluginNotFoundError;
+        const result = commandResult(command, {}, { status: 'failed', diagnostics: [{
+          code: argumentError ? 'invalidArguments' : 'configSuggestionsUnavailable', severity: 'error',
+          message: error instanceof ConfigSuggestionArgumentError || error instanceof WriteCommandRequestError ? error.message
+            : error instanceof CatalogPluginNotFoundError ? 'The selected plugin is not in the active Catalog.'
+              : 'The config suggestion provider could not be prepared.',
+          subject: { ...(parseValidSelector ? { pluginId: selector } : {}),
+            ...(platform === undefined ? {} : { target: platform }), ...(fieldPath === undefined ? {} : { field }) },
+        }] });
+        writeJsonReceipt(io.stdout, result);
+        commandExitState.exitCode = publicExitCode(result, argumentError);
+      }
+    });
+
   for (const command of ['schema', 'list', 'get'] as const) {
     const entry = configCommand((command === 'list' ? new Command(command) : config.command(command)).argument('<plugin>'));
     if (command === 'get') entry.argument('[key]');
@@ -2545,7 +2623,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             }
             if (command !== 'unset') {
               try { inputValue = (await coercePluginConfigUpdates({ schema: fields, updates: { [key!]: inputValue }, cwd: context.cwd }))[key!]; }
-              catch { throw new WriteCommandRequestError(`Invalid value for configuration field "${key}".`); }
+              catch (error) {
+                throw new WriteCommandRequestError(
+                  (error instanceof PluginConfigValueValidationError ? error.publicMessage : undefined)
+                    ?? `Invalid value for configuration field "${key}".`,
+                );
+              }
             }
             try {
               await assertPluginConfigMutationCandidate({ sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
@@ -3007,12 +3090,12 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
   const resolvedCommand = resolveRegisteredCommand(program, awArgs);
   const selected = resolvedCommand.command;
   const id = selected && selected !== program ? commandId(selected) : null;
-  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync', 'plugin.config.apply',
+  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync', 'plugin.config.apply', 'plugin.config.suggestions',
     'dev.plugin.create', 'dev.plugin.validate', 'dev.plugin.remove', 'dev.plugin.status',
     'dev.skill.create', 'dev.skill.validate'].includes(id ?? '');
   if (controlledInterrupt) {
     commandOptions.interruption = interruption;
-    commandOptions.signal = id === 'plugin.config.apply' && options.signal
+    commandOptions.signal = (id === 'plugin.config.apply' || id === 'plugin.config.suggestions') && options.signal
       ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal;
   }
   if (id === 'command.run' && !awArgs.some((arg) => arg === '--help' || arg === '-h')) {
@@ -3125,7 +3208,8 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
       if (name) for (const action of ['validate', 'test', 'build']) result.nextActions.push({ kind: 'command', argv: ['aw', 'dev', 'plugin', action, `plugins/${name}`], reason: 'Check and build the new source.', requiresConfirmation: false });
       result.nextActions.push({ kind: 'command', argv: ['aw', 'dev', 'catalog', 'build'], reason: 'Build the Catalog after checking the source.', requiresConfirmation: false });
     }
-    const invalid = result.diagnostics.some((diagnostic) => /invalidArguments|invalidOption|missingArgument|sensitiveConfigInputUnsupported/u.test(diagnostic.code));
+    const invalid = id === 'plugin.config.suggestions' ? exitCode === 2
+      : result.diagnostics.some((diagnostic) => /invalidArguments|invalidOption|missingArgument|sensitiveConfigInputUnsupported/u.test(diagnostic.code));
     if (invalid && result.status !== 'partial') { result.status = 'failed'; result.data = {}; }
     return emit(result, invalid);
   } catch (error) {
@@ -3134,7 +3218,9 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     const raw = id?.startsWith('plugin.config.') && !(error instanceof CommanderError) && !(error instanceof WriteCommandRequestError)
       ? configMutationFailure(error, options.env ?? process.env, options.cwd ?? process.cwd())
       : error as { code?: string; message?: string };
-    const code = argumentError ? error instanceof InvalidArgumentError || error instanceof CommanderError && error.code === 'commander.invalidArgument' ? 'invalidOptionValue' : 'invalidArguments' : raw.code ?? catalogGenerationErrorCode(error);
+    const invalidOption = id !== 'plugin.config.suggestions'
+      && (error instanceof InvalidArgumentError || error instanceof CommanderError && error.code === 'commander.invalidArgument');
+    const code = argumentError ? invalidOption ? 'invalidOptionValue' : 'invalidArguments' : raw.code ?? catalogGenerationErrorCode(error);
     const blocked = code === 'confirmationRequired' || /unavailable|missing|stale|conflict|unsupported|identityMismatch/iu.test(code);
     let message = raw.message ?? 'The operation failed.';
     if (error instanceof CommanderError) {

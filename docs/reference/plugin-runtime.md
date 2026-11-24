@@ -108,6 +108,18 @@ schema 2 binding 通过 `originPath` 绑定独立的当前来源证据；旧 `na
 
 reader 同时核对来源证据与 binding；原生产物所在包具有当前 nativeProjection owner 时，还须核对包身份、组件映射和实际相对输出路径。Review/Eval 的完整 Skill 快照携带相同的独立来源证据，因此可以复制后读取；只交换另一个 source 或 scope 的 binding 必须失败。来源快照仍不能作为删除或安装权限证明。
 
+### 配置建议脚本
+
+在 `scripts.config.suggestions` 声明 `{ "runner": "node", "path": "./scripts/config-suggestions.mjs", "timeoutMs": 10000 }`。入口及其依赖必须位于可分发的插件文件闭包内。AW 从 Active Catalog 取得提供方，插件安装前即可查询。在插件根目录以当前 Node 启动脚本，stdin 收一个 UTF-8 JSON 对象后关闭，stdout 只写一个响应对象，最多 1 MiB。
+
+请求带 `schemaVersion: 1`、`provider`、`profile`、按名称和数字索引分段的 `fieldPath`、调用者 `cwd`、`consumer` 和 `providerPlugin`。两个插件身份均含 `pluginId`、`name`、`version`，提供方另含 `rootDir`。平台层请求带 `platform`，公共层省略。已填的依赖属性位于 `dependencyValues`，提供方的非敏感有效配置位于 `providerConfigValues`。同插件查询叠加当前草稿，正在编辑的对象可包含部分有效属性，数组保留行的位置。跨插件查询使用提供方已保存的有效值。Store 损坏或无法读取时以空对象为基础，同插件仍叠加当前草稿。
+
+`deadlineAt` 给出本次执行时限的 Unix 毫秒时间戳，供探针预留返回静态候选的时间。AW 还可在请求中提供 `commandHost: { schemaVersion: 1, nodeExecutable, cliEntry, awHome }`。这三个绝对路径指向当前 Node、当前 AW 的公开 CLI 入口和本次 AW home，供兼容的提供方查询已注册命令。此对象只提供路径。命令仍须通过公开 `command show` 和 `command run` 接口进行验证和调用。
+
+响应使用 `{ schemaVersion: 1, status, items, message?, diagnostics? }`。`status` 为 `ok`、`unsupported` 或 `unavailable`。每项提供匹配目标类型的标量 `value` 和 `title`（1–128 字符），另可给出 `description`（最多 256 字符）、`recommended` 和 `source`（`dynamic`、`configured` 或 `merged`）。脚本最多提供 128 个唯一值、一个推荐项。AW 按目标字段筛选 `ok` 的候选，保留通过校验的第一项推荐。`unsupported` 和 `unavailable` 向调用方返回空候选列表。状态说明最多 256 字符，安全诊断最多 8 条，每条含 `code` 和 `message`。
+
+脚本可用宿主 PATH 和工具登录环境，AW 清除内部控制环境变量，过滤敏感配置并清理输出。默认超时 10 秒，可指定 1000–30000 毫秒。在 macOS 和 Linux 上，脚本及其所有后代必须留在 AW 创建的进程组内。启动探针请使用默认的 `detached: false`，避免调用 `setsid` 或另建进程组。AW 在脚本结束、取消或超时时清理该组，主动离组的后代超出清理范围。Windows 使用外层 Job 收尾。输出超限、无效或执行失败时，编辑器仍允许手工填写。
+
 ## 3. 动态 Renderer 与 PlatformComponentPlan 合同
 
 动态 renderer 按平台、实际资源 scope 和能力输入生成五类组件的完整期望集合。Manifest 不预先枚举动态 ID；静态入口可以与动态集合组合。

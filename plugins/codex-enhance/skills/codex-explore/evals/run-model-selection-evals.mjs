@@ -435,7 +435,9 @@ export async function prepareModelSelection(input) {
     sandbox: 'read-only',
     model: null,
     developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
-    roles: await workflowRoles(input.paths.workspace),
+    roles: await workflowRoles(input.paths.workspace, {
+      includeGuide: Boolean(entry.expected.nested_delegation),
+    }),
     multiAgent: workflowProfile(entry),
   };
 }

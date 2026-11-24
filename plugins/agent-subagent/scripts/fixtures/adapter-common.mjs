@@ -25,7 +25,6 @@ process.on('message', async ({ id, milliseconds = 0 }) => {
 });
 
 adapterMain(import.meta.url, {
-  mode: 'workspace',
   async negotiate(context) {
     const executable = await negotiateExecutable(context, context.request.args.includes('environmentMissing') ? path.join(context.request.workspace, 'missing-cli') : process.execPath);
     await fs.writeFile(path.join(context.request.runtime.directory, 'environment-checked.json'), '{}');

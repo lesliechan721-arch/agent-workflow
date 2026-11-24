@@ -77,8 +77,12 @@ describe('Config Definition v4 CLI boundaries', () => {
       expect(defaults.values[key]).toEqual({ executor: 'native' });
     }
     const commands = [
-      { key: 'oracle-web', adapter: 'oracle', oracleEngine: 'browser' },
-      { key: 'oracle-default', adapter: 'oracle' },
+      { key: 'claude-catalog', adapter: 'claude-code', description: 'Working review catalog',
+        modelsPolicy: 'override', models: [
+          { id: 'fixture-review', description: 'Review model', efforts: ['high'], default: true },
+          { id: 'fixture-fast', efforts: ['low'] },
+        ] },
+      { key: 'claude-default', adapter: 'claude-code' },
       { key: 'codex-review', adapter: 'codex', codexProfile: 'review profile' },
       { key: 'codex-default', adapter: 'codex' },
       { key: 'codex-app', adapter: 'codex', codexCliSource: 'app', codexBypassHookTrust: true, communication: false, resume: true },
@@ -86,13 +90,13 @@ describe('Config Definition v4 CLI boundaries', () => {
       { key: 'codex-auto', adapter: 'codex', codexCliSource: 'auto', codexBypassHookTrust: true, codexProfile: 'advanced' },
       { key: 'agy', adapter: 'antigravity', communication: false, args: ['--model', 'backend-default'],
         env: { ORDINARY: 'literal' }, envFrom: { TOKEN: 'HOST_TOKEN' } },
-      { key: 'custom', adapter: 'custom', mode: 'workspace', command: process.execPath, communication: true },
+      { key: 'custom', adapter: 'custom', command: process.execPath, communication: true },
       ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
         ['default', 'auto', 'full-access'].map((permissionMode) => ({
           key: `${adapter}-${permissionMode}-permission`, adapter, permissionMode, communication: false,
         }))),
     ];
-    const generalTaskProfile = { executor: 'oracle-web', reasoningEffort: 'pro' };
+    const generalTaskProfile = { executor: 'claude-catalog', model: 'fixture-review', reasoningEffort: 'high' };
     await save({ subagentCommands: commands, generalTaskProfile });
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
     expect(config.values).toMatchObject({ subagentCommands: commands, generalTaskProfile });
@@ -100,26 +104,28 @@ describe('Config Definition v4 CLI boundaries', () => {
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
     for (const invalid of [
-      { ...commands[0], oracleEngine: 'auto' }, { ...commands[0], adapter: 'codex' },
+      { ...commands[0], modelsPolicy: 'unknown' },
+      { ...commands[0], models: [{ id: 'duplicate' }, { id: 'duplicate' }] },
       { ...commands[2], adapter: 'oracle' }, { ...commands[2], adapter: 'claude-code' },
       ...['', '  ', '\0', 'x'.repeat(4097)].map((codexProfile) => ({ ...commands[2], codexProfile })),
-      ...['codex', 'claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) =>
+      ...['codex', 'claude-code', 'antigravity', 'custom'].flatMap((adapter) =>
         ['false', 0, null].map((communication) => ({ key: 'invalid', adapter, communication,
-          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+          ...(adapter === 'custom' ? { command: process.execPath } : {}) }))),
       ...['false', 0, null].map((resume) => ({ ...commands[4], resume })),
       ...['cli-path', false, null].map((codexCliSource) => ({ ...commands[4], codexCliSource })),
       ...['false', 0, null].map((codexBypassHookTrust) => ({ ...commands[4], codexBypassHookTrust })),
-      ...['claude-code', 'antigravity', 'oracle', 'custom'].flatMap((adapter) => [
+      ...['claude-code', 'antigravity', 'custom'].flatMap((adapter) => [
         { key: 'foreign', adapter, codexCliSource: 'auto',
-          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+          ...(adapter === 'custom' ? { command: process.execPath } : {}) },
         { key: 'foreign', adapter, codexBypassHookTrust: false,
-          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) },
+          ...(adapter === 'custom' ? { command: process.execPath } : {}) },
       ]),
       ...['codex', 'claude-code', 'antigravity'].flatMap((adapter) =>
         ['skip', '', false, null].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode }))),
-      ...['oracle', 'custom'].flatMap((adapter) =>
-        ['default', 'auto', 'full-access'].map((permissionMode) => ({ key: 'invalid', adapter, permissionMode,
-          ...(adapter === 'custom' ? { command: process.execPath, mode: 'workspace' } : {}) }))),
+      ...['default', 'auto', 'full-access'].flatMap((permissionMode) => [
+        { key: 'invalid', adapter: 'custom', command: process.execPath, permissionMode },
+        { key: 'invalid', adapter: 'custom-managed', commandId: 'fixture/adapter', permissionMode },
+      ]),
       { ...commands[7], mode: 'bundle' },
       { ...commands[7], command: process.execPath },
     ]) {

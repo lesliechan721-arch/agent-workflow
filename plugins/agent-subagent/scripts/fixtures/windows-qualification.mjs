@@ -8,8 +8,8 @@ export function field(text, key) {
   const value = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1]
     ?? attributes.map((properties) => properties.match(new RegExp(`(?:^| )${key}="([^"]*)"`))?.[1]).find((entry) => entry !== undefined);
   if (value !== undefined) return value;
-  if (key === 'delivery' && /^queued aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}(?=\s|$)/m.test(controls)) return 'queued';
-  if (key === 'run') return controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?=\s|$)/m)?.[1];
+  if (key === 'delivery' && /^queued aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}(?=\s|$)/m.test(controls)) return 'queued';
+  if (key === 'run') return controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?=\s|$)/m)?.[1];
   if (key === 'state') {
     if (/^starting /m.test(controls)) return 'starting';
     if (/^(?:started|ready) /m.test(controls)) return 'running';
@@ -63,7 +63,7 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 let backend, closed, finishing = false;
-const emit = (value) => process.stdout.write(JSON.stringify({ protocolVersion: 5, ...value }) + '\n');
+const emit = (value) => process.stdout.write(JSON.stringify({ protocolVersion: 6, ...value }) + '\n');
 const hardStop = setTimeout(() => process.exit(4), 305000);
 let timer;
 async function finish(cancelled) {

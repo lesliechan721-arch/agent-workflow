@@ -1,8 +1,9 @@
 import { configReferenceKey, configReferenceValues, configReferenceScalars, configReferenceSelection, configReferenceMessage, configReferenceSource, configCrossLayerDependencies, type ConfigReferenceContext } from './config-references.js';
-import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
-import { PLATFORM_TARGETS, PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PlatformTarget, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
+import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, isNestedConfigObjectArray, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
+import { formatPluginConfigIssue, PLATFORM_TARGETS, PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PlatformTarget, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
 import { ConfigLeafEditor, type ConfigLeafEditorDraft } from './config-leaf-editor.js';
+import { configSuggestionScalar, useConfigSuggestions, type ConfigSuggestionLookup } from './config-suggestions.js';
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { AgentManagement } from './agent-management.js';
 import type { AgentSettings } from './agent-settings.js';
@@ -559,8 +560,10 @@ function commandPackageResultLines(result: CommandProducerResult, removal: boole
   return [
     `命令包 ${result.selector} · ${result.action} · ${result.availability} · ${result.state}`,
     ...(removal && result.action === 'unchanged' ? [`保留命令包 ${result.packageId} · 所有项目共用`] : []),
-    ...result.subcommands.map((name) => `aw command run ${result.selector} -- ${name}`),
-    ...(result.hasFallback ? [`通用入口 · aw command run ${result.selector} --`] : []),
+    ...(result.invocationSelectors ?? [result.selector]).flatMap((invocationSelector) => [
+      ...result.subcommands.map((name) => `aw command run ${invocationSelector} -- ${name}`),
+      ...(result.hasFallback ? [`通用入口 · aw command run ${invocationSelector} --`] : []),
+    ]),
     ...result.errors.map(({ code, message }) => `${code} · ${message}`),
     ...result.recoveryActions,
   ];
@@ -821,6 +824,33 @@ function configPageMatches(
     && page.pluginId === route.pluginId
     && page.profile === route.layer.profile
     && page.context === (route.layer.context ?? 'user'));
+}
+
+function configArrayItemField(
+  field: ConfigFieldViewModel | undefined,
+  draft: ConfigArrayDraft | undefined,
+  item: { rowId?: string } | undefined,
+): ConfigFieldViewModel | undefined {
+  if (!item || field?.definition.type !== 'array') return field;
+  const index = draft?.rows.findIndex((row) => row.rowId === item.rowId) ?? -1;
+  const value = draft?.rows[index]?.value;
+  const definition = field.definition.items;
+  return {
+    ...field,
+    type: definition.type,
+    definition,
+    title: item.rowId === undefined ? '新增项' : `第 ${index + 1} 项`,
+    description: definition.description,
+    choices: definition.choices?.presets,
+    allowCustom: definition.choices?.allowCustom ?? true,
+    value, draftValue: value, configured: value !== undefined,
+    min: definition.type === 'number' ? definition.validation?.minimum : undefined,
+    max: definition.type === 'number' ? definition.validation?.maximum : undefined,
+  };
+}
+
+function configObjectValue(value: unknown): PluginConfigObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as PluginConfigObject : undefined;
 }
 
 const CONFIG_PROFILE_KEYS: readonly ConfigProfileKey[] = ['common', ...PLATFORM_TARGETS];
@@ -2618,32 +2648,56 @@ export function ConsoleAppV4(props: {
     || route.name === 'configFieldAction'
     ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
     : undefined;
-  const arrayItem = route.name === 'configFieldEditor' || route.name === 'configObjectPropertyEditor'
-    ? route.arrayItem : undefined;
-  const activeArrayKey = activeTopField?.definition.type === 'array' && configRoute
+  const editorRoute = route.name === 'configFieldEditor' || route.name === 'configObjectPropertyEditor' ? route : undefined;
+  const arrayItem = editorRoute?.arrayItem;
+  const nestedArray = editorRoute?.nestedArray;
+  const topFieldKey = activeTopField && configRoute
     ? `${configEditorOwnerKey(configRoute.pluginId, configRoute.layer)}\0${activeTopField.key}` : undefined;
-  const activeArrayDraft = activeArrayKey ? arrayDrafts[activeArrayKey] : undefined;
-  const itemValue = arrayItem && activeArrayDraft
-    ? activeArrayDraft.rows.find((row) => row.rowId === arrayItem.rowId)?.value : undefined;
-  const activeField: ConfigFieldViewModel | undefined = arrayItem && activeTopField?.definition.type === 'array'
+  const topArrayKey = activeTopField?.definition.type === 'array' ? topFieldKey : undefined;
+  const topArrayDraft = topArrayKey ? arrayDrafts[topArrayKey] : undefined;
+  const parentItem = nestedArray ? nestedArray.parentItem : arrayItem;
+  const parentField = configArrayItemField(activeTopField, topArrayDraft, parentItem);
+  const parentObjectKey = parentField?.type === 'object' && topFieldKey
+    ? `${topFieldKey}${parentItem ? `\0${parentItem.rowId ?? 'new'}` : ''}` : undefined;
+  const activeCandidateMutation = !parentItem && activeTopField && configCandidate && configCandidate.layer.profile === editingProfile
+    && (configCandidate.layer.context ?? 'user') === configContext ? configCandidate.mutations[activeTopField.key] : undefined;
+  const parentObjectInitial = configObjectValue(activeCandidateMutation?.kind === 'set' ? activeCandidateMutation.value : undefined)
+    ?? configObjectValue(!parentItem && activeTopField ? draftUpdates[activeTopField.key] : undefined)
+    ?? configObjectValue(parentField?.draftValue);
+  const parentObjectDraft = parentObjectKey ? objectDrafts[parentObjectKey] ?? parentObjectInitial ?? {} : undefined;
+  const parentObjectProperties = parentField?.definition.type === 'object' && parentObjectDraft
+    ? resolvePluginConfigObjectProperties(parentField.definition, parentObjectDraft, parentField.key).properties
+    : undefined;
+  const nestedDefinition = nestedArray ? parentObjectProperties?.[nestedArray.propertyKey] : undefined;
+  const nestedValue = nestedArray ? parentObjectDraft?.[nestedArray.propertyKey] : undefined;
+  const nestedField: ConfigFieldViewModel | undefined = parentField && nestedArray && isNestedConfigObjectArray(nestedDefinition)
     ? {
-        ...activeTopField,
-        type: activeTopField.definition.items.type,
-        definition: activeTopField.definition.items,
-        title: arrayItem.rowId === undefined ? '新增项' : `第 ${(activeArrayDraft?.rows.findIndex((row) => row.rowId === arrayItem.rowId) ?? 0) + 1} 项`,
-        description: activeTopField.definition.items.description,
-        choices: activeTopField.definition.items.choices?.presets,
-        allowCustom: activeTopField.definition.items.choices?.allowCustom ?? true,
-        value: itemValue, draftValue: itemValue, configured: itemValue !== undefined,
-        min: activeTopField.definition.items.type === 'number' ? activeTopField.definition.items.validation?.minimum : undefined,
-        max: activeTopField.definition.items.type === 'number' ? activeTopField.definition.items.validation?.maximum : undefined,
+        ...parentField,
+        type: 'array', definition: nestedDefinition,
+        title: nestedDefinition.title ?? nestedArray.propertyKey,
+        description: nestedDefinition.description,
+        value: nestedValue, draftValue: nestedValue, configured: nestedValue !== undefined,
+        choices: undefined, itemSummary: undefined, summary: undefined,
       }
-    : activeTopField;
+    : undefined;
+  const activeArrayKey = nestedArray
+    ? nestedField && `${parentObjectKey}\0property\0${nestedArray.propertyKey}` : topArrayKey;
+  const activeArrayDraft = activeArrayKey ? arrayDrafts[activeArrayKey] : undefined;
+  const activeField = nestedArray ? configArrayItemField(nestedField, activeArrayDraft, arrayItem) : parentField;
+  const itemValue = arrayItem ? activeField?.draftValue : undefined;
+  const parentPath = [activeTopField?.key ?? '', ...(parentItem ? [
+    parentItem.rowId === undefined ? topArrayDraft?.rows.length ?? 0
+      : Math.max(0, topArrayDraft?.rows.findIndex((row) => row.rowId === parentItem.rowId) ?? 0),
+  ] : [])];
+  const activeFieldPath = nestedArray ? [...parentPath, nestedArray.propertyKey, ...(arrayItem ? [
+    arrayItem.rowId === undefined ? activeArrayDraft?.rows.length ?? 0
+      : Math.max(0, activeArrayDraft?.rows.findIndex((row) => row.rowId === arrayItem.rowId) ?? 0),
+  ] : [])] : parentPath;
   useEffect(() => {
     if (!activeArrayKey || activeArrayDraft || !activeTopField || route.name !== 'configFieldEditor') return;
-    const value = draftUpdates[activeTopField.key] ?? activeTopField.draftValue ?? activeTopField.value;
+    const value = nestedArray ? nestedValue : draftUpdates[activeTopField.key] ?? activeTopField.draftValue ?? activeTopField.value;
     setArrayDrafts((current) => ({ ...current, [activeArrayKey]: { ...createConfigArrayDraft(Array.isArray(value) ? value : undefined), evidence: currentConfigPage?.editEvidence } }));
-  }, [activeArrayKey, activeArrayDraft, activeTopField, route.name, editingProfile]);
+  }, [activeArrayKey, activeArrayDraft, activeTopField, nestedArray, nestedValue, route.name, editingProfile]);
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || route.editor !== 'array' || !activeArrayKey || !activeArrayDraft) return;
     const row = activeArrayDraft.rows[focus];
@@ -2668,30 +2722,18 @@ export function ConsoleAppV4(props: {
       props.controller.replace({ ...route, name: 'configFieldEditor', editor: activeField.type });
     }
   }, [props.controller, route, activeField]);
-  const activeObjectKey = activeField?.type === 'object' && configRoute
-    ? `${configEditorOwnerKey(configRoute.pluginId, configRoute.layer)}\0${activeField.key}${arrayItem ? `\0${arrayItem.rowId ?? 'new'}` : ''}`
-    : undefined;
-  const objectValueFromUpdate = !arrayItem && activeField && Object.hasOwn(draftUpdates, activeField.key)
-    && typeof draftUpdates[activeField.key] === 'object'
-    ? draftUpdates[activeField.key] as PluginConfigObject
-    : undefined;
-  const activeCandidateMutation = !arrayItem && activeField && configCandidate && configCandidate.layer.profile === editingProfile
-    && (configCandidate.layer.context ?? 'user') === configContext ? configCandidate.mutations[activeField.key] : undefined;
-  const objectValueFromCandidate = activeCandidateMutation?.kind === 'set'
-    && typeof activeCandidateMutation.value === 'object'
-    ? activeCandidateMutation.value as PluginConfigObject
-    : undefined;
-  const objectValueFromField = activeField?.draftValue !== null
-    && typeof activeField?.draftValue === 'object'
-    && !Array.isArray(activeField.draftValue)
-    ? activeField.draftValue as PluginConfigObject
-    : undefined;
-  const activeObjectDraft = activeObjectKey
-    ? objectDrafts[activeObjectKey] ?? objectValueFromCandidate ?? objectValueFromUpdate ?? objectValueFromField ?? {}
-    : undefined;
-  const activeObjectProperties = activeField?.definition.type === 'object' && activeObjectDraft
-    ? resolvePluginConfigObjectProperties(activeField.definition, activeObjectDraft, activeField.key).properties
-    : undefined;
+  const activeObjectKey = nestedArray
+    ? arrayItem && activeArrayKey ? `${activeArrayKey}\0${arrayItem.rowId ?? 'new'}` : undefined
+    : parentObjectKey;
+  const activeObjectInitial = nestedArray ? configObjectValue(itemValue) : parentObjectInitial;
+  const activeObjectDraft = nestedArray
+    ? activeObjectKey ? objectDrafts[activeObjectKey] ?? activeObjectInitial ?? {} : undefined
+    : parentObjectDraft;
+  const activeObjectProperties = nestedArray
+    ? activeField?.definition.type === 'object' && activeObjectDraft
+      ? resolvePluginConfigObjectProperties(activeField.definition, activeObjectDraft, activeField.key).properties
+      : undefined
+    : parentObjectProperties;
   const activePropertyDefinition = route.name === 'configObjectPropertyEditor'
     && activeField?.definition.type === 'object' && route.propertyKey !== undefined
     ? activeObjectProperties?.[route.propertyKey]
@@ -2707,6 +2749,48 @@ export function ConsoleAppV4(props: {
     || activePropertyDefinition?.sensitive === true;
   const activeFieldIsConst = activeField && 'const' in activeField.definition && activeField.definition.const !== undefined;
   const activePropertyIsConst = activePropertyDefinition && 'const' in activePropertyDefinition && activePropertyDefinition.const !== undefined;
+  const suggestedScalar = configSuggestionScalar(
+    route.name === 'configFieldEditor' ? activeField?.definition
+      : route.name === 'configObjectPropertyEditor' && (route.stage === 'custom' || route.stage === 'choices')
+        ? activePropertyDefinition : undefined,
+  );
+  const suggestionMenu = Boolean(suggestedScalar && (route.name === 'configFieldEditor' && route.mode !== 'custom'
+    || route.name === 'configObjectPropertyEditor' && route.stage === 'choices'));
+  const suggestionLookup = (() => {
+    if (!suggestedScalar || !editorRoute || !activeTopField || !configFieldCanSet(activeTopField)) return undefined;
+    const property = editorRoute.name === 'configObjectPropertyEditor' ? editorRoute.propertyKey : undefined;
+    const selectedDraft = editorRoute.layer.profile === 'common' ? undefined : configDrafts[editorRoute.layer.profile];
+    const commonDraft = configDrafts.common;
+    const lookup: ConfigSuggestionLookup = {
+      pluginId: editorRoute.pluginId,
+      options: configReadOptions(editorRoute.layer),
+      fieldPath: property === undefined ? activeFieldPath : [...activeFieldPath, property],
+      dependencyValues: property === undefined ? {} : activeObjectDraft,
+      draftLayers: {
+        ...(commonDraft ? { common: { updates: commonDraft.updates, removes: commonDraft.removes } } : {}),
+        ...(selectedDraft ? { platform: { updates: selectedDraft.updates, removes: selectedDraft.removes } } : {}),
+      },
+    };
+    if (property !== undefined && activeObjectDraft) {
+      let workingObject = activeObjectDraft;
+      if (nestedArray && arrayItem && activeArrayDraft && parentObjectDraft) {
+        const workingArray = editConfigArrayDraft(activeArrayDraft, { kind: 'set', rowId: arrayItem.rowId, value: activeObjectDraft });
+        workingObject = { ...parentObjectDraft, [nestedArray.propertyKey]: arrayDraftValue(workingArray) as PluginConfigObject[string] };
+      }
+      const workingValue = parentItem && topArrayDraft
+        ? arrayDraftValue(editConfigArrayDraft(topArrayDraft, { kind: 'set', rowId: parentItem.rowId, value: workingObject }))
+        : workingObject;
+      lookup.draftValues = { [activeTopField.key]: workingValue };
+    }
+    return lookup;
+  })();
+  const suggestions = useConfigSuggestions(props.controller, snapshot.router.currentFrameId, suggestionLookup, suggestedScalar);
+  useLayoutEffect(() => {
+    if (suggestionMenu) {
+      setFocus(0);
+      setScrollOffset(0);
+    }
+  }, [suggestions.items, suggestionMenu]);
   const referenceNotice = (scalar: PluginConfigScalarField, value: unknown): string | undefined => {
     const selection = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
     const message = referenceContextError && !selection ? `来源 ${configReferenceSource(scalar)}：${referenceContextError}`
@@ -2716,6 +2800,15 @@ export function ConsoleAppV4(props: {
       && (Object.hasOwn(configDrafts.common?.updates ?? {}, source) || configDrafts.common?.removes.includes(source));
     return [message, pendingSource ? `来源 ${source} 在公共设置有未保存修改。请先保存来源配置，再编辑或保存引用配置。` : undefined]
       .filter(Boolean).join(' ') || undefined;
+  };
+  const invalidReferenceNotice = (definition: ConfigFieldViewModel['definition'], value: unknown): string | undefined => {
+    for (const { scalar, value: selected } of configReferenceValues(definition, value)) {
+      const reference = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
+      if (!reference || reference.issues.length || !reference.choices.some((choice) => choice.value === selected)) {
+        return referenceNotice(scalar, selected) ?? '引用选项已变化，请重新选择。';
+      }
+    }
+    return undefined;
   };
   const openReferenceSource = (scalar: PluginConfigScalarField, leaf?: ConfigLeafEditorDraft): void => {
     const ref = 'valueRef' in scalar ? scalar.valueRef : undefined;
@@ -2735,7 +2828,7 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
-    const candidate = activeCandidateMutation;
+    const candidate = nestedArray ? undefined : activeCandidateMutation;
     const draft = arrayItem ? itemValue : candidate?.kind === 'set' ? candidate.value : draftUpdates[activeField.key];
     setInputValue(activeField.sensitive
       ? draft === undefined ? '' : String(draft)
@@ -2843,7 +2936,9 @@ export function ConsoleAppV4(props: {
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && (snapshot.result.operationKind === 'portableInstall'
         || ('summary' in snapshot.result && snapshot.result.summary?.configDiagnostics?.length))));
-  const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst && isCharacterInputMode(route, searchFocus)
+  const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst
+    && !suggestionMenu && !(suggestedScalar?.type === 'boolean' && route.name === 'configObjectPropertyEditor')
+    && isCharacterInputMode(route, searchFocus)
     || route.name === 'operationReportPreview' && reportSaveMode;
   const canOpenHelp = !tooSmall && !characterInput && !preparationRunning;
   useEffect(() => {
@@ -2903,6 +2998,23 @@ export function ConsoleAppV4(props: {
       + Math.max(0, wrapConsoleText(actionError ?? description ?? '', size.columns - 2).length - 1)
       + Math.max(0, wrapConsoleText(title, size.columns - 2).length - 1),
   });
+  const suggestionActions = (
+    scalar: PluginConfigScalarField, current: unknown, select: (value: PluginConfigScalar) => void, custom: () => void,
+  ): ActionItem[] => [
+    { label: '自定义', run: custom },
+    ...(suggestions.items.length ? suggestions.items : scalar.choices?.presets ?? []).map((item) => ({
+      label: `${safeConfigText(item.title)}${item.recommended ? '（推荐）' : ''}`,
+      description: item.description ? safeConfigText(item.description) : undefined,
+      selected: item.value === current,
+      run: () => select(item.value),
+    })),
+  ];
+  const suggestionRows = (items: ActionItem[]): React.JSX.Element => {
+    const compact = policy.mode === 'compact';
+    const viewport = actionViewport(items, compact, focus, scrollOffset, pageActionBudget(2));
+    return <SemanticRows actions={items} focus={focus} kind="choice" compact={compact}
+      offset={viewport.offset} limit={viewport.limit} />;
+  };
   let detailNavigation: { maxOffset: number; lineLimit: number } | undefined;
   const detailCardContent = (
     subject: NonNullable<ReturnType<TuiController['getPluginDetailSubject']>>,
@@ -4132,7 +4244,8 @@ export function ConsoleAppV4(props: {
     return field.type;
   };
   const fieldEditorMode = (field: ConfigFieldViewModel): { mode: 'choices' } | Record<string, never> =>
-    (field.choices?.length ?? 0) > 0 || 'valueRef' in field.definition && field.definition.valueRef ? { mode: 'choices' } : {};
+    (field.choices?.length ?? 0) > 0 || 'valueRef' in field.definition && field.definition.valueRef
+      || configSuggestionScalar(field.definition) ? { mode: 'choices' } : {};
   const openConfigTarget = (candidate: ConfigCandidate): void => {
     const currentFlowId = snapshot.router.currentFlowId;
     const storedAnchor = configOverviewAnchors.current.get(candidate.pluginId);
@@ -4152,13 +4265,11 @@ export function ConsoleAppV4(props: {
     if (!configRoute || !currentConfigPage) return;
     setConfigActionError(undefined);
     if (activeField && editingProfile) {
-      for (const { scalar, value: referencedValue } of configReferenceValues(activeField.definition, value)) {
-        const selected = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
-        if (!selected || selected.issues.length || !selected.choices.some((choice) => choice.value === referencedValue)) {
-          setObjectError(referenceNotice(scalar, referencedValue));
-          setInputError(referenceNotice(scalar, referencedValue));
-          return;
-        }
+      const error = invalidReferenceNotice(activeField.definition, value);
+      if (error) {
+        setObjectError(error);
+        setInputError(error);
+        return;
       }
     }
     if (arrayItem && activeArrayKey && activeArrayDraft && activeField) {
@@ -4205,15 +4316,31 @@ export function ConsoleAppV4(props: {
     go({
       name: 'configFieldEditor', pluginId: configRoute.pluginId, layer: configRoute.layer,
       fieldKey: activeField.key, editor: activeField.definition.items.type,
-      ...(activeField.definition.items.choices || 'valueRef' in activeField.definition.items && activeField.definition.items.valueRef ? { mode: 'choices' as const } : {}),
+      ...(activeField.definition.items.choices || 'valueRef' in activeField.definition.items && activeField.definition.items.valueRef
+        || configSuggestionScalar(activeField.definition.items) ? { mode: 'choices' as const } : {}),
       arrayItem: { rowId },
+      ...(nestedArray ? { nestedArray } : {}),
     });
+  };
+  const closeNestedArray = (): void => {
+    setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== activeArrayKey)));
+    setObjectError(undefined);
+    back();
   };
   const commitArray = (): void => {
     if (!activeField || activeField.definition.type !== 'array' || !activeArrayDraft || !activeArrayKey) return;
     const value = arrayDraftValue(activeArrayDraft);
     const issues = validatePluginConfigValue(activeField.definition, value, activeField.key);
     if (issues.length) { setObjectError(issues.slice(0, 2).map(objectIssueText).join('；')); return; }
+    if (nestedArray && parentObjectKey && parentObjectDraft) {
+      const error = invalidReferenceNotice(activeField.definition, value);
+      if (error) { setObjectError(error); return; }
+      if (arrayDraftChanged(activeArrayDraft)) writeObjectDraft(parentObjectKey, parentObjectInitial, {
+        ...parentObjectDraft, [nestedArray.propertyKey]: value as PluginConfigObject[string],
+      });
+      closeNestedArray();
+      return;
+    }
     if (!arrayDraftChanged(activeArrayDraft)) {
       setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== activeArrayKey)));
       back();
@@ -4234,19 +4361,27 @@ export function ConsoleAppV4(props: {
     };
     openConfigTarget(candidate);
   };
-  const updateObjectDraft = (value: PluginConfigObject): void => {
-    if (!activeObjectKey) return;
-    setObjectDrafts((current) => ({ ...current, [activeObjectKey]: value }));
-    const initial = objectValueFromUpdate ?? objectValueFromField ?? {};
-    setChangedObjectDraftKeys((current) => configValuesEqual(initial, value)
-      ? current.filter((key) => key !== activeObjectKey)
-      : [...new Set([...current, activeObjectKey])]);
+  const writeObjectDraft = (key: string, initial: PluginConfigObject | undefined, value: PluginConfigObject): void => {
+    setObjectDrafts((current) => ({ ...current, [key]: value }));
+    setChangedObjectDraftKeys((current) => configValuesEqual(initial ?? {}, value)
+      ? current.filter((currentKey) => currentKey !== key)
+      : [...new Set([...current, key])]);
     setObjectError(undefined);
     setConfigActionError(undefined);
   };
-  const objectIssueText = (
-    issue: ReturnType<typeof validatePluginConfigValue>[number],
-  ): string => {
+  const updateObjectDraft = (value: PluginConfigObject): void => {
+    if (activeObjectKey) writeObjectDraft(activeObjectKey, activeObjectInitial, value);
+  };
+  const formatNestedIssue = (issue: ReturnType<typeof validatePluginConfigValue>[number], path: (string | number)[]): string => {
+    const suffix = issue.path.segments?.slice(1) ?? (issue.path.property === undefined ? [] : [issue.path.property]);
+    return safeConfigText(formatPluginConfigIssue({
+      ...issue, path: { ...issue.path, segments: [...path, ...suffix] },
+    }));
+  };
+  const objectIssueText = (issue: ReturnType<typeof validatePluginConfigValue>[number]): string => {
+    if (nestedArray || (issue.path.segments?.length ?? 0) > 3) {
+      return formatNestedIssue(issue, activeFieldPath);
+    }
     const index = issue.path.segments?.find((part) => typeof part === 'number');
     const itemDefinition = activeTopField?.definition.type === 'array' ? activeTopField.definition.items : undefined;
     const property = issue.path.property;
@@ -4270,7 +4405,8 @@ export function ConsoleAppV4(props: {
   const objectPropertyStage = (
     definition: PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField,
   ): Extract<TuiRoute, { name: 'configObjectPropertyEditor' }>['stage'] =>
-    definition.type === 'boolean' || definition.choices || 'valueRef' in definition && definition.valueRef ? 'choices' : 'custom';
+    definition.type === 'boolean' || 'choices' in definition && definition.choices
+      || 'valueRef' in definition && definition.valueRef || configSuggestionScalar(definition) ? 'choices' : 'custom';
   const openObjectProperty = (propertyKey: string, dynamic: boolean): void => {
     if (!activeField || activeField.definition.type !== 'object') return;
     const definition = activeObjectProperties?.[propertyKey]
@@ -4278,6 +4414,18 @@ export function ConsoleAppV4(props: {
         ? undefined
         : activeField.definition.additionalProperties);
     if (!definition || 'const' in definition && definition.const !== undefined && !('valueRef' in definition && definition.valueRef)) return;
+    if (isNestedConfigObjectArray(definition)) {
+      setObjectError(undefined);
+      go({
+        name: 'configFieldEditor',
+        pluginId: configRoute!.pluginId,
+        layer: configRoute!.layer,
+        fieldKey: activeField.key,
+        editor: 'array',
+        nestedArray: { propertyKey, ...(arrayItem ? { parentItem: arrayItem } : {}) },
+      });
+      return;
+    }
     const exists = activeObjectDraft && Object.hasOwn(activeObjectDraft, propertyKey);
     go({
       name: 'configObjectPropertyEditor',
@@ -4288,20 +4436,14 @@ export function ConsoleAppV4(props: {
       dynamic,
       stage: exists ? 'action' : objectPropertyStage(definition),
       ...(arrayItem ? { arrayItem } : {}),
+      ...(nestedArray ? { nestedArray } : {}),
     });
   };
   const updateObjectProperty = (propertyKey: string, value: PluginConfigObject[string] | undefined): boolean => {
     if (!activeField || activeField.definition.type !== 'object' || !activeObjectDraft) return false;
     const definition = activeObjectProperties?.[propertyKey] ?? activeField.definition.additionalProperties;
-    if (definition && value !== undefined) {
-      for (const { scalar, value: selected } of configReferenceValues(definition, value)) {
-        const reference = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
-        if (!reference || reference.issues.length || !reference.choices.some((choice) => choice.value === selected)) {
-          setInputError(referenceNotice(scalar, selected) ?? '引用选项已变化，请重新选择。');
-          return false;
-        }
-      }
-    }
+    const referenceError = definition && value !== undefined ? invalidReferenceNotice(definition, value) : undefined;
+    if (referenceError) { setInputError(referenceError); return false; }
     const candidate = { ...activeObjectDraft, [propertyKey]: value };
     if (value === undefined) delete candidate[propertyKey];
     const issues = validatePluginConfigValue(activeField.definition, candidate, activeField.key)
@@ -7509,7 +7651,7 @@ export function ConsoleAppV4(props: {
     const targetFields = [route.layer.profile].flatMap((profile) =>
       configLayerPages[profile]?.groups.flatMap((group) => group.fields).filter((field) => field.key === activeField.key) ?? []);
     const canSet = targetFields.some(configFieldCanSet);
-    const canUnset = !arrayItem && targetFields.some(configFieldCanUnset);
+    const canUnset = !arrayItem && !nestedArray && targetFields.some(configFieldCanUnset);
     if (!canSet) {
       title = activeField.title;
       description = activeField.invalidOverrideIssue ?? '此旧值不允许修改；可以删除覆盖并恢复继承。';
@@ -7535,6 +7677,17 @@ export function ConsoleAppV4(props: {
         ? [{ label: '写入此固定值', run: () => updateDraft(activeField.key, constant) }] : [];
       content = <Box flexDirection="column"><StaticRow title={`固定值 · ${presentConfigValue({ definition: activeField.definition, value: constant }).text}`} compact />
         <SemanticRows actions={actions} focus={focus} kind="action" compact /></Box>;
+    } else if (suggestionMenu && suggestedScalar) {
+      title = `选择${activeField.title}`;
+      description = suggestions.notice;
+      help = '↑↓ 移动 · Enter 使用 · r 刷新建议 · Esc 取消';
+      actions = suggestionActions(suggestedScalar, (arrayItem ? itemValue : draftUpdates[activeField.key])
+        ?? activeField.draftValue ?? activeField.value, (value) => updateDraft(activeField.key, value), () => {
+        props.controller.replace({ ...route, mode: 'custom' });
+        setFocus(0);
+        setScrollOffset(0);
+      });
+      content = suggestionRows(actions);
     } else if (showChoices) {
       title = `选择${activeField.title}`;
       description = activeField.type !== 'boolean' && activeField.allowCustom
@@ -7575,8 +7728,9 @@ export function ConsoleAppV4(props: {
       content = <SemanticRows actions={[...actions]} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (route.editor === 'array' && activeField.definition.type === 'array') {
       title = activeField.title;
-      description = objectError ?? `${activeArrayDraft?.rows.length ?? 0} 项 · 顺序将按当前列表保存`;
-      help = '↑↓ 移动 · Enter 编辑 · c 使用此列表 · Esc 取消';
+      description = objectError ?? `${activeArrayDraft?.rows.length ?? 0} 项 · ${nestedArray
+        ? '确认后更新当前对象草稿' : '顺序将按当前列表保存'}`;
+      help = '↑↓ 移动 · Enter 编辑 · a 操作 · c 使用此列表 · Esc 取消';
       const rows = activeArrayDraft?.rows ?? [];
       const definition = activeField.definition;
       const errors = activeArrayDraft ? validatePluginConfigValue(definition, arrayDraftValue(activeArrayDraft), activeField.key) : [];
@@ -7592,6 +7746,14 @@ export function ConsoleAppV4(props: {
         label: '调整当前项', disabled: rows.length === 0 ? '列表为空' : undefined,
         run: () => { setArrayToolFocus(0); setArrayToolsOpen(true); },
       }, { label: '使用此列表 [c]', run: commitArray }];
+      if (nestedArray && parentObjectKey && parentObjectDraft && nestedValue !== undefined) {
+        bottomActions.push({ label: '删除属性', status: 'error', run: () => {
+          const next = { ...parentObjectDraft };
+          delete next[nestedArray.propertyKey];
+          writeObjectDraft(parentObjectKey, parentObjectInitial, next);
+          closeNestedArray();
+        } });
+      }
       actions = [...itemActions, ...bottomActions];
       content = <Box flexDirection="column">
         {rows.length === 0 ? <Text>空列表；确认使用后覆盖原值。</Text> : null}
@@ -7632,6 +7794,7 @@ export function ConsoleAppV4(props: {
         const presentation = presentConfigValue({ definition,
           value: activeObjectDraft[property], privateValue: activeField.sensitive,
           configured: Object.hasOwn(activeObjectDraft, property),
+          nestedArray: isNestedConfigObjectArray(definition),
         });
         return presentation.state === 'unset' && 'required' in definition && definition.required
           ? '必填 · 未设置' : presentation.text;
@@ -7729,12 +7892,12 @@ export function ConsoleAppV4(props: {
       help = '输入 · Enter 使用 · Ctrl-U 清空输入 · Esc 取消';
       description = route.editor === 'number'
         ? `允许范围：${activeField.min ?? '不限'}–${activeField.max ?? '不限'}${activeField.unit ? ` ${activeField.unit}` : ''}。`
-        : activeField.sensitive ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
+        : activeField.sensitive ? '当前值不会回显；留空不会自动删除旧值。' : suggestions.notice ?? activeField.description ?? '';
       content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activeField.sensitive} placeholder={activeField.placeholder} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? (activeField.sensitive ? '输入已隐藏。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
     }
     if (canUnset) {
       const unset: ActionItem = { label: '恢复继承', description: '选择要删除覆盖值的位置', run: () => removeDraft(activeField.key) };
-      const inputEditor = canSet && !showChoices && (route.editor === 'number' || route.editor === 'string');
+      const inputEditor = canSet && !suggestionMenu && !showChoices && (route.editor === 'number' || route.editor === 'string');
       help += ' · Ctrl-R 恢复继承';
       if (!inputEditor) {
         const offset = actions.length;
@@ -7745,7 +7908,7 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'configObjectPropertyEditor' && plugin
     && activeField?.definition.type === 'object' && activeObjectDraft) {
     const property = route.propertyKey;
-    const definition = activePropertyDefinition;
+    const definition = isNestedConfigObjectArray(activePropertyDefinition) ? undefined : activePropertyDefinition;
     const propertyTitle = definition && property ? definition.title ?? property : '动态键';
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title} / ${propertyTitle}`;
     if (activeVariantPreview) {
@@ -7819,6 +7982,24 @@ export function ConsoleAppV4(props: {
         },
       ];
       content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />;
+    } else if (property !== undefined && suggestionMenu && suggestedScalar) {
+      title = `选择${propertyTitle}`;
+      description = suggestions.notice;
+      help = '↑↓ 移动 · Enter 使用 · r 刷新建议 · Esc 取消';
+      actions = suggestionActions(suggestedScalar, activeObjectDraft[property],
+        (value) => { if (updateObjectProperty(property, value)) back(); }, () => {
+          props.controller.replace({ ...route, stage: 'custom' });
+          setFocus(0);
+          setScrollOffset(0);
+        });
+      content = suggestionRows(actions);
+    } else if (property !== undefined && suggestedScalar?.type === 'boolean' && route.stage === 'custom') {
+      title = `选择${propertyTitle}`;
+      actions = [true, false].map((value) => ({
+        label: value ? '开启' : '关闭', selected: activeObjectDraft[property] === value,
+        run: () => { if (updateObjectProperty(property, value)) back(); },
+      }));
+      content = <SemanticRows actions={actions} focus={focus} kind="choice" compact />;
     } else if (property !== undefined && definition && route.stage === 'choices') {
       title = `选择${propertyTitle}`;
       description = definition.type !== 'boolean' && definition.choices?.allowCustom
@@ -7872,6 +8053,8 @@ export function ConsoleAppV4(props: {
       help = '↑↓ 移动 · Enter 编辑 · a 操作 · c 使用 · Esc 取消';
       content = <ConfigLeafEditor key={`${snapshot.router.currentFrameId}:${property}`}
         definition={definition} value={activeObjectDraft[property]} propertyKey={property}
+        formatIssue={nestedArray ? (issue, item) => formatNestedIssue(issue,
+          [...activeFieldPath, property, ...(item === undefined ? [] : [item])]) : undefined}
         referenceContext={referenceContext} referenceNotice={referenceNotice}
         initialDraft={referenceLeafDrafts.current.get(snapshot.router.currentFrameId)}
         onOpenReferenceSource={openReferenceSource}
@@ -7882,7 +8065,7 @@ export function ConsoleAppV4(props: {
           referenceLeafDrafts.current.delete(snapshot.router.currentFrameId); back(); return true; }} />;
     } else if (property !== undefined && definition) {
       title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
-      description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
+      description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : suggestions.notice ?? definition.description ?? '按 Enter 使用输入值。');
       help = '输入 · Enter 使用 · Ctrl-U 清空输入 · Esc 取消';
       content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activePropertySensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
     }
@@ -11914,13 +12097,17 @@ export function ConsoleAppV4(props: {
       setSourceInputError(undefined);
       return;
     }
+    if (suggestionMenu && input.toLowerCase() === 'r' && !key.ctrl && !key.meta) {
+      suggestions.refresh();
+      return;
+    }
     if (route.name === 'configFieldEditor' && route.mode !== 'choices' && input === 'c'
       && (route.editor === 'array' || route.editor === 'object')) {
       if (route.editor === 'array') commitArray();
       else commitObjectDraft();
       return;
     }
-    if (route.name === 'configFieldEditor' && !arrayItem && activeField && key.ctrl && input.toLowerCase() === 'r') {
+    if (route.name === 'configFieldEditor' && !arrayItem && !nestedArray && activeField && key.ctrl && input.toLowerCase() === 'r') {
       const canUnset = [route.layer.profile].some((profile) =>
         configLayerPages[profile]?.groups.flatMap((group) => group.fields)
           .some((field) => field.key === activeField.key && configFieldCanUnset(field)));
@@ -11928,6 +12115,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (route.name === 'configFieldEditor'
+      && !suggestionMenu
       && !activeFieldIsConst
       && !(activeField && 'valueRef' in activeField.definition && activeField.definition.valueRef)
       && (route.editor === 'string' || route.editor === 'number')
@@ -11973,6 +12161,7 @@ export function ConsoleAppV4(props: {
     }
     if (route.name === 'configObjectPropertyEditor'
       && (route.stage === 'key' || route.stage === 'custom')
+      && suggestedScalar?.type !== 'boolean'
       && !activeVariantPreview
       && !activePropertyIsConst
       && !(activePropertyDefinition && 'valueRef' in activePropertyDefinition && activePropertyDefinition.valueRef && route.stage !== 'key')
@@ -12263,8 +12452,13 @@ export function ConsoleAppV4(props: {
       back();
     } else if (globalAction === 'back'
       && (route.name === 'configFieldEditor' || route.name === 'configFieldAction')) {
+      if (nestedArray && !arrayItem) {
+        closeNestedArray();
+        return;
+      }
       const returnToReferenceScope = false;
-      if (!returnToReferenceScope) setConfigCandidate(undefined);
+      if (!returnToReferenceScope && !nestedArray) setConfigCandidate(undefined);
+      if (nestedArray) setObjectError(undefined);
       if (activeArrayKey && !arrayItem && !returnToReferenceScope) {
         setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== activeArrayKey)));
         setObjectError(undefined);

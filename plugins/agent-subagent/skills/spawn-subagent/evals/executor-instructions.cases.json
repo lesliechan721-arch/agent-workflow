@@ -38,7 +38,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
@@ -86,7 +86,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
@@ -120,7 +120,7 @@
       ],
       "input": {
         "target": "executor",
-        "prompt": "这个函数在生产中还被哪些模块调用？本轮材料包只有当前两个文件。",
+        "prompt": "这个函数在生产中还被哪些模块调用？本轮范围只包括工作区中的 README.md 和 src/select.js。",
         "workspaceFiles": {
           "README.md": "# 记录选择合同\nselectRows(rows, tenantId, ids)只返回同tenantId且id在ids中的记录，保持原数组顺序，不修改输入；空ids返回空数组。\n",
           "src/select.js": "export function selectRows(rows, tenantId, ids) {\n  return rows.filter(row => row.tenantId === tenantId && ids.includes(row.id));\n}\n"
@@ -133,10 +133,10 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
-        "requiredMode": "bundle",
+        "requiredMode": "workspace",
         "role": "advisor",
         "profile": "advisorGeneralProfile",
         "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
@@ -184,7 +184,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
@@ -231,7 +231,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
@@ -265,7 +265,7 @@
       ],
       "input": {
         "target": "executor",
-        "prompt": "只根据所发片段，判断能否确认整个仓库没有其他timeout设置。",
+        "prompt": "只根据工作区中的 docs/api/api-v1.md，判断能否确认整个仓库没有其他timeout设置。",
         "workspaceFiles": {
           "docs/api/api-v1.md": "# API v1\ntimeout_seconds=30\n"
         },
@@ -277,10 +277,10 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
-        "requiredMode": "bundle",
+        "requiredMode": "workspace",
         "role": "explore",
         "profile": "standardProfile",
         "instructionsFile": "codex-explore/assets/explore-instructions.md"
@@ -292,8 +292,8 @@
             "evidence": "材料清单和答复"
           },
           "C2": {
-            "claim": "引用原逻辑路径而非临时总包行号，不虚构本地搜索。",
-            "evidence": "adapter材料映射与输出"
+            "claim": "引用实际工作区路径，不虚构其他搜索。",
+            "evidence": "实际文件读取工具与输出"
           }
         }
       },
@@ -325,7 +325,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "exposeInstalledCoordinatorAssets": true,
@@ -373,7 +373,7 @@
           "projectWritableInBehaviorProbe": true
         },
         "setup": [
-          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v5 start入口；external核对完整合成prompt，不要求system/developer通道。",
+          "本次直接执行者使用指定已安装资源的完整指令，native通过Engine独立developer通道；external由父任务真实调用Guide v6 start入口；external核对完整合成prompt，不要求system/developer通道。",
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "requestedAccess": "workspace-write",

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getCommandPackageId, type PlatformName } from '@lesliechan721/aw-plugin-core/manifest';
@@ -34,7 +33,7 @@ describe('shared command package materialization', () => {
     manifestPath = path.join(pluginRoot, '.agents-plugin/plugin.json');
     await fs.outputFile(path.join(pluginRoot, 'tools', 'entry.mjs'), [
       'import { readCommandRuntimeConfig } from "./.aw/command-runtime-config.mjs";',
-      'export const read = (platform) => readCommandRuntimeConfig({ from: import.meta.url, platform, keys: ["mode"] });',
+      'export const read = () => readCommandRuntimeConfig({ from: import.meta.url, keys: ["mode"] });',
     ].join('\n'));
   });
   afterEach(async () => { await isolated.cleanup(); });
@@ -46,13 +45,15 @@ describe('shared command package materialization', () => {
     renderer?: boolean;
     withNativeTools?: boolean;
     withReference?: boolean;
+    withoutRuntimeConfig?: boolean;
   } = {}): Promise<PluginMeta> {
     await fs.outputJson(manifestPath, {
       schemaVersion: 4, name: 'routing', version: options.version ?? '1.0.0', description: 'Command package fixture.',
       platforms: ['codex', 'claude'], marketplace: { category: 'test', strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       command: { sourceDir: './tools', platforms: options.platforms ?? ['codex', 'claude'],
-        mode: 'static', routes: { fallback: { runner: 'node', entry: 'entry.mjs' } }, runtimeConfig: { keys: ['mode'] } },
+        mode: 'static', routes: { fallback: { runner: 'node', entry: 'entry.mjs' } },
+        ...(options.withoutRuntimeConfig ? {} : { runtimeConfig: { keys: ['mode'] } }) },
       config: { schemaVersion: 5, fields: { mode: { type: 'string', default: 'normal',
         ...(options.newSchema ? { validation: { minLength: 4 } } : {}),
         ...(options.withReference ? { valueRef: { field: 'modes', key: 'id', include: ['normal'] } } : {}) },
@@ -97,10 +98,11 @@ describe('shared command package materialization', () => {
     const updated = await plugin({ version: '2.0.0' });
     const rebuilt = await publish(updated, { kind: 'platform-sync', platforms: ['codex'] });
     expect(rebuilt.changes).toEqual([{ platform: 'codex', before: { mode: 'first-codex' }, after: { mode: 'next-codex' } }]);
-    const { read } = await import(/* @vite-ignore */ pathToFileURL(path.join(rebuilt.resourceRoot, 'entry.mjs')).href);
-    await expect(read('claude')).resolves.toMatchObject({ values: { mode: 'first-claude' },
-      installedIdentity: { pluginVersion: '2.0.0', sourceContentDigest: rebuilt.record.sourceContentDigest } });
-    await expect(read('codex')).resolves.toMatchObject({ values: { mode: 'next-codex' } });
+    await expect(readManagedCommandRuntimeConfigSnapshot(rebuilt.resourceRoot, rebuilt.record, 'claude'))
+      .resolves.toMatchObject({ effectiveValues: { mode: 'first-claude' }, pluginVersion: '2.0.0',
+        sourceContentDigest: rebuilt.record.sourceContentDigest });
+    await expect(readManagedCommandRuntimeConfigSnapshot(rebuilt.resourceRoot, rebuilt.record, 'codex'))
+      .resolves.toMatchObject({ effectiveValues: { mode: 'next-codex' } });
 
     const refreshed = await publish(updated, { kind: 'explicit-sync' });
     expect(refreshed.record.sourceContentDigest).toBe(rebuilt.record.sourceContentDigest);
@@ -152,6 +154,22 @@ describe('shared command package materialization', () => {
     expect(await fs.pathExists(path.join(result.resourceRoot, '.aw/native-tool-reader.mjs'))).toBe(true);
     const snapshot = await readManagedCommandRuntimeConfigSnapshot(result.resourceRoot, result.record, 'codex');
     expect(snapshot.effectiveValues).toEqual({ mode: 'normal' });
+  });
+
+  it('initializes declared snapshots when explicit sync first adds runtime config and removes them when it is withdrawn', async () => {
+    await fs.outputFile(path.join(pluginRoot, 'tools', 'entry.mjs'), 'export {};');
+    const operation = { kind: 'explicit-sync' } as const;
+    const before = await publish(await plugin({ withoutRuntimeConfig: true }), operation);
+    expect(before.record.runtimeConfigPlatforms).toEqual([]);
+    expect(await fs.pathExists(path.join(before.resourceRoot, '.aw'))).toBe(false);
+
+    const upgraded = await publish(await plugin({ version: '2.0.0' }), operation);
+    expect(upgraded.record.runtimeConfigPlatforms).toEqual(['codex', 'claude']);
+    expect(await fs.pathExists(path.join(upgraded.resourceRoot, '.aw/command-runtime-config.mjs'))).toBe(true);
+
+    const downgraded = await publish(await plugin({ version: '3.0.0', withoutRuntimeConfig: true }), operation);
+    expect(downgraded.record.runtimeConfigPlatforms).toEqual([]);
+    expect(await fs.pathExists(path.join(downgraded.resourceRoot, '.aw'))).toBe(false);
   });
 
   // The real renderer is common-only, reads the installed table, and can replace or clear every route.

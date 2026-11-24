@@ -1,5 +1,7 @@
 import path from 'node:path';
-import { validateSelectors } from '../file-selection/contracts.mjs';
+
+export const ADAPTER_PROTOCOL_VERSION = 6;
+export const NATIVE_PLATFORMS = Object.freeze(['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']);
 
 export const LIMITS = Object.freeze({
   taskBytes: 262144, instructionBytes: 262144,
@@ -81,37 +83,32 @@ export function validateDiagnostics(value) {
 
 /** The shared wire shape does not establish a backend's terminal state. */
 export function validateRequest(request) {
-  const required = ['protocolVersion', 'type', 'run', 'execution', 'mode', 'workspace', 'prompt', 'args', 'communication', 'resume', 'runtime'];
-  if (!requiredFields(request, required, ['fileSelectors', 'fileResolver', 'codex', 'permissionMode', 'sessionId']) || request.protocolVersion !== 5 || request.type !== 'start' || !['workspace', 'bundle'].includes(request.mode) || typeof request.communication !== 'boolean' || typeof request.resume !== 'boolean'
+  const required = ['protocolVersion', 'type', 'run', 'execution', 'workspace', 'prompt', 'args', 'communication', 'resume', 'runtime'];
+  if (!requiredFields(request, required, ['codex', 'permissionMode', 'sessionId']) || request.protocolVersion !== ADAPTER_PROTOCOL_VERSION || request.type !== 'start' || typeof request.communication !== 'boolean' || typeof request.resume !== 'boolean'
       || Object.hasOwn(request, 'sessionId') && (!request.resume || !identifier(request.sessionId))
-      || Object.hasOwn(request, 'permissionMode') && !['default', 'auto', 'full-access'].includes(request.permissionMode)) fail('protocolInvalid', 'Use a mode-correct Adapter v5 start frame.');
-  if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !runId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v5 run identity or deadline is invalid.');
-  if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v5 execution selection is invalid.');
+      || Object.hasOwn(request, 'permissionMode') && !['default', 'auto', 'full-access'].includes(request.permissionMode)) fail('protocolInvalid', 'Use an Adapter v6 start frame.');
+  if (!requiredFields(request.run, ['id', 'name', 'deadlineAt']) || !runId(request.run.id) || !label(request.run.name) || !(request.run.deadlineAt === null || epochMs(request.run.deadlineAt))) fail('protocolInvalid', 'The Adapter v6 run identity or deadline is invalid.');
+  if (!requiredFields(request.execution, ['executor'], ['model', 'reasoningEffort']) || !identifier(request.execution.executor) || ['model', 'reasoningEffort'].some((key) => Object.hasOwn(request.execution, key) && !identifier(request.execution[key]))) fail('protocolInvalid', 'The Adapter v6 execution selection is invalid.');
   if (Object.hasOwn(request, 'codex') && (!requiredFields(request.codex, ['cliSource', 'bypassHookTrust'], ['profile'])
       || !['auto', 'cli', 'app'].includes(request.codex.cliSource) || typeof request.codex.bypassHookTrust !== 'boolean'
       || Object.hasOwn(request.codex, 'profile') && !identifier(request.codex.profile))) fail('protocolInvalid', 'The Codex adapter configuration is invalid.');
-  if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v5 workspace, prompt, or args is invalid.');
-  if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v5 private runtime or installed toolkit is invalid.');
-  if (request.mode === 'workspace' || Object.hasOwn(request, 'sessionId')) {
-    if (Object.hasOwn(request, 'fileSelectors') || Object.hasOwn(request, 'fileResolver')) fail('protocolInvalid', 'Workspace and resume requests must omit all file selection fields.');
-  } else {
-    if (!Array.isArray(request.fileSelectors) || request.fileSelectors.some((value) => !text(value)) || !requiredFields(request.fileResolver, ['command', 'args']) || !absolutePath(request.fileResolver.command) || !Array.isArray(request.fileResolver.args) || request.fileResolver.args.length !== 1 || !absolutePath(request.fileResolver.args[0])) fail('protocolInvalid', 'Bundle requests require raw fileSelectors and the installed fileResolver.');
-    try { validateSelectors(request.fileSelectors); } catch { fail('protocolInvalid', 'The bundle fileSelectors contain an invalid selection value.'); }
-  }
-  if (byteLength(JSON.stringify(request)) > LIMITS.requestBytes) fail('protocolTooLarge', 'The Adapter v5 start frame exceeds the 8 MiB limit.');
+  if (!absolutePath(request.workspace) || !text(request.prompt) || !request.prompt.trim() || byteLength(request.prompt) > LIMITS.promptBytes || !Array.isArray(request.args) || request.args.some((value) => !text(value))) fail('protocolInvalid', 'The Adapter v6 workspace, prompt, or args is invalid.');
+  if (!requiredFields(request.runtime, ['directory', 'toolkit']) || !absolutePath(request.runtime.directory) || !requiredFields(request.runtime.toolkit, ['module', 'command', 'messageScript', 'mcpScript']) || Object.values(request.runtime.toolkit).some((value) => !absolutePath(value))) fail('protocolInvalid', 'The Adapter v6 private runtime or installed toolkit is invalid.');
+  if (byteLength(JSON.stringify(request)) > LIMITS.requestBytes) fail('protocolTooLarge', 'The Adapter v6 start frame exceeds the 8 MiB limit.');
   return request;
 }
 
 export function validateResult(result) {
   const required = ['protocolVersion', 'type', 'state', 'generationStarted', 'backendExitCode', 'text'];
-  if (!requiredFields(result, required, ['code', 'message', 'sessionId', 'model', 'remoteStopConfirmed', 'diagnostics', 'initialization']) || result.protocolVersion !== 5 || result.type !== 'result' || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || byteLength(result.text) > LIMITS.outputBytes
+  if (result?.protocolVersion !== ADAPTER_PROTOCOL_VERSION) fail('protocolInvalid', 'Use an Adapter v6 result frame.');
+  if (!requiredFields(result, required, ['code', 'message', 'sessionId', 'model', 'remoteStopConfirmed', 'diagnostics', 'initialization']) || result.type !== 'result' || !STATES.includes(result.state) || ![true, false, null].includes(result.generationStarted) || !(result.backendExitCode === null || Number.isSafeInteger(result.backendExitCode)) || !text(result.text) || byteLength(result.text) > LIMITS.outputBytes
       || (Object.hasOwn(result, 'code') && !code(result.code))
       || (result.state !== 'completed' && !code(result.code))
       || (Object.hasOwn(result, 'message') && (!text(result.message) || byteLength(result.message) > LIMITS.messageBytes))
       || ['sessionId', 'model'].some((key) => Object.hasOwn(result, key) && !identifier(result[key]))
       || (Object.hasOwn(result, 'remoteStopConfirmed') && typeof result.remoteStopConfirmed !== 'boolean')
       || (result.state === 'completed' && (result.generationStarted !== true || result.backendExitCode !== 0 || !result.text.trim()))
-      || byteLength(JSON.stringify(result)) > LIMITS.resultBytes) fail('adapterResultInvalid', 'The Adapter v5 result is missing, invalid, or exceeds its limit.');
+      || byteLength(JSON.stringify(result)) > LIMITS.resultBytes) fail('adapterResultInvalid', 'The Adapter v6 result is missing, invalid, or exceeds its limit.');
   if (Object.hasOwn(result, 'diagnostics')) validateDiagnostics(result.diagnostics);
   if (Object.hasOwn(result, 'initialization')) {
     validateInitialization(result.initialization);

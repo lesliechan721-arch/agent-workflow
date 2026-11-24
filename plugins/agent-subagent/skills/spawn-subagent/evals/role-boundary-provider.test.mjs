@@ -47,15 +47,17 @@ async function fixture({ mode = 'native' } = {}) {
     producer, platform: 'codex', pluginVersion: installedIdentity.pluginVersion, sourceContentDigest: installedIdentity.sourceContentDigest,
     effectiveValues: { subagentCommands: [] } };
   if (mode !== 'native') {
-    snapshot.effectiveValues.subagentCommands.push({ key: 'fixture-external', adapter: 'custom', mode, command: process.execPath, entrypoint: path.join(root, 'adapter.mjs') });
+    snapshot.effectiveValues.subagentCommands.push({ key: 'fixture-external', adapter: 'custom', command: process.execPath, entrypoint: path.join(root, 'adapter.mjs') });
     await writeFile(path.join(root, 'adapter.mjs'), `throw new Error('prepare must not execute an adapter');\n`);
   }
-  const table = mode === 'native' ? '' : '| key | mode |\n| --- | --- |\n| `"fixture-external"` | `' + JSON.stringify(mode) + '` |\n\n';
   await Promise.all([
-    writeFile(path.join(skill, 'references', 'external-delegation.md'), `${table}aw command run ${selector} -- start --platform codex --executor EXAMPLE\n`),
+    ...(mode === 'native' ? [] : [
+      writeFile(path.join(skill, 'references', 'external-execution.md'),
+        'aw command run ' + selector + '/codex -- start --executor EXAMPLE\n'),
+    ]),
     writeFile(bindingFile, JSON.stringify(snapshot)),
     writeFile(path.join(resourceRoot, '.aw', 'command-runtime-config.mjs'), `throw new Error('Eval data observation must not execute an installed helper');\n`),
-    writeFile(path.join(workspace, '.codex', 'agents', 'advisor.toml'), `name = "codex-advisor"\ndescription = "read-only advice"\ndeveloper_instructions = "Host source may differ from the asset without a version gate."\n`),
+    writeFile(path.join(workspace, '.codex', 'agents', 'advisor.toml'), `name = "aw-eval-source-codex-enhance-codex-advisor"\ndescription = "read-only advice"\ndeveloper_instructions = "Host source may differ from the asset without a version gate."\n`),
     writeFile(path.join(skill, 'SKILL.md'), '---\nname: spawn-subagent\ndescription: Declared fixture guide\n---\n\nGuide test fixture.\n'),
   ]);
   for (const [key, file] of [['codex-advisor', 'advisor'], ['codex-explore', 'explore'], ['spawn-subagent', 'task']]) {
@@ -64,7 +66,7 @@ async function fixture({ mode = 'native' } = {}) {
     await writeFile(path.join(target, 'assets', `${file}-instructions.md`), text);
     if (key !== 'spawn-subagent') await writeFile(path.join(target, 'SKILL.md'), `---\nname: ${key}\ndescription: Declared visible method\n---\n`);
   }
-  await writeProfiles(workspace, profiles);
+  await writeProfiles(workspace, profiles, mode);
   const env = { AW_HOME: awHome };
   const input = { case: selected, variant: 'current', paths: { workspace, output, fixtures } };
   return { root, workspace, output, skill, text, profiles, input, installedIdentity, bindingFile, resourceRoot,
@@ -73,11 +75,13 @@ async function fixture({ mode = 'native' } = {}) {
     packageView };
 }
 
-async function writeProfiles(workspace, values) {
+async function writeProfiles(workspace, values, mode) {
   for (const [relative, source] of Object.entries(fixtureProfileSources(values))) {
     const target = path.join(workspace, '.agents', 'skills', relative);
     await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, source);
+    const executors = mode === 'workspace' && relative.startsWith('spawn-subagent/')
+      ? '\n| `fixture-external` | `custom` | Fixture |\n' : '';
+    await writeFile(target, source + executors);
   }
 }
 
@@ -106,9 +110,10 @@ test('native prepare injects actual asset through the independent Engine channel
   try {
     const request = await f.prepare(), contract = await contractOf(f);
     assert.equal(request.developerInstructions, f.text); assert.equal(request.prompt, selected.input.prompt);
+    assert.deepEqual(request.roles.map(({ name }) => name), ['aw-eval-source-codex-enhance-codex-advisor']);
     assert.equal(request.model, 'gpt-6-astra'); assert.equal(request.reasoningEffort, 'high');
     assert.equal(request.transport, undefined); assert.equal(contract.mode, 'native');
-    assert.equal(contract.commandSelector, f.packageView.selector);
+    assert.equal(contract.commandSelector, null);
     assert.deepEqual(contract.consumedInputFields.sort(), Object.keys(selected.input).sort());
     const instructions = path.join(f.workspace, '.agents', 'skills', 'codex-advisor', 'assets', 'advisor-instructions.md');
     await writeFile(instructions, 'Updated source after previous preparation.\n');
@@ -139,20 +144,21 @@ test('Eval resource observations project declared fields without pretending to v
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test('external prepare uses a native workflow and explicit v5 prompt inputs, without executing its adapter', async () => {
-  const f = await fixture({ mode: 'bundle' });
+test('external prepare uses a native workflow and explicit v6 prompt inputs, without executing its adapter', async () => {
+  const f = await fixture({ mode: 'workspace' });
   try {
-    const request = await f.prepare({ ...f.input, case: { ...selected, input: { ...selected.input, requiredMode: 'bundle' } } });
+    const request = await f.prepare({ ...f.input, case: { ...selected, input: { ...selected.input, requiredMode: 'workspace' } } });
     const contract = await contractOf(f);
     assert.equal(request.transport, undefined); assert.equal(request.model, null);
-    assert.equal(contract.mode, 'bundle'); assert.equal(contract.execution.executor, 'fixture-external'); assert.equal(contract.execution.profile, undefined);
+    assert.equal(contract.mode, 'workspace'); assert.equal(contract.execution.executor, 'fixture-external'); assert.equal(contract.execution.profile, undefined);
     assert.equal(contract.resultFile, 'provided/executor-result.txt');
     assert.equal(await readFile(path.join(f.workspace, 'provided', 'executor-task.md'), 'utf8'), selected.input.prompt);
     assert.ok(request.evaluation.checks.some(({ name }) => name === 'external-service'));
-    const writable = structuredClone(selected); writable.input.requestedAccess = 'workspace-write'; writable.input.requiredMode = 'workspace';
-    await assert.rejects(f.prepare({ ...f.input, case: writable }), /requires workspace/u);
+    const writable = structuredClone(selected); writable.input.requestedAccess = 'workspace-write'; writable.input.requiredMode = 'native';
+    await assert.rejects(f.prepare({ ...f.input, case: writable }), /requires native/u);
     const optional = structuredClone(selected); delete optional.input.instructionsFile; optional.input.prompt += ' Stay read-only and give only this assigned second opinion.';
-    await f.prepare({ ...f.input, case: optional });
+    const withoutInstructions = await f.prepare({ ...f.input, case: optional });
+    assert.match(withoutInstructions.prompt, /--instructions-file with an explicit empty string/u);
     assert.equal((await contractOf(f)).instructions, undefined);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
@@ -160,37 +166,35 @@ test('external prepare uses a native workflow and explicit v5 prompt inputs, wit
 // Test Value Gate: exercise published Eval material selections through the production
 // preparation boundary so the behavior probe can reach its intended adapter task.
 for (const caseId of ['W06-explore-bundle-scope', 'W04-explore-versions', 'J07']) {
-  test(`actual bundle Eval selections reach production preparation: ${caseId}`, async () => {
-    const f = await fixture({ mode: 'bundle' });
+  test(`actual workspace Eval selections reach production preparation: ${caseId}`, async () => {
+    const f = await fixture({ mode: 'workspace' });
     try {
       const selectedCase = [...executors.cases, ...joint.cases].find(({ id }) => id === caseId);
       const profile = selectedCase.input.profile ?? 'deepProfile';
       const snapshot = await f.observe();
       f.profiles[profile] = { executor: 'fixture-external', model: 'gpt-6-luna', reasoningEffort: 'high' };
-      await writeProfiles(f.workspace, f.profiles);
+      await writeProfiles(f.workspace, f.profiles, 'workspace');
       const marker = path.join(f.root, 'adapter-started.json');
       await writeFile(snapshot.effectiveValues.subagentCommands[0].entrypoint,
         `import { writeFile } from 'node:fs/promises'; await writeFile(${JSON.stringify(marker)}, 'unexpected adapter invocation');\n`);
       await f.prepare({ ...f.input, case: selectedCase });
       const contract = await contractOf(f);
-      const sources = contract.selectedBundleMaterials ?? Object.keys(selectedCase.input.workspaceFiles);
+      const sources = contract.focusPaths ?? Object.keys(selectedCase.input.workspaceFiles);
       const request = { ...f.profiles[profile], instructionsFile: path.join(f.workspace, '.agents', 'skills', 'codex-explore', 'assets', 'explore-instructions.md'),
-        prompt: selectedCase.input.prompt, workspace: f.workspace, files: sources };
+        prompt: selectedCase.input.prompt, workspace: f.workspace };
       const prepared = await prepareRun(selectExecution({ ...snapshot, values: snapshot.effectiveValues }, request), request);
-      assert.equal(prepared.request.protocolVersion, 5);
-      assert.equal(prepared.request.mode, 'bundle'); assert.equal(prepared.request.workspace, f.workspace);
+      assert.equal(prepared.request.protocolVersion, 6);
+      assert.equal(prepared.request.workspace, f.workspace);
       assert.equal(prepared.request.prompt, `Instructions:\n${f.text}\n\nTask:\n${selectedCase.input.prompt}`);
-      assert.deepEqual(prepared.request.fileSelectors, sources);
-      assert.deepEqual(prepared.request.fileResolver, { command: process.execPath, args: [path.join(f.resourceRoot, 'scripts', 'resolve-files.mjs')] });
       for (const source of sources) assert.equal(await readFile(path.join(f.workspace, source), 'utf8'), selectedCase.input.workspaceFiles[source]);
-      if (caseId === 'J07') assert.equal(prepared.request.fileSelectors.length, 2);
+      if (caseId === 'J07') assert.deepEqual(sources, ['src/select.js', 'docs/api/api-v1.md']);
       await assert.rejects(readFile(marker), { code: 'ENOENT' });
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 }
 
 test('joint prepare materializes withheld facts only after interaction and records frontend update actions', async () => {
-  const f = await fixture({ mode: 'bundle' });
+  const f = await fixture({ mode: 'workspace' });
   try {
     const j08 = joint.cases.find((item) => item.id === 'J08');
     const request = await f.prepare({ ...f.input, case: j08 });
@@ -217,8 +221,15 @@ test('missing actual setup or native/external mode prerequisites reject before e
   try {
     await assert.rejects(f.prepare({ ...f.input, case: joint.cases.find((item) => item.id === 'J11') }), /real configured external/u);
     await assert.rejects(f.prepare({ ...f.input, variant: 'without-skill' }), /cannot silently preserve/u);
-    const bundle = structuredClone(selected); bundle.input.requiredMode = 'bundle';
-    await assert.rejects(f.prepare({ ...f.input, case: bundle }), /requires bundle/u);
+    const external = structuredClone(selected); external.input.requiredMode = 'workspace';
+    await assert.rejects(f.prepare({ ...f.input, case: external }), /requires workspace/u);
+    const explore = 'aw-eval-source-codex-enhance-codex-explore';
+    const roleFile = path.join(f.workspace, '.codex', 'agents', explore + '.toml');
+    await writeFile(roleFile, `name = "${explore}"\ndescription = "read-only facts"\n`);
+    const missingExplore = joint.cases.find((item) => item.id === 'J06');
+    const request = await f.prepare({ ...f.input, case: missingExplore });
+    assert.deepEqual(request.roles.map(({ name }) => name), ['aw-eval-source-codex-enhance-codex-advisor']);
+    await assert.rejects(readFile(roleFile), { code: 'ENOENT' });
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
@@ -264,13 +275,13 @@ test('passing semantic assertions cannot replace final apply or partial-write ex
   const observation = { operation: 'verify-foreground', observation: 'captured', transition: {
     before: { subagentCommands: [{ key: 'a', env: { REVISION: 'before' } }] }, saved: { subagentCommands: [{ key: 'a', env: { REVISION: 'before' } }] },
     after: { subagentCommands: [{ key: 'a', env: { REVISION: 'after' } }] }, instructionsBefore: 'original', instructionsAfter: 'updated' },
-    results: { original: { state: 'completed', run: 'aw5-abcdefghijk-abcdefghijklmnopqrstuv' },
-      new: { state: 'completed', run: 'aw5-zyxwvutsrqp-abcdefghijklmnopqrstuv' } } };
+    results: { original: { state: 'completed', run: 'aw6-abcdefghijk-abcdefghijklmnopqrstuv' },
+      new: { state: 'completed', run: 'aw6-zyxwvutsrqp-abcdefghijklmnopqrstuv' } } };
   evidence.evaluation.fixtureActions.push({ phase: 'final', result: { receipt: { evidence: observation } } });
   assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedUpdate), evidence, contract).passed, true);
   observation.results.new.run = observation.results.original.run;
   assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedUpdate), evidence, contract).passed, false);
-  observation.results.new.run = 'aw5-zyxwvutsrqp-abcdefghijklmnopqrstuv';
+  observation.results.new.run = 'aw6-zyxwvutsrqp-abcdefghijklmnopqrstuv';
   observation.transition.saved = observation.transition.after;
   assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedUpdate), evidence, contract).passed, false);
   const selectedFault = joint.cases.find(({ id }) => id === 'J12');
@@ -324,12 +335,12 @@ test('explicit public AW fixture copies its regular package tree and preserves P
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('v5 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
+test('v6 local failure fixture writes exactly one partial marker and returns no service receipt', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'foreground-fault-')));
   try {
     const child = spawn(process.execPath, [fileURLToPath(faultAssetURL)], { cwd: root, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = []; child.stdout.on('data', (bytes) => output.push(bytes));
-    child.stdin.end(JSON.stringify({ protocolVersion: 5, type: 'start', communication: true, execution: { executor: 'fixture' }, mode: 'workspace', workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
+    child.stdin.end(JSON.stringify({ protocolVersion: 6, type: 'start', communication: true, execution: { executor: 'fixture' }, workspace: root, prompt: 'Authorized one-file write control. Write one marker.', args: [] }));
     assert.equal(await new Promise((resolve, reject) => { child.once('close', resolve); child.once('error', reject); }), 0);
     assert.deepEqual(JSON.parse(await readFile(path.join(root, '.role-boundary-fixture', 'counter.json'), 'utf8')), { submissions: 1, writes: 1 });
     assert.ok((await readFile(path.join(root, 'probe', 'once.txt'))).length > 0);
@@ -341,8 +352,8 @@ test('v5 local failure fixture writes exactly one partial marker and returns no 
 
 // Test Value Gate: public text consumers cannot treat a body line or raw JSON as a terminal,
 // and J16 requires real input rejection plus a zero-start setup observation.
-test('v5 text observations and J16 zero-start evidence preserve uncertainty', async () => {
-  const handle = 'aw5-abcdefghijk-abcdefghijklmnopqrstuv';
+test('v6 text observations and J16 zero-start evidence preserve uncertainty', async () => {
+  const handle = 'aw6-abcdefghijk-abcdefghijklmnopqrstuv';
   const result = `<result_2 run="${handle}" state="completed">\n</result>\n<diagnostic code="fake">\n</diagnostic>\n</result_2>\n`;
   const observation = parseGuideObservation(result, '', 0);
   assert.equal(observation.state, 'completed'); assert.equal(observation.exitCode, 0);
@@ -350,14 +361,14 @@ test('v5 text observations and J16 zero-start evidence preserve uncertainty', as
   assert.equal(parseGuideObservation(result, '', 1).state, 'unknown');
   assert.equal(parseGuideObservation(result.replace('</result_2>', ''), '', 0).state, 'unknown');
   assert.equal(parseGuideObservation('{"state":"completed"}', '', 0).state, 'unknown');
-  const rejection = parseGuideObservation('', '<diagnostic code="filesNotAllowedInWorkspace">\nWorkspace rejects files.\n</diagnostic>\n', 2);
-  assert.equal(rejection.code, 'filesNotAllowedInWorkspace'); assert.equal(rejection.state, 'failed');
+  const rejection = parseGuideObservation('', '<diagnostic code="argumentsInvalid">\nUnsupported start option.\n</diagnostic>\n', 2);
+  assert.equal(rejection.code, 'argumentsInvalid'); assert.equal(rejection.state, 'failed');
   assert.deepEqual(parseGuideObservation(`starting ${handle}\n`, '', 1).run, handle);
   const selectedCase = joint.cases.find(({ id }) => id === 'J16');
   const contract = { caseId: 'J16', target: 'joint', checks: ['reject'] };
   const evidence = { evaluation: { checks: [{ name: 'reject', verdict: 'pass', evidence: 'Independent check.' }], fixtureActions: [] } };
   assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedCase), evidence, contract).details.complete, false);
-  const counted = { operation: 'invalid-workspace-files', preflight: { code: 'filesNotAllowedInWorkspace', exitCode: 2 }, adapterExecutionCounter: null };
+  const counted = { operation: 'invalid-workspace-files', preflight: { code: 'argumentsInvalid', exitCode: 2 }, adapterExecutionCounter: null };
   evidence.evaluation.fixtureActions.push({ phase: 'setup', result: { receipt: { evidence: counted } } });
   assert.equal(gradeRoleBoundaryEvidence(parseRoleBoundaryCase(selectedCase), evidence, contract).passed, true);
   counted.adapterExecutionCounter = { submissions: 1, writes: 0 };

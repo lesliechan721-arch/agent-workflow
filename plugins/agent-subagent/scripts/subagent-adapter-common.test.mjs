@@ -71,7 +71,7 @@ async function fixture(t, { deadlineAt = null, communication = true, args = [], 
     child.stdout.destroy(); child.stderr.destroy();
     await fs.rm(root, { recursive: true, force: true });
   });
-  const send = (frame) => child.stdin.write(`${JSON.stringify({ protocolVersion: 5, ...frame })}\n`);
+  const send = (frame) => child.stdin.write(`${JSON.stringify({ protocolVersion: 6, ...frame })}\n`);
   const waitFor = (type) => new Promise((resolve, reject) => {
     let timer;
     const finish = (error, frame) => {
@@ -105,7 +105,7 @@ async function fixture(t, { deadlineAt = null, communication = true, args = [], 
   };
   send({
     type: 'start', run: { id: randomBytes(8).toString('base64url'), name: 'lifecycle-fixture', deadlineAt },
-    execution: { executor: 'fixture' }, mode: 'workspace', workspace,
+    execution: { executor: 'fixture' }, workspace,
     prompt: 'Wait for the lifecycle stop.', args, communication, resume: true, ...(codex === undefined ? {} : { codex }),
     runtime: { directory, toolkit: {
       command: process.execPath, module: path.join(scripts, 'runtime/adapter-channel.mjs'),
@@ -275,7 +275,7 @@ for (const sendTextMode of [undefined, 'argument']) for (const input of ['text',
 test('initialization diagnostics summarize field groups within the ready frame budget', () => {
   const diagnostics = Array.from({ length: 100 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.unknown_${index}`, message: 'Unsupported field; SYNTHETIC_SECRET is omitted.' }));
   const summary = summarizeDiagnostics(diagnostics, { API_TOKEN: 'SYNTHETIC_SECRET' });
-  const frame = { protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: summary };
+  const frame = { protocolVersion: 6, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: summary };
   validateFrame(frame, 'adapter');
   assert.equal(JSON.stringify(frame).includes('SYNTHETIC_SECRET'), false);
   assert.equal(summary[0].code, 'diagnosticsSummarized');
@@ -288,7 +288,7 @@ test('initialization diagnostics summarize field groups within the ready frame b
 test('initialization diagnostics handle redaction expansion without accepting invalid input', () => {
   const diagnostic = { code: 'profileFieldIgnored', field: `features.base${'f'.repeat(499)}`, message: `base${'m'.repeat(2044)}` };
   const summary = summarizeDiagnostics([diagnostic], { API_TOKEN: 'base' });
-  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: summary }, 'adapter');
+  validateFrame({ protocolVersion: 6, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: summary }, 'adapter');
   assert.equal(summary[0].code, diagnostic.code);
   assert.equal(summary[0].field, undefined);
   assert.match(summary[0].message, /message omitted/);
@@ -302,7 +302,7 @@ test('initialization diagnostics handle redaction expansion without accepting in
   const expanded = summarizeDiagnostics(Array.from({ length: 8 }, () => ({ code: diagnostic.code, message: 'base'.repeat(50) })), { API_TOKEN: 'base' });
   assert.equal(expanded[0].code, 'diagnosticsSummarized');
   assert.match(expanded[0].message, /^8\b/);
-  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: expanded }, 'adapter');
+  validateFrame({ protocolVersion: 6, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'unsupported' }, resume: { status: 'unsupported' } } }, diagnostics: expanded }, 'adapter');
   const reducible = 'long-protected-value'.repeat(110);
   for (const invalid of [{ ...diagnostic, code: 'invalid-code' }, { ...diagnostic, message: reducible }, { ...diagnostic, field: 'f'.repeat(513) }, { ...diagnostic, field: 'features.\ninvalid' }]) {
     assert.throws(() => summarizeDiagnostics([invalid], { API_TOKEN: reducible }), { code: 'protocolInvalid' });

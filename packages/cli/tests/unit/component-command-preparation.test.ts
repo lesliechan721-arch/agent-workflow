@@ -67,8 +67,8 @@ describe('component command preparation', () => {
         allow: active ? [{ argsPrefix: [] }] : [], ask: [{ argsPrefix: ['missing'] }], deny: [{ argsPrefix: ['check', 'hidden'] }],
         ...(active ? { sandbox: { excludedCommands: [{ argsPrefix: ['check'] }] } } : {}) }]);
       expect(finalized.invocationPolicy.inactivePermissions).toEqual([
-        { name: 'run', action: 'ask', argsPrefix: ['missing'] },
-        ...(active ? [] : [{ name: 'run', action: 'deny', argsPrefix: ['check', 'hidden'] }]),
+        { name: 'run', action: 'ask', invocationSelector: 'fixture/command-profile', argsPrefix: ['missing'] },
+        ...(active ? [] : [{ name: 'run', action: 'deny', invocationSelector: 'fixture/command-profile', argsPrefix: ['check', 'hidden'] }]),
       ]);
       expect(finalized.invocationPolicy.diagnostics).toMatchObject([{ code: 'invocationPolicyNotApplied',
         subject: { field: 'permissions.run' }, detail: { reasonCode: 'command-route-unreachable', skippedPermissionActions: ['allow', 'sandbox'] } }]);

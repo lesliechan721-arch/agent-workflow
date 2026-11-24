@@ -25,7 +25,7 @@ const sourceEvalRoot = pluginContext?.sourceRoot
   ? path.join(pluginContext.sourceRoot, 'skills', 'spawn-subagent', 'evals')
   : evalRoot;
 const roles = [
-  'subagent',
+  'aw-eval-source-agent-subagent-subagent',
 ];
 
 async function invoke(runner, input, env = process.env) {
@@ -105,7 +105,7 @@ function v1RoutingEvidence() {
     ordinal: 1, threadId: 'root', parentThreadId: null,
     callId: 'spawn-simple', namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
     arguments: {
-      agent_type: 'subagent', message: 'work', fork_context: false,
+      agent_type: 'aw-eval-source-agent-subagent-subagent', message: 'work', fork_context: false,
     },
     output: { agent_id: 'child', status: 'running' },
   };
@@ -128,7 +128,7 @@ function v1RoutingEvidence() {
       },
     }, {
       threadId: 'child', parentThreadId: 'root',
-      agentRole: 'subagent',
+      agentRole: 'aw-eval-source-agent-subagent-subagent',
       initialMessage: { kind: 'plaintext', text: 'work' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:child',
@@ -164,6 +164,7 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
       assert.equal(result.code, 0, result.stderr);
       const request = JSON.parse(result.stdout);
       assert.equal(request.model, null);
+      assert.deepEqual(request.roles.map(({ name }) => name), roles);
       assert.equal(request.roles.every((role) => !path.isAbsolute(role.configFile)), true);
       assert.deepEqual(request.multiAgent, {
         protocol: suite.id === 'routing' && document.cases[0].input.runtimeProfile === 'v1' ? 'v1' : 'v2',
@@ -181,6 +182,11 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
     )).stdout);
     assert.equal(v2Request.model, null);
     assert.match(v2Request.prompt, /固定单行最终确认 `ROUTING_SPAWNED`/u);
+    const missingRole = routing.cases.find((entry) => entry.id === 'missing_preset_role-v2');
+    const omitted = await invoke('run-routing-evals.mjs', adapterInput('prepare', missingRole, root), env);
+    assert.equal(omitted.code, 0, omitted.stderr);
+    assert.deepEqual(JSON.parse(omitted.stdout).roles, []);
+    await assert.rejects(readFile(path.join(root, 'workspace', 'subject', v2Request.roles[0].configFile)), { code: 'ENOENT' });
     await assert.rejects(readFile(marker));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -202,7 +208,7 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
       tool: 'spawn_agent',
       linkedThreadId: 'child',
       arguments: {
-        agent_type: 'subagent',
+        agent_type: 'aw-eval-source-agent-subagent-subagent',
         message: 'work', task_name: 'work', fork_turns: 'none',
       },
       output: { agent_id: 'child', status: 'running' },

@@ -9,6 +9,7 @@ import { createCliExecutionContext, createCommandExecutionContext } from '../../
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
+import { inactiveCommandPermissionEffects } from '../../src/output/public-result.js';
 import type { DeploymentBinding } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getInvocationPolicyPath, getInvocationPolicyPhysicalKey } from '../../src/platforms/layout.js';
@@ -38,13 +39,15 @@ describe('prepared managed command Review', () => {
       const cwd = isolated.layout.fixtureCwd;
       const pluginRoot = path.join(cwd, 'plugin');
       const reference = { argsPrefix: ['check'] };
-      const capabilities = ['aw.managed-commands.v2', ...(platform === 'claude' ? ['aw.claude.sandbox-exclusions.v1'] : [])];
+      const capabilities = ['aw.managed-commands.v2', 'aw.plugin-config.v2', ...(platform === 'claude' ? ['aw.claude.sandbox-exclusions.v1'] : [])];
+      const invocationSelector = `fixture/review-commands/${platform}`;
       await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), {
         schemaVersion: 4, platforms: [platform], name: 'review-commands', version: '1.0.0', description: 'Prepared Review fixture.',
         requires: { aw: { capabilities } },
         marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
         skills: './skills',
-        command: { sourceDir: './commands', mode: 'static',
+        config: { schemaVersion: 5, fields: { mode: { type: 'string', default: 'check' } } },
+        command: { sourceDir: './commands', mode: 'static', runtimeConfig: { keys: ['mode'] },
           routes: { subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs', args: ['--fixed', 'value'] }] } },
         extensions: { permissions: [{ name: 'commands', allow: [reference], ask: ['git status'], deny: [{ argsPrefix: ['unreachable'] }],
           ...(platform === 'claude' ? { agentOverrides: { claude: { sandbox: { excludedCommands: [reference] } } } } : {}) }] },
@@ -88,12 +91,15 @@ describe('prepared managed command Review', () => {
       const plans = operationPlan.deploymentPlans!;
       const projection = plans.flatMap((plan) => plan.projections).find((entry) => entry.bundle)!;
       const skillPath = path.join(projection.bundle!.stagingRoot, 'skills/provider/SKILL.md');
-      expect(await fs.readFile(skillPath, 'utf8')).toContain('aw command run fixture/review-commands -- check');
+      expect(await fs.readFile(skillPath, 'utf8')).toContain(`aw command run ${invocationSelector} -- check`);
       const contribution = plans.flatMap((plan) => plan.projections.flatMap((entry) => entry.supplements))
         .find((entry) => platform === 'codex' ? entry.destination.endsWith('.rules') : entry.mergeKey?.startsWith(`${platform}-permissions:`))!;
       const rules = await fs.readFile(contribution.stagingPath, 'utf8');
       expect(plans.flatMap((plan) => plan.evidence.managedCommandReview?.inactivePermissions ?? []))
-        .toEqual([{ name: 'commands', action: 'deny', argsPrefix: ['unreachable'] }]);
+        .toEqual([{ name: 'commands', action: 'deny', invocationSelector, argsPrefix: ['unreachable'] }]);
+      expect(plans.flatMap(inactiveCommandPermissionEffects)).toContainEqual(expect.objectContaining({
+        message: expect.stringContaining(`${invocationSelector} -- unreachable`),
+      }));
       if (platform === 'codex') {
         await fs.appendFile(contribution.stagingPath, '# unreviewed bytes\n');
         await expect(target.platformDeployment!.verify()).rejects.toThrow('operationPlanStale');
@@ -104,10 +110,12 @@ describe('prepared managed command Review', () => {
         intent: { kind: 'pluginWrite', action: 'install', pluginId: plugin.pluginId!, platform, scope },
         evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan },
       });
-      expect(review.changes).toContainEqual(expect.objectContaining({ description: expect.stringMatching(/fixture\/review-commands -- check.*tool\.mjs.*--fixed/u) }));
-      expect(review.changes).toContainEqual(expect.objectContaining({ description: expect.stringContaining('fixture/review-commands -- unreachable') }));
+      expect(review.changes).toContainEqual(expect.objectContaining({
+        title: '命令路由与审批', description: expect.stringMatching(new RegExp(`${invocationSelector} -- check.*tool\\.mjs.*--fixed`, 'u')),
+      }));
+      expect(review.changes).toContainEqual(expect.objectContaining({ description: expect.stringContaining(`${invocationSelector} -- unreachable`) }));
       if (platform === 'codex') {
-        expect(rules).toContain('["aw","command","run","fixture/review-commands","--","check"]');
+        expect(rules).toContain(JSON.stringify(['aw', 'command', 'run', invocationSelector, '--', 'check']));
         for (const decision of ['allow', 'prompt', 'forbidden']) expect(rules).toContain(`decision = "${decision}"`);
         expect(review.changes).toContainEqual(expect.objectContaining({ description: rules.trim() }));
       } else if (platform === 'opencode') {
@@ -126,7 +134,7 @@ describe('prepared managed command Review', () => {
         }
       } else {
         const permissions = JSON.parse(rules).permissions as Record<string, string[]>;
-        expect(permissions.allow).toEqual(['Bash(aw command run fixture/review-commands -- check *)']);
+        expect(permissions.allow).toEqual([`Bash(aw command run ${invocationSelector} -- check *)`]);
         for (const key of ['allow', 'ask', 'deny', 'excludedCommands']) {
           expect(review.changes).toContainEqual(expect.objectContaining({ description: permissions[key]!.join('；') }));
         }

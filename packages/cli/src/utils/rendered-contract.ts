@@ -1,6 +1,6 @@
 import type { ClaudePermissions } from '../generators/permissions.js';
 import type { PlatformName } from '../types.js';
-import { normalizeCommandSelector, SAFE_PERMISSION_TOKEN } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizeCommandInvocationSelector, SAFE_PERMISSION_TOKEN } from '@lesliechan721/aw-plugin-core/manifest';
 import {
   assertHookMatcherAllowed,
   assertNativeHookEvent,
@@ -65,7 +65,7 @@ function isManagedClaudePrefix(value: string): boolean {
   if (!value.endsWith(' *')) return false;
   const tokens = value.slice(0, -2).split(' ');
   if (tokens[0] !== 'aw' || tokens[1] !== 'command' || tokens[2] !== 'run' || tokens[4] !== '--') return false;
-  try { normalizeCommandSelector(tokens[3]); } catch { return false; }
+  try { normalizeCommandInvocationSelector(tokens[3]); } catch { return false; }
   return tokens.slice(5).every((token) => SAFE_PERMISSION_TOKEN.test(token));
 }
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { prepareRun, prepareResume, executionConfiguration } from '../commands/scripts/runtime/runner.mjs';
 import { selectExecution } from '../commands/scripts/runtime/plan.mjs';
-import { communicationCommand } from '../commands/scripts/runtime/managed-host.mjs';
+import { communicationCommand, managedCommandInvocation, managedLaunch } from '../commands/scripts/runtime/managed-host.mjs';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
 
 const resourceRoot = path.dirname(guideRuntimeScripts(import.meta.url));
@@ -18,7 +18,7 @@ async function fixture(t, platform = 'codex') {
   const producer = { sourceId: 'one', sourceIdentity: digest('a'), pluginName: 'agent-subagent' };
   const installedIdentity = { ...producer, pluginId: selector, platform, pluginVersion: '1.0.0', sourceContentDigest: digest('b') };
   const route = { name: 'message', runner: 'node', entry: 'scripts/message.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' };
-  const target = { selector, owner: { kind: 'plugin', producer }, availability: 'ready', resourceRoot,
+  const target = { selector, owner: { kind: 'plugin', producer }, availability: 'ready', requiresPlatformContext: true, runtimeConfigPlatforms: [platform], resourceRoot,
     pluginVersion: installedIdentity.pluginVersion, sourceContentDigest: installedIdentity.sourceContentDigest,
     routes: { subcommands: [route] }, errors: [], recoveryActions: [] };
   const stateFile = path.join(directory, 'commands.json'), capture = path.join(directory, 'calls.jsonl');
@@ -46,15 +46,15 @@ process.exitCode=partial?4:0;`);
 
 // Test Value Gate: public command show evidence and exact AW argv protect the
 // communication route before the adapter receives any backend input.
-test('communication selects the same installed producer for both Guide platforms', async (t) => {
-  for (const platform of ['codex', 'claude']) {
+test('communication selects the same installed producer for every native platform', async (t) => {
+  for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
     const f = await fixture(t, platform);
     const prepared = await f.prepare();
-    assert.equal(prepared.communicationLaunch.selector, selector);
+    assert.equal(prepared.communicationLaunch.selector, selector + '/' + platform);
     assert.deepEqual(prepared.commandHost, f.host);
     assert.equal(prepared.environment.AW_HOME, f.directory);
     assert.equal(prepared.environment.ORDINARY, '/foreign');
-    const invocation = { command: process.execPath, args: [f.host.cliEntry, 'command', 'run', selector, '--', 'message'] };
+    const invocation = { command: process.execPath, args: [f.host.cliEntry, 'command', 'run', selector + '/' + platform, '--', 'message'] };
     assert.deepEqual(await communicationCommand(prepared.environment), invocation);
     for (const args of [invocation.args.slice(0, -1), [...invocation.args.slice(0, -1), 'start'],
       [f.host.cliEntry, 'command', 'run', 'cmdp_0123456789abcdef', '--', 'message'],
@@ -75,6 +75,24 @@ test('communication rejects an otherwise valid v1 AW result', async (t) => {
   await assert.rejects(f.prepare(), { code: 'managedCommandUnavailable' });
 });
 
+// Test Value Gate: a verified platform-bound command needs an actionable
+// selector diagnostic without suggesting that unrelated failures share its fix.
+test('managed execution suggests a platform suffix only when the verified package requires it', async (t) => {
+  const f = await fixture(t, 'pi');
+  const launch = (commandId) => managedLaunch(f.host, commandId, f.environment, f.directory, 'message');
+  const suffix = /\/<platform>/;
+  await assert.rejects(launch(selector), { code: 'executorInvalid', message: suffix });
+  const corrected = await launch(`${selector}/pi`);
+  assert.deepEqual(managedCommandInvocation(f.host, corrected).args,
+    [f.host.cliEntry, 'command', 'run', `${selector}/pi`, '--no-fallback', '--', 'message']);
+  await assert.rejects(launch(`${selector}/grok`), (error) => error.code === 'executorInvalid' && !suffix.test(error.message));
+  await f.save([{ ...f.target, requiresPlatformContext: null }]);
+  await assert.rejects(launch(selector), { code: 'managedCommandUnavailable' });
+  await f.save([{ ...f.target, requiresPlatformContext: false, routes: { subcommands: [] } }]);
+  await assert.rejects(launch(selector), (error) => error.code === 'executorInvalid' && !suffix.test(error.message));
+  assert.ok((await f.calls()).every(({ args }) => args[2] === selector));
+});
+
 test('communication requires the verified owner, code, revision and exact named message route', async (t) => {
   const f = await fixture(t);
   const { target, route } = f;
@@ -85,6 +103,8 @@ test('communication requires the verified owner, code, revision and exact named 
     ['unavailable', [{ ...target, availability: 'unavailable' }]],
     ['wrong source', [{ ...target, owner: owner({ sourceId: 'two' }) }]],
     ['rebound source', [{ ...target, owner: owner({ sourceIdentity: digest('c') }) }]],
+    ['no platform context', [{ ...target, requiresPlatformContext: false }]],
+    ['unpublished platform', [{ ...target, runtimeConfigPlatforms: [] }]],
     ['wrong version', [{ ...target, pluginVersion: '2.0.0' }]],
     ['wrong source content', [{ ...target, sourceContentDigest: digest('c') }]],
     ['wrong revision', [{ ...target, resourceRoot: f.directory }]],
@@ -105,9 +125,11 @@ test('communication resume follows a snapshot-only revision switch and rejects c
   const revision = async (name) => {
     const root = path.join(f.directory, name);
     await fs.mkdir(path.join(root, 'scripts', 'adapters'), { recursive: true });
-    for (const file of ['worker.mjs', 'adapters/antigravity-v5.mjs']) {
+    for (const file of ['worker.mjs', 'adapters/antigravity-v6.mjs']) {
       await fs.copyFile(path.join(resourceRoot, 'scripts', file), path.join(root, 'scripts', file));
     }
+    await fs.mkdir(path.join(root, 'assets'), { recursive: true });
+    await fs.copyFile(path.join(resourceRoot, 'assets/task-instructions.md'), path.join(root, 'assets/task-instructions.md'));
     return root;
   };
   f.snapshot.resourceRoot = await revision('previous');
@@ -122,7 +144,7 @@ test('communication resume follows a snapshot-only revision switch and rejects c
   const resumed = await prepareResume(configuration, 'next task', 'same-session', options);
   assert.equal(resumed.request.sessionId, 'same-session');
   assert.equal(resumed.request.prompt, 'next task');
-  assert.equal(resumed.executable.entrypoint, path.join(nextRoot, 'scripts/adapters/antigravity-v5.mjs'));
+  assert.equal(resumed.executable.entrypoint, path.join(nextRoot, 'scripts/adapters/antigravity-v6.mjs'));
   assert.deepEqual(resumed.communicationLaunch, prepared.communicationLaunch);
   assert.deepEqual(await communicationCommand(resumed.environment), await communicationCommand(prepared.environment));
   for (const replacement of [{ sourceIdentity: digest('c') }, { pluginVersion: '2.0.0' }, { sourceContentDigest: digest('d') }]) {
@@ -151,7 +173,7 @@ test('communication rejects unrelated plugin identities and unsupported Guide pl
   for (const replacement of [
     { pluginName: 'other-plugin', pluginId: 'one/other-plugin' },
     { pluginId: 'two/agent-subagent' },
-    { platform: 'pi' },
+    { platform: 'generic' },
   ]) {
     const changed = { ...f.snapshot, installedIdentity: { ...f.snapshot.installedIdentity, ...replacement } };
     const selected = selectExecution(changed, { executor: 'agy' });

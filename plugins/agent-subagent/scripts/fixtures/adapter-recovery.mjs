@@ -1,11 +1,9 @@
-import fs from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { createChildChannel } from '../../commands/scripts/runtime/adapter-channel.mjs';
 import { adapterMain, deferred, renderCommunicationInstructions } from '../../commands/scripts/adapters/common.mjs';
-import { executeCodex, negotiateCodex } from '../../commands/scripts/adapters/codex-v5.mjs';
-import { executeClaude, negotiateClaude } from '../../commands/scripts/adapters/claude-code-v5.mjs';
-import { executeOracle, negotiateOracle } from '../../commands/scripts/adapters/oracle-v5.mjs';
+import { executeCodex, negotiateCodex } from '../../commands/scripts/adapters/codex-v6.mjs';
+import { executeClaude, negotiateClaude } from '../../commands/scripts/adapters/claude-code-v6.mjs';
 
 // The adapter, negotiation, JSONL frames and session binding are real. Only the
 // external backend and the file transport are controlled. Native recovery tests
@@ -14,9 +12,8 @@ setTimeout(() => process.exit(9), 30000).unref();
 const name = process.env.FIXTURE_BACKEND;
 const scenario = process.env.FIXTURE_CASE;
 const adapter = {
-  codex: { mode: 'workspace', permissionMode: true, codex: true, negotiate: negotiateCodex, execute: executeCodex },
-  claude: { mode: 'workspace', permissionMode: true, negotiate: negotiateClaude, execute: executeClaude },
-  oracle: { mode: 'bundle', negotiate: negotiateOracle, execute: executeOracle },
+  codex: { permissionMode: true, codex: true, negotiate: negotiateCodex, execute: executeCodex },
+  claude: { permissionMode: true, negotiate: negotiateClaude, execute: executeClaude },
 }[name];
 const observe = (value) => process.send(value);
 
@@ -24,7 +21,6 @@ function backend(context, args) {
   const stdout = new PassThrough();
   const done = deferred();
   let exited = false;
-  let closing;
   const emit = (value) => stdout.write(`${JSON.stringify(value)}\n`);
   const instance = {
     child: { stdout }, done: done.promise,
@@ -32,7 +28,6 @@ function backend(context, args) {
     get exitCode() { return exited ? 0 : null; },
     async write(input) {
       observe({ input });
-      if (name === 'oracle') return;
       if (name === 'claude') {
         emit({ type: 'system', subtype: 'init', session_id: 'session-fixture' });
         emit({ type: 'user', uuid: input.uuid });
@@ -52,15 +47,10 @@ function backend(context, args) {
       }
     },
     async end() {
-      closing ??= (async () => {
-        if (name === 'oracle') {
-          await fs.writeFile(args[args.indexOf('--write-output') + 1], 'Module answer.');
-        }
-        exited = true;
-        stdout.end();
-        done.resolve();
-      })();
-      await closing;
+      if (exited) return;
+      exited = true;
+      stdout.end();
+      done.resolve();
     },
     async cleanup() { await this.end(); return true; },
   };

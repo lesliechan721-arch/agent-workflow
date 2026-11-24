@@ -78,18 +78,22 @@ export interface PluginNodeScriptsConfig { packageRoot?: string; build?: PluginN
 export interface PluginScriptTestsConfig { node?: string[] }
 export interface PluginArtifactRenderScriptEntry { runner: 'node'; path: string; args?: string[] }
 export interface PluginArtifactScriptsConfig { render?: PluginArtifactRenderScriptEntry }
+export interface PluginConfigSuggestionsScript { runner: 'node'; path: string; timeoutMs?: number }
 export interface PluginScriptsConfig {
   preApply?: PluginPreApplyScript;
   helpers?: PluginScriptHelpersConfig;
   node?: PluginNodeScriptsConfig;
   artifacts?: PluginArtifactScriptsConfig;
+  config?: { suggestions: PluginConfigSuggestionsScript };
   tests?: PluginScriptTestsConfig;
 }
 
 export type PluginConfigScalar = string | number | boolean;
 export type PluginConfigScalarArray = string[] | number[] | boolean[];
 export type PluginConfigScalarObject = Record<string, PluginConfigScalar>;
-export type PluginConfigObject = Record<string, PluginConfigScalar | PluginConfigScalarArray | PluginConfigScalarObject>;
+type PluginConfigLeafPropertyValue = PluginConfigScalar | PluginConfigScalarArray | PluginConfigScalarObject;
+export type PluginConfigObjectPropertyValue = PluginConfigLeafPropertyValue | Record<string, PluginConfigLeafPropertyValue>[];
+export type PluginConfigObject = Record<string, PluginConfigObjectPropertyValue>;
 export type PluginConfigArray = PluginConfigScalarArray | PluginConfigObject[];
 export type PluginConfigValue = PluginConfigScalar | PluginConfigObject | PluginConfigArray;
 export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'object' | 'array';
@@ -141,6 +145,11 @@ export interface PluginConfigValueReference {
   label?: string;
   include?: PluginConfigScalar[];
 }
+export interface PluginConfigSuggestionsDeclaration {
+  plugin?: string;
+  provider: string;
+  dependsOn?: string[];
+}
 export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   title?: string;
   description?: string;
@@ -153,6 +162,7 @@ interface PluginConfigPlainStringField extends Omit<PluginConfigFieldBase<string
   const?: string;
   sensitive?: false;
   valueRef?: PluginConfigValueReference;
+  suggestions?: PluginConfigSuggestionsDeclaration;
   choices?: PluginConfigChoices<string>;
   validation?: PluginConfigStringValidation;
 }
@@ -162,6 +172,7 @@ interface PluginConfigSensitiveStringField extends Omit<PluginConfigFieldBase<st
   default?: never;
   choices?: never;
   const?: never;
+  suggestions?: never;
   validation?: PluginConfigStringValidation;
 }
 export type PluginConfigStringField =
@@ -171,6 +182,7 @@ export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
   type: 'number';
   const?: number;
   valueRef?: PluginConfigValueReference;
+  suggestions?: PluginConfigSuggestionsDeclaration;
   choices?: PluginConfigChoices<number>;
   validation?: PluginConfigNumberValidation;
 }
@@ -178,6 +190,7 @@ export interface PluginConfigBooleanField extends PluginConfigFieldBase<boolean>
   type: 'boolean';
   const?: boolean;
   valueRef?: PluginConfigValueReference;
+  suggestions?: PluginConfigSuggestionsDeclaration;
   choices?: PluginConfigChoices<boolean>;
 }
 export type PluginConfigScalarField =
@@ -207,14 +220,29 @@ export interface PluginConfigLeafObjectField extends Omit<PluginConfigFieldBase<
   choices?: PluginConfigChoices<PluginConfigScalarObject>;
   validation?: PluginConfigObjectValidation;
 }
-export type PluginConfigObjectPropertyField =
+export type PluginConfigNestedPropertyField =
   | PluginConfigScalarPropertyField
   | PluginConfigLeafArrayField
   | PluginConfigLeafObjectField;
+export interface PluginConfigNestedObjectField {
+  type: 'object';
+  properties: Record<string, PluginConfigNestedPropertyField>;
+  additionalProperties?: false;
+  validation?: PluginConfigObjectValidation;
+  title?: string;
+  description?: string;
+}
+export interface PluginConfigNestedObjectArrayField
+  extends Omit<PluginConfigFieldBase<PluginConfigObject[]>, 'default'> {
+  type: 'array';
+  items: PluginConfigNestedObjectField;
+  validation?: PluginConfigArrayValidation;
+}
+export type PluginConfigObjectPropertyField = PluginConfigNestedPropertyField | PluginConfigNestedObjectArrayField;
 export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField,
-  'default' | 'required' | 'sensitive'
-> & { sensitive?: never };
+  'default' | 'required' | 'sensitive' | 'suggestions'
+> & { sensitive?: never; suggestions?: never };
 interface PluginConfigObjectFieldBase extends PluginConfigFieldBase<PluginConfigObject> {
   type: 'object';
   choices?: PluginConfigChoices<PluginConfigObject>;
@@ -246,8 +274,8 @@ export type PluginConfigObjectField =
   | PluginConfigKeyValueObjectField;
 export type PluginConfigArrayItemField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField | PluginConfigObjectField,
-  'default' | 'required' | 'sensitive'
-> & { default?: never; required?: never; sensitive?: never };
+  'default' | 'required' | 'sensitive' | 'suggestions'
+> & { default?: never; required?: never; sensitive?: never; suggestions?: never };
 export interface PluginConfigArrayField extends PluginConfigFieldBase<PluginConfigArray> {
   type: 'array';
   items: PluginConfigArrayItemField;
@@ -273,8 +301,8 @@ export interface PluginConfigPresentation {
   fieldViews?: Record<string, { summary: string; itemSummary?: never } | { itemSummary: string; summary?: never }>;
   groups?: PluginConfigPresentationGroup[];
 }
-type PluginConfigLegacyScalarField = DistributiveOmit<PluginConfigScalarField, 'const'>;
-type PluginConfigLegacyScalarPropertyField = DistributiveOmit<PluginConfigScalarPropertyField, 'const'>;
+type PluginConfigLegacyScalarField = DistributiveOmit<PluginConfigScalarField, 'const' | 'suggestions'>;
+type PluginConfigLegacyScalarPropertyField = DistributiveOmit<PluginConfigScalarPropertyField, 'const' | 'suggestions'>;
 type PluginConfigLegacyAdditionalPropertiesField = DistributiveOmit<PluginConfigAdditionalPropertiesField, 'const'>;
 type PluginConfigLegacyObjectField =
   | (Omit<PluginConfigFixedObjectField, 'properties' | 'variants' | 'default' | 'choices'> & {

@@ -78,7 +78,7 @@ test('macOS App selection enforces identity, priority, containment, and missing-
 });
 
 // Test Value Gate: a controlled system-query boundary protects package-root
-// isolation, unique selection, update removal, and query failure diagnostics.
+// isolation, a clean system PowerShell environment, and query failure diagnostics.
 // This fake host does not provide native Windows registration/start evidence.
 test('registered Windows packages have a bounded and unambiguous executable search', { skip: process.platform === 'win32' }, async (t) => {
   const { root, environment } = await fixture(t);
@@ -86,10 +86,19 @@ test('registered Windows packages have a bounded and unambiguous executable sear
   const host = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const query = path.join(root, 'query.json');
   await fs.mkdir(path.dirname(host), { recursive: true });
-  await executable(host, 'const fs = require("node:fs"); const query = JSON.parse(fs.readFileSync(process.env.AW_CODEX_TEST_QUERY, "utf8")); if (query.fail) process.exit(7); process.stdout.write(JSON.stringify(query));');
-  const previous = { SystemRoot: process.env.SystemRoot, AW_CODEX_TEST_QUERY: process.env.AW_CODEX_TEST_QUERY };
-  process.env.SystemRoot = systemRoot;
-  process.env.AW_CODEX_TEST_QUERY = query;
+  await executable(host, `
+    const fs = require('node:fs');
+    if (Object.keys(process.env).some((name) => /^(?:win)?psmodulepath$/i.test(name))) process.exit(8);
+    const query = JSON.parse(fs.readFileSync(process.env.AW_CODEX_TEST_QUERY, 'utf8'));
+    if (query.fail) process.exit(7);
+    process.stdout.write(JSON.stringify(query));
+  `);
+  const queryEnvironment = {
+    SystemRoot: systemRoot, AW_CODEX_TEST_QUERY: query,
+    PSModulePath: 'other-powershell-modules', winPSModulePath: 'other-windows-powershell-modules',
+  };
+  const previous = Object.fromEntries(Object.keys(queryEnvironment).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, queryEnvironment);
   t.after(() => {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

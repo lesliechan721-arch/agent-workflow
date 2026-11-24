@@ -182,4 +182,24 @@ describe('renderer input contract', () => {
     expect(() => assertPlatformRenderContext({ ...input, config: { ...input.config, values: { optional: 'secret' } } })).toThrow(/missing/u);
     expect(() => assertPlatformRenderContext({ ...input, previousComponents: [{ id: 'role', kind: 'agent', name: 'role' }] })).toThrow(/outside batch/u);
   });
+
+  it('accepts v5 values with nested fixed object arrays and rejects a third object array level', () => {
+    const command = { type: 'object' as const, properties: {
+      models: { type: 'array' as const, items: { type: 'object' as const, properties: {
+        id: { type: 'string' as const },
+        efforts: { type: 'array' as const, items: { type: 'string' as const } },
+      } } },
+    } };
+    const models = [{ id: 'example', efforts: ['low', 'high'] }];
+    const input: PlatformRenderContextV2 = { ...context(), changedConfigKeys: [], config: {
+      schema: { schemaVersion: 5, fields: { command, commands: { type: 'array', items: command } } },
+      values: { command: { models }, commands: [{ models }] },
+      sources: { command: 'common', commands: 'platform' },
+      issues: [],
+    } };
+    expect(() => assertPlatformRenderContext(input)).not.toThrow();
+    expect(() => assertPlatformRenderContext({ ...input, config: { ...input.config, values: {
+      ...input.config.values, commands: [{ models: [{ id: 'example', thirdLevel: [{ key: 'too deep' }] }] }],
+    } } })).toThrow(/config\/values\/commands\/0\/models\/0\/thirdLevel/u);
+  });
 });

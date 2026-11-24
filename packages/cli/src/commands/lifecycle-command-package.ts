@@ -1,7 +1,7 @@
-import { canonicalizeIdentityValue, getCommandPackageId, type InstalledCommandProducer } from '@lesliechan721/aw-plugin-core/manifest';
+import { canonicalizeIdentityValue, getCommandPackageId, getManagedCommandInvocationSelectors, type InstalledCommandProducer } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CommandProducerResult, PlatformName, PluginMeta } from '../types.js';
-import { inspectManagedCommandRouteChanges } from '../utils/managed-command-cli-review.js';
+import { inspectManagedCommandRouteChanges, reviewInstalledInvocationPlatforms, reviewInvocationPlatforms } from '../utils/managed-command-cli-review.js';
 import {
   managedCommandProducerIdentity, prepareManagedCommandPackage, publishPreparedManagedCommandPackage, verifyPreparedManagedCommandPackage,
 } from '../utils/managed-command-materialization.js';
@@ -17,6 +17,7 @@ import type { DesiredTarget } from './rebuild-operations.js';
 export type RetainedManagedCommandPackage = Pick<ManagedCommandPackageView,
   'packageId' | 'selector' | 'availability' | 'subcommands' | 'hasFallback' | 'errors' | 'recoveryActions'> & {
   producer: InstalledCommandProducer['producer'];
+  invocationSelectors?: string[];
 };
 
 function summary(view: ManagedCommandPackageView): RetainedManagedCommandPackage {
@@ -25,7 +26,8 @@ function summary(view: ManagedCommandPackageView): RetainedManagedCommandPackage
   if (!recoveryActions.some((action) => action.startsWith(`aw command package remove ${packageId} `))) {
     recoveryActions.push(`aw command package remove ${packageId}${availability === 'unavailable' ? ' --force' : ''} --yes`);
   }
-  return { producer: view.owner.producer, packageId, selector, availability, subcommands, hasFallback, errors, recoveryActions };
+  const invocationSelectors = getManagedCommandInvocationSelectors(selector, view.requiresPlatformContext, view.runtimeConfigPlatforms);
+  return { producer: view.owner.producer, packageId, selector, availability, subcommands, hasFallback, invocationSelectors, errors, recoveryActions };
 }
 
 export async function discoverRetainedManagedCommandPackages(options: {
@@ -39,8 +41,8 @@ export async function discoverRetainedManagedCommandPackages(options: {
 }
 
 export function retainedManagedCommandPackageResult(entry: RetainedManagedCommandPackage): CommandProducerResult {
-  const { producer, packageId, selector, availability, subcommands, hasFallback, errors, recoveryActions } = entry;
-  return { producer, packageId, selector, availability, subcommands, hasFallback, errors, recoveryActions,
+  const { producer, packageId, selector, availability, subcommands, hasFallback, invocationSelectors, errors, recoveryActions } = entry;
+  return { producer, packageId, selector, availability, subcommands, hasFallback, invocationSelectors, errors, recoveryActions,
     state: availability === 'unavailable' ? 'partial' : 'completed', action: 'unchanged' };
 }
 
@@ -60,7 +62,7 @@ async function prepareWithdrawal(installed: ManagedCommandPackageView, cwd: stri
   const force = installed.availability === 'unavailable';
   return { ...retained, kind: 'removeManagedCommandPackage', scope: 'user', pluginId: installed.selector, force,
     expectedPackage: await captureManagedCommandPackageEvidence(installed, env, { force }),
-    routeReview: await inspectManagedCommandRouteChanges({ before: installed.routes ?? undefined, selector: installed.selector, cwd, env }),
+    routeReview: await inspectManagedCommandRouteChanges({ before: installed.routes ?? undefined, beforePlatforms: await reviewInstalledInvocationPlatforms(installed), selector: installed.selector, cwd, env }),
     nativeToolChanges: nativeToolChangesForPackage(retained.producer, installed.nativeTools, null),
   };
 }
@@ -135,7 +137,7 @@ export async function prepareLifecycleCommandPackage(options: {
     }
   }
   const { record, previous } = candidate;
-  const routeReview = await inspectManagedCommandRouteChanges({ before: previous?.record.routes, after: record.routes, selector: pluginId, cwd, env });
+  const routeReview = await inspectManagedCommandRouteChanges({ before: previous?.record.routes, beforePlatforms: reviewInvocationPlatforms(previous?.record), after: record.routes, afterPlatforms: reviewInvocationPlatforms(record), selector: pluginId, cwd, env });
   const prepared: PreparedPackageAction = { record, actions: [{ kind: 'syncManagedCommandPackage', pluginId, scope: 'user', producer, record,
     expectedPackage: candidate.expectedPackage, contentDigest: candidate.resourceDigest, routeReview, runtimeConfigChanges: candidate.runtimeConfigChanges,
     nativeToolChanges: nativeToolChangesForPackage(producer, previous?.record.nativeTools, record.nativeTools),
@@ -167,7 +169,7 @@ export async function publishLifecycleCommandPackage(action: PublicationAction, 
   try {
     const installed = await installedPackage(packageId, env);
     const candidate = action.kind === 'syncManagedCommandPackage' ? await context.packagePreparationCache?.get(packageId) : undefined;
-    const routeReview = await inspectManagedCommandRouteChanges({ before: installed?.routes ?? undefined, after: candidate?.record.routes, selector, env, cwd });
+    const routeReview = await inspectManagedCommandRouteChanges({ before: installed?.routes ?? undefined, beforePlatforms: await reviewInstalledInvocationPlatforms(installed), after: candidate?.record.routes, afterPlatforms: reviewInvocationPlatforms(candidate?.record), selector, env, cwd });
     if (canonicalizeIdentityValue(routeReview) !== canonicalizeIdentityValue(action.routeReview)) {
       throw new ManagedCommandError('operationReviewStale', 'The reviewed routes or visible permissions changed.');
     }
@@ -183,9 +185,11 @@ export async function publishLifecycleCommandPackage(action: PublicationAction, 
     const { errors, recoveryActions } = await publishPreparedManagedCommandPackage({ candidate, plugin, referencePlugins: context.referencePlugins, cwd, env });
     const subcommands = candidate.record.routes.subcommands.map(({ name }) => name);
     const hasFallback = !!candidate.record.routes.fallback;
+    const invocationSelectors = getManagedCommandInvocationSelectors(selector, !!candidate.record.runtimeConfigKeys?.length,
+      candidate.record.runtimeConfigPlatforms);
     await event(errors.length ? 'failure' : 'success');
     return { ...base, action: candidate.expectedPackage ? 'updated' : 'created', availability: subcommands.length || hasFallback ? 'ready' : 'empty',
-      subcommands, hasFallback, state: errors.length ? 'partial' : 'completed', errors, recoveryActions };
+      subcommands, hasFallback, invocationSelectors, state: errors.length ? 'partial' : 'completed', errors, recoveryActions };
   } catch (error) {
     const remaining = await installedPackage(packageId, env).catch(() => undefined);
     const recovery = action.kind === 'removeManagedCommandPackage' ? `aw command package remove ${packageId}${remaining?.availability !== 'ready' && remaining?.availability !== 'empty' ? ' --force' : ''} --yes`
@@ -195,7 +199,9 @@ export async function publishLifecycleCommandPackage(action: PublicationAction, 
     const partialRemoval = action.kind === 'removeManagedCommandPackage' && diagnostic.code === 'commandPackageRemovalFailed'
       && (!remaining || remaining.availability === 'unavailable');
     return { ...base, state: partialRemoval ? 'partial' : 'failed', action: 'unchanged', availability: remaining?.availability ?? 'unavailable',
-      subcommands: remaining?.subcommands ?? [], hasFallback: remaining?.hasFallback ?? false, errors: [diagnostic], recoveryActions: [recovery] };
+      subcommands: remaining?.subcommands ?? [], hasFallback: remaining?.hasFallback ?? false,
+      invocationSelectors: getManagedCommandInvocationSelectors(selector, remaining?.requiresPlatformContext ?? null, remaining?.runtimeConfigPlatforms ?? []),
+      errors: [diagnostic], recoveryActions: [recovery] };
   }
 }
 

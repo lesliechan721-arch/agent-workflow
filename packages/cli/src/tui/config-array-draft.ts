@@ -1,9 +1,18 @@
 import {
   stablePluginConfigStringify,
   type PluginConfigArray,
+  type PluginConfigAdditionalPropertiesField,
+  type PluginConfigNestedObjectArrayField,
   type PluginConfigObject,
+  type PluginConfigObjectPropertyField,
   type PluginConfigScalar,
 } from '@lesliechan721/aw-plugin-core';
+
+export function isNestedConfigObjectArray(
+  field: PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField | undefined,
+): field is PluginConfigNestedObjectArrayField {
+  return field?.type === 'array' && field.items.type === 'object';
+}
 
 export interface ConfigArrayRow {
   rowId: string;

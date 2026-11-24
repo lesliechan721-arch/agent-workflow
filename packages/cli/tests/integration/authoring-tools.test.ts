@@ -3494,10 +3494,12 @@ describe('authoring tools', () => {
     tempDirs.push(root);
     const { closure } = nativeToolFixture();
     const manifest = createBaseManifest('native-reader-author', {
+      platforms: ['claude', 'generic'],
       requires: { aw: { capabilities: ['aw.managed-commands.v2', 'aw.native-tools.v3'] } },
       nativeTools: closure,
       scripts: { tests: { node: ['./tests/command.test.mjs'] } },
       config: { fields: { mode: { type: 'string', required: true } } },
+      extensions: { permissions: [{ name: 'tools', allow: [{ argsPrefix: [] }] }] },
       command: {
         platforms: ['claude'], sourceDir: './command', mode: 'static', runtimeConfig: { keys: ['mode'] },
         routes: { fallback: { runner: 'node', entry: 'entry.mjs' } },

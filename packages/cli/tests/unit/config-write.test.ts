@@ -337,8 +337,10 @@ describe('existing command package apply', () => {
     expect(await f.countRenders()).toBe(1);
     const reviewed = await preparePluginConfigApply(f.options);
     expect(reviewed.commandPackageReviews).toMatchObject([{
-      routeChanges: [{ argv: ['aw', 'command', 'run', 'team/demo', '--', 'check'],
-        before: { entry: 'safe.mjs' }, after: { entry: 'fast.mjs' } }],
+      routeChanges: ['codex', 'claude'].map((platform) => ({
+        argv: ['aw', 'command', 'run', `team/demo/${platform}`, '--', 'check'],
+        before: { entry: 'safe.mjs' }, after: { entry: 'fast.mjs' },
+      })),
       otherProjects: 'unobserved',
     }]);
     await disposePluginConfigApply(reviewed.plan);
@@ -410,7 +412,7 @@ describe('existing command package apply', () => {
     await fs.ensureDir(path.join(f.cwd, '.git'));
     await f.sync();
     await patchPluginConfigStore({ ...f.store, updates: { mode: 'fast' } });
-    const rules = { permissions: { allow: ['Bash(aw command run team/demo -- check *)'] } };
+    const rules = { permissions: { allow: ['Bash(aw command run team/demo/claude -- check *)'] } };
     await fs.outputJson(path.join(f.cwd, '.claude/settings.local.json'), rules);
     const reviewed = await preparePluginConfigApply(f.options);
     expect(reviewed.commandPackageReviews).toMatchObject([{ affectedPermissions: [] }]);

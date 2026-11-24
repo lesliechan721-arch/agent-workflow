@@ -134,7 +134,8 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
       && component.content.coverage.includes('plugin-agents'));
     const instructionRenderer = instructionUnit?.batches.length ? { sourceDigest, manifest, resources,
       batches: instructionUnit.batches, capabilities: instructionUnit.capabilityView } : undefined;
-    const policy = output === 'package' ? resolveInvocationPolicy(manifest, platform).permissions : undefined;
+    const invocationPolicy = output === 'package' ? resolveInvocationPolicy(manifest, platform, binding.plugin.pluginId) : undefined;
+    const policy = invocationPolicy?.permissions;
     const hasSkills = expected.components.some((component) => component.kind === 'skill');
     // Host delivery depends on the applied reachability, even when the declarations have stayed the same.
     const commandSkillAvailable = commandApplies && (hasSkills || batches.some((batch) => batch.allowedOutputKinds.includes('skill')))
@@ -146,7 +147,7 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
       inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, route: binding.route, renderScope, dynamic, declared, expected,
         capabilities: staticCapabilityInputs(declared.components, capabilityView), staticResources, instructions, instructionRenderer, policy,
         ...(hasSkills ? { requires: manifest.requires?.aw, nativeTools: manifest.nativeTools } : {}),
-        commandSkillAvailable, commandPermissions }) };
+        invocationSelector: invocationPolicy?.invocationSelector, commandSkillAvailable, commandPermissions }) };
   }));
   units.sort((left, right) => left.id.localeCompare(right.id));
   return { schemaVersion: 1, kind: 'aw-platform-input', plugin: { ...binding.plugin }, platform: binding.platform,

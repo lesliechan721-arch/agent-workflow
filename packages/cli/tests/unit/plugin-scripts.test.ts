@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { realpathSync } from 'node:fs';
 import os from 'node:os';
@@ -126,6 +126,164 @@ afterEach(async () => {
   }
   descendantPids.clear();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+describe.skipIf(process.platform === 'win32')('marker-free plugin process', () => {
+  it.each([
+    { description: 'preserves successful output when group cleanup crosses the execution deadline' },
+    { description: 'closes pipes held open by a descendant outside the verified group', detached: true },
+    { description: 'honors cancellation during group cleanup after a successful exit', abort: true },
+  ])('$description', async ({ detached = false, abort = false }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-process-'));
+    tempDirs.push(root);
+    const stdout = JSON.stringify({ schemaVersion: 1, status: 'ok', items: [] });
+    const descendant = `
+      process.on('SIGTERM', () => {});
+      process.send(process.pid, () => process.disconnect());
+      setTimeout(() => {}, 10_000);
+    `;
+    await fs.writeFile(path.join(root, 'probe.mjs'), `
+      import { spawn } from 'node:child_process';
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { setTimeout as delay } from 'node:timers/promises';
+      while (!existsSync('release')) await delay(10);
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {
+        detached: ${detached}, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      });
+      child.once('message', (pid) => {
+        writeFileSync('descendant.pid', String(pid));
+        child.unref();
+        process.stdout.write(${JSON.stringify(stdout)});
+        process.stderr.write('probe message');
+      });
+    `);
+
+    let exited: ReturnType<typeof waitForChildExit> | undefined;
+    const runner = createDefaultPluginProcessRunner({
+      spawn: ((command: string, args: string[], options: SpawnOptions) => {
+        const child = spawn(command, args, options);
+        hostProcesses.add(child);
+        exited = waitForChildExit(child);
+        return child;
+      }) as typeof spawn,
+    });
+    const controller = new AbortController();
+    const abortReason = new Error('cancelled during cleanup');
+    // Move only the host clock so the real script exits during the last
+    // part of its execution budget, regardless of CI startup latency.
+    let pid: number;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const result = runner.run({
+        command: process.execPath, args: ['probe.mjs'], cwd: root, env: { PATH: process.env.PATH },
+      }, { timeoutMs: 1_000, signal: controller.signal, markerFreeContainment: true, maxStdoutBytes: 1024 * 1024 });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+      if (!detached) await vi.advanceTimersByTimeAsync(950);
+      await fs.writeFile(path.join(root, 'release'), '');
+      expect(await exited).toEqual({ code: 0, signal: null });
+      pid = Number(await fs.readFile(path.join(root, 'descendant.pid'), 'utf8'));
+      descendantPids.add(pid);
+
+      if (abort) controller.abort(abortReason);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalled(), { timeout: 5_000 });
+      if (abort) {
+        await expect(result).rejects.toBe(abortReason);
+      } else {
+        await expect(result).resolves.toEqual({ exitCode: 0, signal: null, timedOut: false, stdout, stderr: 'probe message' });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    if (detached) expect(process.kill(pid, 'SIGKILL')).toBe(true);
+    await waitForProcessExit(pid);
+    descendantPids.delete(pid);
+  });
+
+  it.each(['timeout', 'abort'] as const)('closes blocked stdin on %s', async (mode) => {
+    const stdin = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: undefined,
+      exitCode: null,
+      signalCode: null,
+      stdin,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: () => {
+        queueMicrotask(() => {
+          child.emit('exit', null, 'SIGKILL');
+          child.emit('close', null, 'SIGKILL');
+        });
+        return true;
+      },
+    });
+    const runner = createDefaultPluginProcessRunner({
+      platform: 'linux',
+      spawn: (() => child) as unknown as typeof spawn,
+    });
+    const controller = new AbortController();
+    const cancelled = new Error('cancelled while writing stdin');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const result = runner.run({
+        command: 'node', args: [], cwd: '/', env: {}, stdin: 'x'.repeat(1024 * 1024),
+      }, { timeoutMs: 1_000, signal: controller.signal, markerFreeContainment: true });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+      expect(stdin.writableFinished).toBe(false);
+
+      if (mode === 'abort') controller.abort(cancelled);
+      else await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(stdin.destroyed).toBe(true);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce(), { timeout: 500 });
+      if (mode === 'abort') await expect(result).rejects.toBe(cancelled);
+      else await expect(result).resolves.toMatchObject({ timedOut: true });
+    } finally {
+      stdin.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes oversized stdout while the producing process is still alive', async () => {
+    const { promise: reported, resolve: report } = Promise.withResolvers<string>();
+    const runner = createDefaultPluginProcessRunner({
+      spawn: ((command: string, args: string[], options: SpawnOptions) => {
+        const child = spawn(command, args, options);
+        hostProcesses.add(child);
+        child.stderr?.once('data', (chunk) => report(String(chunk)));
+        return child;
+      }) as typeof spawn,
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const result = runner.run({
+        command: process.execPath,
+        args: ['-e', `
+          process.on('SIGTERM', () => {});
+          process.stdout.on('error', () => {});
+          const watchdog = setTimeout(() => process.stderr.write('stdout write stalled'), 5_000);
+          process.stdout.write(Buffer.alloc(2 * 1024 * 1024), (error) => {
+            clearTimeout(watchdog);
+            process.stderr.write(error ? 'stdout closed' : 'stdout consumed');
+          });
+          setTimeout(() => {}, 10_000);
+        `],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+      }, { timeoutMs: 1_000, markerFreeContainment: true, maxStdoutBytes: 1024 * 1024 });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+
+      // Do not advance the cleanup clock until the still-running producer reports the pipe state.
+      const pipeState = await reported;
+      await vi.waitFor(() => expect(settled).toHaveBeenCalled(), { timeout: 5_000 });
+      expect(pipeState).toBe('stdout closed');
+      await expect(result).resolves.toMatchObject({ stdoutTruncated: true, timedOut: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('preApply script', () => {

@@ -24,7 +24,7 @@ const batchObservationMs = windows ? 120000 : 5000;
 const testTimeoutMs = windows ? 180000 : 35000;
 const cleanupTimeoutMs = windows ? 45000 : 10000;
 
-// This external v5 adapter owns a separate, bounded local backend process. Every
+// This external v6 adapter owns a separate, bounded local backend process. Every
 // completion uses the observed backend exit code. No model runs in these tests.
 const fakeAdapter = String.raw`
 import fs from 'node:fs/promises';
@@ -51,7 +51,7 @@ const signal = (name) => new Promise((resolve, reject) => {
   void check();
 });
 const emit = (event) => new Promise((resolve, reject) => {
-  process.stdout.write(JSON.stringify({ protocolVersion: 5, ...event }) + '\n', (error) => error ? reject(error) : resolve());
+  process.stdout.write(JSON.stringify({ protocolVersion: 6, ...event }) + '\n', (error) => error ? reject(error) : resolve());
 });
 async function finish(stopped = false) {
   if (finishing) return;
@@ -113,7 +113,7 @@ async function start(frame) {
   if (scenario.readyGate) { await phase('readyGateWaiting'); await signal('ready'); }
   if (scenario.readyDelay) await new Promise((resolve) => setTimeout(resolve, scenario.readyDelay));
   if (finishing) return;
-  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false || frame.mode === 'bundle' ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: !frame.resume ? 'disabled' : scenario.resume ? 'enabled' : 'unsupported' } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
+  await emit({ type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: !frame.communication ? { status: 'disabled' } : scenario.communication === false ? { status: 'unsupported' } : scenario.descriptor ?? { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: !frame.resume ? 'disabled' : scenario.resume ? 'enabled' : 'unsupported' } } }, ...(scenario.diagnostics ? { diagnostics: scenario.diagnostics } : {}) });
   ready = true;
   await phase('readySent');
   for (const text of scenario.messages ?? []) await emit({ type: 'message', text });
@@ -166,7 +166,7 @@ function field(output, key) {
   const attribute = controls.match(new RegExp(`(?:^| )${key}=([^ \\n]+)`, 'm'))?.[1];
   if (attribute !== undefined) return attribute;
   if (key === 'run') {
-    const handle = controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?=\s|$)/m)?.[1];
+    const handle = controls.match(/^(?:started|starting|start_failed|ready|queued|stopped|stopping|deferred|exported) (aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22})(?=\s|$)/m)?.[1];
     if (handle) return handle;
   }
   for (const kind of ['result', 'input', 'message', 'diagnostic']) {
@@ -185,7 +185,7 @@ function successful(result, command) {
   assert.match(result.stdout, expected[command]);
 }
 
-async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
+async function fixture(t, { diagnostics = false } = {}) {
   const began = performance.now();
   const phases = []; const scenarios = [];
   function phase(name, values = {}) {
@@ -214,17 +214,24 @@ async function fixture(t, mode = 'workspace', { diagnostics = false } = {}) {
     pluginName: 'agent-subagent', pluginVersion: '0.0.0', sourceContentDigest: 'sha256:' + 'b'.repeat(64), platform: 'codex' };
   const snapshot = { installedIdentity, resourceRoot: installed, platform: 'codex', values: {
     subagentRetentionHours: 0,
-    subagentCommands: [{ key: 'fixture', adapter: 'custom', mode, command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
-  const claude = structuredClone(snapshot);
-  claude.platform = claude.installedIdentity.platform = 'claude';
-  const save = () => Promise.all([snapshot, claude].map((value) =>
+    subagentCommands: [{ key: 'fixture', adapter: 'custom', command: await fs.realpath(process.execPath), entrypoint: adapter }] } };
+  const snapshots = { codex: snapshot };
+  for (const platform of ['claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok']) {
+    const value = structuredClone(snapshot);
+    value.platform = value.installedIdentity.platform = platform;
+    snapshots[platform] = value;
+  }
+  const save = () => Promise.all(Object.values(snapshots).map((value) =>
     fs.writeFile(path.join(installed, value.platform + '.json'), JSON.stringify(value))));
   await save();
   await fs.mkdir(path.join(installed, '.aw'));
   await fs.writeFile(path.join(installed, '.aw', 'command-runtime-config.mjs'), `import fs from 'node:fs/promises';
-export async function readCommandRuntimeConfig({keys, platform}) {
-  if (!['codex', 'claude'].includes(platform)) throw new Error('Unexpected platform');
-  if (![JSON.stringify(['subagentCommands', 'subagentRetentionHours']), JSON.stringify(['subagentRetentionHours'])].includes(JSON.stringify(keys))) throw new Error('Unexpected keys');
+let reads = 0;
+export async function readCommandRuntimeConfig({from, keys, ...extra}) {
+  if (++reads !== 1 || from !== new URL('../scripts/subagent.mjs', import.meta.url).href || Object.keys(extra).length) throw new Error('Unexpected reader call');
+  const expected = process.argv[2] === 'start' ? ['subagentCommands', 'subagentRetentionHours'] : ['subagentRetentionHours'];
+  if (JSON.stringify(keys) !== JSON.stringify(expected)) throw new Error('Unexpected keys');
+  const platform = process.env.FIXTURE_AW_PLATFORM;
   const snapshot = JSON.parse(await fs.readFile(new URL('../' + platform + '.json', import.meta.url), 'utf8'));
   snapshot.values = Object.fromEntries(keys.map((key) => [key, snapshot.values[key]]));
   return snapshot;
@@ -234,7 +241,7 @@ export async function readCommandRuntimeConfig({keys, platform}) {
     const next = installed + '-next';
     await fs.rename(installed, next);
     installed = next;
-    snapshot.resourceRoot = claude.resourceRoot = installed;
+    for (const value of Object.values(snapshots)) value.resourceRoot = installed;
     await save();
   }
   // Windows native tools need their normal host environment. Normalize names so
@@ -246,12 +253,12 @@ export async function readCommandRuntimeConfig({keys, platform}) {
     TMPDIR: temporaryRoot, TMP: temporaryRoot, TEMP: temporaryRoot };
   const handles = new Set();
   let nextScenario = 0, nextClock = 0, nextExport = 0;
-  function command(args, { stdin, env = {}, cwd = workspace, breakOutput = false, keepStdinOpen = false, timeout = windows ? 120000 : 35000, signal = t.signal } = {}) {
+  function command(args, { stdin, env = {}, cwd = workspace, platform = 'codex', breakOutput = false, keepStdinOpen = false, timeout = windows ? 120000 : 35000, signal = t.signal } = {}) {
     return new Promise((resolve, reject) => {
       signal.throwIfAborted();
       const began = performance.now();
       phase('commandBegin', { operation: args[0] });
-      const child = spawn(process.execPath, [...diagnosticsArgs, path.join(installed, 'scripts', path.basename(sourceEntry)), ...args], { cwd, env: { ...environment, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [...diagnosticsArgs, path.join(installed, 'scripts', path.basename(sourceEntry)), ...args], { cwd, env: { ...environment, ...env, FIXTURE_AW_PLATFORM: platform }, stdio: ['pipe', 'pipe', 'pipe'] });
       const output = [], diagnostics = [];
       const abort = () => child.kill('SIGKILL');
       signal.addEventListener('abort', abort, { once: true });
@@ -267,7 +274,7 @@ export async function readCommandRuntimeConfig({keys, platform}) {
         signal.removeEventListener('abort', abort);
         const stdout = Buffer.concat(output).toString('utf8');
         const handle = field(stdout, 'run');
-        if (/^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
+        if (/^aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/.test(handle ?? '')) handles.add(handle);
         let nativeTiming;
         const stderr = Buffer.concat(diagnostics).toString('utf8').split('\n').filter((line) => {
           if (!line.startsWith('AW_SUBAGENT_NATIVE_TIMING ')) return true;
@@ -291,8 +298,8 @@ export async function readCommandRuntimeConfig({keys, platform}) {
     const scenarioFile = path.join(runDirectory, 'scenario.json');
     await fs.writeFile(scenarioFile, JSON.stringify(scenario));
     const input = promptFile === undefined ? ['--prompt', prompt] : ['--prompt-file', promptFile];
-    const response = await command(['start', '--platform', platform, '--executor', 'fixture', '--workspace', workspace, ...input, ...extra],
-      { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd });
+    const response = await command(['start', '--executor', 'fixture', '--workspace', workspace, ...input, ...extra],
+      { env: { ...env, FIXTURE_SCENARIO_FILE: scenarioFile, FIXTURE_RUN_DIRECTORY: runDirectory, FIXTURE_GENERATIONS: generations }, stdin, cwd, platform });
     const run = field(response.stdout, 'run');
     phase('startReturned', { scenario: index, code: response.code, state: field(response.stdout, 'state'), communication: field(response.stdout, 'communication') });
     return { ...response, run, runDirectory, scenario, showDiagnostics: extra.includes('--diagnostics'),
@@ -308,10 +315,10 @@ export async function readCommandRuntimeConfig({keys, platform}) {
     };
   }
   async function initialized(started) {
-    assert.match(started.run ?? '', /^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/, started.stdout + started.stderr);
+    assert.match(started.run ?? '', /^aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/, started.stdout + started.stderr);
     if (started.code === 0) { successful(started, 'start'); return; }
     assert.equal(started.code, 1, started.stdout + started.stderr);
-    assert.match(started.stdout, /^starting aw5-/);
+    assert.match(started.stdout, /^starting aw6-/);
     assert.equal(field(started.stderr, 'code'), started.showDiagnostics ? 'startupNotReady' : undefined);
     t.diagnostic(`AW_SUBAGENT_PARENT_PHASE ${JSON.stringify({ phase: 'continueSamePendingRun', elapsedMs: started.elapsedMs })}`);
     if (started.scenario.readyGate) await started.releaseReady();
@@ -418,7 +425,7 @@ export async function readCommandRuntimeConfig({keys, platform}) {
       finally { await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); phase('cleanupEnd'); }
     }
   }, { timeout: cleanupTimeoutMs + 5000 });
-  return { directory, homeRoot: directory, temporaryRoot, workspace, get installed() { return installed; }, generations, snapshot, claude, get config() { return path.join(installed, 'codex.json'); }, save, rotate, command, start, resume, initialized, clock, waitTerminal, evidence, stopped, exportResult, phase };
+  return { directory, homeRoot: directory, temporaryRoot, workspace, get installed() { return installed; }, generations, snapshot, snapshots, get config() { return path.join(installed, 'codex.json'); }, save, rotate, command, start, resume, initialized, clock, waitTerminal, evidence, stopped, exportResult, phase };
 }
 
 

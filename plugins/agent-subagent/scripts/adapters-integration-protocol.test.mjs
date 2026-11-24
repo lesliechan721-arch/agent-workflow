@@ -1,7 +1,7 @@
 import { nativeTest as test } from './fixtures/native-test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { fixture, supported, testTimeoutMs } from './fixtures/adapter-v5.mjs';
+import { fixture, supported, testTimeoutMs } from './fixtures/adapter-v6.mjs';
 
 for (const backend of ['codex', 'claude']) for (const scenario of ['no terminal', 'nonzero', 'diagnostic overflow']) test(`${backend}: ${scenario} cannot become completed`, { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t, backend, scenario); const run = f.start(); run.send(f.request);
@@ -79,5 +79,18 @@ test('Codex: approval requests cannot be silently granted', { skip: !supported, 
 test('A connection without start cannot succeed or launch a backend', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t); const run = f.start(); run.child.stdin.end();
   const result = await run.exit; assert.equal(result.code, 1); assert.deepEqual(result.frames, []); assert.match(result.diagnostic, /protocolInvalid/);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+// Test Value Gate: an older client must get a protocol failure from the actual
+// adapter entry without starting a backend or inventing execution evidence.
+test('installed adapter rejects the previous protocol version before negotiation', { skip: !supported, timeout: testTimeoutMs }, async (t) => {
+  const f = await fixture(t);
+  const run = f.start();
+  run.send({ ...f.request, protocolVersion: 5 });
+  const response = await run.exit;
+  assert.equal(response.code, 1);
+  assert.match(response.diagnostic, /^protocolInvalid:/);
+  assert.deepEqual(response.frames, []);
   await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
 });

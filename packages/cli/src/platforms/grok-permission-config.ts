@@ -124,23 +124,23 @@ export async function readGrokPermissionLayers(ctx: ReadContext, destination: st
   return rules;
 }
 
-function mayApply(pattern: string, commandPrefix: string): boolean {
+export function grokPermissionMayApply(pattern: string, commandPrefix: string): boolean {
   // An initial literal fragment can rule out some unrelated patterns. This is
   // a review of configured candidates, separate from Grok's runtime decision.
   const literal = pattern.trim().replace(/:\*$/u, '').split(/[*?[\\]/u, 1)[0]!;
   return commandPrefix.startsWith(literal) || literal.startsWith(commandPrefix);
 }
 
-export async function inspectGrokPermissionConfig(ctx: ReadContext, argvPrefix: readonly string[],
+export async function inspectGrokPermissionConfig(ctx: ReadContext, argvPrefixes: readonly (readonly string[])[],
   projectRoot?: string): Promise<GrokPermissionReview> {
   const result: GrokPermissionReview = { rules: [], readFailures: [] };
-  const commandPrefix = argvPrefix.join(' ');
+  const commandPrefixes = argvPrefixes.map((argv) => argv.join(' '));
   const inspect = async (file: string, allowedProjectRoot?: string) => {
     try {
       const source = allowedProjectRoot ? getGrokPermissionConfigPath(ctx, { kind: 'project', projectRoot: allowedProjectRoot }) : file;
       const rules = shellRules(await readTomlText(source, allowedProjectRoot) ?? '');
       for (const { effect: action, resource: pattern } of rules) {
-        if (mayApply(pattern, commandPrefix)) result.rules.push({ path: file, action, pattern });
+        if (commandPrefixes.some((prefix) => grokPermissionMayApply(pattern, prefix))) result.rules.push({ path: file, action, pattern });
       }
     } catch {
       result.readFailures.push(file);

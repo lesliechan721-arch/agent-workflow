@@ -78,6 +78,10 @@ const adapterFacts: Readonly<Partial<Record<
   },
   config: {
     'config.presentation': { conflicts: 'Schema mutation and sensitive or path values in presets.' },
+    'config.fields.<key>.suggestions': {
+      requires: 'A local suggestion script or explicit same-source direct provider dependency.',
+      conflicts: 'Sensitive, constant, value reference and preset-only fields.',
+    },
   },
   'pre-apply': {
     'scripts.preApply': { requires: 'A Node entry inside the plugin root.' },

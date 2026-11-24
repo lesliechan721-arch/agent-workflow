@@ -119,7 +119,11 @@ describe('managed command plugin lifecycle', () => {
     await integration.sealMarketplaceGenerations(targets);
     for (const target of targets) {
       expect(target.operationActions).toContainEqual(expect.objectContaining({ kind: 'syncManagedCommandPackage',
-        routeReview: expect.objectContaining({ routeChanges: [expect.objectContaining({ argv: ['aw', 'command', 'run', selector, '--', 'check'] })] }),
+        routeReview: expect.objectContaining({ routeChanges: expect.arrayContaining(
+          ['opencode', 'claude'].map((platform) => expect.objectContaining({
+            argv: ['aw', 'command', 'run', `${selector}/${platform}`, '--', 'check'],
+          })),
+        ) }),
         runtimeConfigChanges: expect.arrayContaining([{ platform: 'opencode', after: { mode: 'opencode' } }, { platform: 'claude', after: { mode: 'claude' } }]),
       }));
       const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
@@ -134,7 +138,7 @@ describe('managed command plugin lifecycle', () => {
     const retained = await readManagedCommandPackageView(id, isolated.env);
     expect(retained.resourceRoot).toBe(before.resourceRoot);
     expect(retained.runtimeConfigPlatforms.sort()).toEqual(['claude','opencode']);
-    expect(await runManagedCommand({ id: selector, args: ['check','after'], cwd: isolated.layout.fixtureCwd,
+    expect(await runManagedCommand({ id: `${selector}/opencode`, args: ['check','after'], cwd: isolated.layout.fixtureCwd,
       cliEntry: import.meta.filename, env: isolated.env })).toBe(0);
     expect(await fs.readJson(capturePath)).toMatchObject({ args: ['fixed', 'after'] });
   });
@@ -150,7 +154,7 @@ describe('managed command plugin lifecycle', () => {
     const target = await integration.buildTarget(input(updated, 'sync', 'claude'));
     const action = target.operationActions?.find((entry) => entry.kind === 'removeManagedCommandPackage');
     expect(action).toMatchObject({ selector, availability: 'ready', routeReview: { routeChanges: [{ before: { entry: 'tool.mjs' }, after: null }] } });
-    expect((await resolveManagedCommand(selector, isolated.env, { args: ['check'] })).launch.args).toEqual(['fixed']);
+    expect((await resolveManagedCommand(`${selector}/claude`, isolated.env, { args: ['check'] })).launch.args).toEqual(['fixed']);
     await integration.sealMarketplaceGenerations([target]);
     const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
     expect(result.status, JSON.stringify(result)).toBe('succeeded');

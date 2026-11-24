@@ -27,8 +27,8 @@ test('diagnostic redaction expansion preserves completed output and readable exp
   const diagnostic = { code: 'profileReadyIgnored', field: `features.base${'f'.repeat(499)}`, message: `base${'m'.repeat(2044)}` };
   const resultDiagnostics = [{ ...diagnostic, code: 'profileResultIgnored' }, { code: 'profileFieldIgnored', field: 'features.kept', message: 'Keep this safe diagnostic.' }];
   const finalText = 'Complete retained answer.';
-  validateFrame({ protocolVersion: 5, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: 'unsupported' } } }, diagnostics: [diagnostic] }, 'adapter');
-  validateFrame({ protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
+  validateFrame({ protocolVersion: 6, type: 'ready', initialization: { environment: { status: 'available' }, capabilities: { communication: { status: 'enabled', transport: 'mcp', passiveDelivery: 'in-turn' }, resume: { status: 'unsupported' } } }, diagnostics: [diagnostic] }, 'adapter');
+  validateFrame({ protocolVersion: 6, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text: finalText, diagnostics: resultDiagnostics }, 'adapter');
   const f = await fixture(t);
   f.snapshot.values.subagentCommands[0].envFrom = { SERVICE_DATA: 'REFERENCED_VALUE' }; await f.save();
   const started = await f.start({ diagnostics: [diagnostic], resultDiagnostics, finalText }, { env: { REFERENCED_VALUE: 'base' } });
@@ -64,13 +64,13 @@ test('diagnostic redaction expansion preserves completed output and readable exp
 // ready. Public reads must stay bounded and export must retain every diagnostic.
 test('initialization failure with large diagnostics remains readable and exportable', { timeout: testTimeoutMs }, async (t) => {
   const diagnostics = Array.from({ length: 64 }, (_, index) => ({ code: 'profileFieldIgnored', field: `features.item_${index}_${'f'.repeat(400)}`, message: 'x'.repeat(1000) }));
-  validateFrame({ protocolVersion: 5, type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
+  validateFrame({ protocolVersion: 6, type: 'result', state: 'failed', generationStarted: false, backendExitCode: null,
     text: '', code: 'fixtureInitializationFailed', diagnostics }, 'adapter');
   const f = await fixture(t);
   const clock = await f.clock(['start'], { stepMs: 1000 });
   const started = await f.start({ initializationFailure: true, readyGate: true, diagnostics }, { env: clock.environment });
   bounded(started); assert.equal(started.code, 1);
-  assert.match(started.stdout, /^starting aw5-/);
+  assert.match(started.stdout, /^starting aw6-/);
   assert.equal(field(started.stdout, 'environment'), undefined);
   assert.equal(field(started.stderr, 'code'), undefined);
   await started.releaseReady();

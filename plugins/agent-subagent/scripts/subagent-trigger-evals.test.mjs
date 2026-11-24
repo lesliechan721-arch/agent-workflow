@@ -15,10 +15,10 @@ import triggerCorpusDocument from '../skills/spawn-subagent/evals/trigger-cases.
 import compositionCorpusDocument from '../skills/spawn-subagent/evals/trigger-composition-cases.json' with { type: 'json' };
 
 const GUIDE_ROLE_NAMES = [
-  'subagent',
+  'aw-eval-source-agent-subagent-subagent',
 ];
 const EXPLORE_ROLE_NAMES = [
-  'codex-explore',
+  'aw-eval-source-codex-enhance-codex-explore',
 ];
 const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
 
@@ -259,12 +259,12 @@ async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
 async function testGuideRoleValidation() {
   const cases = [
     {
-      options: { omitRole: 'subagent' },
-      expected: /role subagent exactly once, got 0/,
+      options: { omitRole: 'aw-eval-source-agent-subagent-subagent' },
+      expected: /role aw-eval-source-agent-subagent-subagent exactly once, got 0/,
     },
     {
-      options: { duplicateRole: 'subagent' },
-      expected: /role subagent exactly once, got 2/,
+      options: { duplicateRole: 'aw-eval-source-agent-subagent-subagent' },
+      expected: /role aw-eval-source-agent-subagent-subagent exactly once, got 2/,
     },
   ];
   for (const entry of cases) {

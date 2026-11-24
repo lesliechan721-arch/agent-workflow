@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
@@ -210,11 +210,19 @@ describe('plugin scripts staging smoke', () => {
     for (const [feature, values] of [
       ['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],
     ] as const) capabilities.features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
-    const config = await renderer.resolveArtifactRenderConfig({ pluginName: plugin.manifest.name,
-      manifest: plugin.manifest, sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
-      platform: 'codex', scope: 'user', cwd: temporary, env });
-    const prepared = await renderer.preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user',
-      kinds: renderUnit.kinds, capabilities, config, cwd: temporary, commandEnv: env });
+    const configStore = await importSmokeSnapshotModule<typeof import('../../src/utils/plugin-config.js')>(
+      path.join(snapshot.cliDistRoot, 'src', 'utils', 'plugin-config.js'));
+    const configOptions = { pluginName: plugin.manifest.name, manifest: plugin.manifest,
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      platform: 'codex', scope: 'user', cwd: temporary, env } as const;
+    const prepare = (config: Awaited<ReturnType<typeof renderer.resolveArtifactRenderConfig>>) =>
+      renderer.preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user',
+        kinds: renderUnit.kinds, capabilities, config, cwd: temporary, commandEnv: env });
+    const zeroConfig = await prepare(await renderer.resolveArtifactRenderConfig(configOptions));
+    expect(zeroConfig.resources.files.some((file) => file.path.startsWith('references/'))).toBe(false);
+    const subagentCommands = [{ key: 'local-codex', adapter: 'codex' }];
+    await configStore.writePluginConfigStore({ ...configOptions, values: { subagentCommands } });
+    const prepared = await prepare(await renderer.resolveArtifactRenderConfig(configOptions));
     expect(prepared.expected.unmet).toEqual([]);
     expect(prepared.expected.components.map(({ id }) => id)).toEqual(['spawn-subagent-skill']);
     expect(prepared.resources.files.some((file) => file.source?.kind === 'bundle')).toBe(true);
@@ -234,8 +242,10 @@ describe('plugin scripts staging smoke', () => {
       expect(projected.bundle).not.toBeNull();
       const component = projected.components.find((item) => item.id === 'spawn-subagent-skill')!;
       const skill = path.join(projected.bundle!.stagingRoot, 'skills', component.nativeName);
-      expect(await fs.readFile(path.join(skill, 'references/external-delegation.md'), 'utf8'))
-        .toContain('aw command run fixture/agent-subagent -- start --platform codex');
+      expect(await fs.readFile(path.join(skill, 'references/external-execution.md'), 'utf8'))
+        .toContain('aw command run fixture/agent-subagent/codex -- start --executor');
+      expect(await fs.readFile(path.join(skill, 'references/executor-selection.md'), 'utf8'))
+        .toContain('aw command run fixture/agent-subagent/codex -- inspect --executor');
       await expect(fs.pathExists(path.join(skill, 'scripts/subagent.mjs'))).resolves.toBe(false);
       await expect(fs.pathExists(path.join(skill, '.aw-runtime-config.json'))).resolves.toBe(false);
       const installed = await materialization.publishPreparedManagedCommandPackage({ ...ctx, plugin, candidate });
@@ -244,6 +254,10 @@ describe('plugin scripts staging smoke', () => {
         selector: 'fixture/agent-subagent', availability: 'ready', runtimeConfigPlatforms: ['codex'],
       });
       const resourceRoot = command.resourceRoot!;
+      await expect(fs.pathExists(path.join(resourceRoot, 'scripts', 'introspection', 'inspect.mjs'))).resolves.toBe(true);
+      await expect(fs.pathExists(path.join(bundle, 'scripts', 'config-suggestions.mjs'))).resolves.toBe(true);
+      expect(await fs.readFile(path.join(resourceRoot, 'assets', 'task-instructions.md'), 'utf8'))
+        .toBe(await fs.readFile(path.join(skill, 'assets', 'task-instructions.md'), 'utf8'));
       const nativeTools = (await commands.readInstalledCommandProducer(resourceRoot)).nativeTools;
       expect(nativeTools?.consumers).toEqual([{
         kind: 'plugin-command',
@@ -261,13 +275,18 @@ describe('plugin scripts staging smoke', () => {
       const runtimeReader = await importSmokeSnapshotModule<typeof reader>(
         path.join(resourceRoot, 'scripts', 'runtime', 'native-tool-reader.mjs'));
       expect(() => runtimeReader.readNativeTool('windows-job', unavailable.protocol, {})).toThrow('nativeContextInvalid');
-      const runtimeConfig = await importSmokeSnapshotModule<{
-        readCommandRuntimeConfig(options: { from: string; platform: string; keys: string[] }): Promise<unknown>;
-      }>(path.join(resourceRoot, '.aw', 'command-runtime-config.mjs'));
-      await expect(runtimeConfig.readCommandRuntimeConfig({
-        from: path.join(resourceRoot, 'scripts/subagent.mjs'), platform: 'codex',
+      const physicalRoot = await fs.realpath(resourceRoot);
+      const readerUrl = pathToFileURL(path.join(physicalRoot, '.aw', 'command-runtime-config.mjs')).href;
+      const options = {
+        from: pathToFileURL(path.join(physicalRoot, 'scripts/subagent.mjs')).href,
         keys: ['subagentCommands', 'subagentRetentionHours'],
-      })).resolves.toMatchObject({ values: { subagentCommands: [], subagentRetentionHours: 24 } });
+      };
+      const installedConfig = await execFileAsync(process.execPath, ['--input-type=module', '--eval',
+        `import { readCommandRuntimeConfig } from ${JSON.stringify(readerUrl)}; console.log(JSON.stringify(await readCommandRuntimeConfig(${JSON.stringify(options)})));`,
+      ], { env: { ...env, AW_COMMAND_RUNTIME_CONFIG: JSON.stringify({
+        schemaVersion: 1, packageId: command.packageId, revision: path.basename(resourceRoot), platform: 'codex',
+      }) } });
+      expect(JSON.parse(installedConfig.stdout)).toMatchObject({ platform: 'codex', values: { subagentCommands, subagentRetentionHours: 24 } });
       async function assertNoPe(directory: string): Promise<void> {
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
           const target = path.join(directory, entry.name);

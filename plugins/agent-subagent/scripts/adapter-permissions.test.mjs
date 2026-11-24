@@ -21,9 +21,9 @@ test('installed adapter permission modes and environment contracts', async (t) =
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const movedScripts = path.join(root, 'commands/scripts');
   await fs.cp(scripts, movedScripts, { recursive: true });
-  if (process.env.AW_PLUGIN_EVENT !== 'test') for (const relative of ['adapters/codex-profile.mjs', 'file-selection/selection.mjs']) {
-    const entry = path.join(movedScripts, relative);
-    const bundled = await build({ entryPoints: [entry], nodePaths: [path.join(packageRoot, 'node_modules')], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+  if (process.env.AW_PLUGIN_EVENT !== 'test') {
+    const entry = path.join(movedScripts, 'adapters/codex-profile.mjs');
+    const bundled = await build({ entryPoints: [path.join(scripts, 'adapters/codex-profile.mjs')], nodePaths: [path.join(packageRoot, 'node_modules')], bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false, logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
     await fs.writeFile(entry, bundled.outputFiles[0].contents);
   }
   const movedCases = path.join(root, 'scripts/fixtures/adapter-permission-cases.mjs');

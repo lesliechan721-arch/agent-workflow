@@ -1,10 +1,10 @@
-import { canonicalizeIdentityValue, selectPluginConfigProfile, type PlatformName } from '@lesliechan721/aw-plugin-core/manifest';
+import { canonicalizeIdentityValue, getManagedCommandInvocationSelectors, selectPluginConfigProfile, type PlatformName } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CommandProducerResult, PluginMeta } from '../types.js';
 import {
   describeManagedCommandRouteReview,
   describeManagedCommandRuntimeConfigChanges,
-  inspectManagedCommandRouteChanges,
+  inspectManagedCommandRouteChanges, reviewInvocationPlatforms,
   type ManagedCommandRouteReview,
 } from './managed-command-cli-review.js';
 import {
@@ -60,7 +60,7 @@ export async function inspectConfigCommandPackageReview(
 ): Promise<ConfigCommandPackageReview> {
   const selector = packageSelector(target);
   const routeReview = await inspectManagedCommandRouteChanges({ selector,
-    before: candidate.previous?.record.routes, after: candidate.record.routes, cwd: options.cwd,
+    before: candidate.previous?.record.routes, beforePlatforms: reviewInvocationPlatforms(candidate.previous?.record), after: candidate.record.routes, afterPlatforms: reviewInvocationPlatforms(candidate.record), cwd: options.cwd,
     env: options.env ?? process.env, userOnly: (options.context ?? options.scope) === 'user' });
   return { ...routeReview, selector, runtimeConfigChanges: candidate.runtimeConfigChanges };
 }
@@ -71,12 +71,16 @@ export function configPackageResult(
 ): CommandProducerResult {
   const { packageId, producer } = target;
   const selector = packageSelector(target);
-  const routes = (published ? candidate?.record : candidate?.previous?.record)?.routes;
+  const record = published ? candidate?.record : candidate?.previous?.record;
+  const routes = record?.routes;
   const subcommands = routes?.subcommands.map(({ name }) => name) ?? target.subcommands ?? [];
   const hasFallback = routes ? routes.fallback !== undefined : target.hasFallback ?? false;
+  const invocationSelectors = getManagedCommandInvocationSelectors(selector,
+    record ? !!record.runtimeConfigKeys?.length : target.requiresPlatformContext ?? null,
+    record?.runtimeConfigPlatforms ?? target.runtimeConfigPlatforms);
   return { producer, packageId, selector, action: published ? 'updated' : 'unchanged',
     availability: routes ? subcommands.length || hasFallback ? 'ready' : 'empty' : target.availability ?? 'unavailable',
-    subcommands, hasFallback, state: published ? published.errors.length ? 'partial' : 'completed' : 'failed',
+    subcommands, hasFallback, invocationSelectors, state: published ? published.errors.length ? 'partial' : 'completed' : 'failed',
     errors: published?.errors ?? errors,
     recoveryActions: published?.recoveryActions
       ?? [`aw plugin sync ${selector}`, `aw command package sync ${selector}`] };

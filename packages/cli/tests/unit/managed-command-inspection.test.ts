@@ -43,6 +43,26 @@ describe('managed command read-only inspection', () => {
       .toEqual([[user, 'ask', true], [project, 'ask', true]]);
   });
 
+  it.each(['add', 'remove'])('reviews old and new invocations when a package changes platform context (%s)', async (direction) => {
+    const selector = 'fixture/inspection-commands';
+    const { env, layout } = isolated;
+    const routes = normalizeCommandRoutes({ subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs' }] });
+    const packageArgv = ['aw', 'command', 'run', selector, '--', 'check'];
+    const platformArgv = ['aw', 'command', 'run', selector + '/codex', '--', 'check'];
+    const rules = [packageArgv, platformArgv].map((pattern) => `prefix_rule(pattern = ${JSON.stringify(pattern)})`);
+    await fs.outputFile(path.join(getCodexHome(env), 'rules', 'default.rules'), rules.join('\n'));
+    const review = await inspectManagedCommandRouteChanges({
+      selector, cwd: layout.fixtureCwd, env, before: routes, after: routes,
+      ...(direction === 'add' ? { afterPlatforms: ['codex'] } : { beforePlatforms: ['codex'] }),
+    });
+    const [oldArgv, newArgv] = direction === 'add' ? [packageArgv, platformArgv] : [platformArgv, packageArgv];
+    expect(review.routeChanges).toEqual([
+      { argv: oldArgv, before: expect.objectContaining({ entry: 'tool.mjs' }), after: null },
+      { argv: newArgv, before: null, after: expect.objectContaining({ entry: 'tool.mjs' }) },
+    ]);
+    expect(review.affectedPermissions.map((rule) => rule.argvPrefix)).toEqual([packageArgv, platformArgv]);
+  });
+
   it('shows matching Codex rules in user and project files when invocation text routes to a new entry', async () => {
     const cwd = isolated.layout.fixtureCwd;
     const env = isolated.env;
@@ -229,13 +249,33 @@ prefix_rule(pattern = ${JSON.stringify(argv)}, decision = "allow")
     const user = path.join(env.GROK_HOME, 'config.toml');
     const project = path.join(cwd, '.grok/config.toml');
     await fs.ensureDir(path.join(cwd, '.git'));
-    await fs.outputFile(user, `[permission]\nrules = [{ action = "ask", tool = "bash", pattern = "aw command run ${selector} -- check *" }]\n`);
+    const legacyPattern = `aw command run ${selector} -- check *`;
+    const sharedPattern = `aw command run ${selector}*`;
+    const codexPattern = `aw command run ${selector}/codex -- check *`;
+    await fs.outputFile(user, `[permission]\nrules = [\n${[legacyPattern, sharedPattern, codexPattern]
+      .map((pattern) => `  { action = "ask", tool = "bash", pattern = ${JSON.stringify(pattern)} }`).join(',\n')}\n]\n`);
     await fs.outputFile(project, '# project configuration\n');
-    const options = { selector, cwd, env, after: normalizeCommandRoutes({ subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs' }] }) };
+    const routes = normalizeCommandRoutes({ subcommands: [{ name: 'check', runner: 'node', entry: 'tool.mjs' }] });
+    const options = { selector, cwd, env, before: routes, after: routes, afterPlatforms: ['codex', 'grok'] as const };
+    const match = (resourcePattern: string, invocation: string) => ({ platform: 'grok', path: user, action: 'ask',
+      argvPrefix: ['aw', 'command', 'run', invocation, '--'], resourcePattern });
     const scoped = await inspectManagedCommandRouteChanges(options);
-    expect(scoped.affectedPermissions).toContainEqual(expect.objectContaining({ platform: 'grok', path: user, action: 'ask' }));
+    expect(scoped.affectedPermissions.filter(({ platform }) => platform === 'grok')).toEqual([
+      match(legacyPattern, selector), match(sharedPattern, `${selector}/grok`), match(codexPattern, `${selector}/codex`),
+    ]);
     expect(scoped.unverifiedGrokProjectPath).toBe(project);
     expect((await inspectManagedCommandRouteChanges({ ...options, userOnly: true })).unverifiedGrokProjectPath).toBeUndefined();
+    const addedGrok = await inspectManagedCommandRouteChanges({ ...options, beforePlatforms: ['codex'] });
+    expect(addedGrok.affectedPermissions.filter(({ platform }) => platform === 'grok')).toEqual([match(sharedPattern, `${selector}/grok`)]);
+    const addedCodex = await inspectManagedCommandRouteChanges({ ...options, beforePlatforms: ['grok'] });
+    expect(addedCodex.affectedPermissions.filter(({ platform }) => platform === 'grok')).toEqual([
+      match(sharedPattern, `${selector}/codex`), match(codexPattern, `${selector}/codex`),
+    ]);
+    await fs.writeFile(user, '[partial');
+    const unchanged = await inspectManagedCommandRouteChanges({ ...options, beforePlatforms: options.afterPlatforms, inspectInactiveRestrictions: true });
+    expect(unchanged.affectedPermissions.filter(({ platform }) => platform === 'grok')).toEqual([]);
+    expect(unchanged.permissionReadFailures).not.toContain(user);
+    expect(unchanged.unverifiedGrokProjectPath).toBeUndefined();
   });
 
   // A broken shared revision cannot block offline removal of independently owned Native output.

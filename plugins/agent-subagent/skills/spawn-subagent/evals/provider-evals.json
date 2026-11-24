@@ -29,7 +29,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -64,7 +64,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -99,7 +99,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -134,7 +134,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -169,7 +169,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -204,7 +204,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -239,7 +239,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -274,7 +274,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -309,7 +309,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -344,7 +344,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -379,7 +379,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": false,
@@ -414,7 +414,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -449,7 +449,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": "high",
               "fork_context": false,
@@ -484,7 +484,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": "high",
               "fork_context": null,
@@ -508,7 +508,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=subagent；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=aw-eval-source-agent-subagent-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -519,7 +519,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -540,7 +540,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=subagent；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=aw-eval-source-agent-subagent-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -551,7 +551,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -583,7 +583,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": false,
@@ -618,7 +618,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": null,
@@ -655,7 +655,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -693,7 +693,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -760,7 +760,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -827,7 +827,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -863,7 +863,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -899,7 +899,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -937,7 +937,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": true,
@@ -1033,7 +1033,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1069,7 +1069,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -1105,7 +1105,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1132,10 +1132,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 subagent。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 aw-eval-source-agent-subagent-subagent。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "subagent"
+          "aw-eval-source-agent-subagent-subagent"
         ]
       },
       "expected": {
@@ -1152,7 +1152,7 @@
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 subagent role 后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 aw-eval-source-agent-subagent-subagent 角色后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1164,10 +1164,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 subagent。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 aw-eval-source-agent-subagent-subagent。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "subagent"
+          "aw-eval-source-agent-subagent-subagent"
         ]
       },
       "expected": {
@@ -1184,7 +1184,7 @@
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 subagent role 后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 aw-eval-source-agent-subagent-subagent 角色后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1196,7 +1196,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=aw-eval-source-agent-subagent-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1225,7 +1225,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=aw-eval-source-agent-subagent-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1265,7 +1265,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1303,7 +1303,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1341,7 +1341,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1379,7 +1379,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1417,7 +1417,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1455,7 +1455,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "subagent",
+              "agent_type": "aw-eval-source-agent-subagent-subagent",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,

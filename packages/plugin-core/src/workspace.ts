@@ -14,6 +14,7 @@ import {
 
 import {
   assertCatalogVersion,
+  assertPluginConfigSuggestionProviders,
   assertStrictSemVer,
   compareStrictSemVer,
   parseStrictSemVer,
@@ -520,6 +521,7 @@ async function assertSourceConfigReferences(plugins: readonly PluginMeta[]): Pro
   for (const plugin of plugins) {
     if (plugin.manifest.config === undefined) continue;
     const raw = await readRegularJson(plugin.manifestPath, 'Plugin manifest') as { config?: unknown };
+    assertPluginConfigSuggestionProviders(plugin.manifest, plugins, raw.config);
     assertPluginConfigReferenceSchemas(plugin.manifest.config, {
       plugin: plugin.manifest.name, dependencies: plugin.manifest.dependencies ?? [], plugins: definitions,
     }, raw.config);

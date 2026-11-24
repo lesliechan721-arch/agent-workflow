@@ -46,7 +46,7 @@ async function emptyEntry(t, retentionHours = 24) {
   const entryDirectory = path.join(context.root, id);
   const containerDirectory = path.join(entryDirectory, 'executions');
   for (const directory of [context.root, entryDirectory, containerDirectory]) await fs.mkdir(directory, { mode: 0o700 });
-  await atomicJson(path.join(entryDirectory, 'current.json'), { schema: 5, id, key, name: 'fixture', owner: context.owner, installedIdentity: identity, executionId });
+  await atomicJson(path.join(entryDirectory, 'current.json'), { schema: 6, id, key, name: 'fixture', owner: context.owner, installedIdentity: identity, executionId });
   return { homeRoot, context, run: { entryDirectory, containerDirectory } };
 }
 
@@ -105,6 +105,7 @@ test('expiry follows a safe current configuration snapshot and source identity',
     assert.deepEqual(await fs.readdir(root), ['saved-state']);
   }
   assert.equal(store.expired(meta, Date.now(), { ...context, sourceIdentity: undefined }), false);
+  assert.equal(store.expired(meta, Date.now(), { ...context, sourceIdentity: { ...identity, platform: 'claude' } }), false);
   assert.equal(store.expired(meta, Date.now(), { ...context, sourceIdentity: { ...identity, sourceIdentity: 'foreign' } }), false);
   assert.equal(store.expired(meta, Date.now(), { ...context, sourceIdentity: { ...identity, pluginVersion: '2.0.0' } }), true);
   assert.equal(await fs.readFile(path.join(root, 'saved-state'), 'utf8'), before);

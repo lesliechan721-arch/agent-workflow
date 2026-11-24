@@ -27,7 +27,7 @@
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore",
+          "agent_type": "aw-eval-source-codex-enhance-codex-explore",
           "final_message_includes_all": [
             "docs/liveness/records/",
             "FACT records=120",
@@ -61,7 +61,7 @@
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore",
+          "agent_type": "aw-eval-source-codex-enhance-codex-explore",
           "final_message_includes_all": [
             "docs/liveness/authoritative-index.md",
             "FACT records=120",
@@ -93,7 +93,7 @@
       },
       "expected": {
         "criteria": {
-          "agent_type": "codex-explore",
+          "agent_type": "aw-eval-source-codex-enhance-codex-explore",
           "final_message_includes_all": [
             "docs/liveness/records/",
             "FACT records=120",

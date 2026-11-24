@@ -13,7 +13,7 @@ import { prepareManagedCommandPackage, publishPreparedManagedCommandPackage } fr
 import {
   describeManagedCommandRouteReview,
   describeManagedCommandRuntimeConfigChanges,
-  inspectManagedCommandRouteChanges,
+  inspectManagedCommandRouteChanges, reviewInstalledInvocationPlatforms, reviewInvocationPlatforms,
   type ManagedCommandRouteReview,
 } from '../utils/managed-command-cli-review.js';
 import { runManagedCommand } from '../utils/managed-command-runtime.js';
@@ -65,6 +65,7 @@ const HELP = `Usage:
   aw command list [--json]
   aw command show <source/plugin | cmdu-id> [--json]
   aw command run <source/plugin> [--no-fallback] -- [args...]
+  aw command run <source/plugin/platform> [--no-fallback] -- [args...]
   aw command run <cmdu-id> -- [args...]
   aw command package sync <source/plugin> [--yes] [--json]
   aw command package remove <source/plugin | pkg-id> [--force] [--yes] [--json]
@@ -192,7 +193,7 @@ async function syncPackage(options: {
     const prepare = { cwd: context.cwd, env: context.env, signal: context.signal };
     const candidate = await prepareManagedCommandPackage({ ...prepare, plugin, operation: { kind: 'explicit-sync' } });
     try {
-      const reviewInput = { ...prepare, selector, inspectInactiveRestrictions: true, before: candidate.previous?.record.routes, after: candidate.record.routes };
+      const reviewInput = { ...prepare, selector, inspectInactiveRestrictions: true, before: candidate.previous?.record.routes, beforePlatforms: reviewInvocationPlatforms(candidate.previous?.record), after: candidate.record.routes, afterPlatforms: reviewInvocationPlatforms(candidate.record) };
       const routeReview = await inspectManagedCommandRouteChanges(reviewInput);
       const packageReview = { ...routeReview, runtimeConfigChanges: candidate.runtimeConfigChanges };
       receipt.packageReview = packageReview;
@@ -248,9 +249,10 @@ async function removePackage(options: {
   const force = flags['--force'] === true;
   const expectedPackage = await captureManagedCommandPackageEvidence(view, context.env, { force });
   const currentNamedId = () => resolveManagedCommandPackageId(view.selector, context.env).catch(() => undefined);
-  const readRouteImpact = (namedId: string | undefined) => inspectManagedCommandRouteChanges({
+  const readRouteImpact = async (namedId: string | undefined) => inspectManagedCommandRouteChanges({
     selector: view.selector,
     before: namedId === id ? view.routes ?? undefined : undefined,
+    beforePlatforms: await reviewInstalledInvocationPlatforms(view),
     cwd: context.cwd,
     env: context.env,
   });
@@ -278,15 +280,8 @@ function parseRunArguments(args: string[]): { id: string; args: string[]; noFall
   const [selector] = args;
   const delimiter = args.indexOf('--');
   const noFallback = delimiter === 2 && args[1] === '--no-fallback';
-  if (!selector || (delimiter !== 1 && !noFallback)) invalid('Usage: aw command run <source/plugin> [--no-fallback] -- [args...] or aw command run <cmdu-id> -- [args...]');
-  const callArgs = args.slice(delimiter + 1);
-  if (isUserCommandId(selector)) {
-    if (noFallback) invalid('--no-fallback requires a plugin command.');
-  } else {
-    parsePluginCommandSelector(selector);
-    if (noFallback && callArgs.length === 0) invalid('--no-fallback requires a subcommand argument.');
-  }
-  return { id: selector, args: callArgs, noFallback };
+  if (!selector || (delimiter !== 1 && !noFallback)) invalid('Usage: aw command run <source/plugin[/platform]> [--no-fallback] -- [args...] or aw command run <cmdu-id> -- [args...]');
+  return { id: selector, args: args.slice(delimiter + 1), noFallback };
 }
 
 export async function runManagedCommandCli(args: string[], context: CliExecutionContext, host: { cliEntry: string; cliVersion: string; onResult?: (receipt: CommandManagementResult) => void }): Promise<number> {
@@ -409,7 +404,7 @@ export function registerManagedCommandCli(program: Command, context: (options?: 
     });
   }
   group.command('run').description('Run a managed command with byte and exit-code passthrough')
-    .argument('<selector>', 'Source-qualified plugin name or user command ID')
+    .argument('<selector>', 'source/plugin, source/plugin/platform when runtime config is required, or a user command ID')
     .option('--no-fallback', 'Require a named plugin subcommand')
     .argument('[args...]', 'Target arguments after the required -- separator').allowUnknownOption(true)
     .action(async (_id: string, _args: string[], cmd: Command) => {

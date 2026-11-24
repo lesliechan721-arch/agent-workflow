@@ -156,7 +156,7 @@ describe('managed command store and run preparation', () => {
       try {
         invocation = await resolveManagedCommand('official/example', isolated.env, { args: ['read'] });
       } catch (error) {
-        expect(error).toMatchObject({ code: expect.stringMatching(/^(commandBindingInvalid|commandResourceInvalid)$/u) });
+        expect(error).toMatchObject({ code: expect.stringMatching(/^(commandUnavailable|commandResourceInvalid)$/u) });
         return false;
       }
       const script = await fs.readFile(path.join(invocation.resourceRoot, invocation.launch.entry), 'utf8').catch((error: NodeJS.ErrnoException) => {
@@ -290,6 +290,12 @@ describe('managed command store and run preparation', () => {
     expect(env.PATH).toBe('binding');
     expect(env.Path).toBeUndefined();
     expect(env.COPY).toBe('original');
-    expect(() => buildManagedCommandEnvironment({ launch: { ...definition, envFrom: { COPY: 'aw_command_host' } }, hostEnvironment: {}, host })).toThrowError(expect.objectContaining({ code: 'commandEnvironmentInvalid' }));
+    for (const overrides of [
+      { env: { AW_COMMAND_RUNTIME_CONFIG: 'override' } },
+      { envFrom: { COPY: 'aw_command_runtime_config' } },
+    ]) {
+      expect(() => buildManagedCommandEnvironment({ launch: { ...definition, ...overrides }, hostEnvironment: {}, host }))
+        .toThrowError(expect.objectContaining({ code: 'commandEnvironmentInvalid' }));
+    }
   });
 });

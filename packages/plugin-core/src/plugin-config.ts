@@ -27,6 +27,7 @@ import type {
   PluginConfigSchemaField,
   PluginConfigStringFormat,
   PluginConfigStringValidation,
+  PluginConfigSuggestionsDeclaration,
   PluginConfigValidationIssue,
   PluginConfigValue,
   PluginConfigValueReference,
@@ -62,6 +63,8 @@ const MAX_OBJECT_PROPERTIES = 32
 const MAX_PATTERN_CODE_POINTS = 512
 const MAX_STRING_CODE_POINTS = 4096
 const DANGEROUS_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+type ConfigVersion = 2 | 3 | 4 | 5
+type ConfigOwner = { plugin?: string; dependencies?: readonly string[]; hasSuggestionsScript?: boolean }
 
 function createPropertyMap<Value>(): Record<string, Value> {
   return Object.create(null) as Record<string, Value>
@@ -598,6 +601,54 @@ function scalarSchemas(definition: PluginConfigSchemaField): ConfigScalarSchema[
       .flatMap((properties) => Object.values(properties).flatMap((child) => scalarSchemas(child as PluginConfigSchemaField)))
 }
 
+function configSuggestions(fields: readonly PluginConfigSchemaField[]): PluginConfigSuggestionsDeclaration[] {
+  return fields.flatMap(scalarSchemas).flatMap((field) => field.suggestions === undefined ? [] : [field.suggestions])
+}
+
+/** Includes declarations in every platform profile and any source definitions supplied by the author. */
+export function getPluginConfigSuggestions(
+  definition: PluginConfigDefinition | undefined,
+  sourceConfig?: unknown,
+): PluginConfigSuggestionsDeclaration[] {
+  if (definition?.schemaVersion !== 5) return []
+  const profiles = [definition, ...Object.values(definition.platforms ?? {})]
+  const declarations = configSuggestions(profiles.flatMap((profile) => Object.values(profile.fields)))
+  if (sourceConfig !== undefined) {
+    const source = asObject(sourceConfig, 'config')
+    if (source.schemaVersion !== 5) return declarations
+    const sourcePlatforms = source.platforms === undefined ? undefined : asObject(source.platforms, 'config.platforms')
+    const platforms: Array<PlatformTarget | undefined> = [undefined,
+      ...Object.keys(definition.platforms ?? {}).filter(isPlatformTarget)]
+    for (const platform of platforms) {
+      const branch = platform === undefined ? undefined : ownProperty(sourcePlatforms, platform)
+      if (source.definitions === undefined && (branch === undefined
+        || asObject(branch, `config.platforms.${platform}`).definitions === undefined)) continue
+      const profile = platformConfigSource(source, platform, 'config')
+      const collected = createPropertyMap<PluginConfigSchemaField>()
+      expandConfigReferences(profile, 'config', 5, undefined, collected)
+      declarations.push(...configSuggestions(Object.values(collected)))
+    }
+  }
+  return declarations
+}
+
+function assertSuggestionOwners(
+  fields: readonly PluginConfigSchemaField[],
+  path: string,
+  owner?: ConfigOwner,
+): void {
+  if (owner === undefined) return
+  for (const declaration of configSuggestions(fields)) {
+    if (declaration.plugin === undefined) {
+      if (owner.hasSuggestionsScript === false) {
+        throw new Error(`Invalid ${path}.suggestions: local suggestions require scripts.config.suggestions.`)
+      }
+    } else if (declaration.plugin === owner.plugin || !owner.dependencies?.includes(declaration.plugin)) {
+      throw new Error(`Invalid ${path}.suggestions.plugin: "${declaration.plugin}" must be an explicit direct dependency.`)
+    }
+  }
+}
+
 /** Returns validation dependencies only; callers still project their original allowed keys. */
 export function getPluginConfigDependencyKeys(
   definition: PluginConfigDefinition,
@@ -761,7 +812,7 @@ function assertConfigProfileReferenceSchemas(
     const source = sourceConfig
     if (source.definitions !== undefined) {
       const definitions: Record<string, PluginConfigSchemaField> = createPropertyMap()
-      expandConfigReferences(source, 'config', source.schemaVersion === 4, context, definitions)
+      expandConfigReferences(source, 'config', configVersion(source), context, definitions)
       for (const [name, schema] of Object.entries(definitions)) {
         const field = `$definition.${name}`
         const candidate = { ...definition, fields: { ...definition.fields, [field]: schema } } as PluginConfigDefinition
@@ -977,7 +1028,7 @@ function assertValueReferenceSchemas(
   path: string,
   allowReferences = true,
   allowCrossPlugin = false,
-  owner?: { plugin?: string; dependencies?: readonly string[] },
+  owner?: ConfigOwner,
 ): void {
   for (const definition of definitions) {
     for (const scalar of scalarSchemas(definition)) {
@@ -1115,7 +1166,7 @@ function normalizeChoices<Value extends PluginConfigValue>(
 function normalizeScalarField(
   value: unknown,
   path: string,
-  options: { allowDefault: boolean; allowRequired: boolean; allowSensitive: boolean; allowConst?: boolean },
+  options: { allowDefault: boolean; allowRequired: boolean; allowSensitive: boolean; allowConst?: boolean; allowSuggestions?: boolean },
 ): PluginConfigScalarField | PluginConfigScalarPropertyField | PluginConfigAdditionalPropertiesField {
   const input = asObject(value, path)
   const type = nonEmptyString(input.type, `${path}.type`)
@@ -1128,6 +1179,7 @@ function normalizeScalarField(
   if (options.allowSensitive && type === 'string') allowed.push('sensitive')
   allowed.push('choices', 'valueRef')
   if (options.allowConst) allowed.push('const')
+  if (options.allowSuggestions) allowed.push('suggestions')
   if (type !== 'boolean') allowed.push('validation')
   assertAllowedKeys(input, path, allowed)
   const sensitive = options.allowSensitive && type === 'string'
@@ -1148,6 +1200,34 @@ function normalizeScalarField(
   if (Object.hasOwn(input, 'const') && (typeof input.const !== type
     || (type === 'number' && !Number.isFinite(input.const)))) {
     throw new Error(`Invalid ${path}.const: expected a finite scalar of type ${type}.`)
+  }
+  let suggestions: PluginConfigSuggestionsDeclaration | undefined
+  if (input.suggestions !== undefined) {
+    if (sensitive === true || input.const !== undefined || input.valueRef !== undefined
+      || (input.choices !== undefined && asObject(input.choices, `${path}.choices`).allowCustom === false)) {
+      throw new Error(`Invalid ${path}.suggestions: expected a non-sensitive scalar with free input and no const or valueRef.`)
+    }
+    const raw = asObject(input.suggestions, `${path}.suggestions`)
+    assertAllowedKeys(raw, `${path}.suggestions`, ['plugin', 'provider', 'dependsOn'])
+    const provider = nonEmptyString(raw.provider, `${path}.suggestions.provider`)
+    if (!/^[a-z][a-z0-9-]{0,63}$/u.test(provider)) {
+      throw new Error(`Invalid ${path}.suggestions.provider: expected a suggestion provider identifier.`)
+    }
+    const plugin = optionalText(raw.plugin, `${path}.suggestions.plugin`)
+    if (plugin !== undefined && !PLUGIN_NAME_PATTERN.test(plugin)) {
+      throw new Error(`Invalid ${path}.suggestions.plugin: expected a plugin name.`)
+    }
+    let dependsOn: string[] | undefined
+    if (raw.dependsOn !== undefined) {
+      if (!Array.isArray(raw.dependsOn) || !isDenseDataArray(raw.dependsOn) || raw.dependsOn.length > 8) {
+        throw new Error(`Invalid ${path}.suggestions.dependsOn: expected at most 8 property names.`)
+      }
+      dependsOn = raw.dependsOn.map((entry) => nonEmptyString(entry, `${path}.suggestions.dependsOn`))
+      if (new Set(dependsOn).size !== dependsOn.length || dependsOn.some(isDangerousConfigKey)) {
+        throw new Error(`Invalid ${path}.suggestions.dependsOn: expected distinct, safe property names.`)
+      }
+    }
+    suggestions = { provider, ...(plugin === undefined ? {} : { plugin }), ...(dependsOn === undefined ? {} : { dependsOn }) }
   }
   let valueRef: PluginConfigValueReference | undefined
   if (input.valueRef !== undefined) {
@@ -1203,6 +1283,7 @@ function normalizeScalarField(
     return {
       type,
       ...common,
+      ...(suggestions === undefined ? {} : { suggestions }),
       ...(Object.hasOwn(input, 'const') ? { const: input.const as string } : {}),
       ...(options.allowSensitive ? { sensitive } : {}),
       ...(options.allowDefault ? { default: defaultValue as string | undefined } : {}),
@@ -1218,6 +1299,7 @@ function normalizeScalarField(
     return {
       type,
       ...common,
+      ...(suggestions === undefined ? {} : { suggestions }),
       ...(Object.hasOwn(input, 'const') ? { const: input.const as number } : {}),
       ...(options.allowDefault ? { default: defaultValue as number | undefined } : {}),
       choices: input.choices === undefined
@@ -1231,6 +1313,7 @@ function normalizeScalarField(
   return {
     type,
     ...common,
+    ...(suggestions === undefined ? {} : { suggestions }),
     ...(Object.hasOwn(input, 'const') ? { const: input.const as boolean } : {}),
     ...(options.allowDefault ? { default: defaultValue as boolean | undefined } : {}),
     choices: input.choices === undefined
@@ -1279,10 +1362,12 @@ function assertFieldConstraints(definition: PluginConfigSchemaField, path: strin
   }
 }
 
-function normalizeObjectProperty(value: unknown, path: string, v4: boolean): PluginConfigObjectPropertyField {
+function normalizeObjectProperty(
+  value: unknown, path: string, version: ConfigVersion, allowNestedArrays: boolean,
+): PluginConfigObjectPropertyField {
   const input = asObject(value, path)
   let definition: PluginConfigObjectPropertyField
-  if (v4 && (input.type === 'array' || input.type === 'object')) {
+  if (version >= 4 && (input.type === 'array' || input.type === 'object')) {
     if (Object.hasOwn(input, 'default') || Object.hasOwn(input, 'sensitive')) {
       throw new Error(`Invalid ${path}: object properties cannot declare default or sensitive.`)
     }
@@ -1290,22 +1375,39 @@ function normalizeObjectProperty(value: unknown, path: string, v4: boolean): Plu
       throw new Error(`Invalid ${path}: nested objects must be scalar key-value objects.`)
     }
     definition = (input.type === 'array'
-      ? normalizeArrayField(input, path, true, true)
-      : normalizeObjectField(input, path, true)) as PluginConfigObjectPropertyField
+      ? normalizeArrayField(input, path, version, allowNestedArrays ? 'property' : 'leafProperty')
+      : normalizeObjectField(input, path, version)) as PluginConfigObjectPropertyField
     delete (definition as { default?: unknown }).default
   } else {
     definition = normalizeScalarField(input, path, {
-      allowDefault: false, allowRequired: true, allowSensitive: false, allowConst: v4,
+      allowDefault: false, allowRequired: true, allowSensitive: false, allowConst: version >= 4, allowSuggestions: version === 5,
     }) as PluginConfigScalarPropertyField
   }
   assertFieldConstraints(definition as PluginConfigSchemaField, path)
   return definition
 }
 
+function assertSuggestionDependencies(
+  properties: Record<string, PluginConfigObjectPropertyField>,
+  path: string,
+  common?: Record<string, PluginConfigObjectPropertyField>,
+): void {
+  for (const [property, field] of Object.entries(properties)) {
+    if (!('suggestions' in field)) continue
+    for (const dependency of field.suggestions?.dependsOn ?? []) {
+      const target = ownProperty(properties, dependency) ?? ownProperty(common, dependency)
+      if (target === undefined || dependency === property) {
+        throw new Error(`Invalid ${path}.${property}.suggestions.dependsOn: "${dependency}" must be a declared sibling property.`)
+      }
+    }
+  }
+}
+
 function normalizeObjectVariants(
   value: unknown,
   properties: Record<string, PluginConfigObjectPropertyField>,
   path: string,
+  version: ConfigVersion,
 ): PluginConfigObjectVariants {
   const input = asObject(value, path)
   assertAllowedKeys(input, path, ['discriminator', 'cases', 'missing', 'otherwise'])
@@ -1328,8 +1430,9 @@ function normalizeObjectVariants(
     for (const [key, child] of Object.entries(children)) {
       if (isDangerousConfigKey(key)) throw new Error(`Invalid ${variantPath}.properties: dangerous config key.`)
       if (Object.hasOwn(properties, key)) throw new Error(`Invalid ${variantPath}.properties: case cannot override common property "${key}".`)
-      result[key] = normalizeObjectProperty(child, `${variantPath}.properties.${key}`, true)
+      result[key] = normalizeObjectProperty(child, `${variantPath}.properties.${key}`, version, true)
     }
+    assertSuggestionDependencies(result, `${variantPath}.properties`, properties)
     return { properties: result }
   }
   const cases = createPropertyMap<PluginConfigObjectVariant>()
@@ -1345,20 +1448,25 @@ function normalizeObjectVariants(
     ...(input.otherwise === undefined ? {} : { otherwise: normalizeVariant(input.otherwise, `${path}.otherwise`) }) }
 }
 
-function normalizeObjectField(value: unknown, path: string, v4 = false): PluginConfigObjectField {
+function normalizeObjectField(
+  value: unknown,
+  path: string,
+  version: ConfigVersion,
+  nestedArrayItem = false,
+): PluginConfigObjectField {
   const input = asObject(value, path)
   assertAllowedKeys(input, path, [
     'type',
     'title',
     'description',
-    'default',
-    'required',
-    'choices',
     'properties',
     'additionalProperties',
     'validation',
-    ...(v4 ? ['variants'] : []),
+    ...(nestedArrayItem ? [] : ['default', 'required', 'choices', ...(version >= 4 ? ['variants'] : [])]),
   ])
+  if (nestedArrayItem && input.properties === undefined) {
+    throw new Error(`Invalid ${path}.properties: nested object array items require fixed properties.`)
+  }
   if (input.properties === undefined && (input.additionalProperties === undefined || input.additionalProperties === false)) {
     throw new Error(`Invalid ${path}: key-value object config requires a scalar additionalProperties field.`)
   }
@@ -1376,8 +1484,9 @@ function normalizeObjectField(value: unknown, path: string, v4 = false): PluginC
       if (isDangerousConfigKey(property)) {
         throw new Error(`Invalid ${path}.properties: dangerous config key "${property}" is not allowed.`)
       }
-      properties[property] = normalizeObjectProperty(child, `${path}.properties.${property}`, v4)
+      properties[property] = normalizeObjectProperty(child, `${path}.properties.${property}`, version, !nestedArrayItem)
     }
+    assertSuggestionDependencies(properties, `${path}.properties`)
   }
   let additionalProperties: PluginConfigObjectField['additionalProperties']
   if (input.additionalProperties === undefined || input.additionalProperties === false) {
@@ -1386,7 +1495,7 @@ function normalizeObjectField(value: unknown, path: string, v4 = false): PluginC
     additionalProperties = normalizeScalarField(
       input.additionalProperties,
       `${path}.additionalProperties`,
-      { allowDefault: false, allowRequired: false, allowSensitive: false, allowConst: v4 },
+      { allowDefault: false, allowRequired: false, allowSensitive: false, allowConst: version >= 4 },
     ) as PluginConfigAdditionalPropertiesField
     assertFieldConstraints(additionalProperties as PluginConfigSchemaField, `${path}.additionalProperties`)
   }
@@ -1420,16 +1529,17 @@ function normalizeObjectField(value: unknown, path: string, v4 = false): PluginC
   if (input.variants !== undefined && properties === undefined) {
     throw new Error(`Invalid ${path}.variants: variants require a fixed object.`)
   }
-  const variants = input.variants === undefined ? undefined : normalizeObjectVariants(input.variants, properties!, `${path}.variants`)
+  const variants = input.variants === undefined ? undefined
+    : normalizeObjectVariants(input.variants, properties!, `${path}.variants`, version)
   return {
     type: 'object',
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
     default: input.default as PluginConfigObject | undefined,
     required: optionalBoolean(input.required, `${path}.required`),
-    choices: input.choices === undefined
+    ...(!nestedArrayItem ? { choices: input.choices === undefined
       ? undefined
-      : normalizeChoices<PluginConfigObject>(input.choices, `${path}.choices`),
+      : normalizeChoices<PluginConfigObject>(input.choices, `${path}.choices`) } : {}),
     ...(properties === undefined
       ? { additionalProperties: additionalProperties as PluginConfigAdditionalPropertiesField }
       : { properties, additionalProperties: false as const, ...(variants === undefined ? {} : { variants }) }),
@@ -1437,23 +1547,32 @@ function normalizeObjectField(value: unknown, path: string, v4 = false): PluginC
   } as PluginConfigObjectField
 }
 
-function normalizeArrayField(value: unknown, path: string, v4 = false, scalarItemsOnly = false): PluginConfigArrayField {
+function normalizeArrayField(
+  value: unknown,
+  path: string,
+  version: ConfigVersion,
+  scope: 'field' | 'property' | 'leafProperty' = 'field',
+): PluginConfigArrayField {
   const input = asObject(value, path)
-  assertAllowedKeys(input, path, ['type', 'title', 'description', 'default', 'required', 'items', 'choices', 'validation'])
   const itemPath = `${path}.items`
   const item = asObject(input.items, itemPath)
+  const nestedObjectArray = scope === 'property' && version === 5 && item.type === 'object'
+  assertAllowedKeys(input, path, [
+    'type', 'title', 'description', 'required', 'items', 'validation',
+    ...(nestedObjectArray ? [] : ['default', 'choices']),
+  ])
   for (const forbidden of ['default', 'required', 'sensitive']) {
     if (Object.hasOwn(item, forbidden)) {
       throw new Error(`Invalid ${itemPath}.${forbidden}: array items cannot declare ${forbidden}.`)
     }
   }
   let items: PluginConfigArrayItemField
-  if (item.type === 'object' && !scalarItemsOnly) {
-    const { default: _default, required: _required, ...objectItem } = normalizeObjectField(item, itemPath, v4)
+  if (item.type === 'object' && (scope === 'field' || nestedObjectArray)) {
+    const { default: _default, required: _required, ...objectItem } = normalizeObjectField(item, itemPath, version, nestedObjectArray)
     items = objectItem as PluginConfigArrayItemField
   } else {
     items = normalizeScalarField(item, itemPath, {
-      allowDefault: false, allowRequired: false, allowSensitive: false, allowConst: v4,
+      allowDefault: false, allowRequired: false, allowSensitive: false, allowConst: version >= 4,
     }) as PluginConfigArrayItemField
   }
   assertFieldConstraints(items as PluginConfigSchemaField, itemPath)
@@ -1493,9 +1612,9 @@ function normalizeArrayField(value: unknown, path: string, v4 = false, scalarIte
     default: input.default as PluginConfigArray | undefined,
     required: optionalBoolean(input.required, `${path}.required`),
     items,
-    choices: input.choices === undefined
+    ...(!nestedObjectArray ? { choices: input.choices === undefined
       ? undefined
-      : normalizeChoices<PluginConfigArray>(input.choices, `${path}.choices`),
+      : normalizeChoices<PluginConfigArray>(input.choices, `${path}.choices`) } : {}),
     validation,
   }
 }
@@ -1510,8 +1629,13 @@ export function decodePluginConfigSummaryPath(value: string): string {
   return property
 }
 
-function expandConfigReferences(input: Record<string, unknown>, path: string, v4 = false,
-  owner?: { plugin?: string; dependencies?: readonly string[] },
+function configVersion(input: Record<string, unknown>): ConfigVersion {
+  const version = input.schemaVersion
+  return version === 3 || version === 4 || version === 5 ? version : 2
+}
+
+function expandConfigReferences(input: Record<string, unknown>, path: string, version: ConfigVersion,
+  owner?: ConfigOwner,
   collectedDefinitions?: Record<string, PluginConfigSchemaField>): Record<string, unknown> {
   const definitions = input.definitions === undefined ? {} : asObject(input.definitions, `${path}.definitions`)
   if (Object.keys(definitions).length > PLUGIN_CONFIG_V3_MAX_DEFINITIONS) {
@@ -1522,7 +1646,12 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
       throw new Error(`Invalid ${path}.definitions: invalid definition name "${name}".`)
     }
   }
-  const expand = (value: unknown, fieldPath: string, chain: string[], context: 'field' | 'item' | 'property' | 'scalar' = 'field'): Record<string, unknown> => {
+  const expand = (
+    value: unknown,
+    fieldPath: string,
+    chain: string[],
+    context: 'field' | 'item' | 'property' | 'nestedItem' | 'leafProperty' | 'scalar' = 'field',
+  ): Record<string, unknown> => {
     const field = asObject(value, fieldPath)
     if (Object.hasOwn(field, '$ref')) {
       assertAllowedKeys(field, fieldPath, ['$ref', 'title', 'description', 'default', 'required'])
@@ -1543,12 +1672,15 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
       return result
     }
     const result = { ...field }
-    if (context === 'scalar' || (!v4 && context === 'property')) return result
-    if (context === 'property' && field.type === 'object' && (field.properties !== undefined || field.variants !== undefined)) {
+    const property = context === 'property' || context === 'leafProperty'
+    if (context === 'scalar' || (version < 4 && property)) return result
+    if (property && field.type === 'object' && (field.properties !== undefined || field.variants !== undefined)) {
       throw new Error(`Invalid ${fieldPath}: nested objects must be scalar key-value objects.`)
     }
+    if (context === 'nestedItem' && field.type !== 'object') return result
     if (field.type === 'array' && field.items !== undefined) {
-      result.items = expand(field.items, `${fieldPath}.items`, chain, context === 'property' ? 'scalar' : 'item')
+      const itemContext = property ? context === 'property' && version === 5 ? 'nestedItem' : 'scalar' : 'item'
+      result.items = expand(field.items, `${fieldPath}.items`, chain, itemContext)
     }
     if (field.properties !== undefined) {
       const properties = asObject(field.properties, `${fieldPath}.properties`)
@@ -1556,12 +1688,12 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
         throw new Error(`Invalid ${fieldPath}.properties: expected at most ${MAX_OBJECT_PROPERTIES} properties.`)
       }
       result.properties = Object.fromEntries(Object.entries(properties).map(([key, child]) =>
-        [key, expand(child, `${fieldPath}.properties.${key}`, chain, 'property')]))
+        [key, expand(child, `${fieldPath}.properties.${key}`, chain, context === 'nestedItem' ? 'leafProperty' : 'property')]))
     }
     if (field.additionalProperties !== undefined && field.additionalProperties !== false) {
       result.additionalProperties = expand(field.additionalProperties, `${fieldPath}.additionalProperties`, chain, 'scalar')
     }
-    if (v4 && field.variants !== undefined) {
+    if (version >= 4 && context !== 'nestedItem' && field.variants !== undefined) {
       const variants = asObject(field.variants, `${fieldPath}.variants`)
       const cases = asObject(variants.cases, `${fieldPath}.variants.cases`)
       if (Object.keys(cases).length > MAX_OBJECT_PROPERTIES) throw new Error(`Invalid ${fieldPath}.variants.cases: expected at most ${MAX_OBJECT_PROPERTIES} cases.`)
@@ -1581,10 +1713,11 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
   // Validate unused definitions too, through the same field/default/choice validator.
   const normalizedDefinitions: PluginConfigSchemaField[] = []
   for (const [name, value] of Object.entries(definitions)) {
-    const normalized = normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`, true, v4)
+    const normalized = normalizeConfigField(expand(value, `${path}.definitions.${name}`, []), `${path}.definitions.${name}`, version)
     normalizedDefinitions.push(normalized)
     if (collectedDefinitions !== undefined) collectedDefinitions[name] = normalized
   }
+  if (version === 5) assertSuggestionOwners(normalizedDefinitions, `${path}.definitions`, owner)
   const fields = asObject(input.fields, `${path}.fields`)
   if (Object.keys(fields).length > PLUGIN_CONFIG_V3_MAX_FIELDS) {
     throw new Error(`Invalid ${path}.fields: expected at most ${PLUGIN_CONFIG_V3_MAX_FIELDS} fields.`)
@@ -1593,20 +1726,20 @@ function expandConfigReferences(input: Record<string, unknown>, path: string, v4
     [key, expand(value, `${path}.fields.${key}`, [])]))
   if (normalizedDefinitions.some((definition) => scalarSchemas(definition).some((scalar) => 'valueRef' in scalar && scalar.valueRef !== undefined))) {
     const normalizedFields = Object.fromEntries(Object.entries(expanded).map(([key, value]) =>
-      [key, normalizeConfigField(value, `${path}.fields.${key}`, true, v4)]))
-    assertValueReferenceSchemas(normalizedFields, normalizedDefinitions, `${path}.definitions`, true, v4, owner)
+      [key, normalizeConfigField(value, `${path}.fields.${key}`, version)]))
+    assertValueReferenceSchemas(normalizedFields, normalizedDefinitions, `${path}.definitions`, true, version >= 4, owner)
   }
   return expanded
 }
 
-function normalizeConfigField(rawDefinition: unknown, path: string, allowArray: boolean, v4 = false): PluginConfigSchemaField {
+function normalizeConfigField(rawDefinition: unknown, path: string, version: ConfigVersion): PluginConfigSchemaField {
   const rawField = asObject(rawDefinition, path)
   const definition = rawField.type === 'object'
-    ? normalizeObjectField(rawField, path, v4)
-    : rawField.type === 'array' && allowArray
-      ? normalizeArrayField(rawField, path, v4)
+    ? normalizeObjectField(rawField, path, version)
+    : rawField.type === 'array' && version >= 3
+      ? normalizeArrayField(rawField, path, version)
     : normalizeScalarField(rawField, path, {
-      allowDefault: true, allowRequired: true, allowSensitive: true, allowConst: v4,
+      allowDefault: true, allowRequired: true, allowSensitive: true, allowConst: version >= 4, allowSuggestions: version === 5,
     }) as PluginConfigScalarField
   assertFieldConstraints(definition, path)
   if (definition.default !== undefined) {
@@ -1690,24 +1823,30 @@ function normalizeConfigSummaries(
   }
 }
 
-function normalizeCompiledConfigDefinition(
+function normalizeConfigProfile(
   value: unknown,
   path = 'config',
-  owner?: { plugin?: string; dependencies?: readonly string[] },
-): PluginConfigCompiledDefinition {
+  owner?: ConfigOwner,
+): PluginConfigDefinition {
   const input = asObject(value, path)
-  const v4 = input.schemaVersion === 4
-  const v3 = input.schemaVersion === 3 || v4
-  assertAllowedKeys(input, path, v3 ? ['schemaVersion', 'definitions', 'fields', 'presentation'] : ['fields', 'presentation'])
-  const fieldsInput = v3 ? expandConfigReferences(input, path, v4, owner) : asObject(input.fields, `${path}.fields`)
+  const version = configVersion(input)
+  const allowRefs = version >= 3
+  assertAllowedKeys(input, path, allowRefs ? ['schemaVersion', 'definitions', 'fields', 'presentation'] : ['fields', 'presentation'])
+  const fieldsInput = allowRefs ? expandConfigReferences(input, path, version, owner) : asObject(input.fields, `${path}.fields`)
   const fields = createPropertyMap<PluginConfigSchemaField>()
   for (const [field, rawDefinition] of Object.entries(fieldsInput)) {
     if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
       throw new Error(`Invalid ${path}.fields: config key "${field}" is not valid.`)
     }
-    fields[field] = normalizeConfigField(rawDefinition, `${path}.fields.${field}`, v3, v4)
+    const fieldPath = `${path}.fields.${field}`
+    const definition = normalizeConfigField(rawDefinition, fieldPath, version)
+    if ('suggestions' in definition && (definition.suggestions?.dependsOn?.length ?? 0) > 0) {
+      throw new Error(`Invalid ${fieldPath}.suggestions.dependsOn: top-level fields do not have sibling dependencies.`)
+    }
+    fields[field] = definition
   }
-  assertValueReferenceSchemas(fields, Object.values(fields), path, v3, v4, owner)
+  if (version === 5) assertSuggestionOwners(Object.values(fields), `${path}.fields`, owner)
+  assertValueReferenceSchemas(fields, Object.values(fields), path, allowRefs, version >= 4, owner)
   const defaultValues = Object.fromEntries(Object.entries(fields).flatMap(([field, definition]) =>
     definition.default === undefined ? [] : [[field, definition.default]]))
   // Cross-plugin defaults require the caller's complete dependency context.
@@ -1720,14 +1859,14 @@ function normalizeCompiledConfigDefinition(
   let presentation: PluginConfigDefinition['presentation']
   if (input.presentation !== undefined) {
     const presentationInput = asObject(input.presentation, `${path}.presentation`)
-    assertAllowedKeys(presentationInput, `${path}.presentation`, v3 ? ['groups', 'summaries', 'fieldViews'] : ['groups'])
+    assertAllowedKeys(presentationInput, `${path}.presentation`, allowRefs ? ['groups', 'summaries', 'fieldViews'] : ['groups'])
     if (presentationInput.groups !== undefined && !Array.isArray(presentationInput.groups)) {
       throw new Error(`Invalid ${path}.presentation.groups: expected an array.`)
     }
     const groupIds = new Set<string>()
     const groupedFields = new Set<string>()
     presentation = {
-      ...(v3 ? normalizeConfigSummaries(presentationInput, fields, `${path}.presentation`) : {}),
+      ...(allowRefs ? normalizeConfigSummaries(presentationInput, fields, `${path}.presentation`) : {}),
       groups: (presentationInput.groups as unknown[] | undefined)?.map((rawGroup, index) => {
         const groupPath = `${path}.presentation.groups[${index}]`
         const group = asObject(rawGroup, groupPath)
@@ -1761,7 +1900,7 @@ function normalizeCompiledConfigDefinition(
       }),
     }
   }
-  return { ...(v3 ? { schemaVersion: v4 ? 4 as const : 3 as const } : {}), fields, presentation } as PluginConfigCompiledDefinition
+  return { ...(allowRefs ? { schemaVersion: version } : {}), fields, presentation } as PluginConfigDefinition
 }
 
 function platformConfigSource(
@@ -1775,7 +1914,7 @@ function platformConfigSource(
   const branch = rawBranch === undefined ? {} : asObject(rawBranch, branchPath)
   const record = (value: unknown, fieldPath: string): Record<string, unknown> => value === undefined ? {} : asObject(value, fieldPath)
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     definitions: { ...record(input.definitions, `${path}.definitions`), ...record(branch.definitions, `${branchPath}.definitions`) },
     fields: { ...asObject(input.fields, `${path}.fields`), ...record(branch.fields, `${branchPath}.fields`) },
     ...(Object.hasOwn(branch, 'presentation') ? { presentation: branch.presentation }
@@ -1787,12 +1926,12 @@ function platformConfigSource(
 export function normalizePluginConfigDefinition(
   value: unknown,
   path = 'config',
-  owner?: { plugin?: string; dependencies?: readonly string[] },
+  owner?: ConfigOwner,
 ): PluginConfigDefinition {
   const input = asObject(value, path)
-  if (input.schemaVersion !== 5) return normalizeCompiledConfigDefinition(input, path, owner)
+  if (input.schemaVersion !== 5) return normalizeConfigProfile(input, path, owner)
   assertAllowedKeys(input, path, ['schemaVersion', 'definitions', 'fields', 'presentation', 'platforms'])
-  const common = normalizeCompiledConfigDefinition(platformConfigSource(input, undefined, path), path, owner)
+  const common = normalizeConfigProfile(platformConfigSource(input, undefined, path), path, owner)
   const platforms: NonNullable<Extract<PluginConfigDefinition, { schemaVersion: 5 }>['platforms']> = createPropertyMap()
   if (input.platforms !== undefined) {
     for (const [platform, value] of Object.entries(asObject(input.platforms, `${path}.platforms`))) {
@@ -1800,7 +1939,7 @@ export function normalizePluginConfigDefinition(
       if (!isPlatformTarget(platform)) throw new Error(`Invalid ${branchPath}: unknown config platform.`)
       const branch = asObject(value, branchPath)
       assertAllowedKeys(branch, branchPath, ['definitions', 'fields', 'presentation'])
-      const compiled = normalizeCompiledConfigDefinition(platformConfigSource(input, platform, path), branchPath, owner)
+      const compiled = normalizeConfigProfile(platformConfigSource(input, platform, path), branchPath, owner)
       for (const [field, schema] of Object.entries(common.fields)) {
         if ('sensitive' in schema && schema.sensitive === true && compiled.fields[field]?.sensitive !== true) {
           throw new Error(`Invalid ${branchPath}.fields.${field}: a platform cannot weaken common sensitive protection.`)
@@ -1843,7 +1982,7 @@ export function compilePluginConfigDefinition(
   value: unknown,
   platform?: PlatformTarget,
   path = 'config',
-  owner?: { plugin?: string; dependencies?: readonly string[] },
+  owner?: ConfigOwner,
 ): PluginConfigCompiledDefinition {
   if (platform !== undefined && !isPlatformTarget(platform)) throw new Error(`Invalid ${path}.platform: unknown config platform.`)
   return selectConfigProfile(normalizePluginConfigDefinition(value, path, owner), platform)

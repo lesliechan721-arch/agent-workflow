@@ -24,10 +24,10 @@ pnpm plugin:test agent-subagent --native-mode source-candidate --native-context 
 
 | 范围 | 测试入口 | 平台 |
 | --- | --- | --- |
-| v5 协议、消息边界、分配、关闭和工具资源 | `subagent-protocol-v5.test.mjs`、`subagent-bridge-v5.test.mjs` | 三系统 |
+| v6 协议、消息边界、分配、关闭和工具资源 | `subagent-protocol-v6.test.mjs`、`subagent-bridge-v6.test.mjs` | 三系统 |
 | 消息数量、输出预算、消费失败和参数组合 | `subagent-runtime-logic.test.mjs` | 三系统；真实模块与临时状态，Windows 原生调用使用受控替身 |
 | 共享 Adapter 停止触发和截止时间 | `subagent-adapter-common.test.mjs` | 三系统；真实 JSONL 连接与受控时间 |
-| 父命令安装闭环、通信、管道失败、worker 竞态、TTL 和清理 | `subagent-integration-communication.test.mjs`、`subagent-integration-results.test.mjs`、`subagent-integration-recovery.test.mjs` | 三系统；根目录无覆盖发布包含 Windows 专属断言 |
+| 父命令安装闭环、指令文件、跨平台句柄、通信、管道失败、worker 竞态、TTL 和清理 | `subagent-integration-communication.test.mjs`、`subagent-integration-results.test.mjs`、`subagent-integration-recovery.test.mjs` | 三系统；根目录无覆盖发布包含 Windows 专属断言 |
 | 初始化观察窗口、能力补报与启动失败后的固定结果 | `subagent-integration-initialization.test.mjs` | 三系统 |
 | 诊断脱敏、输出预算及完整导出 | `subagent-integration-reports.test.mjs` | 三系统 |
 | Antigravity 通信状态与真实文件桥接 | `antigravity-adapter.test.mjs` | 三系统；状态分支使用真实内存通道，代表用例使用真实文件扫描与投递 |
@@ -35,7 +35,7 @@ pnpm plugin:test agent-subagent --native-mode source-candidate --native-context 
 | 包管理器 shim、Job 环境、隔离 home 与系统 API | `subagent-platform.test.mjs` | Windows |
 | 共享进程组保护、停止后保留调用者 | `subagent-platform.test.mjs` | macOS、Linux |
 | 内建适配器的输入、协议、停止与安装资源闭包 | `adapters-integration-inputs.test.mjs`、`adapters-integration-protocol.test.mjs`、`adapters-integration-control.test.mjs` | 三系统 |
-| 文件选择及确定性 Eval 消费者 | manifest 中其余测试入口 | 按各用例的平台条件执行 |
+| 确定性 Eval 消费者 | manifest 中其余测试入口 | 按各用例的平台条件执行 |
 
 ## Windows 文件占用与跨卷资格
 

@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -6,10 +6,16 @@ import { build } from 'esbuild';
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptRoot, '..');
 const entries = [
-  'commands/scripts/file-selection/selection.mjs',
   'commands/scripts/adapters/codex-profile.mjs',
   'commands/scripts/runtime/windows-native.mjs',
 ];
+
+const instructions = await readFile(path.join(pluginRoot, 'shared/task-instructions.md'));
+for (const directory of ['skills/spawn-subagent/assets', 'commands/assets']) {
+  const output = path.join(pluginRoot, directory);
+  await mkdir(output, { recursive: true });
+  await writeFile(path.join(output, 'task-instructions.md'), instructions);
+}
 
 const readerPath = process.env.AW_PLUGIN_NATIVE_READER;
 if (!readerPath || !path.isAbsolute(readerPath)) throw new Error('AW must supply the generated native tool reader.');
@@ -29,8 +35,12 @@ async function bundleRuntime(entry) {
   const result = await build({
     absWorkingDir: pluginRoot,
     entryPoints: [entry],
+    outfile: entry,
     nodePaths: [path.join(scriptRoot, 'node_modules')],
     bundle: true,
+    // Command files already travel together. Keep one instance of shared
+    // modules such as the runtime error class, with imports relative to outfile.
+    external: ['./commands/scripts/*'],
     platform: 'node',
     format: 'esm',
     target: 'node22',

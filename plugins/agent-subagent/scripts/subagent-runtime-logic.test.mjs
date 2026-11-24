@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
-import { validateDiagnostics } from '../commands/scripts/runtime/contracts.mjs';
+import { validateDiagnostics, NATIVE_PLATFORMS } from '../commands/scripts/runtime/contracts.mjs';
 import { useWindowsNativeFixture, windowsNativeSpawn } from './fixtures/windows-native-host.mjs';
 import { field } from './fixtures/windows-qualification.mjs';
 
@@ -82,7 +82,7 @@ async function fixture(t, sharedContext) {
       run.meta.terminalAt = Date.now(); run.meta.localTreeStopped = true;
       run.snapshot = { ...run.snapshot, state: 'completed', sequence: 3 };
       await files.atomicJson(path.join(run.directory, 'owner.json'), run.meta);
-      await files.atomicJson(path.join(run.directory, 'final.json'), { protocolVersion: 5, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text });
+      await files.atomicJson(path.join(run.directory, 'final.json'), { protocolVersion: 6, type: 'result', state: 'completed', generationStarted: true, backendExitCode: 0, text });
       await files.atomicJson(path.join(run.directory, 'snapshot.json'), run.snapshot);
     },
   };
@@ -119,15 +119,58 @@ test('resume preflight preserves the current result when session or stopping evi
 test('short run handles retain independent lookup and key validation', async (t) => {
   const f = await fixture(t);
   assert.equal(f.run.handle.length, 38);
-  assert.match(f.run.handle, /^aw5-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/);
+  assert.match(f.run.handle, /^aw6-[A-Za-z0-9_-]{11}-[A-Za-z0-9_-]{22}$/);
   assert.equal(Buffer.from(f.run.meta.id, 'base64url').length, 8);
   assert.equal(Buffer.from(f.run.meta.key, 'base64url').length, 16);
   assert.deepEqual(store.parseHandle(f.run.handle), { id: f.run.meta.id, key: f.run.meta.key });
   assert.equal((await store.openRun(f.context, f.run.handle)).directory, f.run.directory);
+  assert.equal((await files.readJson(path.join(f.run.entryDirectory, 'current.json'))).schema, 6);
+  assert.equal((await files.readJson(path.join(f.run.directory, 'owner.json'))).schema, 6);
   const differentKey = `${f.run.meta.key[0] === 'A' ? 'B' : 'A'}${f.run.meta.key.slice(1)}`;
-  await assert.rejects(store.openRun(f.context, `aw5-${f.run.meta.id}-${differentKey}`), { code: 'runUnavailable' });
-  for (const invalid of [`aw5-${'a'.repeat(32)}-${'b'.repeat(32)}`, `aw5-${'../'.repeat(3)}aa-${f.run.meta.key}`, f.run.handle + 'x']) {
+  await assert.rejects(store.openRun(f.context, `aw6-${f.run.meta.id}-${differentKey}`), { code: 'runUnavailable' });
+  for (const invalid of [`aw6-${'a'.repeat(32)}-${'b'.repeat(32)}`, `aw6-${'../'.repeat(3)}aa-${f.run.meta.key}`, f.run.handle + 'x', f.run.handle.replace(/^aw6-/, 'aw5-')]) {
     assert.throws(() => store.parseHandle(invalid), { code: 'runUnavailable' });
+  }
+});
+
+// Test Value Gate: a command's platform comes from its applied snapshot, and cross-platform sends never enter the outbox or resume.
+test('reads one current platform snapshot and preserves cross-platform stop and results', async (t) => {
+  mockProcessObserver(t);
+  const homeRoot = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-cross-platform-'));
+  t.after(() => fs.rm(homeRoot, { recursive: true, force: true }));
+  const installedIdentity = { sourceId: 'official', sourceIdentity: 'official-source', pluginId: 'official/agent-subagent',
+    pluginName: 'agent-subagent', platform: 'codex' };
+  const f = await fixture(t, await store.storeContext({ homeRoot, sourceIdentity: installedIdentity }));
+  let calls;
+  const run = async (platform, operation, ...args) => {
+    calls = 0;
+    const request = cli.parseCommand([operation, '--run', f.run.handle, ...args]);
+    const result = await cli.executeCommand(request, { homeRoot, readCommandRuntimeConfig: async (options) => {
+      calls++;
+      assert.deepEqual(Object.keys(options).sort(), ['from', 'keys']);
+      assert.deepEqual(options.keys, ['subagentRetentionHours']);
+      return { platform, installedIdentity: { ...installedIdentity, platform }, values: { subagentRetentionHours: 0 } };
+    } });
+    assert.equal(calls, 1);
+    return result;
+  };
+  const rejected = await run('claude', 'send', '--text', 'Cross-platform input');
+  assert.equal(rejected.exitCode, 1);
+  assert.equal(field(rejected.diagnostic, 'code'), 'platformMismatch');
+  assert.match(rejected.diagnostic, /original platform codex/);
+  assert.deepEqual(await fs.readdir(path.join(f.run.directory, 'outbox')), []);
+  await f.complete();
+  f.run.meta.worker = { pid: 2147483647, started: 'stopped-fixture' };
+  await files.atomicJson(path.join(f.run.directory, 'owner.json'), f.run.meta);
+  const resume = await run('grok', 'send', '--text', 'Cross-platform resume');
+  assert.equal(resume.exitCode, 1);
+  assert.equal(field(resume.diagnostic, 'code'), 'resumePlatformMismatch');
+  assert.deepEqual(await fs.readdir(f.run.containerDirectory), [f.run.meta.executionId]);
+  assert.equal((await run('pi', 'stop')).exitCode, 0);
+  for (const platform of NATIVE_PLATFORMS) {
+    const result = await run(platform, 'result');
+    assert.equal(result.exitCode, 0);
+    assert.match(result.text, /Complete final answer/);
   }
 });
 
@@ -307,22 +350,24 @@ test('complete file export reports consumption failure without deleting the file
 // Test Value Gate: unsupported forms must fail before any store or stdin work.
 test('parse rejects missing, mixed, repeated, stdin and removed options', () => {
   const invalid = [
-    ['start', '--platform', 'codex', '--executor', 'x'], ['send', '--run', 'x'],
-    ['start', '--platform', 'codex', '--executor', 'x', '--prompt', '-'], ['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', '-'],
+    ['start', '--executor', 'x'], ['send', '--run', 'x'],
+    ['start', '--executor', 'x', '--prompt', '-'], ['start', '--executor', 'x', '--prompt-file', '-'],
     ['send', '--run', 'x', '--text', '-'], ['send', '--run', 'x', '--text-file', '-'],
-    ['start', '--platform', 'codex', '--executor', 'x', '--prompt', 'task', '--prompt-file', 'file'],
+    ['start', '--executor', 'x', '--prompt', 'task', '--prompt-file', 'file'],
     ['send', '--run', 'x', '--text', 'text', '--text-file', 'file'],
     ['result', '--run', 'x', '--export'], ['result', '--run', 'x', '--output-file', 'file', '--export'],
     ['result', '--run', 'x', '--details'], ['result', '--run', 'x', '--output-file', 'a', '--output-file', 'b'],
-    ['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', 'a', '--prompt-file', 'b'],
+    ['start', '--executor', 'x', '--prompt-file', 'a', '--prompt-file', 'b'],
+    ['start', '--executor', 'x', '--prompt', 'task', '--file', 'file'],
+    ['start', '--executor', 'x', '--prompt', 'task', '--mode', 'workspace'],
     ['send', '--run', 'x', '--text', 'a', '--text', 'b'], ['wait', '--run', 'x', '--text', 'a'],
   ];
-  for (const prefix of [[], ['--platform', 'pi'], ['--platform=codex'], ['--platform', 'codex', '--platform', 'claude']]) {
+  for (const prefix of [['--platform', 'pi'], ['--platform=codex'], ['--platform', 'codex', '--platform', 'claude']]) {
     invalid.push(['start', ...prefix, '--executor', 'x', '--prompt', 'task']);
   }
   invalid.push(['start', '--executor', 'x', '--platform', 'claude', '--prompt', 'task']);
   for (const args of invalid) assert.throws(() => cli.parseCommand(args), { code: 'argumentsInvalid' }, args.join(' '));
-  assert.equal(cli.parseCommand(['start', '--platform', 'codex', '--executor', 'x', '--prompt-file', './-']).promptFile, './-');
+  assert.equal(cli.parseCommand(['start', '--executor', 'x', '--prompt-file', './-']).promptFile, './-');
   assert.equal(cli.parseCommand(['wait', '--run', 'x', '--run', 'x', '--timeout-ms', '0']).timeoutMs, 0);
 });
 
@@ -337,7 +382,7 @@ test('command help bypasses required task inputs and diagnostics parses for ever
     assert.notEqual(help.text, overview.text);
     assert.match(help.text, new RegExp(`Usage: ${operation} `));
     assert.deepEqual(cli.parseCommand([operation, '-h']), cli.parseCommand([operation, '--help']));
-    const args = operation === 'start' ? ['--platform', 'codex', '--executor', 'x', '--prompt', 'task']
+    const args = operation === 'start' ? ['--executor', 'x', '--prompt', 'task']
       : operation === 'send' ? ['--run', 'x', '--text', 'input'] : ['--run', 'x'];
     assert.equal(cli.parseCommand([operation, ...args, '--diagnostics']).showDiagnostics, true);
     assert.throws(() => cli.parseCommand([operation, ...args, '--diagnostics', '--diagnostics']), { code: 'argumentsInvalid' });
@@ -355,7 +400,7 @@ test('result display filters routine diagnostics and retains new warnings', asyn
   const late = { code: 'backendActionDenied', message: 'A tool action was denied.' };
   await f.complete();
   await files.atomicJson(path.join(f.run.directory, 'snapshot.json'), { ...f.run.snapshot, diagnostics: [...normal, warning] });
-  await files.atomicJson(path.join(f.run.directory, 'final.json'), { protocolVersion: 5, type: 'result', state: 'completed',
+  await files.atomicJson(path.join(f.run.directory, 'final.json'), { protocolVersion: 6, type: 'result', state: 'completed',
     generationStarted: true, backendExitCode: 0, text: 'Retained answer.', diagnostics: [late, late] });
   const result = await commands.readResult(f.context, f.request);
   assert.deepEqual(blocks(result.text, 'DIAGNOSTIC'), [late.message]);

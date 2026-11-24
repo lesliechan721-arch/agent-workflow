@@ -174,7 +174,7 @@ async function copyUserMaterializedArtifacts(options: {
   return materializedRoot;
 }
 
-async function materializeProfileSkills(options: {
+async function materializeProfileArtifacts(options: {
   prepared: PreparedSkillPluginBundle;
   plugins: readonly PluginMeta[];
   profile: AwSkillEvalMaterializationProfile;
@@ -192,6 +192,14 @@ async function materializeProfileSkills(options: {
       ? path.join(options.projectRoot, '.agents', 'skills')
       : path.join(options.env.AW_HOME!, 'plugins', plugin.manifest.name, options.profile.platform, 'skills');
     await snapshotRuntimeSkills(path.join(outputRoot, 'skills'), targetRoot, options.profile.platform);
+    if (materialized.codexRoleFiles.length) {
+      const codexRoot = options.profile.scope === 'project'
+        ? path.join(options.projectRoot, '.codex')
+        : options.env.CODEX_HOME!;
+      for (const file of materialized.codexRoleFiles) {
+        await fs.copy(file, path.join(codexRoot, 'agents', path.basename(file)), { overwrite: false, errorOnExist: true });
+      }
+    }
     return materialized.preparation.map((unit) => ({ ...unit, outputs: [] }));
   } finally {
     await fs.remove(outputRoot);
@@ -241,7 +249,7 @@ async function materializeProfile(options: {
 
   const preparation: ComponentPreparationBinding[] = [];
   for (const { prepared } of installations) {
-    preparation.push(...await materializeProfileSkills({
+    preparation.push(...await materializeProfileArtifacts({
       prepared,
       plugins: installations.map(({ prepared }) => prepared.bundlePlugin),
       profile: options.profile,

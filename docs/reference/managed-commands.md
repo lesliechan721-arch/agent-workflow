@@ -1,6 +1,6 @@
 # 托管命令合同 v2
 
-插件可在同一 `AW_HOME` 下发布一个以 `来源/插件` 调用的命令包。多个平台、User 和 Project 部署共用该包。用户也可以用 `aw command install` 注册自己的单入口命令，使用 `cmdu_` ID 调用。
+插件可在同一 `AW_HOME` 下发布一个由 `来源/插件` 标识的命令包。多个平台、User 和 Project 部署共用该包。用户也可以用 `aw command install` 注册自己的单入口命令，使用 `cmdu_` ID 调用。
 
 作者在 Plugin Manifest v4 的 `requires.aw.capabilities` 声明 `aw.managed-commands.v2`。用 `aw dev plugin capabilities --surface managed-commands --json` 查询字段和限制，用 `aw command --help` 查询本机 CLI。Guide 的业务参数和适配器协议见 [Guide 运行生命周期](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)及[适配器协议](../../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md)。
 
@@ -8,10 +8,13 @@
 
 ```text
 aw command run <来源/插件> [--no-fallback] -- [args...]
+aw command run <来源/插件/平台> [--no-fallback] -- [args...]
 aw command run <cmdu-id> -- [args...]
 ```
 
 插件选择器由来源 ID（`[a-z][a-z0-9-]{0,31}`）和插件名（`[a-z0-9]+(?:-[a-z0-9]+)*`）组成。必须提供字面分隔符 `--`，即使业务参数为空。缺少分隔符、裸插件名、分隔符前存在未知选项，或对 `cmdu_` / 空参数使用 `--no-fallback`，均在启动前以 `invalidArguments` 和退出码 `2` 停止。帮助选项放在分隔符前。
+
+声明 `command.runtimeConfig.keys` 的包必须在调用时追加一个 Native 平台。省略平台时报 `commandPlatformRequired` 并列出已发布平台。没有该声明的包若追加平台则报 `commandPlatformUnexpected`。两者均在匹配路由前退出，退出码为 2。非法平台、`generic`、空段和四段以上选择器均报 `invalidArguments`。查询、同步和移除继续使用两段包名。
 
 AW 以 `--` 后第一个完整 argv 元素区分大小写地匹配子命令。匹配时消费该元素，再把剩余参数接到路由的固定 `args` 后面。通用入口 `fallback` 收到完整的业务 argv。空字符串、空格、Unicode 和其后的字面 `--` 均原样保留。
 
@@ -112,22 +115,22 @@ AW 以 `--` 后第一个完整 argv 元素区分大小写地匹配子命令。�
 
 ## Skill 引用与宿主权限
 
-在最终 Skill 的 Markdown 中，`{{aw.command}}` 展开为 `aw command run <已核验来源/插件> --`，包括代码块在内。引用只适用于同一插件有可运行命令且当前目标属于 `command.platforms` 的 Native Skill。空路由导致引用该命令的 Skill 不可用，独立组件继续。Portable 分发需提供独立可用正文和资源。[Portable 合同](plugin-runtime.md)
+在最终 Skill 的 Markdown 中，`{{aw.command}}` 展开为当前包的调用入口，包括代码块在内。声明运行配置时为 `aw command run <来源/插件/平台> --`，其余包为 `aw command run <来源/插件> --`。引用只适用于同一插件有可运行命令且当前目标属于 `command.platforms` 的 Native Skill。空路由导致引用该命令的 Skill 不可用，独立组件继续。Portable 分发需提供独立可用正文和资源。[Portable 合同](plugin-runtime.md)
 
-`extensions.permissions[].allow/ask/deny` 可使用原有的字符串命令前缀或结构化 `{ "argsPrefix": ["export"] }`。结构化项要求 `aw.managed-commands.v2`、本插件有 `command` 且目标属于 `command.platforms`。每个 token 必须匹配 `[A-Za-z0-9_./:@%+=,-]+`。`argsPrefix` 必填。`[]` 明确匹配插件入口的所有直接调用，按实际需要缩小为命名路由或其参数前缀。
+`extensions.permissions[].allow/ask/deny` 可使用原有的字符串命令前缀或结构化 `{ "argsPrefix": ["export"] }`。结构化项要求 `aw.managed-commands.v2`、本插件有 `command` 且目标属于 `command.platforms`。带命令包的插件在 `generic` 上自动跳过继承的结构化权限，普通字符串权限仍参与能力检查。显式为 `generic` 配置托管权限会报错。每个 token 必须匹配 `[A-Za-z0-9_./:@%+=,-]+`。`argsPrefix` 必填。`[]` 明确匹配插件入口的所有直接调用，按实际需要缩小为命名路由或其参数前缀。
 
-- AW 生成的结构化权限前缀是逐项 argv `["aw", "command", "run", "<来源/插件>", "--", ...argsPrefix]`。它匹配字面 `--` 紧随选择器的调用。带 `--no-fallback` 的调用使用不同前缀，审批由宿主自身策略决定。
+- AW 生成的结构化权限前缀是逐项 argv `["aw", "command", "run", "<调用选择器>", "--", ...argsPrefix]`。它匹配字面 `--` 紧随选择器的调用。带 `--no-fallback` 的调用使用不同前缀，审批由宿主自身策略决定。
 - Codex 将前缀写入 `prefix_rule`，对应 `allow`、`prompt`、`forbidden`。Claude Code 将普通和托管命令的前缀以空格连接，在尾部加 ` *` 生成 `Bash(...)` 规则，覆盖零个或多个附加参数。Claude Code 匹配前可能移除 `timeout`、`time` 等已知包装，Review 会提示内部命令匹配的影响。AW 内部执行仍按实际 argv 路由。[Claude Code Bash 匹配](https://code.claude.com/docs/en/permissions#bash)
 - Claude 的沙箱排除声明在 `extensions.permissions[].agentOverrides.claude.sandbox.excludedCommands`，每项为同样的结构化对象。插件同时声明 `aw.managed-commands.v2` 与 `aw.claude.sandbox-exclusions.v1`。排除规则生成同样的前缀和尾部 ` *`，位置在 Claude 沙箱设置中。沙箱排除和 Bash 审批各自生效。
 - 宿主规则安装情况以本次回执为准。不能完整施加的动作报告 `invocationPolicyNotApplied`。实际会话证据见[宿主审批验证范围](#宿主审批验证范围)。
 
 Skill 与命令权限使用同一冻结路由表。非空 `argsPrefix` 的首词须命中子命令或存在通用入口才可达。空前缀只要求有至少一个路由。部署操作会跳过不可达的 `allow` 和 Claude 沙箱排除，并在本次可触达的部署中按归属撤回对应的旧规则。仍可投影的 `ask` 和 `deny` 会保留，即使当前没有处理程序，以便其他部署恢复路由时限制继续生效。跳过动作与原因见 [CLI 诊断合同](cli.md#4-业务-payload-的边界)。
 
-权限匹配调用文字。专用路由改为通用处理、新增子命令接走通用调用、入口或固定参数变化，都可能让已放行的调用执行不同代码。安装、同步、重建、命令包同步和配置应用的 Review 展示旧、新入口及可见权限影响，指出未检查的其他项目。OpenCode 的某个配置文件损坏时，Review 会标出该路径，并继续展示其他可读取层中的匹配规则。已审阅的候选或现场证据发生变化时以 `operationReviewStale` 停止相应发布。来源 ID 改绑后，旧包不可再按名称调用。安装新来源的同名插件时，残留的同文字宿主规则仍可能匹配，Review 会提示这一点。通过相应部署的同步或卸载更新其归属规则。
+权限匹配调用文字。添加或撤去包级运行配置会改变调用前缀，Review 同时核对旧、新两种前缀。专用路由改为通用处理、新增子命令接走通用调用、入口或固定参数变化，都可能让已放行的调用执行不同代码。安装、同步、重建、命令包同步和配置应用的 Review 展示旧、新入口及可见权限影响，指出未检查的其他项目。OpenCode 的某个配置文件损坏时，Review 会标出该路径，并继续展示其他可读取层中的匹配规则。已审阅的候选或现场证据发生变化时以 `operationReviewStale` 停止相应发布。来源 ID 改绑后，旧包不可再按名称调用。安装新来源的同名插件时，残留的同文字宿主规则仍可能匹配，Review 会提示这一点。通过相应部署的同步或卸载更新其归属规则。
 
 Codex Review 检查 User 和当前项目的规则文件，识别单行或多行的独立顶层字面 `prefix_rule`，包括参数备选项。Review 会标明无法读取或含无法判定表达式的文件。同一文件中的可判定规则仍会展示。Codex 0.171.0 的目录规则加载器跳过符号链接，Review 将链接列为未检查项。确认后的现场复核使用规则文件原始内容和符号链接的指向。
 
-Grok Review 检查 User 的 `config.toml`、`managed_config.toml` 和已授信当前项目的 `.grok/config.toml`。Review 列出可能匹配的 Bash 规则和无法读取的配置文件。
+有路由变化时，Grok Review 检查 User 的 `config.toml`、`managed_config.toml` 和已授信当前项目的 `.grok/config.toml`。Review 按受影响的调用前缀查找可能匹配的 Bash 规则，并列出无法读取的配置文件。同一规则可能匹配多个受影响的调用前缀时，优先报告匹配的 `/grok` 前缀。
 
 ### 宿主审批验证范围
 
@@ -149,7 +152,7 @@ OpenCode 匹配命令文本。标准书写使用未加引号的字面词，以�
 
 ## 运行配置快照
 
-`command.runtimeConfig.keys` 为每个已发布平台声明同一组可读键。AW 在不可变命令包 revision 中注入 `.aw/command-runtime-config.mjs` 和各平台的 `.aw/runtime-config/<platform>.json`。调用脚本显式传入正确的平台，例如在命令包根的模块中调用：
+`command.runtimeConfig.keys` 为每个已发布平台声明同一组可读键。AW 在不可变命令包 revision 中注入 `.aw/command-runtime-config.mjs` 和各平台的 `.aw/runtime-config/<platform>.json`。AW 在启动前核验所选平台的快照和读取器，随后通过受保护的 `AW_COMMAND_RUNTIME_CONFIG` 传入 `{ schemaVersion: 1, platform, packageId, revision }`。脚本在命令包根目录可以这样读取配置。
 
 ```js
 import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';
@@ -157,14 +160,13 @@ import { readCommandRuntimeConfig } from './.aw/command-runtime-config.mjs';
 const { values, platform, installedIdentity, resourceRoot } =
   await readCommandRuntimeConfig({
     from: import.meta.url,
-    platform: 'codex',
     keys: ['exportDirectory'],
   });
 ```
 
-`from` 必须是同一 revision 内的普通文件。读取器按自身位置核对独立 owner、producer 记录和快照。平台必须是合法 Native 目标，所求键非空、唯一且在声明的允许列表内。快照是 schema 1 的 `aw-command-runtime-config`，含 `producer`、`pluginVersion`、`sourceContentDigest`、`platform`、`allowedKeys` 与 `effectiveValues`。读取器只返回所请求且有值的键，另附平台、当前 revision 根和 `installedIdentity`（`sourceId`、`sourceIdentity`、`pluginId`、`pluginName`、`pluginVersion`、`sourceContentDigest`、`platform`）。
+`from` 必须是同一 revision 内的普通文件。读取器按自身物理位置核对包 ID、revision、独立 owner、producer 记录和快照，拒绝符号链接。直接调用缺少 AW 上下文时报 `commandRuntimeConfigContextMissing`，手传 `platform`、未知选项或身份不匹配报 `commandRuntimeConfigInvalid`。平台必须是合法 Native 目标，所求键非空、唯一且在声明的允许列表内。快照是 schema 1 的 `aw-command-runtime-config`，含 `producer`、`pluginVersion`、`sourceContentDigest`、`platform`、`allowedKeys` 与 `effectiveValues`。读取器只返回所请求且有值的键，另附平台、当前 revision 根和 `installedIdentity`（`sourceId`、`sourceIdentity`、`pluginId`、`pluginName`、`pluginVersion`、`sourceContentDigest`、`platform`）。
 
-读取使用已应用值，缺失、越权键或损坏分别返回 `commandRuntimeConfigMissing`、`commandRuntimeConfigKeyDenied`、`commandRuntimeConfigInvalid`。先核对调用平台和请求键，必要时通过 `aw plugin sync` 或 `aw command package sync` 修复。同一个 `AW_HOME` 下，同平台多个配置根共享一份快照。不同平台分别记录已应用值。Skill 目录内的已安装配置读取器及其能力见[插件运行时合同](plugin-runtime.md)。
+AW 只为声明了运行配置的包生成读取器与快照。调用时仅核验所选平台，其他平台的快照损坏不影响本次执行。读取使用已应用值。所选平台未发布或快照文件缺失时返回 `commandRuntimeConfigMissing`，申请未授权的键时返回 `commandRuntimeConfigKeyDenied`，调用文件、所有权或 producer 记录缺失以及快照损坏时返回 `commandRuntimeConfigInvalid`。先核对调用平台和请求键，必要时通过 `aw plugin sync` 或 `aw command package sync` 修复。同一个 `AW_HOME` 下，同平台多个配置根共享一份快照。不同平台分别记录已应用值。Skill 目录内的已安装配置读取器及其能力见[插件运行时合同](plugin-runtime.md)。
 
 ## 包身份与发布
 
@@ -184,7 +186,7 @@ const { values, platform, installedIdentity, resourceRoot } =
 | `aw source sync` | 刷新 Active Catalog。已安装命令包继续使用当前 revision。 |
 | 确认更新到不含 `command` 的插件版本 | 在写锁内按 owner 撤销共享包，包括本次只选择 Portable 部署的更新。撤销后按名查询或执行会报 `commandNotFound`。需要清理损坏残留时，使用回执中的精确 `pkg-id`。 |
 | 来源移除或改绑 | 原名称失去旧包定位。用 `aw command list` 查找孤立包的 `pkg-id`，据此精确移除。 |
-| `aw command package sync <来源/插件>` | 通过本机 Active Catalog 单独同步命令包。首次同步为所有声明平台生成所需快照，后续重算原已发布且仍受支持的平台。Review 列出已知权限影响供参考，宿主规则由相应平台的生命周期命令更新。Active 插件已无 `command` 时返回 `commandPackageDeclarationMissing`，可用显式移除或插件同步。 |
+| `aw command package sync <来源/插件>` | 通过本机 Active Catalog 单独同步命令包。首次同步或现有包首次启用运行配置时，为所有声明平台生成所需快照，后续重算原已发布且仍受支持的平台。Review 列出已知权限影响供参考，宿主规则由相应平台的生命周期命令更新。Active 插件已无 `command` 时返回 `commandPackageDeclarationMissing`，可用显式移除或插件同步。 |
 | `aw command package remove <来源/插件 \| pkg-id>` | 按 owner 移除整包，所有该包调用失效。宿主规则和插件配置各由自身入口维护。按 `pkg-id` 移除可用旧来源 owner 证据，适用于来源已变化或损坏。 |
 
 保存配置只写 Config Store。命令读取上次应用的 snapshot 和路由。配置应用只刷新已安装且存在受影响输入的包，一次最多发布一个新 revision。配置存储分为 `common` 与 `platforms.<target>`。`--context user` 检查 User 部署，`--context project` 可检查 User 与当前项目，其他项目保留未检查。
@@ -218,8 +220,8 @@ aw command package remove <来源/插件 | pkg-id> [--force] [--yes] [--json]
 
 | 入口 | 公开数据 |
 | --- | --- |
-| `list` | `commands` 为用户命令，`packages` 为当前配置来源的插件包，`orphanedPackages` 为来源缺失、损坏或失配的插件包。包摘要含 `selector`、`packageId`、`availability`、`subcommands`（名称数组）、`hasFallback`。 |
-| `show` | `commands[0]` 为已查询项。用户命令含 `owner.kind: "user"`、`id`、`name`、`launch`。插件命令含 `owner.kind: "plugin"`、`owner.producer`、`selector`、`packageId`、`pluginVersion`、`sourceContentDigest`、`routes`（`subcommands` 和可选 `fallback`）、`runtimeConfigPlatforms` 与 `nativeTools`。两类都含 `availability` 和 `resourceRoot`。无法安全解析的资源或启动信息可为 `null`。 |
+| `list` | `commands` 为用户命令，`packages` 为当前配置来源的插件包，`orphanedPackages` 为来源缺失、损坏或失配的插件包。包摘要含 `selector`、`packageId`、`availability`、`subcommands`（名称数组）、`hasFallback`、`requiresPlatformContext`（布尔值，无法核验时为 `null`）。 |
+| `show` | `commands[0]` 为已查询项。用户命令含 `owner.kind: "user"`、`id`、`name`、`launch`。插件命令含 `owner.kind: "plugin"`、`owner.producer`、`selector`、`packageId`、`pluginVersion`、`sourceContentDigest`、`routes`（`subcommands` 和可选 `fallback`）、`runtimeConfigPlatforms`、`requiresPlatformContext` 与 `nativeTools`。两类都含 `availability` 和 `resourceRoot`。无法安全解析的资源或启动信息可为 `null`。 |
 | 命令或包写操作 | `changes` 列出变动项的 `kind`、`id`、`action`。变动后可查看的记录随 `commands` 或 `packages` 返回。包同步可返回 `packageReview` 与 `nativeToolChanges`。 |
 
 可查询但不可用的记录同时附 `errors`、`blockerCodes` 和 `recoveryActions`，并在顶层 `diagnostics` 中报告问题。包的 `ready` 表示有可用路由，`empty` 表示有效空路由表，`unavailable` 表示不可用。找不到选择器时返回 `commandNotFound`。无法核验归属的包通过诊断报告，保留其内容。`run` 采用子程序透传协议。
@@ -243,6 +245,7 @@ AW 执行错误在 stderr 以 `aw: <stableCode>: <safeMessage>` 报告。启动�
 | 错误码 | 恢复 |
 | --- | --- |
 | `commandNotFound` / `commandRouteNotFound` | 用 `list` 和 `show` 核对来源、命令包、子命令名称与通用入口。按包或平台同步。 |
+| `commandUnavailable` | 运行前无法核验已安装包的 revision 或 producer。用 `aw command show` 查看诊断，再同步命令包。 |
 | `commandDefinitionInvalid` / `commandBindingInvalid` | 核对定义或已安装包记录。用户定义损坏可精确移除后重装，插件包用 sync/rebuild/package sync 恢复。 |
 | `commandIdentityConflict` / `commandOwnerMismatch` | 核对归属和身份，保留无法核验的资源。 |
 | `commandResourceInvalid` / `commandRunnerUnsupported` | 修复缺失、不安全或无法直接启动的入口后更新包。 |

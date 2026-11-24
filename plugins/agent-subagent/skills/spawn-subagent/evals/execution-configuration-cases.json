@@ -40,8 +40,8 @@
       "prompt": "使用 spawn-subagent，为数据库锁与事务语义的实现任务选择本次执行配置，并说明交给调度方的角色。已授权委派，但本轮只做选择，不启动任务。",
       "assertions": [
         "两个自定义项均匹配时选择数组第一项：native、gpt-6.1-sol、high；不选择后面的 gpt-6-astra max。",
-        "保持 subagent 角色及本 Skill 的任务边界。",
-        "需要自行选择配置，实际读取 references/execution-profiles.md 后作出选择。"
+        "保持 aw-eval-source-agent-subagent-subagent 角色及本 Skill 的任务边界。",
+        "需要自行选择配置，实际读取 references/executor-selection.md 后作出选择。"
       ]
     },
     {
@@ -99,7 +99,7 @@
       "prompt": "使用 Guide 准备数据库锁与事务语义任务。调用方已选 executor=native、model=gpt-6-astra、reasoningEffort=xhigh，角色 codex-advisor。本轮只核对调度配置，不启动任务。",
       "assertions": [
         "保留调用方完整执行配置与 codex-advisor 角色，不被 Guide 自定义列表覆盖。",
-        "不读取 references/execution-profiles.md；其选择已由调用方完成。"
+        "不读取 references/executor-selection.md；其选择已由调用方完成。"
       ]
     }
   ]

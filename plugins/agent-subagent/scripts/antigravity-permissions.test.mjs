@@ -11,7 +11,7 @@ async function fixture(t, value) {
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const command = await fs.realpath(process.execPath), script = path.join(home, 'message.mjs');
   await fs.writeFile(script, 'export {};\n', { mode: 0o600 });
-  const args = [script, 'command', 'run', 'one/agent-subagent', '--', 'message'];
+  const args = [script, 'command', 'run', 'one/agent-subagent/antigravity', '--', 'message'];
   const environment = { HOME: home }, target = antigravitySettingsPath(environment);
   const directory = path.join(home, 'runtime');
   await fs.mkdir(directory, { mode: 0o700 });
@@ -91,7 +91,7 @@ test('Antigravity existing exact grants are not duplicated in the session overri
 // Explicit POSIX targets must use the same literal paths on every host.
 test('Antigravity permissions isolate the message route and accept literal arguments only', () => {
   const node = '/opt/node.v24/bin/node', script = '/opt/aw/cli.mjs';
-  const args = [script, 'command', 'run', 'one/agent-subagent', '--', 'message'];
+  const args = [script, 'command', 'run', 'one/agent-subagent/antigravity', '--', 'message'];
   for (const platform of ['darwin', 'linux']) {
     assert.equal(antigravityPermissionRule(node, args, platform), `command(${[node, ...args].join(' ')})`);
     for (const invalid of ['/opt/aw/../message.mjs', '/opt//message.mjs', 'C:\\aw\\message.mjs']) {
@@ -110,15 +110,15 @@ test('Antigravity permissions isolate the message route and accept literal argum
   const matches = (command) => matcher.exec(command)?.[0] === command;
   for (const entry of [node, `'${node}'`, `"${node}"`]) for (const module of [script, `'${script}'`, `"${script}"`]) {
     for (const args of ["--bridge /tmp/run-2/binding.json send --text 'hello 世界'", "'send' '--text' 'a;b|c$(x)\nnext'", String.raw`send --text 'it'\''s'`, String.raw`send --text "say \"hello\" \$HOME"`, 'receive --timeout-ms 0', '--help']) {
-      const call = `${entry} ${module} command run one/agent-subagent -- 'message' ${args}`;
+      const call = `${entry} ${module} command run one/agent-subagent/antigravity -- 'message' ${args}`;
       assert.equal(matches(call), true, call);
     }
   }
-  const parent = `'${node}' '${script}' command run one/agent-subagent --`;
+  const parent = `'${node}' '${script}' command run one/agent-subagent/antigravity --`;
   const base = `${parent} message`;
   for (const command of [
-    parent, `${parent} start --platform codex --executor fixture`, `${parent} stop --run fixture`,
-    `${base}.suffix --help`, `${base.replace('one/agent-subagent', 'two/agent-subagent')} --help`,
+    parent, `${parent} start --executor fixture`, `${parent} stop --run fixture`,
+    `${base}.suffix --help`, `${base.replace('one/agent-subagent/antigravity', 'two/agent-subagent/antigravity')} --help`,
     `${base.replace('command run', 'command remove')} --help`, `'${node}' '${script}.suffix' --help`,
     `'${node}' --eval '1' '${script}'`, `'${node}' /other.mjs`,
     base.replace('node.v24', 'nodeXv24'), `${base} --help; whoami`, `${base} --help && whoami`,

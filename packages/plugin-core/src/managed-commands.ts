@@ -302,6 +302,31 @@ export function normalizeCommandSelector(value: unknown): Pick<ProducerIdentity,
   return normalizeCommandNameParts(parts[0], parts[1], 'command selector');
 }
 
+export function parseCommandInvocationSelector(value: unknown): { packageSelector: string; platform?: PlatformName } {
+  const parts = text(value, 'command invocation selector').split('/');
+  if (parts.length !== 2 && parts.length !== 3) {
+    throw new Error('Invalid command invocation selector: expected <source/plugin> or <source/plugin/platform>.');
+  }
+  const { sourceId, pluginName } = normalizeCommandNameParts(parts[0], parts[1], 'command invocation selector');
+  const packageSelector = `${sourceId}/${pluginName}`;
+  if (parts.length === 2) return { packageSelector };
+  return { packageSelector, platform: enumeration(parts[2], 'command invocation selector platform', NATIVE_PLATFORM_TARGETS) };
+}
+
+export function normalizeCommandInvocationSelector(value: unknown): string {
+  const { packageSelector, platform } = parseCommandInvocationSelector(value);
+  return platform === undefined ? packageSelector : `${packageSelector}/${platform}`;
+}
+
+export function getManagedCommandInvocationSelectors(
+  packageSelector: string,
+  requiresPlatformContext: boolean | null,
+  platforms: readonly PlatformName[],
+): string[] {
+  if (requiresPlatformContext === null) return [];
+  return requiresPlatformContext ? platforms.map((platform) => `${packageSelector}/${platform}`) : [packageSelector];
+}
+
 export function normalizeProducerIdentity(value: unknown, field = 'producer identity'): ProducerIdentity {
   const input = object(value, field, ['sourceId', 'sourceIdentity', 'pluginName']);
   return {
@@ -406,8 +431,8 @@ export function parseManagedCommandPlaceholders(value: string): ManagedCommandPl
   return placeholders;
 }
 
-export function replaceManagedCommandPlaceholders(value: string, selector: string): string {
-  normalizeCommandSelector(selector);
+export function replaceManagedCommandPlaceholders(value: string, invocationSelector: string): string {
+  const selector = normalizeCommandInvocationSelector(invocationSelector);
   let cursor = 0;
   let result = '';
   for (const placeholder of parseManagedCommandPlaceholders(value)) {
@@ -455,6 +480,7 @@ export function validateManagedCommandManifest(manifest: NormalizedPluginManifes
   }
   for (const [index, permission] of (manifest.extensions?.permissions ?? []).entries()) {
     for (const platform of resolveSupportedPlatforms(manifest)) {
+      if (command && platform === 'generic' && permission.agentOverrides?.generic == null) continue;
       const entry = applyPlatformOverride(permission, platform);
       if (!entry) continue;
       const includesManaged = [entry.allow, entry.ask, entry.deny].some((items) =>

@@ -58,7 +58,7 @@
         "expectedLoad": true
       },
       "audit": {
-        "rationale": "充分有界材料可做bundle探索。",
+        "rationale": "可在工作区按已给出的材料路径完成有界探索。",
         "minimalCounterexample": "只有一个入口片段却要求未知全仓库完整结论时应报告能力/材料缺口，不能宣称调查已完成。",
         "allowedVariance": "同义请求可有不同措辞；检查实际观察期内的Skill加载覆盖及委派事件。expectedLoad不能证明首次方法选择前已加载；该顺序需真实事件证据。真实角色和权限验证见executor/joint suite。"
       }

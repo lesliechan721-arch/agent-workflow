@@ -2,9 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { isIP } from 'node:net';
-import { parse, stringify } from 'smol-toml';
+import { parse, stringify } from '../../../scripts/toml.mjs';
 import { fail } from '../runtime/contracts.mjs';
 import { convertHooks, table } from './codex-hooks.mjs';
+import { checkCodexArguments } from './codex-arguments.mjs';
+import { rejectOption } from './arguments.mjs';
 
 // Routing describes when Codex consumes a field; it does not limit accepted keys.
 const threadFields = new Set([
@@ -252,9 +254,57 @@ export async function readCodexProfile(name, environment, diagnostics = [], cwd 
   return { profilePath, document: parseProfile(text, diagnostics) };
 }
 
-export function splitConfiguration(value, { diagnostics = [] } = {}) {
+/** Resolve profile inputs and fold explicit options into one configuration. */
+export async function readCodexConfiguration(args, {
+  profile, workspace, environment, diagnostics = [], privateMcpServer,
+  permissionMode = 'default', model, reasoningEffort,
+}) {
+  checkCodexArguments({ args, permissionMode, execution: { model, reasoningEffort } });
+  let raw = Object.create(null);
+  let ephemeral = false;
+  const extras = [];
+  const conversion = { diagnostics, environment, baseDir: workspace, privateMcpServer };
+  const addRaw = (value) => {
+    raw = mergeConfiguration(raw, convertProfile(value, { ...conversion, explicit: true }));
+  };
+  const values = new Set(['--config', '-c', '--enable', '--disable', '--model', '-m', '--sandbox', '-s', '--ask-for-approval', '-a', '--profile', '-p']);
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index];
+    const equals = argument.indexOf('=');
+    let option = equals < 0 ? argument : argument.slice(0, equals);
+    let value = equals < 0 ? undefined : argument.slice(equals + 1);
+    if (/^-[cmpsa].+/.test(argument)) { option = argument.slice(0, 2); value = argument.slice(2); }
+    if (values.has(option)) {
+      value ??= args[++index];
+      if (typeof value !== 'string') fail('adapterArgumentsInvalid', 'The backend option requires a value.');
+      if (option === '--profile' || option === '-p') {
+        if (profile !== undefined) rejectOption(option);
+        profile = value;
+      } else if (option === '--config' || option === '-c') {
+        const parsed = parseConfigArgument(value, { diagnostics });
+        if (permissionMode !== 'default' && (Object.hasOwn(parsed, 'approval_policy') || Object.hasOwn(parsed, 'approvals_reviewer') || permissionMode === 'full-access' && Object.hasOwn(parsed, 'sandbox_mode'))) rejectOption(option);
+        if (Object.hasOwn(parsed, 'model') && model !== undefined || Object.hasOwn(parsed, 'model_reasoning_effort') && reasoningEffort !== undefined) rejectOption(option);
+        addRaw(parsed);
+      } else if (option === '--enable' || option === '--disable') addRaw({ features: { [value]: option === '--enable' } });
+      else if (option === '--model' || option === '-m') addRaw({ model: value });
+      else if (option === '--sandbox' || option === '-s') addRaw({ sandbox_mode: value });
+      else addRaw({ approval_policy: value });
+    } else if (option === '--strict-config') extras.push(option);
+    else if (option === '--ephemeral') ephemeral = true;
+    else if (option === '--dangerously-bypass-approvals-and-sandbox') addRaw({ approval_policy: 'never', sandbox_mode: 'danger-full-access' });
+    else if (option === '--full-auto') addRaw({ approval_policy: 'on-request', sandbox_mode: 'workspace-write' });
+    else fail('parameterUnavailable', `The Codex app-server adapter cannot preserve ${option}. Remove this explicit option.`);
+  }
+  const loaded = await readCodexProfile(profile, environment, diagnostics, workspace);
+  const defaults = convertProfile(loaded.document ?? {}, { ...conversion, baseDir: loaded.profilePath ? path.dirname(loaded.profilePath) : workspace });
+  const merged = mergeConfiguration(defaults, raw);
+  return { merged, defaults, raw, extras, ephemeral, profilePath: loaded.profilePath };
+}
+
+export function splitConfiguration(value, { diagnostics = [], launchOnly = false } = {}) {
   const launch = Object.create(null), thread = Object.create(null);
   const threadValue = (key, item, target = key) => {
+    if (launchOnly) return;
     try { thread[target] = jsonValue(item); }
     catch {
       // Hooks must retain source-state mapping. Moving them to startup would
@@ -279,8 +329,8 @@ export function splitConfiguration(value, { diagnostics = [] } = {}) {
   return { launch, thread };
 }
 
-export function launchArguments(launch, extra = [], platform = process.platform) {
-  const argv = ['app-server', ...extra];
+export function buildCodexLaunchArgs({ launch, extras = [] }, platform = process.platform) {
+  const argv = ['app-server', ...extras];
   try {
     for (const [key, value] of Object.entries(launch)) argv.push('-c', `${/^[A-Za-z0-9_-]+$/.test(key) ? key : tomlValue(key)}=${tomlValue(value)}`);
   } catch { fail('profileConversionUnsupported', 'Startup configuration cannot be serialized as TOML without loss.'); }

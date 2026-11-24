@@ -14,7 +14,7 @@ import {
   PLUGIN_MANIFEST_SCHEMA_VERSION,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from './manifest.js';
-import { selectPluginConfigProfile, getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
+import { selectPluginConfigProfile, getPluginConfigDependencyKeys, getPluginConfigSuggestions, normalizePluginConfigDefinition } from './plugin-config.js';
 
 import type {
   CatalogMarketplaceIdentity,
@@ -61,6 +61,8 @@ import {
   assertPublicHookEvent,
 } from './hooks-contract.js';
 import {
+  CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS,
+  CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
 } from './plugin-script-contract.js';
@@ -803,15 +805,20 @@ function ensureBoolean(value: unknown, fieldName: string): boolean {
   return value;
 }
 
-function normalizeScriptTimeout(value: unknown, fieldName: string): number {
+function normalizeScriptTimeout(
+  value: unknown,
+  fieldName: string,
+  min = PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
+  max = PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
+): number {
   if (
     typeof value !== 'number' ||
     !Number.isInteger(value) ||
-    value < PLUGIN_SCRIPT_TIMEOUT_MIN_MS ||
-    value > PLUGIN_SCRIPT_TIMEOUT_MAX_MS
+    value < min ||
+    value > max
   ) {
     throw new Error(
-      `Invalid ${fieldName}: expected an integer between ${PLUGIN_SCRIPT_TIMEOUT_MIN_MS} and ${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}.`,
+      `Invalid ${fieldName}: expected an integer between ${min} and ${max}.`,
     );
   }
 
@@ -1087,7 +1094,7 @@ function normalizePluginScripts(
   fieldName: string,
 ): PluginScriptsConfig {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['preApply', 'helpers', 'node', 'artifacts', 'tests']);
+  assertAllowedKeys(input, fieldName, ['preApply', 'helpers', 'node', 'artifacts', 'config', 'tests']);
 
   const output: PluginScriptsConfig = {};
 
@@ -1105,6 +1112,23 @@ function normalizePluginScripts(
 
   if (input.artifacts !== undefined) {
     output.artifacts = normalizeArtifactScripts(pluginRoot, input.artifacts, `${fieldName}.artifacts`);
+  }
+
+  if (input.config !== undefined) {
+    const config = assertObject(input.config, `${fieldName}.config`);
+    assertAllowedKeys(config, `${fieldName}.config`, ['suggestions']);
+    const scriptField = `${fieldName}.config.suggestions`;
+    const entry = assertObject(config.suggestions, scriptField);
+    assertAllowedKeys(entry, scriptField, ['runner', 'path', 'timeoutMs']);
+    if (entry.runner !== 'node') throw new Error(`Invalid ${scriptField}.runner: expected "node".`);
+    const scriptPath = normalizePluginScriptPath(pluginRoot, entry.path, `${scriptField}.path`);
+    assertNodeRunnablePath(scriptPath, `${scriptField}.path`);
+    output.config = { suggestions: {
+      runner: 'node',
+      path: scriptPath,
+      ...(entry.timeoutMs === undefined ? {} : { timeoutMs: normalizeScriptTimeout(entry.timeoutMs,
+        `${scriptField}.timeoutMs`, CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS, CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS) }),
+    } };
   }
 
   if (input.tests !== undefined) {
@@ -1389,6 +1413,7 @@ export function validatePluginManifest(
   if (input.config !== undefined) {
     manifest.config = normalizePluginConfigDefinition(input.config, 'config', {
       plugin: manifest.name, dependencies: manifest.dependencies ?? [],
+      hasSuggestionsScript: manifest.scripts?.config?.suggestions !== undefined,
     });
   }
 
@@ -1435,6 +1460,28 @@ export function validatePluginManifest(
   }
 
   return manifest;
+}
+
+/** Check external suggestion providers against the canonical same-source collection. */
+export function assertPluginConfigSuggestionProviders(
+  manifest: NormalizedPluginManifest,
+  plugins: readonly PluginMeta[],
+  sourceConfig?: unknown,
+): void {
+  const providers = new Set(getPluginConfigSuggestions(manifest.config, sourceConfig)
+    .flatMap((declaration) => declaration.plugin === undefined ? [] : [declaration.plugin]));
+  for (const provider of providers) {
+    if (!plugins.some((plugin) => plugin.manifest.name === provider && plugin.manifest.scripts?.config?.suggestions)) {
+      throw new Error(`Invalid ${manifest.name} config.suggestions.plugin: same-source dependency "${provider}" requires scripts.config.suggestions.`);
+    }
+  }
+}
+
+async function validateConfigSuggestionsScriptFile(pluginRoot: string, manifest: NormalizedPluginManifest): Promise<void> {
+  const relativePath = manifest.scripts?.config?.suggestions.path;
+  if (relativePath === undefined) return;
+  const stat = await fs.lstat(path.resolve(pluginRoot, relativePath)).catch(() => null);
+  if (!stat?.isFile()) throw new Error('Invalid scripts.config.suggestions.path: expected a regular plugin file.');
 }
 
 async function validateDeclaredNativeAssets(pluginRoot: string, manifest: PluginManifestSource | NormalizedPluginManifest): Promise<void> {
@@ -1560,6 +1607,7 @@ export async function validateSourcePluginManifest(
   }
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
+  await validateConfigSuggestionsScriptFile(pluginRoot, manifest);
   await validateManagedCommandSources(pluginRoot, manifest);
   validateNativeToolsManifest(manifest, { source: true });
   await loadPluginNativeToolClosure(pluginRoot, manifest);
@@ -1596,6 +1644,7 @@ export async function readPluginManifest(
     : validatePluginManifest(pluginRoot, rawManifest, { reservedImports: options.reservedImports });
   if (mode === 'bundle') {
     await validateManagedCommandSources(pluginRoot, manifest);
+    await validateConfigSuggestionsScriptFile(pluginRoot, manifest);
     const nativeTools = await loadPluginNativeToolClosure(pluginRoot, manifest);
     if (nativeTools) await validateNativeToolClosureFiles(pluginRoot, nativeTools);
   }

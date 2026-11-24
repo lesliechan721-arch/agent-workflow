@@ -387,28 +387,18 @@ interface SuccessfulNativeCliOutput {
   canEndGrace(): boolean;
 }
 
-async function terminateNativeCliProcessGroup(
+export async function terminateNativeCliProcessGroup(
   pid: number,
   killProcess: typeof process.kill,
-  allowDarwinPermissionDeniedProbe: boolean,
-  inspectLinuxGroup: boolean,
-  successfulOutput?: SuccessfulNativeCliOutput,
+  options: {
+    platform: NodeJS.Platform;
+    allowDarwinPermissionDeniedSignal?: boolean;
+    inspectLinuxGroup?: boolean;
+    successfulOutput?: SuccessfulNativeCliOutput;
+  },
 ): Promise<Error | undefined> {
+  const { platform, successfulOutput } = options;
   const groupPid = -pid;
-  const groupExists = (): boolean => {
-    try {
-      killProcess(groupPid, 0);
-      return true;
-    } catch (error) {
-      if (isProcessGroupMissing(error)) {
-        return false;
-      }
-      throw new Error(
-        'Native CLI cleanup unconfirmed: could not verify process group exit.',
-        { cause: error },
-      );
-    }
-  };
   const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean | Error => {
     try {
       killProcess(groupPid, signal);
@@ -421,7 +411,7 @@ async function terminateNativeCliProcessGroup(
         `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
         { cause: error },
       );
-      if (allowDarwinPermissionDeniedProbe && successfulOutput && readNativeCliErrorCode(error) === 'EPERM') {
+      if (options.allowDarwinPermissionDeniedSignal && successfulOutput && readNativeCliErrorCode(error) === 'EPERM') {
         // Stop signaling this group. The audit may still need to clean up
         // observed descendants before the final group-existence check.
         return denied;
@@ -450,13 +440,22 @@ async function terminateNativeCliProcessGroup(
   if (killSent instanceof Error) return killSent;
   const deadline = performance.now() + NATIVE_CLI_PROCESS_GROUP_VERIFY_MS;
   let nextInspection = performance.now() + NATIVE_CLI_PROCESS_GROUP_POLL_MS;
-  while (groupExists()) {
+  while (true) {
+    let probeError: Error | undefined;
+    try {
+      killProcess(groupPid, 0);
+    } catch (error) {
+      if (isProcessGroupMissing(error)) return;
+      probeError = new Error('Native CLI cleanup unconfirmed: could not verify process group exit.', { cause: error });
+      // Darwin can deny a probe while SIGKILL is still taking effect.
+      if (platform !== 'darwin' || readNativeCliErrorCode(error) !== 'EPERM') throw probeError;
+    }
     const now = performance.now();
     if (now >= deadline) {
-      throw new Error('Native CLI cleanup unconfirmed: process group is still running.');
+      throw probeError ?? new Error('Native CLI cleanup unconfirmed: process group is still running.');
     }
     // Linux signal 0 can still see zombies awaiting reaping by PID 1.
-    if (inspectLinuxGroup && termSent && killSent && now >= nextInspection) {
+    if (options.inspectLinuxGroup && termSent && killSent && now >= nextInspection) {
       if (await hasOnlyZombieLinuxProcessGroupMembers(pid, deadline - now)) return;
       nextInspection = performance.now() + NATIVE_CLI_LINUX_GROUP_INSPECTION_INTERVAL_MS;
     }
@@ -543,10 +542,12 @@ function settleNativeCliTerminationCleanup(
         ? (async () => {
             let processGroupError: Error | undefined;
             try {
-              permissionDeniedGroupSignal = await terminateNativeCliProcessGroup(
-                childPid, killProcess, processGroupPlatform === 'darwin' && observation !== undefined,
-                inspectLinuxGroup, successfulOutput,
-              );
+              permissionDeniedGroupSignal = await terminateNativeCliProcessGroup(childPid, killProcess, {
+                platform: processGroupPlatform,
+                allowDarwinPermissionDeniedSignal: processGroupPlatform === 'darwin' && observation !== undefined,
+                inspectLinuxGroup,
+                successfulOutput,
+              });
             } catch (error) {
               processGroupError = error instanceof Error
                 ? error

@@ -1,6 +1,7 @@
 import { readAgentSettings, previewAgentSettings, saveAgentSettings } from './agent-settings.js';
 import { selectPluginConfigProfile, getPluginConfigReferenceChoices, PLATFORM_TARGETS, NATIVE_PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
 import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
+import { preparePluginConfigSuggestions } from '../utils/plugin-config-suggestions.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
@@ -2636,6 +2637,19 @@ export function createTuiControllerDependencies(
           }
           return result;
         },
+      });
+    },
+    async getConfigSuggestions(lookup, run, signal) {
+      const { pluginId, options: config, ...request } = lookup;
+      const packageInfo = await readCliPackageInfo();
+      const operationContext = sessionContextForPlugin(pluginId);
+      return withResolvedCatalogPlugin({
+        selector: pluginId, cliVersion: packageInfo.version, env: context.env, signal,
+        ...(operationContext ? { operationContext } : {}),
+        consume: async ({ plugin }) => run(await preparePluginConfigSuggestions({
+          plugin, platform: config.platform, context: config.context ?? 'user',
+          cwd: context.cwd, env: context.env, signal, ...request,
+        })),
       });
     },
     async getConfigResetAvailability(pluginId, config, signal) {

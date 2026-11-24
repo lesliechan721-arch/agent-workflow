@@ -4,12 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { antigravityArguments, antigravityFullAccess } from '../../commands/scripts/adapters/antigravity-arguments.mjs';
-import { claudeArguments, negotiateClaude, executeClaude } from '../../commands/scripts/adapters/claude-code-v5.mjs';
-import { checkCodexArguments, negotiateCodex, codexConfiguration } from '../../commands/scripts/adapters/codex-v5.mjs';
+import { claudeArguments, negotiateClaude, executeClaude } from '../../commands/scripts/adapters/claude-code-v6.mjs';
+import { checkCodexArguments, negotiateCodex, codexConfiguration } from '../../commands/scripts/adapters/codex-v6.mjs';
 import { PassThrough } from 'node:stream';
 import { deferred } from '../../commands/scripts/adapters/common.mjs';
-import { negotiateAntigravity } from '../../commands/scripts/adapters/antigravity-v5.mjs';
-import { negotiateOracle } from '../../commands/scripts/adapters/oracle-v5.mjs';
+import { negotiateAntigravity } from '../../commands/scripts/adapters/antigravity-v6.mjs';
 import { permissionModeFallback } from '../../commands/scripts/adapters/permission-mode.mjs';
 
 // Test Value Gate: selected permissions must reach the native control surface,
@@ -69,8 +68,8 @@ test('nondefault modes reject same-control argv in every supported spelling', ()
 test('all builtin negotiations check and fix their executable with communication disabled', { skip: process.platform === 'win32' }, async (t) => {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'aw-adapter-environment-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  for (const [name, negotiate] of [['codex', negotiateCodex], ['claude', negotiateClaude], ['agy', negotiateAntigravity], ['oracle', negotiateOracle]]) {
-    const context = () => ({ request: { args: [], execution: {}, workspace: root, communication: false, permissionMode: 'auto', fileSelectors: [], codex: { cliSource: 'cli', bypassHookTrust: false } }, environment: { PATH: root }, diagnostics: [] });
+  for (const [name, negotiate] of [['codex', negotiateCodex], ['claude', negotiateClaude], ['agy', negotiateAntigravity]]) {
+    const context = () => ({ request: { args: [], execution: {}, workspace: root, communication: false, permissionMode: 'auto', codex: { cliSource: 'cli', bypassHookTrust: false } }, environment: { PATH: root }, diagnostics: [] });
     const missing = context();
     await assert.rejects(negotiate(missing), { code: name === 'codex' ? 'codexExecutableNotFound' : 'executableNotFound' });
     assert.equal(missing.initialization.environment.status, 'unavailable');

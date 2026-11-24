@@ -1,6 +1,6 @@
 # Codex 适配器
 
-公共要求见 [配置与接入](configuration.md)、[Adapter v5](protocol.md) 和 [运行生命周期](runtime.md)。
+公共要求见 [配置与接入](configuration.md)、[Adapter v6](protocol.md) 和 [运行生命周期](runtime.md)。
 
 Codex 固定 workspace，通过 app-server 管理本次 thread/turn、正式输入和中断。Codex 使用 mcp / in-turn，同时提供主动收件，活动轮用 turn/steer，无活动轮时新开 turn。
 
@@ -28,12 +28,13 @@ executor full-access 或 args/profile 同时明确 approval_policy=never、sandb
 
 PATH 按目标 OS 的命令解析规则处理 executable、symlink 和 Windows shim。找到入口后固定绝对路径；启动失败、协议不支持或运行错误都不能切换来源或重发任务。
 
+在 Windows 上，`inspect` 和配置建议以 AW 的 Node 直接启动 npm/pnpm `.cmd` shim 声明的包入口。若 pnpm 在 `node_modules` 内通过 junction 连接实际包目录，探针会检查链接的父路径、解析后的入口路径以及实际包的名称和 `bin` 声明。外部 `start` 支持包目录 junction，并使用 Windows 原生工具校验解析后的入口路径。
+
 macOS 依次检查用户 `~/Applications`、系统 `/Applications` 内的 Codex.app / ChatGPT.app；同目录 Codex.app 优先。候选须具有 `CFBundleIdentifier=com.openai.codex`，并包含有效 `Contents/Resources/codex`。该相对路径是已观察布局，不是官方跨版本保证。
 
 Windows 由当前用户注册的 `OpenAI.Codex_*!App` 取得实际 package identity，再查询安装根；只在这些包内有界发现 codex.exe 常规文件。遵守当前架构与包边界，不扫描磁盘、不固定版本目录或发布者后缀。候选不能唯一确定时报告歧义，系统查询失败与未安装分别诊断。Linux 的 auto/cli 使用 PATH，显式 app 在提交模型前拒绝。
 
 内嵌入口须位于匹配 App/package 的真实目录内，类型、执行权限及 argv 启动有效。使用所选路径完成无模型 app-server 初始化后才能提交任务；继承本次 cwd、环境、CODEX_HOME、认证和配置，不启动图形 App，不复制 binary 或下载依赖。诊断提供 path/app 来源、所选路径及可取得的版本。缺失时给出所选策略及修正 PATH、安装对应来源或更改策略的指引。App 更新移除入口时本次失败，下次新 run 重新发现。Windows 注册包发现与启动仍须 Windows 真机验收，不能用 macOS 或 fake 证据宣布支持。
-
 
 ## Codex profile 转换
 
@@ -53,15 +54,17 @@ AW 不自动添加或依赖 `--strict-config`，不另做全量 schema 严格校
 
 无法读取、TOML 语法错、黑名单、AW 控制冲突、必须转换的结构无效、不能无损表达或启动 argv 过长，在启动后端前失败。初始化或 thread/start、thread/resume 实际报错时停止，不发首轮、不删字段重试、不切换后端。修正配置或换用所需 Codex 后重新开始任务。未提供的字段保持缺失，null 不代表删除。
 
-诊断沿用 Adapter v5 的 `{code, field?, message}` 与 ready/result/快照补报。保留字段路径和具体原因，动态 key 必要时使用位置或占位符，禁止泄露值、token、header、命令参数、可信摘要、原始 config/read 或后端错误正文。错误区分 profile 不可读、黑名单、AW 控制冲突、转换与后端失败。下表列出的界面和废弃设置直接省略，不产生诊断。
+诊断沿用 Adapter v6 的 `{code, field?, message}` 与 ready/result/快照补报。保留字段路径和具体原因，动态 key 必要时使用位置或占位符，禁止泄露值、token、header、命令参数、可信摘要、原始 config/read 或后端错误正文。错误区分 profile 不可读、黑名单、AW 控制冲突、转换与后端失败。下表列出的界面和废弃设置直接省略，不产生诊断。
 
-完整透传会使过去被 AW 忽略的设置开始生效，或明确报错，包括工具、代理及认证设置。升级后应按所需行为核对 profile。Adapter v5 与已有恢复合同不变，不新增配置副本、信任账本或锁。
+完整透传会使过去被 AW 忽略的设置开始生效，或明确报错，包括工具、代理及认证设置。升级后应按所需行为核对 profile。Adapter v6 与已有恢复合同不变，不新增配置副本、信任账本或锁。
 
 ### 线程控制与路由
 
 AW workspace 使用进程 cwd 和 `params.cwd`。最终模型使用 `params.model`，不重复放 config。service_tier 只用 `config.service_tier`，缺失保持缺失。ephemeral 使用顶层参数。approval_policy、approvals_reviewer、sandbox_mode、default_permissions 保留原名进入 config；TOML `[permissions]` 是定义表，不能映射到只接受名称字符串的 RPC 顶层 permissions。
 
 profile effort 是线程默认值；任务显式 effort 同时覆盖默认并在每轮 turn/start.effort 传入。instructions 保留 config.instructions，不能提升为 baseInstructions，否则会改变“显式 base instructions → 指令文件 → instructions”的优先级。developer_instructions 保留原名。AW 角色、任务和已就绪通信说明仍在任务载荷中。
+
+模型自省按相同顺序合并 profile 与显式参数，只将启动阶段的配置交给执行 `model/list` 的 app-server。模型、推理强度、Hooks 和其他线程字段由实际执行的线程消费。
 
 以下字段完整进入 thread/start.config；恢复沿用 thread/resume：
 

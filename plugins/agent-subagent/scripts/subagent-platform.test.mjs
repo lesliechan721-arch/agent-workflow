@@ -125,12 +125,14 @@ test('PATH discovery distinguishes non-executable files and continues to a runna
   assert.equal((await resolveSafeCommand('fixture-cli', [], { cwd: directory, env: { PATH: [first, second].join(path.delimiter) } })).command, runnable);
 });
 
-// Test Value Gate: a package shim must select its verified bin without running
-// batch syntax. This test supplies evidence only on native Windows.
-test('native Windows package shim preserves argv and rejects injected batch text', { skip: process.platform !== 'win32', timeout: 40000 }, async (t) => {
+// Test Value Gate: native Windows launch must run the verified bin behind a package junction.
+test('native Windows package shim resolves a package junction, preserves argv, and rejects injected batch text', { skip: process.platform !== 'win32', timeout: 40000 }, async (t) => {
   const directory = await temporary(t);
-  const packageRoot = path.join(directory, 'node_modules', 'fixture-cli');
+  const packageRoot = path.join(directory, 'store', 'fixture-cli');
+  const packageLink = path.join(directory, 'node_modules', 'fixture-cli');
   await fs.mkdir(packageRoot, { recursive: true });
+  await fs.mkdir(path.dirname(packageLink));
+  await fs.symlink(packageRoot, packageLink, 'junction');
   await fs.writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'fixture-cli', bin: { fixture: 'cli.js' } }));
   await fs.writeFile(path.join(packageRoot, 'cli.js'), 'process.stdout.write(JSON.stringify(process.argv.slice(2)))');
   const shim = path.join(directory, 'fixture.cmd');

@@ -101,7 +101,7 @@ export class CatalogSourceImpactConfirmationRequiredError extends Error {
 }
 
 export function describeSourceCommandRebinding(sourceId: string): string {
-  return `After installing a same-named plugin from the new source, existing approvals for aw command run ${sourceId}/<plugin> -- can authorize the new code. This review covers the current user and project. Other projects may have matching rules.`;
+  return `After installing a same-named plugin from the new source, existing approvals for aw command run ${sourceId}/<plugin>[/<platform>] -- can authorize the new code. This review covers the current user and project. Other projects may have matching rules.`;
 }
 
 export class CatalogSourceIdentityChangeConfirmationRequiredError extends Error {

@@ -60,6 +60,7 @@ export interface ConfigCommandPackage {
   refreshKeys: string[];
   runtimeConfigKeys: string[];
   runtimeConfigPlatforms: PlatformName[];
+  requiresPlatformContext?: boolean | null;
   availability?: 'ready' | 'empty' | 'unavailable';
   subcommands?: string[];
   hasFallback?: boolean;
@@ -120,7 +121,8 @@ export async function discoverPluginConfigManagedCommandPackages(options: {
       packages.set(packageId, { producer, packageId,
         refreshKeys: [...new Set([...(command?.mode === 'dynamic' ? command.refreshKeys : []), ...record?.record.dynamicRefreshKeys ?? []])],
         runtimeConfigKeys: [...new Set([...command?.runtimeConfig?.keys ?? [], ...record?.record.runtimeConfigKeys ?? []])],
-        runtimeConfigPlatforms: view.runtimeConfigPlatforms, declared: command !== undefined, installed: true,
+        runtimeConfigPlatforms: view.runtimeConfigPlatforms, requiresPlatformContext: view.requiresPlatformContext,
+        declared: command !== undefined, installed: true,
         availability: view.availability, subcommands: view.subcommands, hasFallback: view.hasFallback });
     } catch (error) {
       if (error instanceof ManagedCommandError && error.code === 'commandNotFound') continue;

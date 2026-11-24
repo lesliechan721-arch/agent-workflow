@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 
 import { initializeCatalogWorkspace, type PluginManifestSource, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { inspectReviewTarget } from '../../src/commands/review-inspection.js';
@@ -155,6 +156,34 @@ describe('author canonical platforms', () => {
     const skillRoot = path.join(resolveMaterializedSubjectRoot(outputRoot, subject), '.agents', 'skills');
     expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'SKILL.md'), 'utf8')).toContain('generic explicit-generic');
     expect(await fs.readFile(path.join(skillRoot, 'static', 'references', 'runtime.txt'), 'utf8')).toBe('generic runtime\n');
+  });
+
+  it.each(['user', 'project'] as const)('preserves the projected Codex role in an isolated %s Eval subject', async (scope) => {
+    const { root, pluginRoot, env } = await fixture();
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const description = 'Review a fixture change.';
+    const prompt = 'Report the changed files.';
+    delete manifest.scripts;
+    delete manifest.artifacts;
+    await fs.writeJson(manifestPath, { ...manifest, extensions: { agents: [{ name: 'reviewer', description, prompt }] } });
+    const hostConfig = path.join(env.CODEX_HOME!, 'config.toml');
+    await fs.outputFile(hostConfig, 'model = "host-model"\n');
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(root, 'eval-subject');
+    const subject = await materializeAwSkillEvalSubject({ plugin, plugins: [plugin],
+      profile: { id: 'codex', platform: 'codex', scope, plugins: [{ name: plugin.manifest.name, configByScope: {} }] },
+      requiredSkills: new Set(['static']), initializeGitRepository: false,
+      outputRoot, workRoot: path.join(root, 'eval-work'),
+      sourceIdentity: `sha256:${'a'.repeat(64)}`, workspaceIdentity: 'fixture-workspace', env });
+    const codexRoot = path.join(resolveMaterializedSubjectRoot(outputRoot, subject), '.codex');
+    const name = 'aw-eval-source-platform-fixture-reviewer';
+    expect(await fs.readdir(codexRoot)).toEqual(['agents']);
+    expect(await fs.readdir(path.join(codexRoot, 'agents'))).toEqual([`${name}.toml`]);
+    const role = await fs.readFile(path.join(codexRoot, 'agents', `${name}.toml`), 'utf8');
+    expect(getStaticTOMLValue(parseTOML(role))).toEqual({ name, description, developer_instructions: prompt });
+    expect(await fs.readdir(env.CODEX_HOME!)).toEqual(['config.toml']);
+    expect(await fs.readFile(hostConfig, 'utf8')).toBe('model = "host-model"\n');
   });
 
   it('keeps Review evidence on its concrete platform and rejects the old consumer profile', async () => {

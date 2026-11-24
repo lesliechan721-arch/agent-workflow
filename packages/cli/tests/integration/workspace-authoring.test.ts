@@ -48,6 +48,48 @@ function readResult(stdout: string, command: string) {
 }
 
 describe('public Catalog Workspace authoring commands', () => {
+  // Source validation checks the suggestion entry and its imports without starting the probe.
+  it('validates a same-source suggestion provider and checks its runtime imports', async () => {
+    const root = await createRoot();
+    await runCli(['dev', 'catalog', 'create', '--workspace-root', root], { cwd: root, io: capture().io });
+    for (const name of ['suggestions-consumer', 'suggestions-provider']) {
+      await runCli(['dev', 'plugin', 'create', name, '--description', 'Suggestion authoring fixture.',
+        '--no-skills', '--workspace-root', root], { cwd: root, io: capture().io });
+    }
+    const consumerRoot = path.join(root, 'plugins', 'suggestions-consumer');
+    const consumerPath = path.join(consumerRoot, '.agents-plugin/plugin.json');
+    const consumer = await fs.readJson(consumerPath);
+    consumer.dependencies = ['suggestions-provider'];
+    consumer.config = { schemaVersion: 5, fields: {
+      model: { type: 'string', suggestions: { provider: 'models', plugin: 'suggestions-provider' } },
+    } };
+    await fs.writeJson(consumerPath, consumer);
+    const providerRoot = path.join(root, 'plugins', 'suggestions-provider');
+    const providerPath = path.join(providerRoot, '.agents-plugin/plugin.json');
+    const provider = await fs.readJson(providerPath);
+    const validate = async (pluginRoot: string) => {
+      const output = capture();
+      const exitCode = await runCli(['dev', 'plugin', 'validate', pluginRoot, '--workspace-root', root, '--json'],
+        { cwd: root, io: output.io });
+      return { exitCode, receipt: readResult(output.stdout(), 'dev.plugin.validate') };
+    };
+    const missingProvider = await validate(consumerRoot);
+    expect(missingProvider, JSON.stringify(missingProvider.receipt.diagnostics)).toMatchObject({ exitCode: 1, receipt: { diagnostics: expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('requires scripts.config.suggestions') }),
+    ]) } });
+    provider.scripts = { config: { suggestions: { runner: 'node', path: './probe.mjs' } } };
+    await fs.writeJson(providerPath, provider);
+    const probe = path.join(providerRoot, 'probe.mjs');
+    await fs.writeFile(probe, "throw new Error('The author validator must never execute this probe.');\n");
+    expect(await validate(providerRoot)).toMatchObject({ exitCode: 0, receipt: { status: 'success' } });
+    expect(await validate(consumerRoot)).toMatchObject({ exitCode: 0, receipt: { status: 'success' } });
+
+    await fs.writeFile(probe, "import './missing.mjs';\n");
+    expect(await validate(providerRoot)).toMatchObject({ exitCode: 1, receipt: { diagnostics: expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('missing.mjs') }),
+    ]) } });
+  });
+
   it.each(['valid', 'default-empty', 'wrong-type', 'unused-definition'] as const)(
     'validates renderer config references against the same Workspace dependency defaults (%s)',
     async (scenario) => {

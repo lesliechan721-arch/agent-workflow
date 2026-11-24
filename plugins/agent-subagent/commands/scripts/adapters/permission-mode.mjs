@@ -1,6 +1,6 @@
 import { fail } from '../runtime/contracts.mjs';
 
-// Adapter v5 validates presence at its wire boundary. Pure argument helpers
+// Adapter v6 validates presence at its wire boundary. Pure argument helpers
 // also serve existing callers, where an omitted selection means default.
 export function permissionMode(request) {
   const mode = request.permissionMode ?? 'default';

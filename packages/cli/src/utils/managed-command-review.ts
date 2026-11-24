@@ -81,8 +81,8 @@ export function reviewedInactivePermissions(binding: DeploymentBinding, evidence
   if (!isPermissionHost(binding.platform)) return evidence.inactivePermissions;
   const active = evidence.permissions.flatMap((item) => item.kind !== 'codex-rules' && item.kind !== 'claude-permissions'
     && item.pluginId === binding.plugin.pluginId ? item.permissions : []);
-  return evidence.inactivePermissions.filter(({ action, argsPrefix }) => {
-    const tokens = ['aw', 'command', 'run', binding.plugin.pluginId, '--', ...argsPrefix];
+  return evidence.inactivePermissions.filter(({ action, invocationSelector, argsPrefix }) => {
+    const tokens = ['aw', 'command', 'run', invocationSelector, '--', ...argsPrefix];
     const prefix = tokens.join(' ');
     const resources = binding.platform === 'antigravity' ? antigravityPermissionResources({ tokens }, process.platform, { includeLegacyRaw: true })
       : [binding.platform === 'grok' ? prefix : prefix + ' *'];

@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProfile, convertProfile, tomlValue, parseConfigArgument, mergeConfiguration, splitConfiguration, launchArguments } from '../../commands/scripts/adapters/codex-profile.mjs';
-import { codexConfiguration } from '../../commands/scripts/adapters/codex-v5.mjs';
+import { parseProfile, convertProfile, tomlValue, parseConfigArgument, mergeConfiguration, splitConfiguration, buildCodexLaunchArgs } from '../../commands/scripts/adapters/codex-profile.mjs';
+import { codexConfiguration } from '../../commands/scripts/adapters/codex-v6.mjs';
 import { mapHookState, sessionHookSource } from '../../commands/scripts/adapters/codex-hooks.mjs';
+import { safeError } from '../../commands/scripts/runtime/contracts.mjs';
+import { windowsJobExecutable, windowsNativeOperation } from '../../commands/scripts/runtime/windows-native.mjs';
 
 // Test Value Gate: use the delivered parser and adapter configuration boundary
 // to protect priority, lossless values, trust provenance and secret-free errors.
@@ -20,6 +22,40 @@ async function profile(t, text) {
 }
 const command = (text) => [{ hooks: [{ type: 'command', command: text }] }];
 const layer = (type, config, extra = {}) => ({ name: { type, ...(type === 'user' ? { file: '/base.config.toml' } : {}) }, config, ...extra });
+
+function failedOperation(code, message) {
+  return { ok: false, state: 'failed', generationStarted: false, code, message, recoveryActions: [] };
+}
+
+test('preserves the Codex profile diagnostic in the relocated command package', async (t) => {
+  const f = await profile(t, 'model = [');
+  await assert.rejects(codexConfiguration(f.request, f.environment), (error) => {
+    assert.deepEqual(safeError(error), failedOperation('profileValueInvalid', 'The profile is not valid TOML.'));
+    return true;
+  });
+});
+
+test('preserves the Windows operation diagnostic in the relocated command package', async () => {
+  await assert.rejects(windowsNativeOperation('processIdentity', { pid: 0 }), (error) => {
+    assert.deepEqual(safeError(error), failedOperation('platformOperationFailed', 'A native Windows operation input is invalid.'));
+    return true;
+  });
+});
+
+test('reads the Windows native tool context from the relocated command package', {
+  skip: process.env.AW_PLUGIN_EVENT !== 'test' && 'AW supplies the native tool reader during staging.',
+}, async (t) => {
+  const contextKey = 'AW_NATIVE_TOOL_CONTEXT';
+  const oldContext = process.env[contextKey];
+  t.after(() => {
+    if (oldContext === undefined) delete process.env[contextKey];
+    else process.env[contextKey] = oldContext;
+  });
+  process.env[contextKey] = JSON.stringify({ schemaVersion: 1, tools: {
+    'windows-job': { state: 'ready', protocol: 'aw.windows-job.v1', executable: process.execPath },
+  } });
+  assert.equal(await windowsJobExecutable(), process.execPath);
+});
 
 test('TOML conversion preserves quoted keys, arrays and startup/thread precedence', async (t) => {
   const f = await profile(t, `model = "profile-model"\nmodel_reasoning_effort = "low"\nmodel_catalog_json = "/catalog.json"\nmodel_provider = "provider.with.dot"\n[model_providers."provider.with.dot"]\nbase_url = "http://localhost"\nhttp_headers = { "X.Custom" = "secret" }\n[features]\nhooks = false\ncode_mode = { enabled = true }\n[mcp_servers."tools.with.dot"]\ncommand = "tool"\nargs = ["space and quote \\\"", "中文"]\n[plugins."name.with.dot"]\nenabled = true\n`);
@@ -167,7 +203,7 @@ test('routes lossless numbers and explicitly rejects unpreservable TOML represen
   assert.equal(split.thread.project_doc_max_bytes, undefined);
   assert.equal(split.launch.project_doc_max_bytes, 1);
   assert.equal(split.launch.agents.research.future, 9007199254740993n);
-  const launch = Object.assign({}, ...launchArguments(split.launch).filter((_, index, argv) => argv[index - 1] === '-c').map(parseConfigArgument));
+  const launch = Object.assign({}, ...buildCodexLaunchArgs({ launch: split.launch }).filter((_, index, argv) => argv[index - 1] === '-c').map(parseConfigArgument));
   assert.equal(launch.model_context_window, 9007199254740993n);
   assert.equal(typeof launch.project_doc_max_bytes, 'number');
   assert.equal(launch.project_doc_max_bytes, 1);
@@ -388,7 +424,7 @@ test('hook state and future events preserve complete objects without guessing so
 
 test('startup argv quotes literal root keys and enforces each platform budget', () => {
   const value = { 'future.with.dot': { 'header.with.dot': 'keep' } };
-  const args = launchArguments(value);
+  const args = buildCodexLaunchArgs({ launch: value });
   assert.deepEqual(plain(parseConfigArgument(args[2])), value);
-  for (const [platform, length] of [['linux', 120000], ['win32', 14000]]) assert.throws(() => launchArguments({ future: 'x'.repeat(length) }, [], platform), { code: 'profileConversionUnsupported' });
+  for (const [platform, length] of [['linux', 120000], ['win32', 14000]]) assert.throws(() => buildCodexLaunchArgs({ launch: { future: 'x'.repeat(length) } }, platform), { code: 'profileConversionUnsupported' });
 });

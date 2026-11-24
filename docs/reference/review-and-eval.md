@@ -277,7 +277,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 - **平台与执行器分离及内置 Backend 资格**：
   - Manifest 的每个 profile 必须显式声明九平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`copilot`、`grok`、`generic`）的 `platform`，与 backend/executor 分离；
   - **内置 Eval suite backend 仅支持 `codex` 平台**（`profile.platform === 'codex'`）；非 Codex 平台只有在使用显式 `custom-process` provider 时才被支持，否则 prepare 阶段直接拒绝（抛出不支持 backend 错误）。
-- **工作区与内容**：包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及**移除被测 Skill 后的完整 subject workspace**。Codex workflow 准备时，若被测插件为当前平台声明了带运行配置的静态命令，AW 会把构建后的命令资源、声明和隔离 profile 的运行键写入 `workspace/eval/.aw-command-fixture`，供 fixture action 使用。该目录由完整 workspace 摘要绑定，作者 fixture 须使用其他路径。
+- **工作区与内容**：包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及**移除被测 Skill 后的完整 subject workspace**。Codex 的 User 和 Project profile 都将所选插件实际生成的角色 TOML 保留在 `workspace/subject/.codex/agents/`，由工作区摘要绑定。Codex workflow 准备时，若被测插件为当前平台声明了带运行配置的静态命令，AW 会把构建后的命令资源、声明和隔离 profile 的运行键写入 `workspace/eval/.aw-command-fixture`，供 fixture action 使用。该目录由完整 workspace 摘要绑定，作者 fixture 须使用其他路径。
 - **配置覆盖规则与继承**：
   - `plugins` 提供公共基础配置，未覆盖的字段完整继承 baseline 与平台 schema 默认值（`selectPluginConfigProfile`）；
   - 可选 `configByScope.user` 和 `configByScope.project` 只能覆盖已选插件顶层字段，scope 维度不增加额外配置值层；

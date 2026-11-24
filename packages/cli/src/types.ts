@@ -27,6 +27,7 @@ export interface CommandProducerResult {
   availability: 'ready' | 'empty' | 'unavailable' | 'removed';
   subcommands: string[];
   hasFallback: boolean;
+  invocationSelectors?: string[];
   state: 'completed' | 'partial' | 'failed';
   errors: Array<{ code: string; message: string; subject?: string }>;
   recoveryActions: string[];

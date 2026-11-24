@@ -393,6 +393,14 @@ async function validateAwRuntimeLayout(
     nodeEntries.add(filePath);
   }
 
+  const configSuggestions = manifest.scripts?.config?.suggestions;
+  if (configSuggestions) {
+    await assertBundlePathExists(pluginRoot, configSuggestions.path, 'scripts.config.suggestions.path', './');
+    const filePath = stripDotSlash(configSuggestions.path);
+    runtimeFiles.add(filePath);
+    nodeEntries.add(filePath);
+  }
+
   const artifactRenderer = manifest.scripts?.artifacts?.render;
   if (artifactRenderer) {
     await assertBundlePathExists(
