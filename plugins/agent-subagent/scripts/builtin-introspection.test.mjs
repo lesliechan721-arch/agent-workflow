@@ -388,14 +388,16 @@ test('probe validates the Windows shim and passes its args directly to Node', as
   await assert.rejects(resolveProbeExecutable(shim, [], options), { code: 'executableShimUnsupported' });
 });
 
-// Test Value Gate: a child can exit while a descendant still holds its pipe.
-// The worker must reach its deadline and release its local handles.
-test('probe deadline applies after the child exits with inherited stdout open', { timeout: 6000 }, async (t) => {
+// Test Value Gate: a POSIX descendant can keep the probe pipe open after the
+// launcher exits. The probe must still reach its deadline and release the pipe.
+test('probe deadline applies after the child exits with inherited stdout open', {
+  skip: process.platform === 'win32', timeout: 6000,
+}, async (t) => {
   const { root } = await fixture(t);
   const pidFile = path.join(root, 'holder.pid');
   const command = process.execPath;
   const args = ['-e', `
-    const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],
+    const child = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'],
       { stdio: ['ignore', 1, 'ignore'] });
     require('node:fs').writeFileSync(process.argv[1], String(child.pid));
     child.unref();
