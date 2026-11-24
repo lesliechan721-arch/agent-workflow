@@ -28,7 +28,7 @@ const sharedResources = [
   { file: 'assets/work-index-template.md', skills: ['dev-build', 'dev-workflow'] },
   { file: 'references/engineering-quality.md', skills: ['dev-implement', 'dev-review-code', 'dev-simplify-code'] },
 ];
-const allParticipants = new Set([...skills, ...decisionSkills, 'explain-for-review']);
+const allParticipants = new Set([...skills, ...decisionSkills, 'explain-clearly']);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
 

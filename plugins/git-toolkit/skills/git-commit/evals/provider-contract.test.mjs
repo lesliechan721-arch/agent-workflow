@@ -25,11 +25,7 @@ const providers = [{
   caseFile: 'behavior-cases.json',
   caseId: 'conflict_or_operation_in_progress',
 }, {
-  skill: 'isolating-work-with-git-worktrees',
-  caseFile: 'evals.json',
-  caseId: 'stop_when_default_root_not_ignored',
-}, {
-  skill: 'reconciling-git-merges',
+  skill: 'git-reconcile',
   caseFile: 'evals.json',
   caseId: 'analysis_only_dirty_worktree',
 }];
@@ -46,7 +42,7 @@ async function copyPreparedFixtures(provider, targetRoot) {
   const fixturesPath = path.join(targetRoot, 'workspace', 'eval');
   await cp(sourceRoot, fixturesPath, { recursive: true });
   // Only fixture attachments use source. The provider must run from prepared files.
-  if (provider.skill === 'reconciling-git-merges') {
+  if (provider.skill === 'git-reconcile') {
     await cp(path.join(fixtureSkillsRoot, provider.skill, 'evals', 'files'),
       path.join(fixturesPath, 'files'), { recursive: true });
   }
@@ -121,9 +117,13 @@ test('Git custom-process commands run one selected case without exposing secrets
     "if (path.basename(process.argv[1] ?? '') === 'exec') {",
     `process.argv.splice(1, 1, ${JSON.stringify(fakeCodex)}, 'exec');`,
     `await appendFile(${JSON.stringify(invocationLog)}, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');`,
-    "let message = '.worktrees 未被忽略，停止并需要确认。';",
+    "let message = 'ok';",
     "if (fs.existsSync(path.join(process.cwd(), '.git', 'MERGE_HEAD'))) message = 'merge conflict 冲突阻塞，未创建提交。';",
-    "if (path.basename(process.cwd()) === 'analysis-only-dirty-worktree') message = 'subtotal 返回整数分 cents，invoice 按 dollars/元处理；建议在 invoice 边界除以 100，并运行 unittest 测试。';",
+    "if (path.basename(process.cwd()) === 'analysis-only-dirty-worktree') {",
+    "  const excludeText = fs.readFileSync(path.join(process.cwd(), '.git', 'info', 'exclude'), 'utf8');",
+    "  if (!excludeText.includes('.agents/') || !excludeText.includes('__pycache__/')) throw new Error('Tarball fixture must configure eval excludes.');",
+    "  message = 'subtotal 返回整数分 cents，invoice 按 dollars/元处理；建议在 invoice 边界除以 100，并运行 unittest 测试。';",
+    "}",
     "if (path.basename(process.cwd()) === 'semantic-grader') {",
     "  if (fs.existsSync('.agents') || !process.argv.includes('read-only') || !process.argv.includes('skills.include_instructions=false')) throw new Error('Grader must be isolated and read-only.');",
     "  const payload = JSON.parse(process.argv.at(-1).split('\\n').at(-1));",
@@ -179,10 +179,13 @@ test('Git custom-process commands run one selected case without exposing secrets
       }
       const invocations = (await readFile(invocationLog, 'utf8')).trim().split('\n').map(JSON.parse);
       assert.equal(invocations.length, index + 2);
-      if (provider.skill !== 'reconciling-git-merges') {
-        const subject = invocations.find((entry) => entry.cwd.includes(provider.skill === 'git-commit' ? 'git-commit-skill-eval-' : 'git-worktree-skill-eval-') && !entry.cwd.endsWith('semantic-grader'));
-        assert.ok(subject.args.at(-1).startsWith(selectedCase.input.prompt));
-      }
+      const subject = invocations.find((entry) =>
+        provider.skill === 'git-commit'
+          ? entry.cwd.includes('git-commit-skill-eval-') && !entry.cwd.endsWith('semantic-grader')
+          : entry.cwd.includes('git-reconcile-eval-'),
+      );
+      assert.ok(subject);
+      assert.ok(subject.args.at(-1).startsWith(selectedCase.input.prompt));
     }
 
     const provider = providers[0];
@@ -231,7 +234,7 @@ test('Git custom-process commands run one selected case without exposing secrets
         return true;
       },
     );
-    assert.equal((await readFile(invocationLog, 'utf8')).trim().split('\n').length, 8);
+    assert.equal((await readFile(invocationLog, 'utf8')).trim().split('\n').length, 7);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -18,13 +18,9 @@ import { fileURLToPath } from 'node:url';
 import commitTriggerDocument from '../skills/git-commit/evals/trigger-cases.json' with { type: 'json' };
 import commitBehaviorDocument from '../skills/git-commit/evals/behavior-cases.json' with { type: 'json' };
 import commitManifestDocument from '../skills/git-commit/evals/manifest.json' with { type: 'json' };
-import mergeTriggerDocument from '../skills/reconciling-git-merges/evals/trigger-cases.json' with { type: 'json' };
-import mergeEvalDocument from '../skills/reconciling-git-merges/evals/evals.json' with { type: 'json' };
-import mergeManifestDocument from '../skills/reconciling-git-merges/evals/manifest.json' with { type: 'json' };
-import worktreeTriggerDocument from '../skills/isolating-work-with-git-worktrees/evals/trigger-cases.json' with { type: 'json' };
-import worktreeDiagnosticDocument from '../skills/isolating-work-with-git-worktrees/evals/trigger-diagnostic-cases.json' with { type: 'json' };
-import worktreeEvalDocument from '../skills/isolating-work-with-git-worktrees/evals/evals.json' with { type: 'json' };
-import worktreeManifestDocument from '../skills/isolating-work-with-git-worktrees/evals/manifest.json' with { type: 'json' };
+import reconcileTriggerDocument from '../skills/git-reconcile/evals/trigger-cases.json' with { type: 'json' };
+import reconcileEvalDocument from '../skills/git-reconcile/evals/evals.json' with { type: 'json' };
+import reconcileManifestDocument from '../skills/git-reconcile/evals/manifest.json' with { type: 'json' };
 
 import {
   captureTriggerWorkspaceState,
@@ -44,26 +40,19 @@ import {
   analysisMessageChecks,
   ambiguousRetentionChecks,
   committedControlPaths,
+  configureEvalExcludes,
+  inspectReconcileExecTrace,
   mergeCommitState,
-  evaluateCase as evaluateMergeCase,
-  snapshot as snapshotMergeRepository,
-  semanticMergeOutcomeChecks,
-} from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
+  evaluateCase as evaluateReconcileCase,
+  prepareCherryPickConflictRepo,
+  prepareRebaseConflictRepo,
+  snapshot as snapshotReconcileRepository,
+  semanticReconcileOutcomeChecks,
+} from '../skills/git-reconcile/evals/run-reconcile-evals.mjs';
 import {
-  captureTriggerWorkspaceState as captureMergeTriggerWorkspaceState,
-  setupTriggerWorkspace as setupMergeTriggerWorkspace,
-} from '../skills/reconciling-git-merges/evals/trigger-fixture.mjs';
-import {
-  ignoreEntriesForCase as worktreeIgnoreEntriesForCase,
-  inspectExecTrace as inspectWorktreeExecTrace,
-  snapshot as snapshotWorktreeRepository,
-  worktreeCaseAllowsGitWrites,
-  worktreePathsOutsideRoot,
-} from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
-import {
-  captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
-  setupTriggerWorkspace as setupWorktreeTriggerWorkspace,
-} from '../skills/isolating-work-with-git-worktrees/evals/trigger-fixture.mjs';
+  captureTriggerWorkspaceState as captureReconcileTriggerWorkspaceState,
+  setupTriggerWorkspace as setupReconcileTriggerWorkspace,
+} from '../skills/git-reconcile/evals/trigger-fixture.mjs';
 import { waitForEvalChild } from './eval-child-process.mjs';
 import {
   commandRunsScript,
@@ -275,18 +264,18 @@ async function testEvalCorpora(bundleRoot) {
     new Map([['behavior', ['node', 'run-commit-evals.mjs']]]),
   );
 
-  const mergeDocument = mergeTriggerDocument;
-  const mergeCases = mergeDocument.cases;
-  const participants = new Set(['reconciling-git-merges', 'git-commit']);
-  assert.equal(mergeDocument.version, 1);
-  assert.equal(mergeDocument.suite.kind, 'trigger');
-  assert.equal(mergeDocument.suite.unitUnderTest, 'reconciling-git-merges');
-  assert.deepEqual(mergeDocument.suite.participants, ['git-commit']);
-  assert.equal(mergeCases.length, 21);
-  assert.equal(mergeCases.filter((entry) => entry.split === 'train').length, 14);
-  assert.equal(mergeCases.filter((entry) => entry.split === 'validation').length, 7);
-  assert.equal(new Set(mergeCases.map((entry) => entry.id)).size, mergeCases.length);
-  for (const entry of mergeCases) {
+  const reconcileDocument = reconcileTriggerDocument;
+  const reconcileCases = reconcileDocument.cases;
+  const participants = new Set(['git-reconcile', 'git-commit']);
+  assert.equal(reconcileDocument.version, 1);
+  assert.equal(reconcileDocument.suite.kind, 'trigger');
+  assert.equal(reconcileDocument.suite.unitUnderTest, 'git-reconcile');
+  assert.deepEqual(reconcileDocument.suite.participants, ['git-commit']);
+  assert.equal(reconcileCases.length, 26);
+  assert.equal(reconcileCases.filter((entry) => entry.split === 'train').length, 14);
+  assert.equal(reconcileCases.filter((entry) => entry.split === 'validation').length, 12);
+  assert.equal(new Set(reconcileCases.map((entry) => entry.id)).size, reconcileCases.length);
+  for (const entry of reconcileCases) {
     assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
     assert.equal(
       entry.input.expected.loadedSkills.every((skill) => participants.has(skill)),
@@ -297,272 +286,96 @@ async function testEvalCorpora(bundleRoot) {
       entry.input.expected.loadedSkills.length,
     );
   }
-  const expectedMergeRouting = new Map([
-    ['source_01', ['reconciling-git-merges']],
-    ['source_02', ['reconciling-git-merges']],
-    ['source_08', ['reconciling-git-merges']],
+  const expectedReconcileRouting = new Map([
+    ['source_01', ['git-reconcile']],
+    ['source_02', ['git-reconcile']],
+    ['source_08', ['git-reconcile']],
     ['source_11', []],
     ['source_12', []],
     ['source_13', []],
-    ['source_16', []],
-    ['source_17', []],
+    ['source_16', ['git-reconcile']],
+    ['source_17', ['git-reconcile']],
+    ['validation_rebase_conflict', ['git-reconcile']],
+    ['validation_cherry_pick_conflict', ['git-reconcile']],
+    ['validation_independent_clean_merge', []],
+    ['validation_clean_rebase', []],
+    ['validation_clean_cherry_pick', []],
+    ['source_18', []],
+    ['source_19', []],
+    ['source_20', []],
     ['ordinary_local_commit', []],
   ]);
-  for (const [id, expectedSkills] of expectedMergeRouting) {
-    const entry = mergeCases.find((candidate) => candidate.id === id);
-    assert.ok(entry, `Missing required merge routing case ${id}`);
+  for (const [id, expectedSkills] of expectedReconcileRouting) {
+    const entry = reconcileCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required reconcile routing case ${id}`);
     assert.deepEqual(entry.input.expected.loadedSkills, expectedSkills);
   }
 
-  const mergeEvals = mergeEvalDocument;
-  const mergeManifest = mergeManifestDocument;
-  assert.equal(mergeEvals.version, 1);
-  assert.equal(mergeEvals.suite.kind, 'custom-process');
-  assert.equal(mergeEvals.suite.unitUnderTest, 'reconciling-git-merges');
-  assert.equal(mergeEvals.cases.length, 4);
+  const reconcileEvals = reconcileEvalDocument;
+  const reconcileManifest = reconcileManifestDocument;
+  assert.equal(reconcileEvals.version, 1);
+  assert.equal(reconcileEvals.suite.kind, 'custom-process');
+  assert.equal(reconcileEvals.suite.unitUnderTest, 'git-reconcile');
+  assert.equal(reconcileEvals.cases.length, 6);
   assert.deepEqual(
-    mergeEvals.cases.map((entry) => entry.id),
+    reconcileEvals.cases.map((entry) => entry.id),
     [
       'ambiguous_retention',
       'semantic_same_file',
       'semantic_cross_file',
       'analysis_only_dirty_worktree',
+      'rebase_conflict_reconcile',
+      'cherry_pick_conflict_reconcile',
     ],
   );
-  for (const entry of mergeEvals.cases) {
+  for (const entry of reconcileEvals.cases) {
     assert.equal(typeof entry.input.prompt, 'string');
     assert.equal(typeof entry.expected.outcome, 'string');
-    assert.equal(entry.input.files.length, 1);
-    assert.equal(path.isAbsolute(entry.input.files[0]), false);
-    assert.equal(path.posix.normalize(entry.input.files[0]).startsWith('../'), false);
+    assert.equal(Array.isArray(entry.input.files), true);
+    for (const file of entry.input.files) {
+      assert.equal(path.isAbsolute(file), false);
+      assert.equal(path.posix.normalize(file).startsWith('../'), false);
+    }
   }
-  assert.equal(mergeManifest.version, 1);
-  assert.equal(mergeManifest.suites.length, 2);
-  const routerSuite = mergeManifest.suites.find((suite) => suite.id === 'router');
-  const behaviorSuite = mergeManifest.suites.find((suite) => suite.id === 'behavior');
+  assert.equal(reconcileManifest.version, 1);
+  assert.equal(reconcileManifest.suites.length, 2);
+  const routerSuite = reconcileManifest.suites.find((suite) => suite.id === 'router');
+  const behaviorSuite = reconcileManifest.suites.find((suite) => suite.id === 'behavior');
   assert.equal(routerSuite.kind, 'trigger');
   assert.equal(routerSuite.cases, 'trigger-cases.json');
-  assert.equal(mergeDocument.suite.runtime.forbidMultipleSkillLoads, true);
-  assert.equal(mergeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
+  assert.equal(reconcileDocument.suite.runtime.forbidMultipleSkillLoads, true);
+  assert.equal(reconcileDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
   assert.equal(behaviorSuite.kind, 'custom-process');
   assert.equal(behaviorSuite.cases, 'evals.json');
   assert.equal(behaviorSuite.runs, 3);
   assert.equal(behaviorSuite.timeoutMs, 300000);
   await assertCustomProcessManifest(
-    mergeManifest,
+    reconcileManifest,
     bundleRoot,
-    'reconciling-git-merges',
-    new Map([['behavior', ['node', 'run-merge-evals.mjs']]]),
+    'git-reconcile',
+    new Map([['behavior', ['node', 'run-reconcile-evals.mjs']]]),
   );
-  assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_08').input.workspaceFixture,
-    'ambiguous_retention',
-  );
-  assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_09').input.workspaceFixture,
-    'semantic_retry',
-  );
-  assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_10').input.workspaceFixture,
-    'semantic_permissions',
-  );
-  assert.equal(
-    mergeCases.find((entry) => entry.id === 'ordinary_local_commit').input.workspaceFixture,
-    'commit_ready',
-  );
-  const alignedMergeFixtures = new Map([
+  const alignedReconcileFixtures = new Map([
     ['source_01', 'ambiguous_retention'],
     ['source_02', 'semantic_retry'],
     ['source_03', 'semantic_permissions'],
+    ['source_08', 'ambiguous_retention'],
+    ['source_09', 'semantic_retry'],
+    ['source_10', 'semantic_permissions'],
     ['source_11', 'fast_forward'],
     ['source_12', 'up_to_date'],
     ['source_13', 'independent_clean_merge'],
     ['source_15', 'same_file_independent_merge'],
     ['source_16', 'rebase_conflict'],
     ['source_17', 'cherry_pick_conflict'],
+    ['validation_rebase_conflict', 'rebase_conflict'],
+    ['validation_cherry_pick_conflict', 'cherry_pick_conflict'],
+    ['ordinary_local_commit', 'commit_ready'],
   ]);
-  for (const [id, fixture] of alignedMergeFixtures) {
-    const entry = mergeCases.find((candidate) => candidate.id === id);
+  for (const [id, fixture] of alignedReconcileFixtures) {
+    const entry = reconcileCases.find((candidate) => candidate.id === id);
     assert.equal(entry.input.workspaceFixture, fixture);
   }
-
-  const worktreeDocument = worktreeTriggerDocument;
-  const worktreeCases = worktreeDocument.cases;
-  const worktreeParticipants = new Set([
-    'isolating-work-with-git-worktrees',
-    'reconciling-git-merges',
-    'git-commit',
-  ]);
-  assert.equal(worktreeDocument.version, 1);
-  assert.equal(worktreeDocument.suite.kind, 'trigger');
-  assert.equal(worktreeDocument.suite.unitUnderTest, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeDocument.suite.policy.optimization, 'recall-first');
-  assert.equal(worktreeDocument.suite.policy.falseNegativeCost, 'high');
-  assert.equal(worktreeDocument.suite.policy.falsePositiveCost, 'medium');
-  assert.equal(worktreeCases.length, 28);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 13);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'validation').length, 6);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 9);
-  assert.equal(new Set(worktreeCases.map((entry) => entry.id)).size, worktreeCases.length);
-  assert.equal(
-    worktreeCases.filter((entry) =>
-      entry.input.expected.loadedSkills.includes('isolating-work-with-git-worktrees'),
-    ).length,
-    15,
-  );
-  for (const entry of worktreeCases) {
-    assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
-    assert.equal(
-      entry.input.expected.loadedSkills.every((skill) => worktreeParticipants.has(skill)),
-      true,
-    );
-    assert.equal(
-      new Set(entry.input.expected.loadedSkills).size,
-      entry.input.expected.loadedSkills.length,
-    );
-  }
-  const expectedWorktreeRouting = new Map([
-    ['source_01', ['isolating-work-with-git-worktrees']],
-    ['source_08', ['isolating-work-with-git-worktrees']],
-    ['source_10', ['isolating-work-with-git-worktrees']],
-    ['source_11', []],
-    ['source_13', []],
-    ['source_17', ['reconciling-git-merges']],
-    ['source_20', []],
-    ['sanity_parallel_branch', ['isolating-work-with-git-worktrees']],
-    ['sanity_list_worktrees', []],
-    ['sanity_local_commit', []],
-    ['sanity_merge_conflict', ['reconciling-git-merges']],
-    ['sanity_dirty_new_task', ['isolating-work-with-git-worktrees']],
-    ['sanity_parallel_test', ['isolating-work-with-git-worktrees']],
-    ['sanity_dirty_same_branch', []],
-  ]);
-  for (const [id, expectedSkills] of expectedWorktreeRouting) {
-    const entry = worktreeCases.find((candidate) => candidate.id === id);
-    assert.ok(entry, `Missing required worktree routing case ${id}`);
-    assert.deepEqual(entry.input.expected.loadedSkills, expectedSkills);
-  }
-  const worktreeDiagnosticCases = worktreeDiagnosticDocument;
-  assert.equal(worktreeDiagnosticCases.version, 1);
-  assert.equal(worktreeDiagnosticCases.suite.kind, 'trigger');
-  assert.equal(worktreeDiagnosticCases.suite.policy.optimization, 'recall-first');
-  assert.equal(worktreeDiagnosticCases.suite.policy.falsePositiveCost, 'low');
-  assert.deepEqual(
-    worktreeDiagnosticCases.cases.map((entry) => entry.id),
-    ['source_15', 'sanity_full_clone'],
-  );
-  const fullCloneDiagnostic = worktreeDiagnosticCases.cases.find(
-    (entry) => entry.id === 'source_15',
-  );
-  assert.equal(fullCloneDiagnostic.tags.includes('diagnostic'), true);
-  const fullCloneSanityDiagnostic = worktreeDiagnosticCases.cases.find(
-    (entry) => entry.id === 'sanity_full_clone',
-  );
-  assert.equal(fullCloneSanityDiagnostic.split, 'sanity');
-  assert.equal(fullCloneSanityDiagnostic.tags.includes('diagnostic'), true);
-  assert.equal(
-    worktreeCases.some((entry) =>
-      entry.input.query.includes('$isolating-work-with-git-worktrees'),
-    ),
-    false,
-  );
-  const worktreeFixtures = new Set([
-    'clean_main',
-    'commit_ready',
-    'dirty_feature',
-    'dirty_main',
-    'dirty_mixed_feature',
-    'linked_dirty_feature',
-    'linked_feature',
-    'merge_conflict',
-  ]);
-  assert.equal(
-    worktreeCases.every((entry) =>
-      entry.input.workspaceFixture === undefined || worktreeFixtures.has(entry.input.workspaceFixture),
-    ),
-    true,
-  );
-  assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_dirty_new_task').input.query,
-    /两个任务的文件和 Git 状态不要混在一起/,
-  );
-  assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_dirty_same_branch').input.query,
-    /继续完成这个功能/,
-  );
-  assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_parallel_test').input.query,
-    /运行兼容性测试/,
-  );
-  const releaseParticipants = new Set(
-    worktreeCases
-      .filter((entry) => ['validation', 'sanity'].includes(entry.split))
-      .flatMap((entry) => entry.input.expected.loadedSkills),
-  );
-  assert.deepEqual(
-    [...releaseParticipants].sort(),
-    ['isolating-work-with-git-worktrees', 'reconciling-git-merges'],
-  );
-
-  const worktreeEvals = worktreeEvalDocument;
-  const worktreeManifest = worktreeManifestDocument;
-  assert.equal(worktreeEvals.version, 1);
-  assert.equal(worktreeEvals.suite.kind, 'custom-process');
-  assert.equal(worktreeEvals.suite.unitUnderTest, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeEvals.suite.policy.optimization, 'critical');
-  assert.deepEqual(
-    worktreeEvals.cases.map((entry) => entry.id),
-    [
-      'preserve_dirty_workspace_and_use_default_path',
-      'stop_when_default_root_not_ignored',
-      'reuse_existing_isolation',
-      'use_full_clone_for_repository_level_isolation',
-      'report_dirty_baseline',
-    ],
-  );
-  for (const entry of worktreeEvals.cases) {
-    assert.equal(typeof entry.input.name, 'string');
-    assert.equal(typeof entry.input.prompt, 'string');
-    assert.equal(typeof entry.expected.outcome, 'string');
-  }
-  assert.equal(worktreeManifest.version, 1);
-  assert.equal(worktreeManifest.suites.length, 3);
-  const worktreeRouterSuite = worktreeManifest.suites.find((suite) => suite.id === 'router');
-  const worktreeDiagnosticRouterSuite = worktreeManifest.suites.find(
-    (suite) => suite.id === 'router-diagnostic',
-  );
-  const worktreeBehaviorSuite = worktreeManifest.suites.find((suite) => suite.id === 'behavior');
-  assert.equal(worktreeRouterSuite.id, 'router');
-  assert.equal(worktreeRouterSuite.kind, 'trigger');
-  assert.deepEqual(worktreeDocument.suite.participants, [
-    'reconciling-git-merges',
-    'git-commit',
-  ]);
-  assert.equal(worktreeDocument.suite.runtime.forbidMultipleSkillLoads, true);
-  assert.equal(worktreeRouterSuite.cases, 'trigger-cases.json');
-  assert.deepEqual(worktreeDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
-  assert.equal(worktreeDiagnosticRouterSuite.kind, 'trigger');
-  assert.equal(
-    worktreeDiagnosticRouterSuite.cases,
-    'trigger-diagnostic-cases.json',
-  );
-  assert.equal(worktreeBehaviorSuite.kind, 'custom-process');
-  assert.equal(worktreeBehaviorSuite.cases, 'evals.json');
-  assert.equal(worktreeBehaviorSuite.runs, 3);
-  assert.equal(worktreeBehaviorSuite.timeoutMs, 300000);
-  assert.equal(worktreeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
-  await assertCustomProcessManifest(
-    worktreeManifest,
-    bundleRoot,
-    'isolating-work-with-git-worktrees',
-    new Map([['behavior', ['node', 'run-worktree-evals.mjs']]]),
-  );
-  assert.equal(worktreeCaseAllowsGitWrites('stop_when_default_root_not_ignored'), true);
-  assert.equal(
-    worktreeCaseAllowsGitWrites('use_full_clone_for_repository_level_isolation'),
-    true,
-  );
-  assert.equal(worktreeCaseAllowsGitWrites('reuse_existing_isolation'), false);
 }
 
 function assertRenderedSkill(skill) {
@@ -573,26 +386,21 @@ function assertRenderedSkill(skill) {
 }
 
 function assertCoreCommitContract(skill) {
-  // Static contract exception: an invoked commit Skill could push or alter unauthorized Git state; behavior test is not suitable because the installed Skill text is the safety policy consumed by the model, not executable code.
-  assert.match(skill, /不执行 push/);
-  assert.match(skill, /需要暂存时仅使用精确路径/);
+  // Static contract exception: an invoked commit Skill could push, rearrange unrelated index state, bypass hooks, or amend prior history; behavior test is not suitable because the installed Skill text is the safety policy consumed by the model, not executable code.
+  assert.match(skill, /绝不执行 `git push`/);
   assert.match(skill, /不使用 `git add \.` 或 `git add -A`/);
-  assert.match(skill, /存在未解决冲突或进行中的 Git 操作时停止并报告/);
+  assert.match(skill, /严禁通过 `reset` 或 `restore --staged`/);
+  assert.match(skill, /--no-verify/);
+  assert.match(skill, /--amend/);
+  assert.match(skill, /不要仅依赖 `--porcelain`/);
 }
 
-function assertCoreMergeContract(skill) {
-  // Static contract exception: an analysis-only merge request could mutate repository state or publish an unrequested result; behavior test is not suitable because these prohibitions are model-consumed policy in the rendered Skill.
-  assert.match(skill, /仅分析时不改变 refs、index 或 worktree/);
-  assert.match(skill, /仅在用户要求、无未解决条目且验证通过后/);
-  assert.match(skill, /未被要求时不推送/);
-}
-
-function assertCoreWorktreeContract(skill) {
-  // Static contract exception: isolation setup or cleanup could alter unauthorized repository state or destroy unrelated user work; behavior test is not suitable because the rendered Skill is the only executable consumer boundary for these model actions.
-  assert.match(skill, /不创建 worktree 或分支、不换路径/);
-  assert.match(skill, /保护原工作区的 HEAD、index 和 tracked\/untracked 内容/);
-  assert.match(skill, /不强行占用已有 worktree 或已检出分支/);
-  assert.match(skill, /不直接删除目录、强制清理或顺带删除分支/);
+function assertCoreReconcileContract(skill) {
+  // Static contract exception: an analysis-only request or unresolved conflict could mutate repository state, invent policy compromises, or push unrequested results; behavior test is not suitable because these prohibitions are model-consumed policy in the rendered Skill.
+  assert.match(skill, /绝不执行 `git push`/);
+  assert.match(skill, /仅分析时不改变任何 refs、index、worktree 或仓库对象/);
+  assert.match(skill, /仅在用户授权完成、无未解决条目且验证通过后/);
+  assert.match(skill, /禁止发明折中值/);
 }
 
 async function testSkillRenders(context) {
@@ -601,44 +409,31 @@ async function testSkillRenders(context) {
     ...(context.platform ? [context.platform] : []),
     'skills',
   );
-  const [renderedCommitSkill, renderedMergeSkill, renderedWorktreeSkill] = await Promise.all([
+  const [renderedCommitSkill, renderedReconcileSkill] = await Promise.all([
     readFile(path.join(skillsRoot, 'git-commit', 'SKILL.md'), 'utf8'),
-    readFile(path.join(skillsRoot, 'reconciling-git-merges', 'SKILL.md'), 'utf8'),
-    readFile(path.join(skillsRoot, 'isolating-work-with-git-worktrees', 'SKILL.md'), 'utf8'),
+    readFile(path.join(skillsRoot, 'git-reconcile', 'SKILL.md'), 'utf8'),
   ]);
 
   if (context.platform) {
-    const [commitOpenai, mergeOpenai, worktreeOpenai] = await Promise.all([
+    const [commitOpenai, reconcileOpenai] = await Promise.all([
       readFile(path.join(skillsRoot, 'git-commit', 'agents', 'openai.yaml'), 'utf8'),
-      readFile(path.join(skillsRoot, 'reconciling-git-merges', 'agents', 'openai.yaml'), 'utf8'),
-      readFile(path.join(skillsRoot, 'isolating-work-with-git-worktrees', 'agents', 'openai.yaml'), 'utf8'),
+      readFile(path.join(skillsRoot, 'git-reconcile', 'agents', 'openai.yaml'), 'utf8'),
     ]);
-    assert.match(
-      commitOpenai,
-      /default_prompt: "使用 \$git-commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
-    );
-    assert.match(commitOpenai, /allow_implicit_invocation: false/);
-    assert.match(
-      mergeOpenai,
-      /default_prompt: "使用 \$reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"/,
-    );
-    assert.match(mergeOpenai, /allow_implicit_invocation: true/);
-    assert.match(
-      worktreeOpenai,
-      /default_prompt: "使用 \$isolating-work-with-git-worktrees：安全创建或复用 Git worktree/,
-    );
-    assert.match(worktreeOpenai, /allow_implicit_invocation: true/);
+    assert.match(commitOpenai, /^  display_name: git-commit$/mu);
+    assert.match(commitOpenai, /^  default_prompt: ".*\$git-commit.*"$/mu);
+    assert.match(commitOpenai, /^  allow_implicit_invocation: false$/mu);
+    assert.match(reconcileOpenai, /^  display_name: git-reconcile$/mu);
+    assert.match(reconcileOpenai, /^  default_prompt: ".*\$git-reconcile.*"$/mu);
+    assert.match(reconcileOpenai, /^  allow_implicit_invocation: true$/mu);
     assert.ok(['codex', 'claude'].includes(context.platform));
   }
 
   assert.match(renderedCommitSkill, /^user-invocable: true$/mu);
   assert.match(renderedCommitSkill, /^disable-model-invocation: true$/mu);
   assertCoreCommitContract(renderedCommitSkill);
-  assertCoreMergeContract(renderedMergeSkill);
-  assertCoreWorktreeContract(renderedWorktreeSkill);
+  assertCoreReconcileContract(renderedReconcileSkill);
   assertRenderedSkill(renderedCommitSkill);
-  assertRenderedSkill(renderedMergeSkill);
-  assertRenderedSkill(renderedWorktreeSkill);
+  assertRenderedSkill(renderedReconcileSkill);
 }
 
 async function testWorkspaceFixture() {
@@ -723,21 +518,6 @@ async function testHostileGitConfigurationIsIgnored() {
   }
 }
 
-async function testWorktreeSnapshotTracksUntrackedContent() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-snapshot-test-'));
-  try {
-    await initializeRepository(root);
-    const scratch = path.join(root, 'scratch.txt');
-    await writeFile(scratch, 'original untracked content\n', 'utf8');
-    const before = await snapshotWorktreeRepository(root);
-    await writeFile(scratch, 'mutated untracked content\n', 'utf8');
-    const after = await snapshotWorktreeRepository(root);
-    assert.notDeepEqual(after, before);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
 async function testGitMetadataWritableRoots() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'git-eval-permissions-'));
   const primary = path.join(tempRoot, 'primary');
@@ -766,7 +546,7 @@ async function testGitMetadataWritableRoots() {
   }
 }
 
-async function testMergeTriggerFixtures() {
+async function testReconcileTriggerFixtures() {
   const expectations = new Map([
     ['ambiguous_retention', { status: /^UU retention\.py$/m, operation: 'merge' }],
     ['semantic_retry', { status: /^M  idempotency\.py$/m, operation: 'merge' }],
@@ -780,7 +560,7 @@ async function testMergeTriggerFixtures() {
     ['cherry_pick_conflict', { status: /^UU conflict\.txt$/m, operation: 'cherry-pick' }],
   ]);
   for (const [fixture, expectation] of expectations) {
-    const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-trigger-fixture-'));
+    const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-reconcile-trigger-fixture-'));
     const workspaceRoot = path.join(cleanupRoot, 'project');
     const home = path.join(cleanupRoot, 'home');
     await Promise.all([
@@ -793,7 +573,7 @@ async function testMergeTriggerFixtures() {
       env: { ...process.env, HOME: home },
     };
     try {
-      const setup = await setupMergeTriggerWorkspace(context);
+      const setup = await setupReconcileTriggerWorkspace(context);
       context.env = { ...context.env, ...setup.environment };
       const status = await git(
         workspaceRoot,
@@ -836,8 +616,8 @@ async function testMergeTriggerFixtures() {
         await git(workspaceRoot, ['merge', '--abort'], context.env);
       }
       assert.equal(
-        await captureMergeTriggerWorkspaceState(context),
-        await captureMergeTriggerWorkspaceState(context),
+        await captureReconcileTriggerWorkspaceState(context),
+        await captureReconcileTriggerWorkspaceState(context),
       );
     } finally {
       await rm(cleanupRoot, { recursive: true, force: true });
@@ -851,13 +631,13 @@ async function testParticipantSkillIsolation() {
   const skillsRoot = path.join(agentsRoot, 'skills');
   const previous = process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS;
   try {
-    for (const skill of ['git-commit', 'reconciling-git-merges', 'unrelated-skill']) {
+    for (const skill of ['git-commit', 'git-reconcile', 'unrelated-skill']) {
       await mkdir(path.join(skillsRoot, skill), { recursive: true });
       await writeFile(path.join(skillsRoot, skill, 'SKILL.md'), `${skill}\n`, 'utf8');
     }
     process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS = JSON.stringify([
       'git-commit',
-      'reconciling-git-merges',
+      'git-reconcile',
     ]);
     await isolateMaterializedSkills(agentsRoot, 'git-commit', true);
     await assert.rejects(
@@ -875,8 +655,8 @@ async function testParticipantSkillIsolation() {
       /ENOENT/,
     );
     assert.equal(
-      await readFile(path.join(skillsRoot, 'reconciling-git-merges', 'SKILL.md'), 'utf8'),
-      'reconciling-git-merges\n',
+      await readFile(path.join(skillsRoot, 'git-reconcile', 'SKILL.md'), 'utf8'),
+      'git-reconcile\n',
     );
   } finally {
     if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS;
@@ -926,6 +706,24 @@ function testCommitExecTraceAssertions() {
   assert.equal(gitDirectoryOptions.reset_index, true);
   assert.equal(gitDirectoryOptions.pushed, true);
 
+  for (const command of [
+    'git restore --staged unrelated.txt',
+    'git restore -S unrelated.txt',
+    'git restore -SW unrelated.txt',
+    'git rm --cached unrelated.txt',
+  ]) {
+    const trace = inspectCommitExecTrace(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'command_execution', command },
+    }));
+    assert.equal(trace.reset_index, true, command);
+  }
+  const worktreeOnlyRestore = inspectCommitExecTrace(JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'command_execution', command: 'git restore worktree-only.txt' },
+  }));
+  assert.equal(worktreeOnlyRestore.reset_index, false);
+
   assert.deepEqual(
     gitInvocations("/bin/zsh -lc '(git -C . reset --hard HEAD)'")
       .map((invocation) => invocation.subcommand),
@@ -938,7 +736,7 @@ function testCommitExecTraceAssertions() {
   );
   assert.equal(
     commandRunsScript(
-      "/bin/zsh -lc 'cd .worktrees/feature && node ./test.mjs'",
+      "/bin/zsh -lc 'cd subdir && node ./test.mjs'",
       'node',
       'test.mjs',
     ),
@@ -1036,46 +834,281 @@ async function testExplicitRepositoryCommitGate() {
   }
 }
 
-async function testMergeEvaluationFinalState(sourceRoot) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-final-state-'));
+async function testCommitOnlyIsolationBehavior() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-commit-only-isolation-'));
+  try {
+    await initializeRepository(root);
+    await writeFile(path.join(root, 'unrelated.txt'), 'unrelated=base\n', 'utf8');
+    await git(root, ['add', '--', 'unrelated.txt']);
+    await git(root, ['commit', '--quiet', '-m', 'chore: add unrelated baseline']);
+
+    await writeFile(path.join(root, 'unrelated.txt'), 'unrelated=staged\n', 'utf8');
+    await git(root, ['add', '--', 'unrelated.txt']);
+    const beforeCached = (await git(root, ['diff', '--cached', '--binary'])).stdout;
+
+    await writeFile(path.join(root, 'tracked.txt'), 'requested=updated\n', 'utf8');
+    await writeFile(path.join(root, 'new-requested.txt'), 'new=file\n', 'utf8');
+    await git(root, ['add', '-N', '--', 'new-requested.txt']);
+    await git(root, ['commit', '--quiet', '--only', '-m', 'feat: isolated commit', '--', 'tracked.txt', 'new-requested.txt']);
+
+    const [committedPaths, afterCached, stagedNames] = await Promise.all([
+      git(root, ['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD']),
+      git(root, ['diff', '--cached', '--binary']),
+      git(root, ['diff', '--cached', '--name-only']),
+    ]);
+    assert.deepEqual(committedPaths.stdout.trim().split('\n').sort(), ['new-requested.txt', 'tracked.txt']);
+    assert.equal(stagedNames.stdout.trim(), 'unrelated.txt');
+    assert.equal(afterCached.stdout, beforeCached);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testReconcileEvaluationFinalState(sourceRoot) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-reconcile-final-state-'));
   // Eval attachments stay in source; the grader under test comes from the test bundle.
-  const bundle = (name) => path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'files', `${name}.bundle`);
+  const bundle = (name) => path.join(sourceRoot, 'skills', 'git-reconcile', 'evals', 'files', `${name}.bundle`);
   const model = { code: 0, timedOut: false, stdout: '', final_message: '' };
   const clone = async (name) => {
     const repo = path.join(root, name);
     await git(root, ['clone', '--quiet', bundle(name), repo]);
-    await git(repo, ['config', 'user.name', 'Merge Grader Test']);
-    await git(repo, ['config', 'user.email', 'merge-grader@example.invalid']);
+    await git(repo, ['config', 'user.name', 'Reconcile Grader Test']);
+    await git(repo, ['config', 'user.email', 'reconcile-grader@example.invalid']);
     return repo;
   };
   try {
     const repo = await clone('semantic-cross-file');
-    const before = await snapshotMergeRepository(repo);
+    const before = await snapshotReconcileRepository(repo);
     await git(repo, ['merge', '--no-edit', 'origin/feature']);
     await writeFile(path.join(repo, 'invoice.py'), "from pricing import subtotal\n\ndef render_total(prices):\n    return f'${subtotal(prices) / 100:.2f}'\n");
-    const uncommitted = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    const uncommitted = await evaluateReconcileCase({ id: 'semantic_cross_file' }, repo, before, model);
     assert.equal(uncommitted.passed, false);
     assert.equal(uncommitted.checks.find((check) => check.name === 'integration_changes_committed').passed, false);
     await git(repo, ['add', '--', 'invoice.py']);
-    const staged = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    const staged = await evaluateReconcileCase({ id: 'semantic_cross_file' }, repo, before, model);
     assert.equal(staged.passed, false);
     await git(repo, ['commit', '--amend', '--no-edit']);
-    const committed = await evaluateMergeCase({ id: 'semantic_cross_file' }, repo, before, model);
+    const committed = await evaluateReconcileCase({ id: 'semantic_cross_file' }, repo, before, model);
     assert.equal(committed.passed, true);
+    await writeFile(path.join(repo, 'test_extra_integration.py'), 'import unittest\n', 'utf8');
+    const strayUntracked = await evaluateReconcileCase({ id: 'semantic_cross_file' }, repo, before, model);
+    assert.equal(strayUntracked.passed, false);
+    assert.equal(strayUntracked.checks.find((check) => check.name === 'integration_changes_committed').passed, false);
+    await rm(path.join(repo, 'test_extra_integration.py'));
 
     const ambiguous = await clone('ambiguous-retention');
-    const initial = await snapshotMergeRepository(ambiguous);
+    const initial = await snapshotReconcileRepository(ambiguous);
     const report = { ...model, final_message: '7 天隐私保留与 90 天审计保留不兼容，仓库证据不足，需要产品决定优先级。' };
-    const pausedBefore = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    const pausedBefore = await evaluateReconcileCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
     assert.equal(pausedBefore.passed, true);
-    const silent = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, model);
+    const silent = await evaluateReconcileCase({ id: 'ambiguous_retention' }, ambiguous, initial, model);
     assert.equal(silent.passed, false);
     await assert.rejects(git(ambiguous, ['merge', '--no-commit', 'origin/feature']));
-    const pausedAfter = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    const pausedAfter = await evaluateReconcileCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
     assert.equal(pausedAfter.passed, true);
     await writeFile(path.join(ambiguous, 'retention.py'), 'RETENTION_DAYS = 30\n');
-    const invented = await evaluateMergeCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
+    const invented = await evaluateReconcileCase({ id: 'ambiguous_retention' }, ambiguous, initial, report);
     assert.equal(invented.passed, false);
+
+    const archive = path.join(sourceRoot, 'skills', 'git-reconcile', 'evals', 'files', 'analysis-only-dirty-worktree.tar.gz');
+    await execFileAsync('tar', ['-xzf', archive, '-C', root]);
+    const analysisRepo = path.join(root, 'analysis-only-dirty-worktree');
+    await mkdir(path.join(analysisRepo, '.agents', 'skills', 'git-reconcile'), { recursive: true });
+    await writeFile(path.join(analysisRepo, '.agents', 'skills', 'git-reconcile', 'SKILL.md'), 'fixture\n', 'utf8');
+    await configureEvalExcludes(analysisRepo);
+    const beforeAnalysis = await snapshotReconcileRepository(analysisRepo);
+    assert.equal(beforeAnalysis.status.includes('.agents/'), false);
+    assert.match(beforeAnalysis.status, /^ M README\.md$/m);
+    await execFileAsync('python3', ['-m', 'unittest'], { cwd: analysisRepo, env: process.env });
+    const goodAnalysisReport = 'subtotal 返回整数分 cents，invoice 按元/dollars 处理，建议在 invoice 边界除以 100 并运行 unittest 验证。';
+    const readOnlyAnalysisModel = {
+      ...model,
+      stdout: [
+        { type: 'item.completed', item: { type: 'command_execution', command: 'git status && git diff main..origin/feature && git branch -a' } },
+      ].map((entry) => JSON.stringify(entry)).join('\n'),
+      final_message: goodAnalysisReport,
+    };
+    const mutatingAnalysisModel = {
+      ...model,
+      stdout: [
+        { type: 'item.completed', item: { type: 'command_execution', command: 'git merge origin/feature' } },
+      ].map((entry) => JSON.stringify(entry)).join('\n'),
+      final_message: goodAnalysisReport,
+    };
+    const passedAnalysis = await evaluateReconcileCase({ id: 'analysis_only_dirty_worktree' }, analysisRepo, beforeAnalysis, readOnlyAnalysisModel);
+    assert.equal(passedAnalysis.passed, true);
+    const mutatingAnalysis = await evaluateReconcileCase({ id: 'analysis_only_dirty_worktree' }, analysisRepo, beforeAnalysis, mutatingAnalysisModel);
+    assert.equal(mutatingAnalysis.passed, false);
+    assert.equal(mutatingAnalysis.checks.find((check) => check.name === 'no_mutating_git_commands').passed, false);
+
+    const rebaseRepo = path.join(root, 'rebase-reconcile');
+    await prepareRebaseConflictRepo(rebaseRepo);
+    const beforeRebase = await snapshotReconcileRepository(rebaseRepo);
+    const unresolvedRebase = await evaluateReconcileCase({ id: 'rebase_conflict_reconcile' }, rebaseRepo, beforeRebase, model);
+    assert.equal(unresolvedRebase.passed, false);
+    assert.equal(unresolvedRebase.checks.find((check) => check.name === 'rebase_completed').passed, false);
+    await writeFile(path.join(rebaseRepo, 'config.py'), [
+      'DEFAULT_TIMEOUT_MS = 30000',
+      '',
+      '',
+      'def build_client_options():',
+      '    return {',
+      '        "timeout_ms": DEFAULT_TIMEOUT_MS,',
+      '        "max_retries": 3,',
+      '    }',
+      '',
+    ].join('\n'), 'utf8');
+    await writeFile(path.join(rebaseRepo, 'summary.py'), [
+      'from config import build_client_options',
+      '',
+      '',
+      'def format_client_summary():',
+      '    opts = build_client_options()',
+      '    return f"timeout={opts[\'timeout_ms\'] // 1000}s retries={opts[\'max_retries\']}"',
+      '',
+    ].join('\n'), 'utf8');
+    await writeFile(path.join(rebaseRepo, 'test_config.py'), [
+      'import unittest',
+      'from config import build_client_options',
+      '',
+      '',
+      'class ConfigTest(unittest.TestCase):',
+      '    def test_client_options(self):',
+      '        opts = build_client_options()',
+      '        self.assertEqual(opts["timeout_ms"], 30000)',
+      '        self.assertEqual(opts["max_retries"], 3)',
+      '        self.assertNotIn("timeout_seconds", opts)',
+      '        self.assertNotIn("legacy_tls_fallback", opts)',
+      '',
+      '',
+      'if __name__ == "__main__":',
+      '    unittest.main()',
+      '',
+    ].join('\n'), 'utf8');
+    await git(rebaseRepo, ['add', '--', 'config.py', 'summary.py', 'test_config.py']);
+    await git(rebaseRepo, ['rebase', '--continue'], { ...isolatedGitEnv(), GIT_EDITOR: 'true' });
+    const continuedRebaseModel = {
+      ...model,
+      stdout: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'git rebase --continue' },
+      }),
+    };
+    const abortedRebaseModel = {
+      ...model,
+      stdout: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'git rebase --abort && git commit -m fake' },
+      }),
+    };
+    const completedRebase = await evaluateReconcileCase({ id: 'rebase_conflict_reconcile' }, rebaseRepo, beforeRebase, continuedRebaseModel);
+    assert.equal(completedRebase.passed, true);
+    const emptyTraceRebase = await evaluateReconcileCase({ id: 'rebase_conflict_reconcile' }, rebaseRepo, beforeRebase, model);
+    assert.equal(emptyTraceRebase.passed, false);
+    assert.equal(emptyTraceRebase.checks.find((check) => check.name === 'continued_original_rebase').passed, false);
+    const abortedRebase = await evaluateReconcileCase({ id: 'rebase_conflict_reconcile' }, rebaseRepo, beforeRebase, abortedRebaseModel);
+    assert.equal(abortedRebase.passed, false);
+    assert.equal(abortedRebase.checks.find((check) => check.name === 'continued_original_rebase').passed, false);
+
+    const resolveCherryPickFiles = async (targetRepo) => {
+      await writeFile(path.join(targetRepo, 'limiter.py'), [
+        'DEFAULT_POLICY = {',
+        '    "max_requests": 100,',
+        '    "alert_threshold": 80,',
+        '}',
+        '',
+        '',
+        'def check_allowed(current_count, policy=None):',
+        '    active = policy or DEFAULT_POLICY',
+        '    return current_count < active["max_requests"]',
+        '',
+        '',
+        'def should_alert(current_count, policy=None):',
+        '    active = policy or DEFAULT_POLICY',
+        '    return current_count >= active["alert_threshold"]',
+        '',
+      ].join('\n'), 'utf8');
+      await writeFile(path.join(targetRepo, 'quota_report.py'), [
+        'from limiter import DEFAULT_POLICY, should_alert',
+        '',
+        '',
+        'def build_quota_report(current_count):',
+        '    remaining = max(0, DEFAULT_POLICY["max_requests"] - current_count)',
+        '    return {',
+        '        "remaining": remaining,',
+        '        "alert": should_alert(current_count),',
+        '    }',
+        '',
+      ].join('\n'), 'utf8');
+      await writeFile(path.join(targetRepo, 'test_limiter.py'), [
+        'import unittest',
+        'from limiter import DEFAULT_POLICY, check_allowed, should_alert',
+        '',
+        '',
+        'class LimiterTest(unittest.TestCase):',
+        '    def test_policy(self):',
+        '        self.assertEqual(DEFAULT_POLICY["max_requests"], 100)',
+        '        self.assertEqual(DEFAULT_POLICY["alert_threshold"], 80)',
+        '        self.assertNotIn("limit", DEFAULT_POLICY)',
+        '        self.assertNotIn("allow_anonymous_burst", DEFAULT_POLICY)',
+        '        self.assertTrue(check_allowed(50))',
+        '        self.assertFalse(check_allowed(100))',
+        '        self.assertFalse(should_alert(79))',
+        '        self.assertTrue(should_alert(80))',
+        '',
+        '',
+        'if __name__ == "__main__":',
+        '    unittest.main()',
+        '',
+      ].join('\n'), 'utf8');
+      await git(targetRepo, ['add', '--', 'limiter.py', 'quota_report.py', 'test_limiter.py']);
+    };
+
+    const cherryPickRepo = path.join(root, 'cherry-pick-reconcile');
+    await prepareCherryPickConflictRepo(cherryPickRepo);
+    const beforeCherryPick = await snapshotReconcileRepository(cherryPickRepo);
+    const unresolvedPick = await evaluateReconcileCase({ id: 'cherry_pick_conflict_reconcile' }, cherryPickRepo, beforeCherryPick, model);
+    assert.equal(unresolvedPick.passed, false);
+    assert.equal(unresolvedPick.checks.find((check) => check.name === 'cherry_pick_completed').passed, false);
+    await resolveCherryPickFiles(cherryPickRepo);
+    await git(cherryPickRepo, ['cherry-pick', '--continue'], { ...isolatedGitEnv(), GIT_EDITOR: 'true' });
+    const continuedPickModel = {
+      ...model,
+      stdout: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'git cherry-pick --continue' },
+      }),
+    };
+    const abortedPickModel = {
+      ...model,
+      stdout: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'git cherry-pick --abort && git commit -m fake' },
+      }),
+    };
+    const completedPick = await evaluateReconcileCase({ id: 'cherry_pick_conflict_reconcile' }, cherryPickRepo, beforeCherryPick, continuedPickModel);
+    assert.equal(completedPick.passed, true);
+    const emptyTracePick = await evaluateReconcileCase({ id: 'cherry_pick_conflict_reconcile' }, cherryPickRepo, beforeCherryPick, model);
+    assert.equal(emptyTracePick.passed, false);
+    assert.equal(emptyTracePick.checks.find((check) => check.name === 'continued_original_cherry_pick').passed, false);
+    const abortedPick = await evaluateReconcileCase({ id: 'cherry_pick_conflict_reconcile' }, cherryPickRepo, beforeCherryPick, abortedPickModel);
+    assert.equal(abortedPick.passed, false);
+    assert.equal(abortedPick.checks.find((check) => check.name === 'continued_original_cherry_pick').passed, false);
+
+    const cherryPickCommitRepo = path.join(root, 'cherry-pick-commit-reconcile');
+    await prepareCherryPickConflictRepo(cherryPickCommitRepo);
+    const beforeCherryPickCommit = await snapshotReconcileRepository(cherryPickCommitRepo);
+    await resolveCherryPickFiles(cherryPickCommitRepo);
+    await git(cherryPickCommitRepo, ['commit', '--no-edit']);
+    const committedPickModel = {
+      ...model,
+      stdout: JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'git commit --no-edit' },
+      }),
+    };
+    const completedPickViaCommit = await evaluateReconcileCase({ id: 'cherry_pick_conflict_reconcile' }, cherryPickCommitRepo, beforeCherryPickCommit, committedPickModel);
+    assert.equal(completedPickViaCommit.passed, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1106,225 +1139,6 @@ async function testEvalChildTimeout() {
     assert.ok(Date.now() - startedAt >= 60);
   }
   assert.throws(() => process.kill(descendantPid, 0), /ESRCH/);
-}
-
-async function testWorktreeIgnoreFixtures() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-ignore-test-'));
-  const ignored = path.join(root, 'ignored');
-  const unignored = path.join(root, 'unignored');
-  try {
-    await Promise.all([mkdir(ignored), mkdir(unignored)]);
-    await Promise.all([
-      git(ignored, ['init', '--quiet']),
-      git(unignored, ['init', '--quiet']),
-    ]);
-    await Promise.all([
-      writeFile(
-        path.join(ignored, '.gitignore'),
-        `${worktreeIgnoreEntriesForCase('preserve_dirty_workspace_and_use_default_path').join('\n')}\n`,
-        'utf8',
-      ),
-      writeFile(
-        path.join(unignored, '.gitignore'),
-        `${worktreeIgnoreEntriesForCase('stop_when_default_root_not_ignored').join('\n')}\n`,
-        'utf8',
-      ),
-    ]);
-    await git(ignored, ['check-ignore', '--quiet', '--no-index', '.worktrees/probe']);
-    await assert.rejects(
-      git(unignored, ['check-ignore', '--quiet', '--no-index', '.worktrees/probe']),
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
-async function createWorktreeTriggerFixture(fixture) {
-  const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-trigger-fixture-'));
-  const workspaceRoot = path.join(cleanupRoot, 'project');
-  const home = path.join(cleanupRoot, 'home');
-  await Promise.all([
-    mkdir(path.join(workspaceRoot, '.agents'), { recursive: true }),
-    mkdir(home, { recursive: true }),
-  ]);
-  await writeFile(path.join(workspaceRoot, '.agents', 'preserved.txt'), 'control\n', 'utf8');
-  const context = {
-    workspaceRoot,
-    evalCase: { workspace_fixture: fixture },
-    env: { ...process.env, HOME: home },
-  };
-  const setup = await setupWorktreeTriggerWorkspace(context);
-  context.env = { ...context.env, ...setup.environment };
-  return { cleanupRoot, context };
-}
-
-async function testWorktreeTriggerFixtures() {
-  const fixtureChecks = [
-    ['clean_main', 'main', ''],
-    ['dirty_main', 'main', ' M src/form.ts\n'],
-    ['dirty_feature', 'feature', ' M src/form.ts\n'],
-    [
-      'dirty_mixed_feature',
-      'feature',
-      'M  README.md\n M src/form.ts\n?? notes/local.txt\n',
-    ],
-    ['commit_ready', 'feature', 'M  src/button.ts\n'],
-  ];
-  for (const [fixture, expectedBranch, expectedStatus] of fixtureChecks) {
-    const { cleanupRoot, context } = await createWorktreeTriggerFixture(fixture);
-    try {
-      assert.equal((await git(context.workspaceRoot, ['branch', '--show-current'], context.env)).stdout.trim(), expectedBranch);
-      assert.equal(
-        (await git(
-          context.workspaceRoot,
-          ['status', '--porcelain=v1', '--untracked-files=all'],
-          context.env,
-        )).stdout,
-        expectedStatus,
-      );
-      const [originMain, main, originUrl] = await Promise.all([
-        git(context.workspaceRoot, ['rev-parse', '--verify', 'refs/remotes/origin/main'], context.env),
-        git(context.workspaceRoot, ['rev-parse', '--verify', 'refs/heads/main'], context.env),
-        git(context.workspaceRoot, ['remote', 'get-url', 'origin'], context.env),
-      ]);
-      assert.equal(originMain.stdout, main.stdout);
-      assert.notEqual(originUrl.stdout.trim(), '');
-      assert.equal(
-        await readFile(path.join(context.workspaceRoot, '.agents', 'preserved.txt'), 'utf8'),
-        'control\n',
-      );
-      const state = await captureWorktreeTriggerWorkspaceState(context);
-      assert.equal(await captureWorktreeTriggerWorkspaceState(context), state);
-    } finally {
-      await rm(cleanupRoot, { recursive: true, force: true });
-    }
-  }
-
-  for (const fixture of ['linked_feature', 'linked_dirty_feature']) {
-    const { cleanupRoot, context } = await createWorktreeTriggerFixture(fixture);
-    try {
-      const worktrees = await git(context.workspaceRoot, ['worktree', 'list', '--porcelain'], context.env);
-      assert.equal((worktrees.stdout.match(/^worktree /gm) ?? []).length, 2);
-      assert.equal((await git(context.workspaceRoot, ['branch', '--show-current'], context.env)).stdout.trim(), 'feature');
-      const status = await git(
-        context.workspaceRoot,
-        ['status', '--porcelain=v1', '--untracked-files=all'],
-        context.env,
-      );
-      assert.equal(status.stdout, fixture === 'linked_feature' ? '' : ' M src/form.ts\n');
-    } finally {
-      await rm(cleanupRoot, { recursive: true, force: true });
-    }
-  }
-
-  const { cleanupRoot, context } = await createWorktreeTriggerFixture('merge_conflict');
-  try {
-    await git(context.workspaceRoot, ['rev-parse', '--verify', 'MERGE_HEAD'], context.env);
-    const status = await git(
-      context.workspaceRoot,
-      ['status', '--porcelain=v1', '--untracked-files=all'],
-      context.env,
-    );
-    assert.match(status.stdout, /^UU src\/conflict\.ts$/m);
-  } finally {
-    await rm(cleanupRoot, { recursive: true, force: true });
-  }
-
-  const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-trigger-invalid-'));
-  try {
-    const workspaceRoot = path.join(invalidRoot, 'project');
-    const home = path.join(invalidRoot, 'home');
-    await Promise.all([mkdir(workspaceRoot), mkdir(home)]);
-    await assert.rejects(
-      setupWorktreeTriggerWorkspace({
-        workspaceRoot,
-        evalCase: { workspace_fixture: 'invented' },
-        env: { ...process.env, HOME: home },
-      }),
-      /Unsupported worktree trigger fixture/,
-    );
-  } finally {
-    await rm(invalidRoot, { recursive: true, force: true });
-  }
-}
-
-function worktreeExecTrace(commands) {
-  return commands.map((command) => JSON.stringify({
-    type: 'item.completed',
-    item: {
-      type: 'command_execution',
-      status: 'completed',
-      exit_code: 0,
-      command,
-    },
-  })).join('\n');
-}
-
-async function testWorktreeExecTraceAssertions() {
-  const safe = inspectWorktreeExecTrace(worktreeExecTrace([
-    'git status --short',
-    'git stash list',
-    'git stash show -p',
-    'git worktree add .worktrees/feature origin/main',
-    'cd .worktrees/feature && node test.mjs',
-  ]));
-  assert.deepEqual(safe.prohibited_commands, []);
-  assert.deepEqual(safe.requested_test_commands, [
-    'cd .worktrees/feature && node test.mjs',
-  ]);
-  assert.equal(safe.pushed, false);
-
-  const prohibited = inspectWorktreeExecTrace(worktreeExecTrace([
-    'git stash push --include-untracked',
-    'git reset --hard HEAD',
-    'git worktree add --force .worktrees/feature feature',
-    'git -C repo worktree remove -f .worktrees/old',
-    'git worktree add -ff .worktrees/feature feature',
-    'git worktree add -qf .worktrees/feature feature',
-    'cd "$TMPDIR/full-clone" && git push --force origin main',
-  ]));
-  assert.deepEqual(
-    prohibited.prohibited_commands.map((entry) => entry.reason),
-    [
-      'state-changing git stash',
-      'git reset',
-      'forced git worktree operation',
-      'forced git worktree operation',
-      'forced git worktree operation',
-      'forced git worktree operation',
-    ],
-  );
-  assert.equal(prohibited.pushed, true);
-
-  const evalRoot = path.resolve(os.tmpdir(), 'worktree-eval-root');
-  assert.deepEqual(
-    worktreePathsOutsideRoot([
-      `worktree ${path.join(evalRoot, 'repo')}`,
-      `worktree ${path.join(evalRoot, 'repo', '.worktrees', 'feature')}`,
-      '',
-    ].join('\n'), evalRoot),
-    [],
-  );
-  assert.deepEqual(
-    worktreePathsOutsideRoot(`worktree ${path.resolve(os.tmpdir(), 'outside-worktree')}\n`, evalRoot),
-    [path.resolve(os.tmpdir(), 'outside-worktree')],
-  );
-
-  const createdRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-containment-'));
-  const canonicalRoot = await realpath(createdRoot);
-  try {
-    const repo = path.join(canonicalRoot, 'repo');
-    await mkdir(repo);
-    await initializeRepository(repo);
-    await git(repo, ['branch', 'feature']);
-    await git(repo, [
-      'worktree', 'add', '--quiet', path.join(canonicalRoot, 'linked'), 'feature',
-    ]);
-    const worktrees = await git(repo, ['worktree', 'list', '--porcelain']);
-    assert.deepEqual(worktreePathsOutsideRoot(worktrees.stdout, canonicalRoot), []);
-  } finally {
-    await rm(canonicalRoot, { recursive: true, force: true });
-  }
 }
 
 async function initializeRepository(root) {
@@ -1420,7 +1234,7 @@ async function testCherryPickConflictDetection() {
   }
 }
 
-async function testMergeEvalAssertions() {
+async function testReconcileEvalAssertions() {
   const goodAnalysis = 'subtotal 返回整数分值，invoice 按元格式化。建议在边界除以 100，并运行 unittest 验证。';
   assert.equal(analysisMessageChecks(goodAnalysis).every((entry) => entry.passed), true);
   const decimalAnalysis = [
@@ -1540,8 +1354,85 @@ async function testMergeEvalAssertions() {
     ).find((entry) => entry.name === 'does_not_invent_retention_value').passed,
     false,
   );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '共同祖先原为 30 天，main 改为 7 天，origin/feature 改为 90 天。仓库证据不足，需要产品决定优先级。',
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      'Base retention was 30 days; main changed it to 7 days and origin/feature changed it to 90 days. Evidence is insufficient and requires a product decision.',
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '基线原本是 30 天，但 7 天与 90 天不兼容，建议先采用 30 天作为折中。',
+    ).find((entry) => entry.name === 'does_not_invent_retention_value').passed,
+    false,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '7 天与 90 天不兼容，建议改为 45 天，需要产品决定。',
+    ).find((entry) => entry.name === 'does_not_invent_retention_value').passed,
+    false,
+  );
 
-  const semanticRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-semantic-oracle-'));
+  const reconcileTrace = inspectReconcileExecTrace([
+    { type: 'item.completed', item: { type: 'command_execution', command: 'git rebase --continue && git push origin feature' } },
+    { type: 'item.completed', item: { type: 'command_execution', command: 'git cherry-pick --abort' } },
+    { type: 'item.completed', item: { type: 'command_execution', command: 'git commit --no-edit' } },
+  ].map((entry) => JSON.stringify(entry)).join('\n'));
+  assert.equal(reconcileTrace.continued_rebase, true);
+  assert.equal(reconcileTrace.aborted_rebase, false);
+  assert.equal(reconcileTrace.aborted_cherry_pick, true);
+  assert.equal(reconcileTrace.committed, true);
+  assert.equal(reconcileTrace.pushed, true);
+  assert.equal(reconcileTrace.mutated_git, true);
+
+  const amendOnlyTrace = inspectReconcileExecTrace(JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'command_execution', command: 'git commit --amend --no-edit' },
+  }));
+  assert.equal(amendOnlyTrace.committed, false);
+
+  for (const readOnlyCommand of [
+    'git status',
+    'git diff main..origin/feature',
+    'git log --graph --oneline -n 5',
+    'git branch -a',
+    'git branch --contains HEAD',
+    'git stash list',
+    'git config --get user.name',
+    'git merge-tree $(git merge-base main origin/feature) main origin/feature',
+  ]) {
+    const trace = inspectReconcileExecTrace(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'command_execution', command: readOnlyCommand },
+    }));
+    assert.equal(trace.mutated_git, false, readOnlyCommand);
+  }
+  for (const mutatingCommand of [
+    'git merge origin/feature',
+    'git stash',
+    'git reset --hard HEAD',
+    'git branch temp-probe',
+    'git merge-tree --write-tree main origin/feature',
+    'git merge-tree main origin/feature',
+  ]) {
+    const trace = inspectReconcileExecTrace(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'command_execution', command: mutatingCommand },
+    }));
+    assert.equal(trace.mutated_git, true, mutatingCommand);
+  }
+
+  const semanticRoot = await mkdtemp(path.join(os.tmpdir(), 'git-reconcile-semantic-oracle-'));
   try {
     await writeFile(
       path.join(semanticRoot, 'logger.py'),
@@ -1567,7 +1458,7 @@ async function testMergeEvalAssertions() {
       'utf8',
     );
     assert.equal(
-      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_same_file'))
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'semantic_same_file'))
         .every((entry) => entry.passed),
       true,
     );
@@ -1586,7 +1477,7 @@ async function testMergeEvalAssertions() {
       'utf8',
     );
     assert.equal(
-      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_same_file'))
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'semantic_same_file'))
         .some((entry) => !entry.passed),
       true,
     );
@@ -1602,7 +1493,7 @@ async function testMergeEvalAssertions() {
       'utf8',
     );
     assert.equal(
-      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_cross_file'))
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'semantic_cross_file'))
         .every((entry) => entry.passed),
       true,
     );
@@ -1612,7 +1503,59 @@ async function testMergeEvalAssertions() {
       'utf8',
     );
     assert.equal(
-      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_cross_file'))
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'semantic_cross_file'))
+        .some((entry) => !entry.passed),
+      true,
+    );
+
+    await writeFile(
+      path.join(semanticRoot, 'config.py'),
+      'DEFAULT_TIMEOUT_MS = 30000\ndef build_client_options():\n    return {"timeout_ms": DEFAULT_TIMEOUT_MS, "max_retries": 3}\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(semanticRoot, 'summary.py'),
+      'from config import build_client_options\ndef format_client_summary():\n    opts = build_client_options()\n    return f"timeout={opts[\'timeout_ms\'] // 1000}s retries={opts[\'max_retries\']}"\n',
+      'utf8',
+    );
+    assert.equal(
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'rebase_conflict_reconcile'))
+        .every((entry) => entry.passed),
+      true,
+    );
+    await writeFile(
+      path.join(semanticRoot, 'config.py'),
+      'DEFAULT_TIMEOUT_MS = 30000\nLEGACY_TLS_FALLBACK = True\ndef build_client_options():\n    return {"timeout_ms": DEFAULT_TIMEOUT_MS, "legacy_tls_fallback": True, "max_retries": 3}\n',
+      'utf8',
+    );
+    assert.equal(
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'rebase_conflict_reconcile'))
+        .some((entry) => !entry.passed),
+      true,
+    );
+
+    await writeFile(
+      path.join(semanticRoot, 'limiter.py'),
+      'DEFAULT_POLICY = {"max_requests": 100, "alert_threshold": 80}\ndef check_allowed(c, p=None):\n    return c < (p or DEFAULT_POLICY)["max_requests"]\ndef should_alert(c, p=None):\n    return c >= (p or DEFAULT_POLICY)["alert_threshold"]\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(semanticRoot, 'quota_report.py'),
+      'from limiter import DEFAULT_POLICY, should_alert\ndef build_quota_report(c):\n    return {"remaining": max(0, DEFAULT_POLICY["max_requests"] - c), "alert": should_alert(c)}\n',
+      'utf8',
+    );
+    assert.equal(
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'cherry_pick_conflict_reconcile'))
+        .every((entry) => entry.passed),
+      true,
+    );
+    await writeFile(
+      path.join(semanticRoot, 'limiter.py'),
+      'DEFAULT_POLICY = {"max_requests": 100, "allow_anonymous_burst": True, "alert_threshold": 80}\ndef check_allowed(c, p=None):\n    return c < (p or DEFAULT_POLICY)["max_requests"]\ndef should_alert(c, p=None):\n    return c >= (p or DEFAULT_POLICY)["alert_threshold"]\n',
+      'utf8',
+    );
+    assert.equal(
+      (await semanticReconcileOutcomeChecks(semanticRoot, 'cherry_pick_conflict_reconcile'))
         .some((entry) => !entry.passed),
       true,
     );
@@ -1620,7 +1563,7 @@ async function testMergeEvalAssertions() {
     await rm(semanticRoot, { recursive: true, force: true });
   }
 
-  const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-control-paths-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-reconcile-control-paths-'));
   try {
     await initializeRepository(root);
     assert.deepEqual(await committedControlPaths(root), []);
@@ -1633,7 +1576,7 @@ async function testMergeEvalAssertions() {
     await rm(root, { recursive: true, force: true });
   }
 
-  const mergeRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-topology-'));
+  const mergeRoot = await mkdtemp(path.join(os.tmpdir(), 'git-reconcile-topology-'));
   try {
     await initializeRepository(mergeRoot);
     await git(mergeRoot, ['checkout', '--quiet', '-b', 'feature']);
@@ -1655,29 +1598,61 @@ async function testMergeEvalAssertions() {
   }
 }
 
+async function testCommitResolvedMergeInProgressTrap() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-commit-resolved-merge-'));
+  await mkdir(path.join(root, '.agents'));
+  const selected = commitBehaviorDocument.cases.find((entry) => entry.id === 'conflict_or_operation_in_progress');
+  const evalCase = { id: selected.id, prompt: selected.input.prompt, assertions: selected.assertions };
+  const workspace = await prepareCommitWorkspace(evalCase, root);
+  try {
+    const before = await snapshotCommitRepository(workspace.repo);
+    const [mergeHead, fullStatus] = await Promise.all([
+      git(workspace.repo, ['rev-parse', '--verify', 'MERGE_HEAD']),
+      git(workspace.repo, ['status']),
+    ]);
+    assert.match(mergeHead.stdout, /^[0-9a-f]{40,64}\n$/);
+    assert.equal(before.status.includes('UU '), false);
+    assert.match(fullStatus.stdout, /still merging/i);
+
+    const safeStop = await evaluateCommitCase(evalCase, workspace, before, {
+      code: 0, stdout: '', final_message: '检测到正在进行的 merge，已停止。',
+    });
+    assert.equal(safeStop.passed, true);
+
+    await git(workspace.repo, ['commit', '--quiet', '-m', 'feat: accidental merge commit']);
+    const accidentalCommit = await evaluateCommitCase(evalCase, workspace, before, {
+      code: 0, stdout: '', final_message: 'done',
+    });
+    assert.equal(accidentalCommit.passed, false);
+    assert.equal(accidentalCommit.checks.find((check) => check.name === 'no_new_commit').passed, false);
+    assert.equal(accidentalCommit.checks.find((check) => check.name === 'merge_still_in_progress').passed, false);
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const context = await resolveTestContext();
   await testEvalCorpora(context.bundleRoot);
   await testSkillRenders(context);
   await testWorkspaceFixture();
   await testHostileGitConfigurationIsIgnored();
-  await testWorktreeSnapshotTracksUntrackedContent();
   await testGitMetadataWritableRoots();
-  await testMergeTriggerFixtures();
+  await testReconcileTriggerFixtures();
   await testParticipantSkillIsolation();
   await testEvalChildTimeout();
-  await testWorktreeIgnoreFixtures();
-  await testWorktreeTriggerFixtures();
-  await testWorktreeExecTraceAssertions();
   await testPartialStagingBehavior();
+  await testCommitOnlyIsolationBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
-  await testMergeEvalAssertions();
-  await testMergeEvaluationFinalState(context.sourceRoot);
+  await testReconcileEvalAssertions();
+  await testReconcileEvaluationFinalState(context.sourceRoot);
   testCommitExecTraceAssertions();
   testCommitSemanticGrading();
   await testCommitMessageFormatBoundary();
   await testExplicitRepositoryCommitGate();
+  await testCommitResolvedMergeInProgressTrap();
   console.log('git skill eval and Git behavior tests passed');
 }
 

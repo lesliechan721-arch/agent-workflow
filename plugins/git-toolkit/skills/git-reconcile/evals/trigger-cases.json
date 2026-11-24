@@ -1,0 +1,436 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "git-reconcile",
+    "participants": [
+      "git-commit"
+    ],
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏加载可能让 merge、rebase、cherry-pick 冲突或跨分支语义交互未经协调即完成；误加载会劫持 fast-forward、无语义风险的普通 clean merge、普通提交或非 Git 任务。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": true,
+      "fixture": "trigger-fixture.mjs"
+    }
+  },
+  "cases": [
+    {
+      "id": "source_01",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "A merge is already stopped with MERGE_HEAD and a conflict in retention.py. Use the commits and repository evidence to reconcile it without inventing policy.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
+      }
+    },
+    {
+      "id": "source_02",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "The current merge combined a larger retry budget with request-key idempotency in another file. Check that the composed behavior preserves both intents before committing.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
+      }
+    },
+    {
+      "id": "source_03",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "把 feature 合并进 main：main 把权限角色改成 member，feature 的消费者仍加入 auditor；冲突文件之外还有跨文件契约要协调。",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
+      }
+    },
+    {
+      "id": "source_04",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "Main changed retry.py while feature changed idempotency.py. The current merge is textually clean, but the behaviors interact; reconcile them before committing.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
+      }
+    },
+    {
+      "id": "source_05",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "retention.py conflicts between seven-day privacy retention and ninety-day audit retention. Use repository evidence, and do not invent a compromise.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
+      }
+    },
+    {
+      "id": "source_06",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "The current clean merge combines a larger retry budget with new request-key idempotency. Validate the interaction and fix the merge rather than either branch alone.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
+      }
+    },
+    {
+      "id": "source_07",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "当前 merge 有 conflict.txt 冲突，双方还分别修改了权限生产者和消费者。协调双方意图并验证组合结果。",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
+      }
+    },
+    {
+      "id": "source_08",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "query": "The merge conflict represents incompatible seven-day privacy retention and ninety-day audit retention, with no stated priority. Handle it from repository evidence without inventing a compromise.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
+      }
+    },
+    {
+      "id": "source_09",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "query": "git auto-mergd the files, but one side changed transaction retry semantics and the other changed idempotency handling. Validate their composition before committing.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
+      }
+    },
+    {
+      "id": "source_10",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "query": "请继续当前 merge。冲突文件之外，双方还分别修改了同一个权限契约的生产者和消费者，需要一起验证。",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
+      }
+    },
+    {
+      "id": "source_11",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "feature is strictly ahead of main; fast-forward main with --ff-only.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "fast_forward"
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_12",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "git merge feature reports Already up to date. Confirm it and make no changes.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "up_to_date"
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_13",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Merge feature into main. Main only changed README.md and feature only changed change.txt; use the repository's normal Git workflow.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_14",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "两个分支已经分叉，但 main 只改 README.md，feature 只改独立的 change.txt，Git 可以 clean merge。按普通流程合并。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_15",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Both branches touched utils.py: main fixes the top comment and feature changes the unrelated helper fixture. The merge is clean and the changes are independent.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "same_file_independent_merge"
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_16",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "Resolve the conflicts while rebasing my feature branch onto main.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "rebase_conflict"
+      }
+    },
+    {
+      "id": "source_17",
+      "split": "train",
+      "tags": [],
+      "input": {
+        "query": "cherry-pick 这个提交时冲突了，帮我继续 cherry-pick。",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "cherry_pick_conflict"
+      }
+    },
+    {
+      "id": "validation_rebase_conflict",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "query": "当前 feature rebase 到 main 在 conflict.txt 停住了，请结合双方提交意图解决冲突并完成 rebase。",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "rebase_conflict"
+      }
+    },
+    {
+      "id": "validation_cherry_pick_conflict",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "query": "Cherry-picking the feature commit onto main stopped with conflicts in conflict.txt. Reconcile both commits and continue the cherry-pick.",
+        "expected": {
+          "loadedSkills": [
+            "git-reconcile"
+          ]
+        },
+        "workspaceFixture": "cherry_pick_conflict"
+      }
+    },
+    {
+      "id": "validation_independent_clean_merge",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把 feature 合并到 main。main 只改了 README.md，feature 只改了无关的 change.txt，没有冲突，按常规流程直接合并即可。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
+      },
+      "audit": {
+        "rationale": "无语义交互信号的普通 clean merge，属于 git-reconcile 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加冲突或跨文件契约/行为交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "validation_clean_rebase",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Rebase my clean feature branch onto main; the branches touched unrelated files and there are no conflicts.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
+      },
+      "audit": {
+        "rationale": "无冲突且无语义交互信号的常规 rebase，不应加载 git-reconcile。",
+        "minimalCounterexample": "仅让 rebase 出现冲突或跨分支语义协调需求，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "validation_clean_cherry_pick",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把 feature 上独立修改 change.txt 的提交 cherry-pick 到 main，两个分支没有冲突也没有关联改动。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
+      },
+      "audit": {
+        "rationale": "无冲突且无语义交互信号的常规 cherry-pick，不应加载 git-reconcile。",
+        "minimalCounterexample": "仅让 cherry-pick 出现冲突或语义协调需求，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_18",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Run git pull --ff-only to synchronize my local main branch.",
+        "expected": {
+          "loadedSkills": []
+        }
+      },
+      "audit": {
+        "rationale": "用户目标属于 git-reconcile description 明确排除的近似任务。",
+        "minimalCounterexample": "仅增加 merge/rebase/cherry-pick 冲突或跨分支语义交互信号，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_19",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Write a SQL MERGE statement that upserts customer rows.",
+        "expected": {
+          "loadedSkills": []
+        }
+      },
+      "audit": {
+        "rationale": "非 Git 任务，不应加载 git-reconcile。",
+        "minimalCounterexample": "将目标改为协调 Git merge/rebase/cherry-pick 冲突后，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "source_20",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Explain when to use git merge instead of rebase; do not change my repository.",
+        "expected": {
+          "loadedSkills": []
+        }
+      },
+      "audit": {
+        "rationale": "概念说明任务，不涉及实际整合或冲突协调。",
+        "minimalCounterexample": "将目标改为分析或解决具体分支整合冲突后，标签应翻转为加载 git-reconcile。"
+      }
+    },
+    {
+      "id": "ordinary_local_commit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "commit_ready"
+      },
+      "audit": {
+        "rationale": "普通提交不涉及 merge/rebase/cherry-pick 协调，也未显式调用 git-commit；不应加载这两个技能。",
+        "minimalCounterexample": "仅将目标改为协调 Git 整合冲突或跨分支语义交互，标签应翻转为加载 git-reconcile。"
+      }
+    }
+  ]
+}

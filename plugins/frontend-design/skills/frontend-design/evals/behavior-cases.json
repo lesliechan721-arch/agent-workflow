@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "判断实际内容、用途、设计约束和交互结果，既检查任务完成，也防止无关重做与虚构验证。"
+      "rationale": "判断实际内容、模式分叉、方向探索、设计约束、动效工艺与交互结果，既检查任务完成，也防止无关重做与虚构验证。"
     },
     "runtime": {"isolation": "strict"}
   },
@@ -68,13 +68,40 @@
       }
     },
     {
+      "id": "open-persuade-direction-before-code",
+      "split": "validation",
+      "tags": ["new-work", "direction-exploration", "persuade"],
+      "prompt": "使用 frontend-design，依据 bakery.md 为这家独立酸种面包坊设计和制作官网首页，计划落到 index.html。风格、配色和首屏构图都还没定，希望有辨识度、别像常见 SaaS 模板。不联网，不安装依赖。",
+      "assertions": [
+        "在未确认视觉方向前不直接写入 index.html，而是给出 2–3 个实质不同的方向方案与首屏结构/线框等待用户选择。",
+        "每个方向都基于 bakery.md 真实内容给出具体且可执行的视觉差异（色彩方案、字体气质、首屏构图与主行动落点及取舍说明），而不是仅罗列审美形容词或简单换色变体。",
+        "保留 bakery.md 的真实出炉时间、地址、品项与缺照片限制，不编造客户评价、获奖认证或在线支付，也不擅自扩展成冗长产品需求访谈。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "bakery.md": "# 麦石酸种工坊\n社区小批量石磨酸种面包坊，位于青桐路 18 号。\n每周三至周日 07:30、11:30、15:30 三轮出炉，售完即止。\n常备品项：乡村原味酸种 32 元、黑麦核桃 38 元、迷迭香佛卡夏 26 元。\n当日留货仅支持到店自取，通过微信或电话 021-5550-0198 预留，无线上支付与外卖。\n目前没有实景照片、客户评价或媒体报道。\n"
+        }
+      },
+      "expected": {
+        "output": "先提交 2–3 个实质不同的方向方案与首屏线框供用户一轮选择，确认前保持工作区未写入。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "检验展示类绿地页且方向开放时的强审美探索门禁：先对齐视觉世界与首屏构图再写码，避免直接输出默认模板。",
+        "minimalCounterexample": "在相同 brief 下若用户明说“你自行决定方向直接写到 index.html”，则应跳过候选提问并直接生成完整页面。",
+        "allowedVariance": "允许 2 个或 3 个实质不同方向，允许包含 1 个克制稳妥参照；不锁定固定字段模板、固定配色、字体或特定线框字符风格。"
+      }
+    },
+    {
       "id": "content-led-new-page",
       "split": "validation",
       "tags": ["new-work", "artifact"],
       "prompt": "使用 frontend-design，依据 brief.md 制作可离线打开的单页，写到 index.html。你可自行决定视觉方向。使用原生 HTML/CSS/JS，不安装依赖，不联网；预约入口跳到页内联系电话，不接后端。",
       "assertions": [
-        "产出可打开的完整页面，包含来源给出的服务、价格、时间、地区和联系电话，预约入口到达相应内容。",
-        "从工作室内容组织视觉主次，说明具体选择而非只有审美形容词；允许克制或表现性方向，不按特定字体和卡片数量评分。",
+        "因用户明确授权自行决定方向，直接产出可打开的完整 index.html，包含来源给出的服务、价格、时间、地区和联系电话，预约入口到达相应内容。",
+        "从工作室内容组织视觉主次，说明具体设计选择与避开通用模板的取舍而非只有审美形容词；允许克制或表现性方向，不按特定字体和卡片数量评分。",
         "有窄屏布局、语义操作和可见焦点，不编造客户、认证、评价或真实预约成功。",
         "只修改授权产物，报告实际检查；未观察渲染时不声称视觉或设备验证通过。"
       ],
@@ -85,15 +112,44 @@
         }
       },
       "expected": {
-        "output": "完成内容驱动且可离线使用的介绍页，边界与验证诚实。",
+        "output": "跳过方向提问，直接完成内容驱动且可离线使用的介绍页，边界与验证诚实。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": ["index.html"],
         "artifacts": [{"path": "index.html", "exists": true}]
       },
       "audit": {
-        "rationale": "正向证明能交付页面，而不只会拒绝额外工作；事实来自真实 fixture。",
-        "minimalCounterexample": "用户只要求设计建议时不需要写页面。",
-        "allowedVariance": "允许等价布局、字体和本地表现形式；不锁定主观风格，不要求额外截图文件或特定内部实现。"
+        "rationale": "与 open-persuade-direction-before-code 形成对照：用户明说自行决定方向时应直出完整页面，而非无故卡住提问。",
+        "minimalCounterexample": "用户只要求先给方向建议、未授权直接写文件时不应写入 index.html。",
+        "allowedVariance": "允许等价布局、字体和本地表现形式；说明真实设计取舍即可，不要求出现固定术语字样，不锁定主观风格、额外截图文件或特定内部实现。"
+      }
+    },
+    {
+      "id": "operate-dashboard-restraint-and-craft",
+      "split": "validation",
+      "tags": ["product", "mode", "interaction", "artifact"],
+      "prompt": "使用 frontend-design，改进 dashboard.html 这个内部库存处理台，让运营人员每天高频核对库存和执行补货操作更顺手，并解决操作菜单显示不全和响应迟钝的问题。保留现有品牌色、全部商品数据与操作功能；只改 dashboard.html，不联网，不安装依赖。",
+      "assertions": [
+        "按操作型界面收紧超大流体标题并去除逐行装饰性入场动画，让库存数据与操作区立即可扫；纵向数字对齐清晰，保留现有品牌色、全部商品行与操作功能。",
+        "修复行操作菜单被父容器 overflow: hidden 裁切的问题，使首行与末行菜单都完整可见；关闭态不可继续获焦，且支持键盘、可见焦点与关闭。",
+        "修正操作菜单与控件动效：移除 transition: all、迟缓的 ease-in 与 scale(0) 突兀放大，使高频操作响应短促跟手并在减弱动效环境下完整可用。",
+        "仅修改 dashboard.html，诚实报告实际验证与未验证范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "dashboard.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>库存处理台</title><style>:root{--brand:#1d4ed8;--ink:#111827;--surface:#ffffff}body{margin:0;padding:24px;font-family:system-ui;color:var(--ink);background:#f3f4f6}h1{font-size:clamp(2.5rem,6vw,5rem);margin:0 0 24px}.card{background:var(--surface);border-radius:12px;overflow:hidden;border:1px solid #e5e7eb}table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid #e5e7eb;text-align:left}tbody tr{opacity:0;transform:translateY(16px);animation:rowIn 650ms ease-in forwards}tbody tr:nth-child(2){animation-delay:250ms}@keyframes rowIn{to{opacity:1;transform:translateY(0)}}.menu-wrap{position:relative;display:inline-block}.menu{position:absolute;right:0;top:100%;min-width:140px;background:#fff;border:1px solid #cbd5e1;padding:6px;transform:scale(0);transform-origin:center;opacity:0;pointer-events:none;transition:all 450ms ease-in}.menu.open{transform:scale(1);opacity:1;pointer-events:auto}.btn{background:var(--brand);color:#fff;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}</style><h1>库存处理台</h1><div class='card'><table><thead><tr><th>SKU</th><th>商品</th><th>可用库存</th><th>单价</th><th>操作</th></tr></thead><tbody><tr><td>SKU-1042</td><td>滤芯标准装</td><td>12</td><td>¥89.00</td><td><div class='menu-wrap'><button class='btn' type='button' data-toggle='m1'>操作</button><div id='m1' class='menu'><button type='button' data-act='补货 SKU-1042'>发起补货</button><button type='button' data-act='盘点 SKU-1042'>标记盘点</button></div></div></td></tr><tr><td>SKU-2088</td><td>密封圈套装</td><td>3</td><td>¥1240.50</td><td><div class='menu-wrap'><button class='btn' type='button' data-toggle='m2'>操作</button><div id='m2' class='menu'><button type='button' data-act='补货 SKU-2088'>发起补货</button><button type='button' data-act='盘点 SKU-2088'>标记盘点</button></div></div></td></tr></tbody></table></div><p id='log' role='status'></p><script>document.querySelectorAll('[data-toggle]').forEach(btn=>{btn.addEventListener('click',()=>{const m=document.getElementById(btn.dataset.toggle);m.classList.toggle('open')})});document.querySelectorAll('[data-act]').forEach(btn=>{btn.addEventListener('click',()=>{document.getElementById('log').textContent='已记录：'+btn.dataset.act;btn.closest('.menu').classList.remove('open')})});</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付克制、高扫描效率、菜单不被裁切且响应利落的内部库存处理台。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["dashboard.html"],
+        "artifacts": [{"path": "dashboard.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "检验操作型模式默认（紧字阶、零加载编排、表格数字可读）叠加真实 CSS/动效工程陷阱（overflow: hidden 裁切浮层、ease-in + scale(0) + transition: all）。",
+        "minimalCounterexample": "若用户明确要求制作对外营销展示页而非高频工作台，则不必收窄展示性标题尺度。",
+        "allowedVariance": "允许使用 Popover API、position: fixed、调整容器 overflow 或直接改为行内操作按钮等等价方案；允许高频菜单采用 0ms 无动画切换（此时无需强加空的 prefers-reduced-motion 规则），不强制单一 DOM 写法。"
       }
     },
     {
@@ -131,9 +187,9 @@
       "tags": ["read-only", "evidence"],
       "prompt": "使用 frontend-design，只根据 checkout.html 源码判断结算操作的设计问题。不要运行页面、打开浏览器、联网或修改文件；区分能从源码确认的问题和仍需渲染验证的事项。",
       "assertions": [
-        "识别用 div 承担付款动作的语义和键盘风险，以及文本输入缺少关联标签的问题。",
+        "识别用 div 承担付款动作的语义和键盘风险、焦点样式被全局移除、文本输入缺少关联标签，以及低对比度风险。",
         "指出代码只有提示而无付款接口，不能把它说成真实支付完成。",
-        "建议与源码观察分开，未声称看过截图、交互实测或完整合规通过；保持工作区不变。"
+        "按已证实缺陷、可选设计建议与未验证范围清晰分开，未声称看过截图、交互实测或完整合规通过；保持工作区不变。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -142,14 +198,14 @@
         }
       },
       "expected": {
-        "output": "给出有源码依据的设计检查与清楚的验证限制。",
+        "output": "给出三分栏清晰组织的源码设计诊断与验证限制。",
         "workspaceUnchanged": true,
         "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "只读与证据边界必须在具有写工具的环境中仍被遵守，提示中不列出待检缺陷。",
         "minimalCounterexample": "授权实现且提供可运行环境时应实际修复和验证。",
-        "allowedVariance": "允许等价分组和建议，不强制报告格式或未测量的精确对比度数值。"
+        "allowedVariance": "允许使用或不使用 Before/After 表格，不强制精确报告模板或未实测对比度数值。"
       }
     },
     {
@@ -158,7 +214,7 @@
       "tags": ["motion", "artifact"],
       "prompt": "使用 frontend-design，改善工具栏搜索面板的打开关闭体验。用户频繁使用快捷键。保留 Ctrl/Cmd+K 打开或关闭、Escape 关闭和搜索内容；只改 search.html，不引入依赖。",
       "assertions": [
-        "消除旧延迟任务干扰连续打开关闭的问题，不为高频操作增加等待或装饰性编排。",
+        "消除旧延迟任务干扰连续打开关闭的问题，高频快捷键切换即时响应，不增加等待或装饰性编排，并移除 transition: all。",
         "处理焦点进入和关闭返回，键盘操作与按钮操作均可用。",
         "在减弱动效条件下功能仍成立，不依赖动画结束才更新关键状态；保留搜索内容。"
       ],
@@ -177,7 +233,35 @@
       "audit": {
         "rationale": "动效质量由频率和实际中断行为判断，不只检查 CSS 有无媒体查询。",
         "minimalCounterexample": "低频内容展示且有明确表现目标时可以采用更有表现力的运动。",
-        "allowedVariance": "无动画是有效解；允许非模态面板或适合场景的模态实现，不强制动画库、缓动值或时长。"
+        "allowedVariance": "无动画是高频快捷键的推荐解；允许非模态面板或适合场景的模态实现，不强制动画库、缓动值或时长。"
+      }
+    },
+    {
+      "id": "popover-hover-and-touch-craft",
+      "split": "validation",
+      "tags": ["motion", "interaction", "artifact"],
+      "prompt": "使用 frontend-design，打磨 toolbar.html 中筛选浮层和工具栏按钮的交互与动效体验，兼顾桌面鼠标、触屏和键盘用户。保留现有筛选选项和按钮文案；只改 toolbar.html，不联网，不安装依赖。",
+      "assertions": [
+        "筛选浮层从触发器锚定展开（非无依据居中 scale(0)），使用自然短促的 ease-out 过渡（如轻缩放、轻位移配合透明度或等价清晰展开），移除 transition: all 与迟缓的 ease-in。",
+        "消除触屏悬停缩放卡死问题——移除工具栏按钮不必要的悬停缩放/位移，或若保留则限制在支持真实悬停的指针环境（如 @media (hover: hover) and (pointer: fine)）中；不把关键信息或操作藏在悬停里，同时补齐键盘操作、关闭态不可继续获焦、Escape 关闭、可见焦点与焦点返回。",
+        "在 prefers-reduced-motion 下仍清晰可用，保留全部筛选选项与按钮文案；仅改 toolbar.html，诚实说明验证限制。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "toolbar.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>工具栏</title><style>body{font-family:system-ui;padding:24px;color:#1f2937}.bar{display:flex;gap:8px;position:relative}.tool-btn{padding:8px 12px;border:1px solid #cbd5e1;background:#fff;border-radius:6px;cursor:pointer;transition:all 420ms ease-in}.tool-btn:hover{transform:scale(1.08);background:#eff6ff}.popover{position:absolute;top:44px;left:0;width:220px;padding:12px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;transform:scale(0);transform-origin:center;opacity:0;pointer-events:none;transition:all 420ms ease-in}.popover.open{transform:scale(1);opacity:1;pointer-events:auto}</style><div class='bar'><button id='filterBtn' class='tool-btn' type='button'>筛选状态</button><div id='filterPop' class='popover'><label><input type='checkbox' value='open' checked> 进行中</label><br><label><input type='checkbox' value='done'> 已完成</label></div><button class='tool-btn' type='button'>导出列表</button></div><script>const btn=document.getElementById('filterBtn');const pop=document.getElementById('filterPop');btn.addEventListener('click',()=>pop.classList.toggle('open'));</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付锚定自然、无触屏悬停问题、键盘完善且过渡利落的工具栏浮层。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["toolbar.html"],
+        "artifacts": [{"path": "toolbar.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "Holdout 用例，检验微交互细节（锚定原点、短促 ease-out 展开、消除触屏悬停缩放问题、关闭态不可获焦与键盘闭环）是否真正落地。",
+        "minimalCounterexample": "若为居中模态框而非触发锚定浮层，则应保持 transform-origin: center。",
+        "allowedVariance": "允许等价的锚定展开过渡（轻缩放、轻位移或克制渐显均可），允许直接移除工具栏按钮多余悬停缩放，不锁死单一曲线字面量或原生 Popover/ARIA 实现。"
       }
     },
     {
@@ -215,7 +299,7 @@
       "prompt": "当前原型协调者已确认 brief.md 的问题、范围和设计关系。使用 frontend-design，只完成指定前端到 artifact/index.html，沿用已确认关系，不再访谈或取得接受结论。不得联网或安装依赖；反馈由协调者负责。",
       "assertions": [
         "直接完成被分配前端，桌面两栏与窄屏顺序符合 brief，选项变更能反映在费用区。",
-        "不重开已确认的选择或自行增加候选，不声称协调者或用户已接受本次实现。",
+        "不重开已确认的选择或自行增加方向候选，不声称协调者或用户已接受本次实现。",
         "交付实际产物与检查限制，不写共享决策记录或新增后端流程。"
       ],
       "input": {
@@ -231,7 +315,7 @@
         "artifacts": [{"path": "artifact/index.html", "exists": true}]
       },
       "audit": {
-        "rationale": "验证合法委派中的方法复用，不把加载技能当成重新启动整个流程。人工 brief 仅证明本地交接消费，不证明真实上下游端到端能力。",
+        "rationale": "验证合法委派中的方法复用，不把加载技能当成重新启动方向探索或访谈流程。人工 brief 仅证明本地交接消费，不证明真实上下游端到端能力。",
         "minimalCounterexample": "关键布局尚未决定且会改变用户结果时应保留未决状态或交回协调者。",
         "allowedVariance": "允许局部排版、间距和 DOM 结构调整；固定的是被接受的关系与行为，不是精确像素。"
       }
@@ -239,12 +323,12 @@
     {
       "id": "explicit-visual-redesign",
       "split": "validation",
-      "tags": ["redesign", "scope", "holdout"],
+      "tags": ["redesign", "scope"],
       "prompt": "使用 frontend-design，重做 museum.html 的视觉，不需要保留现有霓虹配色和等大卡片。方向为平静、适合长时间阅读。开放时间、票价、预约规则和链接均不得改。只改 museum.html，使用本地系统字体，不增加依赖。",
       "assertions": [
-        "根据明确授权真正改变旧视觉方向，而不是仅做微小间距修正；新层级支持阅读任务。",
+        "因用户已明确锁定平静阅读方向，跳过额外方向提问并真正替换旧霓虹配色与等大卡片布局；新层级支持长时间阅读。",
         "保留时间、票价、预约条件和有效链接，不为了文案简短改变产品事实。",
-        "不强制新的展示字体、黑底、复杂动效或外部素材，不把旧视觉视作不可修改的权威。"
+        "不强制新的外链展示字体、黑底、复杂动效或外部素材，不把旧视觉视作不可修改的权威。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -259,7 +343,7 @@
         "artifacts": [{"path": "museum.html", "exists": true}]
       },
       "audit": {
-        "rationale": "与保留既有系统形成对照，防止技能把所有任务都错误收窄为局部打磨。",
+        "rationale": "与保留既有系统及开放方向探索形成对照：明确指定方向的重做应直接换掉旧视觉而非只做微调。",
         "minimalCounterexample": "只要求保留品牌的局部调整时不得更换整体视觉。",
         "allowedVariance": "允许多种平静阅读布局，不把某个颜色、字号或 DOM 结构作为唯一正确解。"
       }

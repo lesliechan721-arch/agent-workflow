@@ -16,7 +16,7 @@ const localPluginRoot = path.resolve(scriptDir, '..');
 const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape', 'project-context'];
 const leafSkills = ['decision-grill', 'decision-prototype'];
 const decisionSkills = [...leafSkills, 'decision-shape', 'project-context'];
-const alignmentSkills = [...decisionSkills, 'explain-for-review'];
+const alignmentSkills = [...decisionSkills, 'explain-clearly'];
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -852,7 +852,7 @@ test('leaf scopes stay independent and composition suites expose their methods',
       ));
       assert.equal(corpus.suite.unitUnderTest, skillName);
       const expectedParticipants = skillName === 'decision-grill'
-        && suite.id === 'presentation-handoff' ? ['explain-for-review'] : [];
+        && suite.id === 'presentation-handoff' ? ['explain-clearly'] : [];
       assert.deepEqual(corpus.suite.participants ?? [], expectedParticipants);
       if (expectedParticipants.length > 0) {
         for (const profileId of suite.profiles) {

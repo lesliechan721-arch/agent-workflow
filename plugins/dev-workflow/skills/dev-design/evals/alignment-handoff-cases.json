@@ -3,7 +3,7 @@
   "suite": {
     "kind": "conversation",
     "unitUnderTest": "dev-design",
-    "participants": ["decision-shape", "decision-grill", "decision-prototype", "project-context", "dev-spec", "dev-review-spec", "explain-for-review"],
+    "participants": ["decision-shape", "decision-grill", "decision-prototype", "project-context", "dev-spec", "dev-review-spec", "explain-clearly"],
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

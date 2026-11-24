@@ -16,7 +16,7 @@
       "project-context",
       "dev-spec",
       "dev-review-spec",
-      "explain-for-review"
+      "explain-clearly"
     ],
     "runtime": {
       "isolation": "strict"

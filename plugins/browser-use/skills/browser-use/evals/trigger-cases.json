@@ -162,6 +162,70 @@
       }
     },
     {
+      "id": "responsive_layout_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "我刚改完本地 http://localhost:5173 的导航栏样式，帮我在桌面端和手机端视口下看下有没有溢出或错位。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "前端响应式与多视口视觉核查是核心高频任务。",
+        "minimalCounterexample": "改成仅静态评审一段 CSS 类名且不运行页面时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "console_errors_dev",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "打开本地 http://localhost:3000 点一下提交按钮，看看控制台有没有报错以及请求状态码。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "本地前端交互与控制台/接口状态检查需要实际驱动浏览器。",
+        "minimalCounterexample": "用户已贴出控制台报错堆栈和响应体且不要求复现时无需加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "css_review_no_browser",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "帮我静态看看这段 Tailwind 类名有没有移动端响应式写法问题，不要启动浏览器或运行项目：<nav class=\"flex gap-4 overflow-hidden\">...</nav>",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "纯静态样式代码审阅且明确不运行浏览器时不应误触发。",
+        "minimalCounterexample": "要求打开本地页面在 390px 视口截屏核实布局时应加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
+      "id": "stacktrace_triage_implicit_no_browser",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "这段 React 报错 `TypeError: Cannot read properties of undefined (reading 'map')` 出在 `UserList.tsx:42`（`users` 初始值为 `null`），帮我解释原因并给出最小修复建议。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "不含显式禁止语的真实近邻负例：已给出前端报错信息与源码上下文，可直接分析修复，无需加载浏览器技能。",
+        "minimalCounterexample": "改为要求打开本地页面复现并查看控制台报错时应加载。",
+        "allowedVariance": "只评价目标技能是否被加载，不规定首个入口，不禁止合理的辅助技能。"
+      }
+    },
+    {
       "id": "given_article",
       "split": "train",
       "tags": [

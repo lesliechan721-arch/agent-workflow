@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "medium",
-      "rationale": "保护真实界面设计任务的发现，同时避免把机械修改、后端与无界面内容工作扩大成设计流程。"
+      "rationale": "保护真实界面设计、改版与诊断任务的发现，同时避免把纯逻辑修复、机械修改、后端、无界面内容工作或正式双轴代码审查误路由到本技能。"
     }
   },
   "cases": [
@@ -17,6 +17,13 @@
       "tags": ["positive", "new-work"],
       "input": {"query": "为本地修理工作室做一个预约介绍页，让服务内容和预约入口清楚，又有自己的视觉特色。", "expectedLoad": true},
       "audit": {"rationale": "需要内容驱动的视觉方向与页面实现。", "minimalCounterexample": "只把已有按钮链接改到指定地址时不需要设计方法。", "allowedVariance": "可以作为直接入口或允许的辅助能力，不要求第一个加载。"}
+    },
+    {
+      "id": "anti_slop_redesign_implicit",
+      "split": "validation",
+      "tags": ["positive", "redesign", "implicit-intent"],
+      "input": {"query": "这个官网首页太像 AI 模板了，帮我换一套更有辨识度的视觉和首屏构图，先给我几个方向挑。", "expectedLoad": true},
+      "audit": {"rationale": "典型的隐式用户表述，明确涉及去模板感改版与方向探索。", "minimalCounterexample": "只把首页某个文案错别字改掉时不需要加载本技能。", "allowedVariance": "可作为直接入口或辅助能力加载，不要求固定提问格式。"}
     },
     {
       "id": "dense_product_ui",
@@ -30,7 +37,7 @@
       "split": "validation",
       "tags": ["positive", "refinement"],
       "input": {"query": "保留当前品牌和组件库，改善日期选择器的焦点、点击区和打开关闭体验。", "expectedLoad": true},
-      "audit": {"rationale": "局部交互也有前端设计增量，不要求完整页面。", "minimalCounterexample": "日期常量精确替换且无界面判断时普通编辑即可。", "allowedVariance": "可与实施或浏览器能力组合，不要求重做视觉方向。"}
+      "audit": {"rationale": "局部交互与动效也有前端设计增量，不要求完整页面。", "minimalCounterexample": "日期常量精确替换且无界面判断时普通编辑即可。", "allowedVariance": "可与实施或浏览器能力组合，不要求重做视觉方向。"}
     },
     {
       "id": "delegated_prototype_ui",
@@ -47,6 +54,13 @@
       "audit": {"rationale": "要求实际网页的排版和响应式，不是正文摘要。", "minimalCounterexample": "只总结文档内容而不处理界面时不应加载。", "allowedVariance": "可辅助保真呈现能力，不强制特定页面结构。"}
     },
     {
+      "id": "readonly_ui_diagnosis",
+      "split": "validation",
+      "tags": ["positive", "read-only", "diagnosis"],
+      "input": {"query": "帮我只读诊断 checkout.html 这个结账页的视觉层级、按钮对比度和表单交互问题，给出具体改法，不要改代码。", "expectedLoad": true},
+      "audit": {"rationale": "单页视觉、对比度与交互体验的只读设计诊断属于本技能适用场景。", "minimalCounterexample": "要求对整个功能 PR 做工程正确性、安全与测试覆盖的正式代码审查时应路由到代码审查能力。", "allowedVariance": "可作为直接入口或辅助能力加载，不要求修改文件。"}
+    },
+    {
       "id": "backend_only",
       "split": "validation",
       "tags": ["negative", "boundary"],
@@ -54,11 +68,32 @@
       "audit": {"rationale": "没有视觉、交互或前端设计对象。", "minimalCounterexample": "增加分页控件布局与状态要求时可加载。", "allowedVariance": "其他开发能力可以加载，本断言只检查 frontend-design。"}
     },
     {
+      "id": "frontend_logic_bugfix_only",
+      "split": "validation",
+      "tags": ["negative", "boundary", "near-miss"],
+      "input": {"query": "修复结账页提交按钮连续点击导致重复发扣款请求的 JS 竞态 bug，只改请求状态与防重逻辑，不调整视觉、布局或文案。", "expectedLoad": false},
+      "audit": {"rationale": "虽然发生在前端页面内，但任务纯属请求竞态与业务逻辑修复，不涉及视觉设计、布局排版或交互体验重构。", "minimalCounterexample": "要求重新设计结账按钮的等待/失败/重试视觉反馈与表单错误呈现时可加载本技能。", "allowedVariance": "允许普通实现或调试能力处理，本断言只检查不误触发 frontend-design。"}
+    },
+    {
       "id": "mechanical_token_edit",
       "split": "validation",
       "tags": ["negative", "boundary"],
       "input": {"query": "只把 tokens.css 中 --space-card 从 16px 改成 20px，值已确定，不需要重新设计。", "expectedLoad": false},
       "audit": {"rationale": "精确机械替换没有新增设计判断。", "minimalCounterexample": "用户要求重新判断卡片间距与层级时可加载。", "allowedVariance": "允许直接编辑和相关回归检查，不用本技能引入额外分析。"}
+    },
+    {
+      "id": "formal_code_review_boundary",
+      "split": "validation",
+      "tags": ["negative", "boundary", "near-miss"],
+      "input": {"query": "帮我完整 review 一下这个前端 PR #248 的全部改动，核对需求遗漏、边界 bug、状态一致性与测试覆盖，给出阻塞项和修改条件。", "expectedLoad": false},
+      "audit": {"rationale": "面向整份 PR 的需求符合度与工程质量审查属于正式代码审查能力，不应误路由到前端设计技能。", "minimalCounterexample": "只请求对某个页面做视觉层级、对比度和交互体验的只读设计诊断时可加载本技能。", "allowedVariance": "允许代码审查类技能加载，本断言只检查不误触发 frontend-design。"}
+    },
+    {
+      "id": "product_discovery_interview",
+      "split": "validation",
+      "tags": ["negative", "boundary", "near-miss"],
+      "input": {"query": "我们准备做一款新的团队报销产品，先通过逐轮问答帮我理清核心审批角色、业务流程边界和 MVP 范围，现在还不做页面设计。", "expectedLoad": false},
+      "audit": {"rationale": "业务角色、审批流程与 MVP 范围探索属于需求决策协调，而非视觉世界与界面设计。", "minimalCounterexample": "业务范围已明确，需要为报销审批页探索视觉方向或优化表格交互时应加载本技能。", "allowedVariance": "允许需求塑形/访谈能力加载，本断言只检查不误触发 frontend-design。"}
     },
     {
       "id": "prose_summary_only",

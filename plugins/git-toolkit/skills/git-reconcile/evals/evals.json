@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "git-reconcile",
+    "participants": [
+      "git-commit"
+    ],
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "错误完成 merge、rebase 或 cherry-pick 冲突与语义交互会破坏产品行为和 Git 历史；错误执行 analysis-only 场景会破坏用户本地状态。"
+    }
+  },
+  "cases": [
+    {
+      "id": "ambiguous_retention",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "当前仓库已检出 `main`，请将 `origin/feature` 合并到 `main`，协调双方改动并完成验证。",
+        "files": [
+          "evals/files/ambiguous-retention.bundle"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 找出七天隐私保留与九十天审计保留这两个不兼容意图，不自行选择或发明折中方案，不提交合并，并结合证据明确指出尚待决定的产品问题。允许在执行 merge 前保持仓库原状并暂停，也允许执行 merge 后保留未解决冲突。"
+      },
+      "audit": {
+        "rationale": "Skill 要求证据不足时保留待决冲突，不发明产品行为，也不完成 merge。",
+        "minimalCounterexample": "仅增加一项明确且有权威依据的 retention 优先级后，应解决冲突、验证并完成 merge。"
+      }
+    },
+    {
+      "id": "semantic_same_file",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "当前仓库已检出 `main`，请将 `origin/feature` 合并到 `main`，排查并协调双侧改动可能引入的语义交互，验证通过后完成合并。",
+        "files": [
+          "evals/files/semantic-same-file.bundle"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 自主识别 clean merge 中的同文件语义冲突，进行聚焦的集成修改，同时保留基础类 fast path 与子类动态派发语义；全部测试通过后提交一个双父 merge commit。"
+      }
+    },
+    {
+      "id": "semantic_cross_file",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "当前仓库已检出 `main`，请将 `origin/feature` 合并到 `main`，排查并协调双侧改动可能引入的跨文件契约或行为交互，验证通过后完成合并。",
+        "files": [
+          "evals/files/semantic-cross-file.bundle"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 自主跨文件追踪 producer-consumer 契约，在 invoice 边界做最小适配，不进行无关重构；全部测试通过后提交一个双父 merge commit。"
+      }
+    },
+    {
+      "id": "analysis_only_dirty_worktree",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "当前仓库已检出 `main`，工作树中有与本次合并无关的未提交本地修改。请只读分析将 `origin/feature` 合并到 `main` 的文本与语义风险，不要执行 merge 或修改任何 refs、暂存区与工作树内容；报告发现的契约交互、建议的最小修复和验证方案。",
+        "files": [
+          "evals/files/analysis-only-dirty-worktree.tar.gz"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 识别 subtotal 的分值返回与 invoice 按元格式化之间的跨文件契约问题，提出聚焦修复与验证方案；不执行任何写 Git 命令或文件编辑，并使 HEAD、refs、index、worktree 以及 README.md 的本地修改保持不变。"
+      },
+      "audit": {
+        "rationale": "Skill 要求 analysis-only 场景在具备写能力时不改变 refs、index、worktree 或仓库对象，同时仍识别跨文件契约风险。",
+        "minimalCounterexample": "仅将授权改为执行 merge 后，允许在保护无关本地修改的前提下完成聚焦集成。"
+      }
+    },
+    {
+      "id": "rebase_conflict_reconcile",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "当前仓库的 `feature` 分支在向 `main` 变基时停在冲突状态。请结合仓库提交历史协调双方意图，排查相关消费者交互，验证组合结果并完成变基。",
+        "files": []
+      },
+      "expected": {
+        "outcome": "Agent 对照基线与双侧提交历史解决冲突，不恢复 main 刻意删除的 legacy_tls_fallback，同时保留 main 的 timeout_ms 与 feature 的 max_retries，并适配跨文件消费者 summary.py 的时间单位；运行测试通过后继续完成 rebase，历史呈线性单提交且无进行中的 rebase 状态。"
+      }
+    },
+    {
+      "id": "cherry_pick_conflict_reconcile",
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "当前仓库正在 `main` 上 cherry-pick `hotfix` 提交并停在冲突状态。请结合仓库提交历史协调双方意图，排查相关消费者交互，验证组合结果并完成此次 cherry-pick。",
+        "files": []
+      },
+      "expected": {
+        "outcome": "Agent 对照基线与双侧提交历史解决冲突，不恢复 main 刻意删除的 allow_anonymous_burst 或已重命名的 limit，同时保留 main 的 max_requests 与 hotfix 的 alert_threshold/should_alert，并适配跨文件消费者 quota_report.py；运行测试通过后沿原操作完成单个新提交，且无进行中的 cherry-pick 状态。"
+      }
+    }
+  ]
+}

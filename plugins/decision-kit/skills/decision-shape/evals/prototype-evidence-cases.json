@@ -13,7 +13,7 @@
       "decision-grill",
       "decision-prototype",
       "project-context",
-      "explain-for-review"
+      "explain-clearly"
     ],
     "runtime": {
       "isolation": "strict"
