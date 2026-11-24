@@ -1,6 +1,8 @@
 # Human Content
 
-提供面向人的复杂材料阅读与反馈能力。`explain-for-review` 把已有内容转成保真、可查证的呈现，按实际需要选择文字、图表或交互页面。
+将复杂需求、技术规格、架构设计、协议、代码机制或研究材料转化为人类容易理解、同时可查回原文的保真呈现。
+
+## 安装
 
 选择目标后安装：
 
@@ -9,16 +11,32 @@ aw target set codex claude
 aw plugin install human-content --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
+支持 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI、Grok Build 和通用导出目标 `generic`。如需直接导出所选目标的 Skills：
 
-例如：
-
-```text
-使用 explain-for-review 解释这份规格，让我看清待决定事项和主要风险，并能查到原文。需要长文导航时，将本地阅读页写到 out/；源文保持只读。
+```bash
+aw dev skill export human-content --scope user --out <dir>
 ```
 
-本插件可独立用于方案、协议、研究说明和审查报告，也可被设计工作流调用。它不接管产品决定、规范编写或独立审查；派生视图不是第二份事实源。默认采用低成本且本地的形式，外部服务、发布和音视频生成依当前明确请求、工具及授权。
+## 包含的 Skill
 
-可用 `aw dev skill export human-content --scope <project|user> --out <dir>` 导出所选目标的 Skills。作为 Decision Kit 的依赖时，仍只负责已有材料的解释与反馈。
+| Skill | 什么时候使用 |
+| --- | --- |
+| [`explain-clearly`](skills/explain-clearly/README.md) | 面对复杂或晦涩的已有材料，需要按认知瓶颈转化为清晰受控短句（简化技术写作）、结构图/SVG、一次性离线交互 HTML 探索页或定制讲解视频，或把冗长需求改写清晰 |
 
-公开入口：[explain-for-review](skills/explain-for-review/SKILL.md)。
+## 典型用法
+
+```text
+这份计费降级和重试规格太绕了我看不懂。先用具体正反例子把流程讲透，画清状态和失败出口，并标出我还要拍板的风险与原文依据。
+```
+
+```text
+把这份多主题设计规格做成单文件离线交互 HTML 写到 out/explainer.html，让我能单步演示状态变化、切换超时异常分支并点回原文条款；源文保持只读。
+```
+
+## 边界
+
+- **专注理解，不替代决策、原型或审查**：不替用户批准方案，也不为尚未决定的界面或交互制作新产品候选；源码调查、生产前端开发、面向 Agent 的指令编写与独立质量审查均由对应直接方式或专门能力处理。
+- **源文默认只读**：仅在明确要求直接改写原文可读性时才原位修改；本地生成的一次性 HTML 默认零外部网络、不启动反馈服务、不自动提交 Git。
+- **视频先预检后制作**：制作定制讲解视频前，会先检查本机工具链、TTS 方案及潜在外部费用并取得确认。
+
+公开入口：[explain-clearly](skills/explain-clearly/SKILL.md)。

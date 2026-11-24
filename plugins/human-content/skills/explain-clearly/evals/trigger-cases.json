@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "explain-clearly",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检验复杂已有材料的理解、改写清晰、图示、交互讲解与讲解视频的隐式触发，以及与相邻能力的精度边界。"
+    }
+  },
+  "cases": [
+    {
+      "id": "complex_existing_spec",
+      "split": "validation",
+      "tags": ["boundary", "positive"],
+      "input": {
+        "query": "这份计费降级和重试规格太绕了我读不明白。先给我一个具体例子把正常和失败路径讲透，标清我还要拍板哪些点，并能查回原文。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "典型隐式复杂需求理解请求，不点名 Skill，要求实例、待决点与原文溯源。",
+        "minimalCounterexample": "只问某缩写含义的一句话问答无需加载本 Skill。",
+        "allowedVariance": "正例无需点名 Skill；负例指首次主入口，后续独立讲解需求按上下文判定。"
+      }
+    },
+    {
+      "id": "rewrite_bureaucratic_prose",
+      "split": "validation",
+      "tags": ["boundary", "positive"],
+      "input": {
+        "query": "这份需求文档写得太晦涩了，满篇套娃长句和黑话，帮我直接改写得通俗好读一些，但所有边界条件和数字一条都不能丢。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确要求用受控清晰写作提升面向人的可读性并保持语义保真。",
+        "minimalCounterexample": "仅改错别字或润色一句话宣传文案无需加载。",
+        "allowedVariance": "正例无需点名 Skill；负例指首次主入口。"
+      }
+    },
+    {
+      "id": "state_lifecycle_diagram",
+      "split": "validation",
+      "tags": ["boundary", "positive"],
+      "input": {
+        "query": "这份订单结算和人工回滚流程涉及 4 个角色，光看文字分不清先后和失败出口，画张清晰的结构图和条件对照表给我讲明白。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "已有复杂状态与多角色关系需要 L2 视觉建模以建立心智模型。",
+        "minimalCounterexample": "简单三步线性清单直接文字答复即可。",
+        "allowedVariance": "正例无需点名 Skill；负例指首次主入口。"
+      }
+    },
+    {
+      "id": "interactive_html_explainer",
+      "split": "validation",
+      "tags": ["boundary", "positive"],
+      "input": {
+        "query": "这份状态机规格太长太绕，帮我做一个能本地打开点着看流程变化和超时异常分支的网页存到 out/explainer.html，随时能查回原文。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "针对已有规格制作一次性可探索讲解网页（L3），不是发明新产品交互原型。",
+        "minimalCounterexample": "为尚未决定的结算页做 2 个可点击新交互方案比较体验属于新产品原型制作，而非解释已有材料。",
+        "allowedVariance": "正例无需点名 Skill；负例指首次主入口。"
+      }
+    },
+    {
+      "id": "bespoke_explainer_video",
+      "split": "validation",
+      "tags": ["boundary", "positive"],
+      "input": {
+        "query": "帮我把这份一致性协议做成一个 3b1b 风格的动画讲解视频，最好配个旁白，让我看一遍就能彻底懂。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "命中 L4 定制讲解视频与工具/成本预检流程。",
+        "minimalCounterexample": "仅询问 ffmpeg 某条命令行参数语法属于普通工具问答。",
+        "allowedVariance": "正例无需点名 Skill；负例指首次主入口。"
+      }
+    },
+    {
+      "id": "simple_one_liner",
+      "split": "validation",
+      "tags": ["boundary", "negative"],
+      "input": {
+        "query": "HTTP 429 是什么意思？一句话告诉我。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "单句常识解释，不应触发复杂呈现技能。",
+        "minimalCounterexample": "需讲清一套含多级配额、退避窗口与失败恢复的复杂限流规格时应触发。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    },
+    {
+      "id": "new_product_prototype",
+      "split": "validation",
+      "tags": ["boundary", "negative", "near-miss"],
+      "input": {
+        "query": "我们还没决定新版订阅结算页怎么布局，做两个可点击的交互候选方案放进切换器里让我试玩后拍板。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "为未定产品行为制作新候选体验以形成决定，属于原型设计而非解释已有材料。",
+        "minimalCounterexample": "把已写好的两份计费规则文档做成可视化后果对照帮我读懂属于 explain-clearly。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    },
+    {
+      "id": "code_history_investigate",
+      "split": "validation",
+      "tags": ["boundary", "negative", "near-miss"],
+      "input": {
+        "query": "查一下源码和 git 历史，搞清楚 retryLimit 当初为什么设成 3，不要改代码。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "查证源码机制与历史动机属于代码调查任务，而非面向人的复杂材料呈现。",
+        "minimalCounterexample": "已有一份冗长调查报告看不懂、需要画图或做交互讲解页呈现时再辅助使用 explain-clearly。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    },
+    {
+      "id": "production_frontend_ui",
+      "split": "validation",
+      "tags": ["boundary", "negative", "near-miss"],
+      "input": {
+        "query": "帮我按现有设计系统重构我们 SaaS 产品的定价页和导航栏，并打磨移动端响应式细节。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "生产级界面设计与实现属于前端工程任务，而非一次性讲解工件。",
+        "minimalCounterexample": "把现有复杂定价规则规格做成一次性离线讲解网页供内部理解属于 explain-clearly。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    },
+    {
+      "id": "agent_prompt_authoring",
+      "split": "validation",
+      "tags": ["boundary", "negative", "near-miss"],
+      "input": {
+        "query": "重构仓库根目录的 AGENTS.md 和系统 Prompt，减少模型漏读规则和上下文噪音。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "面向 Agent 的指令与上下文工程不属于面向人类读者的理解呈现。",
+        "minimalCounterexample": "把复杂技术方案整理给人类读者理解属于 explain-clearly。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    },
+    {
+      "id": "independent_review_verdict",
+      "split": "validation",
+      "tags": ["boundary", "negative", "near-miss"],
+      "input": {
+        "query": "只读审查这份架构改动和 PR diff，检查并发竞态和权限漏洞，按严重度输出 finding。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "独立只读质量裁决与缺陷查证不属于材料解释任务。",
+        "minimalCounterexample": "已有复杂审查报告需要重排成易懂的讲解视图时再辅助使用 explain-clearly。",
+        "allowedVariance": "负例指首次主入口。"
+      }
+    }
+  ]
+}

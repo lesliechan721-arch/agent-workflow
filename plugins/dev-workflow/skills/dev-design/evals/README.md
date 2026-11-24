@@ -15,7 +15,7 @@
 
 ## 运行前提
 
-`strict` 会按被测 Skill 与 `suite.participants` 选择运行时能力；准备目录存在某个 Skill 不代表运行时仍可见。Spec 的用例声明 `explain-for-review`，独立编写不借 Design 取得方法。参与列表表示可用能力，不要求每个用例全部加载；触发用例只判断被测入口是否加载，不推断首次入口、独立性或最终质量。
+`strict` 会按被测 Skill 与 `suite.participants` 选择运行时能力；准备目录存在某个 Skill 不代表运行时仍可见。Spec 的用例声明 `explain-clearly`，独立编写不借 Design 取得方法。参与列表表示可用能力，不要求每个用例全部加载；触发用例只判断被测入口是否加载，不推断首次入口、独立性或最终质量。
 
 只读和因缺口停止的 conversation 使用 `workspaceUnchanged: false` 与 `allowedWorkspaceChanges: []`：提供可写工具，但拒绝任何最终业务文件变化。还须查看实际工具轨迹中的写入尝试，最终快照不能单独证明主动只读。写入用例提供明确目标、必要的本地忽略条件及实际 artifact；已存在文件还须核对其语义，不以存在性代替任务完成。
 
