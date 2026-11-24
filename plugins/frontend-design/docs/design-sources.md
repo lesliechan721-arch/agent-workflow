@@ -1,22 +1,22 @@
 # Frontend Design 来源与取舍
 
-以下记录供阅读和维护本技能时参考，不属于执行流程或运行依赖。原查阅记录日期：2026-10-15。`main` 链接会变化，维护时需重新核对适用内容；执行前端任务不要求读取这些上游材料，也不自动执行上游脚本。
+以下记录供阅读和维护本技能时参考，不属于执行流程或运行依赖。最近核对日期：2026-11-24。`main` 链接可能变化，维护时需重新核对适用内容；执行前端任务不要求读取这些上游材料，也不自动执行上游脚本。
 
 ### 设计方法参考
 
-| 来源 | 本技能采用的判断 | 不直接继承的控制 |
+| 来源 | 本技能采用的机制与判断 | 不直接继承的耦合与控制 |
 | --- | --- | --- |
-| [Anthropic Frontend Design](https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md) | 从主题、真实内容和受众选择视觉方向；排版、构图与表现重点相互支持 | 不把审美偏好、固定调色数量或特定排版禁例变成所有任务的硬规则 |
-| [Taste Skill 旧版实验入口](https://github.com/Leonxlnx/taste-skill/blob/main/skills/taste-skill-v2-experimental/SKILL.md) | 先解释任务、区分保留与重做、检查依赖和状态；区分真实设计系统与风格借鉴 | 该入口自述为保留旧行为的实验版本，不能代表当前默认版本；不继承固定旋钮、默认框架、图标库、字体或调色禁用表 |
-| [Emil Design Engineering](https://github.com/emilkowalski/skills/blob/main/skills/emil-design-eng/SKILL.md) | 按使用频率判断动效、及时反馈、空间来源、一致状态及中断体验 | 不要求统一 Before/After 格式、所有按钮缩放、所有键盘动作绝对禁动或固定库 API；性能与兼容性结论需要实际证据 |
-| [Impeccable 主技能](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/SKILL.md) | 按页面用途区分表达与工作效率；保留既有视觉依据；条件读取；验证真实结果而非意图 | 不复制多命令入口、context 二进制、hooks、自动文档、候选抽选或固定检查轮次；保持一个可独立使用的技能 |
+| [Anthropic Frontend Design](https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md) | 5 类高频 AI 视觉默认皮警戒；两阶段方向契约与写码前反默认自检；“把大胆花在一处”与临门减法；用户视角、主动动词与一致词义的界面文案 | 不把特定审美倾向变成覆盖用户 brief 的硬规定 |
+| [Taste Skill](https://github.com/Leonxlnx/taste-skill/blob/main/skills/taste-skill/SKILL.md) | 按业务形态匹配视觉载体（场所与实体产品重实景、软件重真实产品界面、技术特效限技术/游戏/创意主题）；基于真实浏览器的结果核查 | 不继承 Stop hook、本地门禁脚本、固定单屏章节模板、外链搜图工具或固定框架要求 |
+| [Emil Design Engineering](https://github.com/emilkowalski/skills/blob/main/skills/emil-design-eng/SKILL.md) | 动效频率表（100+/天与快捷键 0ms 禁动）；常规 UI `<300ms`、强 `ease-out`（默认避 `ease-in`）与退快于进；`scale(0.95)+opacity:0`、浮层 `transform-origin`、可中断用 `transition`、触屏 `@media (hover: hover) and (pointer: fine)`、Tooltip 连续悬停与拖拽避改父级继承 CSS 变量 | 不强制所有评审锁死统一 Before/After 表格、所有按钮一律缩放或绑定特定动画库 API；性能结论仍须实测 |
+| [Impeccable 主技能](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/SKILL.md) | 4 种页面模式对立工程默认（说服、操作、阅读、作品）；展示/作品绿地页先方向确认再写码；4 种色彩策略与光照场景定明暗；Craft Floor 具象红灯与浏览器表面细节；停稳动画后的批量渲染核查与批量修复复验 | 不复制 20+ 子命令入口、二进制 launcher、hooks、强制 `PRODUCT.md`/`DESIGN.md`、随机抽选器或生图流水线；保持零运行依赖的单技能 |
 
-Impeccable 的相关分支包括 [new-work](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/new-work.md) 的保留、扩展与重做边界，以及 [craft-floor](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/craft-floor.md) 和 [operate](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md) 的检查对象与工作型界面判断。本技能不是上游的翻译、副本或命令兼容实现，不分发其脚本、字体、图像或模板。
+Impeccable 重点参考分支包括 [new-work](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/new-work.md)、[craft-floor](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/craft-floor.md)、[operate](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md)、[mode-persuade](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/mode-persuade.md) 与 [mode-read](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/mode-read.md)。本技能不是上游的翻译、副本或命令兼容实现，不分发其脚本、二进制、字体、图像或模板。
 
-### 规范与经验分开
+### 规范与默认启发分开
 
-对比度、重排和目标尺寸依据 W3C 的 WCAG 2.2 解释页；各主题 reference 在规则附近链接具体条款，保留级别、单位和例外。模态交互依据 WAI-ARIA APG 模式。解释页帮助理解，完整符合性仍以适用规范和实际覆盖为准。
+对比度、重排、最小目标尺寸、拖拽与手势替代及键盘可达性依据 W3C 的 WCAG 2.2 解释页，并在 [交互、动效与可访问性条款](../skills/frontend-design/references/interaction-and-motion.md) 中集中给出精确条款、级别、单位与例外；模态及复合控件行为依据 WAI-ARIA APG 模式。解释页用于执行判断，完整合规仍以适用规范与实测覆盖为准。
 
-字体选择、行长起点、间距尺度、表达强度和动效时长属于设计启发，不是通用标准。对第三方技能中的强制偏好、示例参数或简化性能解释，保留其适用判断，不推导成无条件限制。需要复用任何上游原文、代码或资产时另行核对其当前许可证与署名要求。
+反模板红灯、展示字体警戒、字阶起点、行长区间、色彩策略与动效默认曲线属于**高杠杆默认启发**——它们在用户未指定的自由轴上生效，用于对抗模型默认平庸输出；一旦用户、brief 或既有设计系统明确指定了不同方向，以明确约束为准。复用任何上游原文、代码或资产时需另行核对其许可证与署名要求。
 
-本技能采用单入口、无强制运行依赖、条件参考和证据边界；这些安排属于本技能自身的设计，不代表上游技能的原始合同。
+本技能采用单入口、零强制运行依赖、0 跳核心加 3 份单跳真分支参考和集中证据边界；这些架构取舍属于本技能自身设计，不代表上游技能的原始合同。

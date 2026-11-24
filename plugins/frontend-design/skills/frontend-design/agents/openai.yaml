@@ -1,6 +1,6 @@
 interface:
   display_name: "Frontend Design"
-  short_description: "为网页和产品界面选择视觉方向，完善布局、响应式与交互细节"
-  default_prompt: "使用 $frontend-design 完成当前前端设计任务，保留已有约束，并报告实际验证结果。"
+  short_description: "按页面模式探索视觉方向，打磨排版布局、交互动效并核查真实渲染"
+  default_prompt: "使用 $frontend-design 完成当前前端设计任务：按页面用途选择模式与工艺，必要时先确认视觉方向，保留既有约束并报告实际验证结果。"
 policy:
   allow_implicit_invocation: true
