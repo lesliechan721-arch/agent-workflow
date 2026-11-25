@@ -300,7 +300,7 @@ async function apiRequest(started, pathname, options = {}) {
   });
 }
 
-async function fakeSystemOpener(name, delayMs = 0, exitCode = 0) {
+async function fakeSystemOpener(name, delayMs = 0, exitCode = 0, { waitForRelease = false } = {}) {
   if (!['darwin', 'linux'].includes(process.platform)) return null;
   if (process.platform === 'linux') {
     for (const marker of ['/.dockerenv', '/run/.containerenv']) {
@@ -314,16 +314,25 @@ async function fakeSystemOpener(name, delayMs = 0, exitCode = 0) {
   }
   const bin = path.join(testRoot, `fake-opener-${name}`);
   const countPath = path.join(bin, 'requests.txt');
+  const releasePath = path.join(bin, 'release');
   const executable = path.join(bin, process.platform === 'darwin' ? 'open' : 'xdg-open');
   await mkdir(bin, { recursive: true });
   await writeFile(executable, `#!${process.execPath}\n`
-    + "const { appendFileSync } = require('node:fs');\n"
+    + "const { appendFileSync, existsSync } = require('node:fs');\n"
     + "const delay = Number(process.env.FAKE_OPEN_DELAY_MS || '0');\n"
     + "const exitCode = Number(process.env.FAKE_OPEN_EXIT_CODE || '0');\n"
-    + "setTimeout(() => { appendFileSync(process.env.FAKE_OPEN_COUNT, 'request\\n'); process.exit(exitCode); }, delay);\n");
+    + "if (process.env.FAKE_OPEN_RELEASE) {\n"
+    + "  appendFileSync(process.env.FAKE_OPEN_COUNT, 'request\\n');\n"
+    + "  const deadline = Date.now() + 6000;\n"
+    + "  setInterval(() => {\n"
+    + "    if (existsSync(process.env.FAKE_OPEN_RELEASE)) process.exit(exitCode);\n"
+    + "    if (Date.now() >= deadline) process.exit(2);\n"
+    + "  }, 20);\n"
+    + "} else setTimeout(() => { appendFileSync(process.env.FAKE_OPEN_COUNT, 'request\\n'); process.exit(exitCode); }, delay);\n");
   await chmod(executable, 0o700);
   return {
     countPath,
+    releasePath,
     env: {
       ...runtimeEnv,
       PATH: bin,
@@ -338,6 +347,7 @@ async function fakeSystemOpener(name, delayMs = 0, exitCode = 0) {
       FAKE_OPEN_COUNT: countPath,
       FAKE_OPEN_DELAY_MS: String(delayMs),
       FAKE_OPEN_EXIT_CODE: String(exitCode),
+      FAKE_OPEN_RELEASE: waitForRelease ? releasePath : '',
     },
   };
 }
@@ -877,7 +887,7 @@ test('concurrent open commands share one request, observe connection, and allow 
 });
 
 test('a concurrent open stays pending until the shared opener result is known', async (t) => {
-  const fake = await fakeSystemOpener('open-pending-failure', 250, 1);
+  const fake = await fakeSystemOpener('open-pending-failure', 0, 1, { waitForRelease: true });
   if (!fake) {
     t.skip('The host cannot qualify a fake executable as a natural desktop opener');
     return;
@@ -889,20 +899,29 @@ test('a concurrent open stays pending until the shared opener result is known', 
   const owner = runRuntimeFailure([
     'open', '--session', started.session, '--timeout', '1s',
   ], 1, fake.env);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const shared = parseReceipt((await runRuntime([
-    'open', '--session', started.session, '--timeout', '50ms',
-  ], fake.env)).stdout);
-  assert.equal(shared.status, 'opening');
-  assert.equal(shared.presentation.pageConnected, false);
-
-  const ownerFailure = await owner;
-  assert.equal(parseReceipt(ownerFailure.stdout).status, 'failed');
+  let ownerFailure;
+  try {
+    await waitForOpenRequest(fake.countPath, 1);
+    const shared = parseReceipt((await runRuntime([
+      'open', '--session', started.session, '--timeout', '50ms',
+    ], fake.env)).stdout);
+    assert.equal(shared.status, 'opening');
+    assert.equal(shared.presentation.pageConnected, false);
+    assert.equal(await openRequestCount(fake.countPath), 1);
+  } finally {
+    await writeFile(fake.releasePath, 'release');
+    ownerFailure = await owner;
+  }
+  const ownerReceipt = parseReceipt(ownerFailure.stdout);
+  assert.equal(ownerReceipt.status, 'failed');
+  assert.match(ownerReceipt.reason, /exit 1/u);
   assert.equal(await openRequestCount(fake.countPath), 1);
   const repeatedFailure = await runRuntimeFailure([
     'open', '--session', started.session, '--timeout', '0ms',
   ], 1, fake.env);
-  assert.equal(parseReceipt(repeatedFailure.stdout).status, 'failed');
+  const repeatedReceipt = parseReceipt(repeatedFailure.stdout);
+  assert.equal(repeatedReceipt.status, 'failed');
+  assert.equal(repeatedReceipt.reason, ownerReceipt.reason);
   assert.equal(await openRequestCount(fake.countPath), 1);
   await stopIfActive(started.session);
 });
