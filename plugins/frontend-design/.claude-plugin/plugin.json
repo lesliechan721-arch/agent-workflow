@@ -1,6 +1,6 @@
 {
   "name": "frontend-design",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "description": "面向网页与产品界面的前端设计与实现，涵盖页面模式工艺、反模板方向探索、交互动效、只读诊断与真实渲染核查。",
   "interface": {
     "displayName": "Frontend Design",

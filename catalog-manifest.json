@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.82",
+  "catalogVersion": "0.1.0-beta.83",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "c2a337c652c57abb648d369c291c1b006374660e"
+    "sourceHead": "cd51fe646772d26a9464d4cf19e415bb268c259b"
   },
   "entries": [
     {
@@ -445,7 +445,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.8",
+      "version": "0.1.0-beta.9",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -456,9 +456,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:5a32dac856c5a41f86848a320dfe5c3d12015ef581592a0371400ec84ef2775e",
-      "manifestDigest": "sha256:1ec84befe1b12553efd93b1d411e07c3fb80566a343246bbbf6691db36c69892",
-      "contentDigest": "sha256:4c10b189e34733ac33891cc8a596eeefe3d714bdd87463fed0cfaf457daf02d3"
+      "artifactDigest": "sha256:464e49803a63e1fb0f381a3cd84cdf19e01425d1377effbba933f7ea8956b9fa",
+      "manifestDigest": "sha256:1da4880d28d5cda3e74d429f2335410a921272df5da84615ef3d5dc8a0ef30d1",
+      "contentDigest": "sha256:0bcf17189978e1d11df16b59d3efd3c19c4e953cb3a82e6d315f940de71081a5"
     },
     {
       "name": "git-toolkit",
