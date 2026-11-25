@@ -473,6 +473,11 @@ export function validateManagedCommandManifest(manifest: NormalizedPluginManifes
     if (!manifest.scripts?.artifacts?.render) {
       throw new Error('Invalid command: dynamic routes require scripts.artifacts.render.');
     }
+    const config = manifest.config;
+    if (config?.schemaVersion === 5 && command.refreshKeys.some((key) => config.fields[key]?.platformOnly === true
+      || Object.values(config.platforms ?? {}).some((profile) => profile.fields[key]?.platformOnly === true))) {
+      throw new Error('Invalid command.refreshKeys: platformOnly config keys are not permitted.');
+    }
     validateKeys(command.refreshKeys, 'command.refreshKeys');
   }
   if (command?.runtimeConfig) {

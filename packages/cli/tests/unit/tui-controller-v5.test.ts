@@ -4064,7 +4064,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
 
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
-      title: 'invalid · 设置值无效',
+      title: 'invalid · Codex · 设置值无效',
       configLayer: { profile: 'codex', context: 'project' },
       requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'platform', scope: 'project', platform: 'codex' }],
       diagnostic: {

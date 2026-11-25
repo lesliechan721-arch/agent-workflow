@@ -117,7 +117,7 @@ describe('codex-config', () => {
   });
 
   it('composes multiple managed instruction fragments in a stable artifact-id order', () => {
-    const left = composeManagedDeveloperInstructionsBlock('codex-explore', [
+    const left = composeManagedDeveloperInstructionsBlock('fixture-research', [
       {
         artifactId: 'role-guidance',
         value: 'Use the built-in explorer role.',
@@ -127,7 +127,7 @@ describe('codex-config', () => {
         value: 'Spawn read-only explorers for code search.',
       },
     ]);
-    const right = composeManagedDeveloperInstructionsBlock('codex-explore', [
+    const right = composeManagedDeveloperInstructionsBlock('fixture-research', [
       {
         artifactId: 'lightweight-instruction',
         value: 'Spawn read-only explorers for code search.',
@@ -156,23 +156,23 @@ describe('codex-config', () => {
       '',
     ].join('\n');
 
-    const next = upsertCodexAgentRegistration(input, 'codex-explorer', {
-      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+    const next = upsertCodexAgentRegistration(input, 'fixture-researcher', {
+      configFile: 'agents/aw-fixture-research-fixture-researcher.toml',
       description: 'Codex explorer role',
     });
 
-    expect(next).toContain('[agents.codex-explorer]');
-    expect(next).toContain('config_file = "agents/aw-codex-explore-codex-explorer.toml"');
+    expect(next).toContain('[agents.fixture-researcher]');
+    expect(next).toContain('config_file = "agents/aw-fixture-research-fixture-researcher.toml"');
     expect(next).toContain('description = "Codex explorer role"');
     expect(next).toContain('[plugins."other@aw"]');
-    expect(parseCodexConfig(next).agents['codex-explorer']).toEqual({
-      key: 'codex-explorer',
-      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+    expect(parseCodexConfig(next).agents['fixture-researcher']).toEqual({
+      key: 'fixture-researcher',
+      configFile: 'agents/aw-fixture-research-fixture-researcher.toml',
       description: 'Codex explorer role',
     });
 
-    const removed = removeCodexAgentRegistration(next, 'codex-explorer');
-    expect(removed).not.toContain('[agents.codex-explorer]');
+    const removed = removeCodexAgentRegistration(next, 'fixture-researcher');
+    expect(removed).not.toContain('[agents.fixture-researcher]');
     expect(removed).toContain('[plugins."other@aw"]');
     expect(parseCodexConfig(removed).agents).toEqual({});
   });
@@ -372,12 +372,12 @@ describe('codex-config', () => {
 
     const result = await applyCodexConfigTransactionFile(configPath, {
       upsertManagedInstructionBlock: {
-        pluginName: 'codex-explore',
+        pluginName: 'fixture-research',
         value: 'Use the built-in explorer role.',
       },
       upsertAgentRegistrations: {
-        'codex-explorer': {
-          configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+        'fixture-researcher': {
+          configFile: 'agents/aw-fixture-research-fixture-researcher.toml',
           description: 'Codex explorer role',
         },
       },
@@ -385,13 +385,13 @@ describe('codex-config', () => {
 
     expect(result.baselineContent).toBe(baselineContent);
     expect(result.wrote).toBe(true);
-    expect(result.snapshot.developerInstructions.managedBlocks['codex-explore']).toEqual({
-      pluginName: 'codex-explore',
+    expect(result.snapshot.developerInstructions.managedBlocks['fixture-research']).toEqual({
+      pluginName: 'fixture-research',
       value: 'Use the built-in explorer role.\n',
     });
-    expect(result.snapshot.agents['codex-explorer']).toEqual({
-      key: 'codex-explorer',
-      configFile: 'agents/aw-codex-explore-codex-explorer.toml',
+    expect(result.snapshot.agents['fixture-researcher']).toEqual({
+      key: 'fixture-researcher',
+      configFile: 'agents/aw-fixture-research-fixture-researcher.toml',
       description: 'Codex explorer role',
     });
     await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(result.content);

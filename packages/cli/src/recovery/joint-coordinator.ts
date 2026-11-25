@@ -33,6 +33,7 @@ import { executeJointInstall } from './joint-install-execution.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { isInstallConfigBlocked } from '../utils/plugin-config-diagnostics.js';
 
 export interface JointRecoveryState {
   snapshot: JointDemandSnapshot;
@@ -85,6 +86,7 @@ function matchesExactContribution(placement: JointPlacement, contribution: Deman
     && reaches(contribution.root, exact.pluginId) && reaches(exact.pluginId, placement.pluginId);
 }
 function useDeclaredRetryRoots(receipt: RecoveryReceipt): void {
+  const configBlockedInstall = isInstallConfigBlocked(receipt);
   const status = `aw plugin status --context ${recoveryStatusContext(receipt)} --json`;
   const results = new Map(receipt.targetResults.map((target) => [targetKey(target), target]));
   const pending = new Set(receipt.remainingTargets.map(targetKey));
@@ -96,6 +98,7 @@ function useDeclaredRetryRoots(receipt: RecoveryReceipt): void {
     const prefix = action.slice(0, match.index);
     if (prefix && !/(?:^|\s)run $|然后重试 $/iu.test(prefix)) return [action];
     const context = prefix.replace(/(?:then run |run |然后重试 )$/iu, '').trimEnd();
+    if (configBlockedInstall) return [context ? `${context} 修复配置后重新执行原安装请求。` : '修复配置后重新执行原安装请求。'];
     const target = results.get([match[1], match[3] ?? match[4], match[2] ?? match[5]].join('\0'));
     if (!target || !pending.has(targetKey(target))) return context ? [context] : [];
     const dispositions = recoveryRetryDispositions(receipt, [target]);
@@ -1041,6 +1044,14 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     plan.warnings.push(...children.flatMap((child) => child.warnings));
     plan.plannedImpact.outputs = children.some((child) => child.plannedImpact.outputs);
     plan.receipt = mergeReceipts(plan, children.map((child) => child.receipt));
+    if (isInstallConfigBlocked(plan.receipt)) {
+      // Do not commit proposed requirements (or activate a first-install source)
+      // when no selected deployment can proceed until configuration is repaired.
+      plan.blockExecution = true;
+      plan.plannedImpact.declaration = false;
+      plan.plannedImpact.outputs = false;
+      plan.changes = [];
+    }
     if (retriesFromRequestedRoots(plan.receipt) && plan.receipt.remainingTargets.length) useDeclaredRetryRoots(plan.receipt);
     const observedManager = children.flatMap((child) => child.nativeGroups)
       .map((group) => group.preview.codexManagerPreview)

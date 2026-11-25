@@ -8,14 +8,22 @@
       "platform": "codex",
       "scope": "project",
       "plugins": {
-        "agent-subagent": {}
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        }
       }
     },
     "project-dev-build": {
       "platform": "codex",
       "scope": "project",
       "plugins": {
-        "agent-subagent": {},
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        },
         "dev-workflow": {}
       }
     },
@@ -23,7 +31,11 @@
       "platform": "codex",
       "scope": "user",
       "plugins": {
-        "agent-subagent": {}
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        }
       }
     },
     "project-nondefault": {
@@ -92,7 +104,10 @@
               "model": "gpt-6-astra",
               "reasoningEffort": "max"
             }
-          ]
+          ],
+          "generalTaskProfile": {
+            "executor": "native"
+          }
         }
       }
     },
@@ -100,8 +115,13 @@
       "platform": "codex",
       "scope": "project",
       "plugins": {
-        "agent-subagent": {},
-        "codex-enhance": {}
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        },
+        "agent-explore": {},
+        "agent-advisor": {}
       }
     }
   },

@@ -6,10 +6,15 @@ import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGr
 import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
-const roleSkills = { 'agent-subagent': { subagent: 'spawn-subagent/assets/task-instructions.md' },
-  'codex-enhance': { 'codex-explore': 'codex-explore/assets/explore-instructions.md',
-    'codex-advisor': 'codex-advisor/assets/advisor-instructions.md' } };
-export const shippedRoles = Object.fromEntries(Object.entries(roleSkills).map(([plugin, roles]) => [plugin, Object.keys(roles).sort()]));
+// Candidate plugins own no native roles (all three deliver Skills and/or main-session instructions only).
+const candidateRoleSkills = { 'agent-subagent': {},
+  'agent-explore': {}, 'agent-advisor': {} };
+export const shippedSkills = { 'agent-subagent': 'spawn-subagent', 'agent-explore': 'explore-facts', 'agent-advisor': 'consult-advisor' };
+// Immutable historical beta.76 source, bound to the digest below; not a current plugin set.
+const frozenRoleSkills = { 'agent-subagent': { subagent: 'skills/spawn-subagent/assets/task-instructions.md' },
+  'codex-enhance': { 'codex-explore': 'skills/codex-explore/assets/explore-instructions.md',
+    'codex-advisor': 'skills/codex-advisor/assets/advisor-instructions.md' } };
+export const shippedRoles = Object.fromEntries(Object.entries(candidateRoleSkills).map(([plugin, roles]) => [plugin, Object.keys(roles).sort()]));
 export const rolePlatform = platform => !['generic', 'opencode'].includes(platform);
 
 async function readGrokPersonalCopies(ctx, providers) {
@@ -117,6 +122,11 @@ export async function qualifyProjectDependencies(ctx, report) {
 }
 
 export async function qualifyCatalog(ctx, report, catalog, frozen) {
+  const roleSkills = frozen ? frozenRoleSkills : candidateRoleSkills;
+  const seedBaseline = async () => {
+    if (ctx.platform !== 'generic') await ctx.aw(['plugin', 'config', 'set', `${catalogId}/agent-subagent`,
+      'generalTaskProfile', '--platform', ctx.platform, '--value-json', '{"executor":"native"}']);
+  };
   const snapshot = await fs.readFile(path.join(catalog, 'catalog-manifest.json'));
   const metadata = JSON.parse(snapshot);
   const label = frozen ? 'frozen' : 'candidate';
@@ -138,9 +148,10 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     entry.dependencies.map(name => name.includes('/') ? name : catalogId + '/' + name));
   await ctx.aw(['source', 'add', catalogId, '--path', local, '--primary', '--no-auto-check', '--yes']);
   await ctx.aw(['source', 'sync', catalogId, '--yes']);
+  if (!frozen) await seedBaseline();
   const active = JSON.parse(await fs.readFile(path.join(ctx.env.AW_HOME, 'catalog-state.json'), 'utf8')).sources[catalogId].active;
   report.catalog = { kind: label, version: metadata.catalogVersion, manifestSha256: sha256(snapshot), active,
-    config: 'isolated defaults', plugins: Object.fromEntries(Object.keys(roleSkills).map(name => {
+    config: frozen ? 'isolated historical defaults' : 'isolated host-default baseline', plugins: Object.fromEntries(Object.keys(roleSkills).map(name => {
       const plugin = metadata.entries.find(entry => entry.name === name);
       return [name, { version: plugin.version, artifactDigest: plugin.artifactDigest }];
     })) };
@@ -199,7 +210,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     const gaps = installedTarget.componentGaps ?? [];
     if (frozen && ctx.platform !== 'codex' && (plugin === 'codex-enhance' || ctx.platform !== 'claude')) {
       const missingSkills = gaps.filter(gap => gap.providerPluginId === id && gap.kind === 'skill');
-      const names = plugin === 'agent-subagent' ? ['spawn-subagent'] : shippedRoles[plugin];
+      const names = plugin === 'agent-subagent' ? ['spawn-subagent'] : Object.keys(roles).sort();
       assert.deepEqual(missingSkills.map(gap => gap.name).sort(), names);
       assert(missingSkills.every(gap => gap.reasonCode === 'dependency-unmet' && !gap.requiredFeatures.length));
     }
@@ -211,7 +222,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
       const gap = roleGaps.find(row => row.name === name);
       if (expectRoles) {
         assert(!gap, id + '/' + name + ' cannot be counted solely as a gap');
-        const prompt = await fs.readFile(path.join(catalog, entry.source, 'skills', sourcePath), 'utf8');
+        const prompt = await fs.readFile(path.join(catalog, entry.source, sourcePath), 'utf8');
         const file = nativePath(ctx, { id }, 'agent', packageRoot, name);
         // A TOML string escapes newlines. The authored first line identifies the
         // role while the stored digest identifies the complete installed bytes.
@@ -226,7 +237,24 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
         }
       }
     }
-    report.catalog.plugins[plugin] = { version: entry.version, artifactDigest: entry.artifactDigest, installed,
+    let skills;
+    if (!frozen) {
+      const name = shippedSkills[plugin];
+      assert(!gaps.some(gap => gap.providerPluginId === id && gap.kind === 'skill'));
+      assert.equal(roleGaps.length, expectRoles ? 0 : Object.keys(roles).length);
+      skills = [await readInstalled(ctx, nativePath(ctx, { id }, 'skill', packageRoot, name), name)];
+      if (plugin !== 'agent-subagent') {
+        const trigger = `${name}-trigger`;
+        const instructionGaps = gaps.filter(gap => gap.providerPluginId === id && gap.kind === 'instruction');
+        assert.deepEqual(instructionGaps, [], `${id}: native instruction cannot be unmet`);
+        // Generic deliberately omits its trigger. Other platforms publish it through the native package or supplement.
+        if (ctx.platform !== 'generic') {
+          const text = await fs.readFile(path.join(catalog, entry.source, 'shared/trigger-instruction.md'), 'utf8');
+          skills.push(await readInstalled(ctx, nativePath(ctx, { id }, 'instruction', packageRoot, trigger), text.trim().split(/\r?\n/u)[0]));
+        }
+      }
+    }
+    report.catalog.plugins[plugin] = { version: entry.version, artifactDigest: entry.artifactDigest, installed, ...(skills ? { skills } : {}),
       gaps: gaps.filter(gap => gap.providerPluginId === id).map(({ id, kind, name, reasonCode }) => ({ id, kind, name, reasonCode })) };
   }
   if (frozen && ctx.platform === 'pi') {
@@ -234,32 +262,40 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     const retained = path.join(ctx.root, 'old-publication');
     const requirements = installation.value.data.requirements.roots;
     assert.deepEqual([...requirements].sort(), [...ids].sort());
+    // Withdraw the retired root while its historical Catalog is still available. The candidate has no alias.
+    const retiredId = ids.find(id => !id.endsWith('/agent-subagent'));
+    const withdrawal = await baseline(['plugin', 'remove', retiredId, '--only', 'requirements', '--scope', ctx.scope, '--yes']);
+    assert.equal(withdrawal.exitCode, 0);
     await fs.rename(local, retained);
     await fs.cp(catalogCandidate, local, { recursive: true });
-    // Keep this private path source and its on-disk identity fixed across the
-    // change, so the original requirements are the inputs to an ordinary sync.
     await fs.copyFile(path.join(retained, '.aw-generated.json'), marker);
     await ctx.aw(['source', 'sync', catalogId, '--yes']);
-    const refresh = await ctx.aw(['plugin', 'sync', ...ids, '--context', ctx.scope, '--target', 'pi', '--yes']);
+    await seedBaseline();
+    const refresh = await ctx.aw(['plugin', 'sync', `${catalogId}/agent-subagent`, '--context', ctx.scope, '--target', 'pi', '--yes']);
     assert.deepEqual(refresh.data.remainingTargets, []);
+    await ctx.aw(['plugin', 'install', `${catalogId}/agent-explore`, `${catalogId}/agent-advisor`, '--scope', ctx.scope, '--target', 'pi', '--yes']);
     const current = await ctx.aw(['plugin', 'status', '--context', ctx.scope]);
     checkSettled(current);
     const candidateManifest = JSON.parse(await fs.readFile(path.join(local, 'catalog-manifest.json'), 'utf8'));
     const currentActive = JSON.parse(await fs.readFile(path.join(ctx.env.AW_HOME, 'catalog-state.json'), 'utf8')).sources[catalogId].active;
     assert.notEqual(currentActive.snapshotDigest, active.snapshotDigest);
     report.upgrade = { command: refresh.command, status: refresh.status, active: currentActive, plugins: {} };
-    for (const [plugin, roles] of Object.entries(roleSkills)) {
+    for (const [plugin, roles] of Object.entries(candidateRoleSkills)) {
       const entry = candidateManifest.entries.find(entry => entry.name === plugin);
-      assert.notEqual(entry.artifactDigest, report.catalog.plugins[plugin].artifactDigest);
+      if (plugin === 'agent-subagent') assert.notEqual(entry.artifactDigest, report.catalog.plugins[plugin].artifactDigest);
       const id = catalogId + '/' + plugin;
       const target = targetOf(current, ctx, id);
       const directory = nativePackage(target);
       const installed = [];
       for (const [name, sourcePath] of Object.entries(roles)) {
-        const prompt = await fs.readFile(path.join(local, entry.source, 'skills', sourcePath), 'utf8');
-        const file = nativePath(ctx, { id }, 'agent', directory, name);
-        installed.push({ name, ...await readInstalled(ctx, file, prompt.trim().split(/\r?\n/u)[0]) });
+        const prompt = await fs.readFile(path.join(local, entry.source, sourcePath), 'utf8');
+        installed.push({ name, ...await readInstalled(ctx, nativePath(ctx, { id }, 'agent', directory, name), prompt.trim().split(/\r?\n/u)[0]) });
       }
+      if (plugin === 'agent-subagent') {
+        await assert.rejects(fs.stat(path.join(directory, 'agents', `aw-${catalogId}-${plugin}-subagent.md`)), { code: 'ENOENT' });
+      }
+      const skill = shippedSkills[plugin];
+      installed.push({ name: skill, ...await readInstalled(ctx, nativePath(ctx, { id }, 'skill', directory, skill), skill) });
       report.upgrade.plugins[plugin] = { version: entry.version, artifactDigest: entry.artifactDigest, installed };
     }
   }

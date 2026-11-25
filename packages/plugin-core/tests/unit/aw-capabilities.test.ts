@@ -54,6 +54,11 @@ describe('AW capability contracts', () => {
     expect(registry).not.toContain('aw.review-publication.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
+    expect(registry).toEqual(expect.arrayContaining([
+      'aw.plugin-config-suggestions.v2', 'aw.plugin-config-platform-only.v1',
+      'aw.plugin-config-clears-on-change.v1', 'aw.plugin-config-ref-override.v1',
+    ]))
+    expect(registry.filter((id) => id.startsWith('aw.plugin-config-suggestions.'))).toEqual(['aw.plugin-config-suggestions.v2'])
     expect(registry).toContain('aw.installed-runtime-config.v2')
     expect(registry).not.toContain('aw.installed-runtime-config.v1')
     expect(normalizeAwCapabilities([
@@ -313,6 +318,7 @@ describe('AW capability contracts', () => {
       'aw source status',
       'aw cache status',
       'aw plugin config get official/demo',
+      'aw plugin config suggestions official/demo',
       'aw command run official/demo -- tool --json',
       'aw plugin build demo',
       'aw catalog source sync',
@@ -323,7 +329,7 @@ describe('AW capability contracts', () => {
     const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
     expect(result.detected).toEqual([
       'aw.catalog-dev-source.v2', 'aw.catalog-source.v3', 'aw.cli-output.v2',
-      'aw.managed-commands.v2', 'aw.plugin-authoring.v2', 'aw.plugin-config.v2',
+      'aw.managed-commands.v2', 'aw.plugin-authoring.v2', 'aw.plugin-config-suggestions.v2', 'aw.plugin-config.v2',
       'aw.plugin-recovery.v2', 'aw.skill-eval.v3',
     ])
     expect(result.observations.filter((entry) => entry.code === 'aw-command-unmapped')

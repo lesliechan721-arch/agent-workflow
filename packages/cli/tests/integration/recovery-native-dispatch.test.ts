@@ -562,6 +562,74 @@ describe('native recovery dispatch', () => {
       }
     });
 
+  it.each(['unchanged', 'external edit'] as const)('revalidates Grok User rules after a partial install with %s', async (scenario) => {
+    installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    const catalog = path.join(cwd, 'catalog');
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    const rules = path.join(host, 'rules');
+    const firstRule = path.join(rules, 'aw-local-advisor-guide.md');
+    const secondRule = path.join(rules, 'aw-local-explore-guide.md');
+    const names = ['advisor', 'explore'];
+    for (const name of names) {
+      const skill = path.join(catalog, 'plugins', name, 'skills', name);
+      await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: Use ${name}.\n---\nUse ${name}.\n`);
+      await fs.outputFile(path.join(skill, 'README.md'), `Use ${name}.\n`);
+    }
+    await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({ name, configureManifest(manifest) {
+      manifest.platforms = ['grok'];
+      manifest.skills = './skills';
+      manifest.extensions = { instructions: [{ name: 'guide', title: 'Guide', content: `Use ${name}.`, coverage: ['main'] }] };
+    } })));
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: catalog }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['grok']);
+    let firstCompleted = false;
+    let edited = false;
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      let stdout: string;
+      if (args.includes('--version')) stdout = 'grok 1.0.77';
+      else if (args[0] === 'plugin' && args[1] === 'list') stdout = '[]';
+      else if (args[0] === 'inspect') {
+        if (scenario === 'external edit' && firstCompleted && !edited) {
+          const content = await fs.readFile(firstRule, 'utf8');
+          await fs.writeFile(firstRule, content.replace('Use advisor.', 'Use altered.'));
+          edited = true;
+        }
+        const files = await fs.pathExists(rules) ? await fs.readdir(rules) : [];
+        const projectInstructions = await Promise.all(files.map(async (file) => {
+          const rule = path.join(rules, file);
+          const sizeBytes = (await fs.stat(rule)).size;
+          return { path: rule, scope: 'global', fileType: 'rules', sizeBytes, approxTokens: Math.floor(sizeBytes / 4) };
+        }));
+        stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true, plugins: [], skills: [],
+          agents: [], hooks: [], mcpServers: [], projectInstructions });
+      } else throw new Error('Unexpected automatic Grok mutation: ' + JSON.stringify(args));
+      return { exitCode: 0, stdout, stderr: '' };
+    };
+    const result = await runRecovery('install', names.map((name) => 'local/' + name),
+      { cwd, env, cliVersion: '1.0.0', scope: 'user', context: 'user', targets: ['grok'], yes: true },
+      { nativeCliRunner, onInstallProgress: ({ completed }) => { if (completed === 1) firstCompleted = true; } });
+    const advisor = result.targetResults.find(({ pluginId }) => pluginId === 'local/advisor');
+    const explore = result.targetResults.find(({ pluginId }) => pluginId === 'local/explore');
+    expect(advisor?.execution).toBe('partial');
+    expect(advisor?.blockers.map(({ code }) => code)).toContain('nativeTrustRequired');
+    if (scenario === 'external edit') {
+      expect(edited).toBe(true);
+      expect(explore?.blockers.map(({ code }) => code)).toContain('operationPlanStale');
+      expect(await fs.readFile(firstRule, 'utf8')).toContain('Use altered.');
+      expect(await fs.pathExists(secondRule)).toBe(false);
+    } else {
+      expect(await fs.readFile(firstRule, 'utf8')).toContain('Use advisor.');
+      expect(explore?.execution).toBe('partial');
+      expect(explore?.blockers.map(({ code }) => code)).toContain('nativeTrustRequired');
+      expect(await fs.readFile(secondRule, 'utf8')).toContain('Use explore.');
+    }
+  });
+
   // A Grok User refresh changes the shared list even when a prior trust refusal
   // already published the new AW source. Its untouched neighbor stays a no-op.
   it.each(['trusted', 'retry after refusal', 'foreign registration', 'edited native copy'] as const)(

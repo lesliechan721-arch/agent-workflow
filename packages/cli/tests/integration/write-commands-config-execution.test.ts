@@ -1545,6 +1545,8 @@ describe('five namespaced write commands', () => {
 
   it('sets and unsets whole platform arrays, rejects v5 bytes, and recreates v6 after reset', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env },
+      { ...createEmptyPreferences(), targets: ['cursor'] });
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {

@@ -244,7 +244,7 @@ async function writeDynamicArtifactPlugin(
     platforms?: string[] | null;
   } = {},
 ): Promise<{ pluginDir: string; manifestPath: string }> {
-  const rendererRoleKey = options.rendererRoleKey ?? 'codex-explorer';
+  const rendererRoleKey = options.rendererRoleKey ?? 'fixture-researcher';
   return writeSourcePlugin(root, 'dynamic-authoring-test', createBaseManifest('dynamic-authoring-test', {
     ...(options.platforms === null ? {} : { platforms: options.platforms ?? ['codex'] }),
     skills: './skills',
@@ -260,7 +260,7 @@ async function writeDynamicArtifactPlugin(
       "const request = JSON.parse(sourceFs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
       'const components = [], omitted = [], unmet = [];',
       'const candidates = [{id:"lightweight-instruction",kind:"instruction",name:"lightweight-instruction",content:{title:"Read-only work",content:"Use the explorer for read-only work.",coverage:["main"]}},',
-      `{id:"codex-explorer-role",kind:"agent",${options.includeRoleKey === false ? '' : `name:${JSON.stringify(rendererRoleKey)},`}content:{description:"Read-only explorer.",prompt:"Read only. Do not edit files.",model:request.config.values.explorerModel}}];`,
+      `{id:"fixture-researcher-role",kind:"agent",${options.includeRoleKey === false ? '' : `name:${JSON.stringify(rendererRoleKey)},`}content:{description:"Read-only explorer.",prompt:"Read only. Do not edit files.",model:request.config.values.explorerModel}}];`,
       'for (const component of candidates) {',
       '  if (!request.allowedOutputKinds.includes(component.kind)) continue;',
       '  if (component.kind === "instruction" && !request.config.values.enableInstruction) { omitted.push({id:component.id,kind:component.kind,reason:"config-disabled"}); continue; }',

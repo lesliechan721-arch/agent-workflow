@@ -100,14 +100,14 @@ describe('shared plugin command author contract', () => {
   it('allows dynamic refresh keys from public common fields only', () => {
     const input = manifest({
       platforms: ['codex', 'claude'], scripts,
-      config: { schemaVersion: 5, fields: { mode: { type: 'string' }, secret: { type: 'string', sensitive: true } }, platforms: {
+      config: { schemaVersion: 5, fields: { mode: { type: 'string' }, secret: { type: 'string', sensitive: true }, perPlatform: { type: 'string', platformOnly: true } }, platforms: {
         codex: { fields: { mode: { type: 'string', sensitive: true }, codexOnly: { type: 'boolean' } } },
       } },
     });
     expect(() => validatePluginManifest('/plugin', {
       ...input, command: { ...dynamicCommand, refreshKeys: ['mode'] },
     })).not.toThrow();
-    for (const [key, error] of [['secret', /sensitive/u], ['codexOnly', /unknown config key/u]] as const) {
+    for (const [key, error] of [['secret', /sensitive/u], ['codexOnly', /unknown config key/u], ['perPlatform', /platformOnly/u]] as const) {
       expect(() => validatePluginManifest('/plugin', {
         ...input, command: { ...dynamicCommand, refreshKeys: [key] },
       })).toThrow(error);

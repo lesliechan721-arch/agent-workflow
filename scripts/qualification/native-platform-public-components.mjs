@@ -34,7 +34,7 @@ const pairPrerequisites = new Map([
   ['grok-rule-pair', 'single-instruction'],
 ]);
 const componentCommands = new Set(['target.set', 'source.add', 'source.sync', 'dev.catalog.create', 'dev.catalog.build',
-  'dev.plugin.create', 'plugin.install', 'plugin.remove', 'plugin.status', 'plugin.sync']);
+  'dev.plugin.create', 'plugin.config.set', 'plugin.install', 'plugin.remove', 'plugin.status', 'plugin.sync']);
 const publicStatusByExitCode = new Map([[0, 'success'], [1, 'failed'], [2, 'failed'], [3, 'blocked'], [4, 'partial']]);
 const publicStatuses = new Set(publicStatusByExitCode.values());
 const rows = (value, limit) => Array.isArray(value) ? value.slice(0, limit) : [];
@@ -58,7 +58,7 @@ const receiptReasons = new Set(['operationPlanStale: client discovery changed af
   'The preApply process cleanup could not be confirmed.']);
 
 function componentCommand(args, dependencies) {
-  const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+  const command = args.slice(0, args[0] === 'dev' || args[0] === 'plugin' && args[1] === 'config' ? 3 : 2).join('.');
   const fields = {};
   for (const field of ['scope', 'context']) {
     const index = args.indexOf('--' + field);

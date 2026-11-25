@@ -3,6 +3,7 @@ import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import {
+  canonicalizeIdentityValue,
   CONFIG_SUGGESTIONS_TIMEOUT_DEFAULT_MS,
   CONFIG_SUGGESTIONS_TIMEOUT_MAX_MS,
   CONFIG_SUGGESTIONS_TIMEOUT_MIN_MS,
@@ -34,8 +35,9 @@ interface ConfigSuggestionsPluginIdentity {
   version: string;
 }
 
-export interface ConfigSuggestionsRequestV1 {
-  schemaVersion: 1;
+interface ConfigSuggestionsRequestBase {
+  schemaVersion: 2;
+  hint?: string;
   provider: string;
   platform?: PlatformTarget;
   profile: 'common' | PlatformTarget;
@@ -49,20 +51,56 @@ export interface ConfigSuggestionsRequestV1 {
   deadlineAt?: number;
 }
 
-export interface ConfigSuggestionItemV1 {
-  value: PluginConfigScalar;
+export type ConfigSuggestionsRequestV2 = ConfigSuggestionsRequestBase & (
+  { kind: 'scalar' } | { kind: 'object'; targets: string[] }
+);
+
+interface SuggestionPresentation {
   title: string;
   description?: string;
   recommended?: boolean;
-  source?: 'dynamic' | 'configured' | 'merged';
+  source?: 'dynamic' | 'configured' | 'merged' | 'builtin';
 }
 
-export interface ConfigSuggestionsResponseV1 {
-  schemaVersion: 1;
-  status: 'ok' | 'unsupported' | 'unavailable';
-  items: ConfigSuggestionItemV1[];
+export interface ScalarSuggestionItemV2 extends SuggestionPresentation {
+  value: PluginConfigScalar;
+}
+
+export interface ObjectSuggestionPatch {
+  set?: Record<string, PluginConfigScalar>;
+  unset?: string[];
+}
+
+export interface ObjectSuggestionChildItemV2 extends ObjectSuggestionPatch, SuggestionPresentation {
+  recommendedHints?: string[];
+}
+
+export interface ObjectSuggestionItemV2 extends ObjectSuggestionChildItemV2 {
+  children?: { title?: string; items: ObjectSuggestionChildItemV2[] };
+}
+
+export type ConfigSuggestionItemV2 = ScalarSuggestionItemV2 | ObjectSuggestionItemV2;
+
+export interface ConfigSuggestionsResponseV2 {
+  schemaVersion: 2;
+  status: 'ok' | 'not-applicable' | 'no-probe' | 'unavailable';
+  items: ConfigSuggestionItemV2[];
   message?: string;
   diagnostics?: Array<{ code: string; message: string }>;
+}
+
+type ProjectionOptions = {
+  kind: 'scalar' | 'object';
+  hint?: string;
+  mode: 'cache' | 'field';
+  targets?: readonly string[];
+  isValidValue?: (value: PluginConfigScalar) => boolean;
+  isValidPatch?: (patch: ObjectSuggestionPatch) => boolean;
+};
+
+export function hasRecommendedHints(response: ConfigSuggestionsResponseV2): boolean {
+  return response.items.some((item) => !('value' in item) && (item.recommendedHints?.length
+    || item.children?.items.some((child) => child.recommendedHints?.length)));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,13 +124,37 @@ function boundedText(value: string, limit: number): string {
   return [...value].slice(0, limit).join('');
 }
 
+export function mergeObjectSuggestionPatches(
+  parent: ObjectSuggestionPatch, child: ObjectSuggestionPatch,
+): ObjectSuggestionPatch {
+  const set = { ...parent.set, ...child.set };
+  const unset = new Set([...(parent.unset ?? []), ...(child.unset ?? [])]);
+  for (const key of Object.keys(child.set ?? {})) unset.delete(key);
+  for (const key of child.unset ?? []) delete set[key];
+  return { set, unset: [...unset] };
+}
+
+function patchKey(patch: ObjectSuggestionPatch): string {
+  return canonicalizeIdentityValue({ set: patch.set ?? {}, unset: [...(patch.unset ?? [])].sort() });
+}
+
+function constrainStaticRecommendation(items: SuggestionPresentation[]): void {
+  let recommended = false;
+  for (const item of items) {
+    if (item.recommended) {
+      item.recommended = !recommended;
+      recommended = true;
+    }
+  }
+}
+
 export function projectConfigSuggestionsResponse(
   raw: unknown,
   sensitiveValues: readonly string[],
-  isValidValue?: (value: PluginConfigScalar) => boolean,
-): ConfigSuggestionsResponseV1 {
-  if (!isRecord(raw) || raw.schemaVersion !== 1 ||
-    (raw.status !== 'ok' && raw.status !== 'unsupported' && raw.status !== 'unavailable') ||
+  options: ProjectionOptions,
+): ConfigSuggestionsResponseV2 {
+  if (!isRecord(raw) || raw.schemaVersion !== 2 ||
+    (raw.status !== 'ok' && raw.status !== 'not-applicable' && raw.status !== 'no-probe' && raw.status !== 'unavailable') ||
     !Array.isArray(raw.items) || raw.items.length > MAX_ITEMS ||
     (raw.message !== undefined && !isBoundedText(raw.message, 256)) ||
     (raw.diagnostics !== undefined && (!Array.isArray(raw.diagnostics) || raw.diagnostics.length > MAX_DIAGNOSTICS))) {
@@ -102,38 +164,130 @@ export function projectConfigSuggestionsResponse(
   // Redact after stripping control sequences so they cannot split a token.
   const tokens = [...new Set(sensitiveValues.flatMap((value) => [value, stripUnsafeCharacters(value)]))];
   const sanitize = (value: string): string => redactPluginScriptOutput(stripUnsafeCharacters(value), tokens);
-  const items: ConfigSuggestionItemV1[] = [];
-  const seen = new Set<PluginConfigScalar>();
-  let hasRecommendation = false;
-  const candidates = raw.status === 'ok' ? raw.items : [];
-  for (const item of candidates) {
-    if (!isRecord(item) || !isScalar(item.value) || seen.has(item.value) ||
-      !isBoundedText(item.title, 128) ||
+  // Reject a candidate instead of changing what applying it would save.
+  const safeScalar = (value: unknown): value is PluginConfigScalar => isScalar(value)
+    && (typeof value === 'string' ? sanitize(value) === value : !tokens.includes(String(value)));
+  const presentation = (item: Record<string, unknown>): SuggestionPresentation | undefined => {
+    if (!isBoundedText(item.title, 128) ||
       (item.description !== undefined && !isBoundedText(item.description, 256)) ||
       (item.recommended !== undefined && typeof item.recommended !== 'boolean') ||
-      (item.source !== undefined && item.source !== 'dynamic' && item.source !== 'configured' && item.source !== 'merged')) {
-      continue;
-    }
-    // Sanitizing a candidate could change what the editor would save.
-    if ((typeof item.value === 'string' ? sanitize(item.value) !== item.value : tokens.includes(String(item.value))) ||
-      (isValidValue && !isValidValue(item.value))) continue;
+      (item.source !== undefined && item.source !== 'dynamic' && item.source !== 'configured'
+        && item.source !== 'merged' && item.source !== 'builtin')) return undefined;
     const title = boundedText(sanitize(item.title), 128);
-    if (!title.trim()) continue;
-    // A shared response keeps its flags until a field has filtered its candidates.
-    let recommended = item.recommended;
-    if (isValidValue && recommended) {
-      recommended = !hasRecommendation;
-      hasRecommendation = true;
-    }
-    items.push({
-      value: item.value,
+    if (!title.trim()) return undefined;
+    return {
       title,
       ...(item.description === undefined ? {} : { description: boundedText(sanitize(item.description), 256) }),
-      ...(recommended === undefined ? {} : { recommended }),
+      ...(item.recommended === undefined ? {} : { recommended: item.recommended }),
       ...(item.source === undefined ? {} : { source: item.source }),
-    });
-    seen.add(item.value);
+    };
+  };
+  const items: ConfigSuggestionItemV2[] = [];
+  const candidates = raw.status === 'ok' ? raw.items : [];
+  if (options.kind === 'scalar') {
+    const seen = new Set<PluginConfigScalar>();
+    for (const item of candidates) {
+      if (!isRecord(item) || !safeScalar(item.value) || seen.has(item.value) ||
+        (options.isValidValue && !options.isValidValue(item.value))) continue;
+      const display = presentation(item);
+      if (!display) continue;
+      items.push({ value: item.value, ...display });
+      seen.add(item.value);
+    }
+  } else {
+    const allowedTargets = new Set(options.targets);
+    const safeKey = (key: unknown): key is string => typeof key === 'string'
+      && allowedTargets.has(key) && sanitize(key) === key;
+    const patch = (item: Record<string, unknown>): ObjectSuggestionPatch | undefined => {
+      if ((item.set !== undefined && (!isRecord(item.set)
+          || Object.entries(item.set).some(([key, value]) => !safeKey(key) || !safeScalar(value))))
+        || (item.unset !== undefined && (!Array.isArray(item.unset) || item.unset.some((key) => !safeKey(key))))) return undefined;
+      const set = item.set as ObjectSuggestionPatch['set'];
+      const unset = item.unset === undefined ? undefined : [...new Set(item.unset as string[])];
+      if (unset?.some((key) => Object.hasOwn(set ?? {}, key))) return undefined;
+      return { ...(set === undefined ? {} : { set }), ...(unset === undefined ? {} : { unset }) };
+    };
+    const validPatch = (entry: ObjectSuggestionPatch): boolean =>
+      (Object.keys(entry.set ?? {}).length > 0 || (entry.unset?.length ?? 0) > 0)
+      && (options.isValidPatch?.(entry) ?? true);
+    // The shared cache does not bind a field schema. Only enforce tree-wide
+    // uniqueness after field validation so an invalid leaf cannot claim a hint.
+    const seenHints = new Set<string>();
+    const cleanHints = (rawHints: unknown): string[] | undefined => {
+      if (!Array.isArray(rawHints)) return undefined;
+      const hints = new Set<string>();
+      for (const hint of rawHints) {
+        if (typeof hint !== 'string' || !/^[a-z0-9][a-z0-9-]{0,31}$/u.test(hint)
+          || sanitize(hint) !== hint || hints.has(hint)
+          || (options.mode === 'field' && seenHints.has(hint))) continue;
+        hints.add(hint);
+        if (options.mode === 'field') seenHints.add(hint);
+        if (hints.size >= 8) break;
+      }
+      return hints.size ? [...hints] : undefined;
+    };
+    const leaf = (
+      source: Record<string, unknown>, ownPatch: ObjectSuggestionPatch, display: SuggestionPresentation,
+      seen: Set<string>, effective: ObjectSuggestionPatch = ownPatch,
+    ): ObjectSuggestionChildItemV2 | undefined => {
+      if (!validPatch(effective)) return undefined;
+      const key = patchKey(effective);
+      if (seen.has(key)) return undefined;
+      seen.add(key);
+      const hints = cleanHints(source.recommendedHints);
+      return { ...display, ...ownPatch, ...(hints ? { recommendedHints: hints } : {}) };
+    };
+    const seen = new Set<string>();
+    for (const item of candidates) {
+      if (!isRecord(item)) continue;
+      const ownPatch = patch(item);
+      const display = presentation(item);
+      if (!ownPatch || !display) continue;
+      if (item.children === undefined) {
+        const entry = leaf(item, ownPatch, display, seen);
+        if (entry) items.push(entry);
+        continue;
+      }
+      const children = item.children;
+      if (!isRecord(children) || !Array.isArray(children.items) || children.items.length > 32
+        || (children.title !== undefined && (!isBoundedText(children.title, 128) || !sanitize(children.title).trim()))) continue;
+      const childItems: ObjectSuggestionChildItemV2[] = [];
+      const seenChildren = new Set<string>();
+      for (const child of children.items) {
+        if (!isRecord(child) || child.children !== undefined) continue;
+        const childPatch = patch(child);
+        const childDisplay = presentation(child);
+        if (!childPatch || !childDisplay) continue;
+        const entry = leaf(child, childPatch, childDisplay, seenChildren, mergeObjectSuggestionPatches(ownPatch, childPatch));
+        if (entry) childItems.push(entry);
+      }
+      if (childItems.length) items.push({ ...display, ...ownPatch, children: {
+        ...(children.title === undefined ? {} : { title: boundedText(sanitize(children.title), 128) }),
+        items: childItems,
+      } });
+    }
+    if (options.mode === 'field') {
+      const objectItems = items as ObjectSuggestionItemV2[];
+      const leaves = objectItems.flatMap((item) => item.children?.items ?? [item]);
+      if (leaves.some((entry) => entry.recommendedHints?.length)) {
+        // A hint-aware provider's recommendations replace all static flags.
+        const hint = options.hint ?? 'balanced';
+        for (const item of objectItems) {
+          delete item.recommended;
+          if (item.children) {
+            for (const child of item.children.items) {
+              delete child.recommended;
+              if (child.recommendedHints?.includes(hint)) child.recommended = item.recommended = true;
+            }
+          } else if (item.recommendedHints?.includes(hint)) item.recommended = true;
+        }
+      } else {
+        constrainStaticRecommendation(items);
+        for (const item of objectItems) if (item.children) constrainStaticRecommendation(item.children.items);
+      }
+    }
   }
+  if (options.kind === 'scalar' && options.mode === 'field') constrainStaticRecommendation(items);
 
   const diagnostics = raw.diagnostics?.map((entry: unknown) => {
     if (!isRecord(entry) || typeof entry.code !== 'string' || !isBoundedText(entry.message, 256)) {
@@ -147,7 +301,7 @@ export function projectConfigSuggestionsResponse(
     };
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: raw.status,
     items,
     ...(raw.message === undefined ? {} : { message: boundedText(sanitize(raw.message), 256) }),
@@ -155,8 +309,8 @@ export function projectConfigSuggestionsResponse(
   };
 }
 
-function unavailable(code: string, message: string): ConfigSuggestionsResponseV1 {
-  return { schemaVersion: 1, status: 'unavailable', items: [], message, diagnostics: [{ code, message }] };
+function unavailable(code: string, message: string): ConfigSuggestionsResponseV2 {
+  return { schemaVersion: 2, status: 'unavailable', items: [], message, diagnostics: [{ code, message }] };
 }
 
 async function resolveSuggestionCommandHost(env: NodeJS.ProcessEnv): Promise<CommandHost | undefined> {
@@ -166,13 +320,13 @@ async function resolveSuggestionCommandHost(env: NodeJS.ProcessEnv): Promise<Com
 }
 
 export async function runPluginConfigSuggestions(options: {
-  request: ConfigSuggestionsRequestV1;
+  request: ConfigSuggestionsRequestV2;
   entry: string;
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
   sensitiveValues?: readonly string[];
-}): Promise<ConfigSuggestionsResponseV1> {
+}): Promise<ConfigSuggestionsResponseV2> {
   const { request, signal, sensitiveValues = [] } = options;
   signal?.throwIfAborted();
   const timeoutMs = options.timeoutMs ?? CONFIG_SUGGESTIONS_TIMEOUT_DEFAULT_MS;
@@ -227,7 +381,9 @@ export async function runPluginConfigSuggestions(options: {
     return unavailable('configSuggestionsScriptFailed', 'The config suggestions script exited unsuccessfully.');
   }
   try {
-    return projectConfigSuggestionsResponse(JSON.parse(result.stdout), sensitiveValues);
+    return projectConfigSuggestionsResponse(JSON.parse(result.stdout), sensitiveValues, {
+      kind: request.kind, mode: 'cache', ...(request.kind === 'object' ? { targets: request.targets } : {}),
+    });
   } catch {
     return unavailable('configSuggestionsResponseInvalid', 'The config suggestions script returned an invalid response.');
   }

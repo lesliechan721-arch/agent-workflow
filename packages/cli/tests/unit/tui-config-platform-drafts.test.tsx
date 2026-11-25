@@ -17,6 +17,7 @@ function configPage(options: ConfigReadOptions, stored: ReadonlyMap<ConfigProfil
   const value = stored.get(profile);
   return {
     pluginId, profile, context, layer: { profile, context },
+    configurableLayers: ['common', 'codex'],
     storedCount: value === undefined ? 0 : 1,
     presets: [],
     groups: [{

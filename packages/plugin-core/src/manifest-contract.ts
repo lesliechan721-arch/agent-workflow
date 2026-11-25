@@ -1947,6 +1947,8 @@ export function createBundleSourceManifest(
       ? structuredClone(plugin.manifest.artifacts)
       : undefined,
     scripts,
+    // Config source-only capability facts do not survive this clone. The caller binds
+    // the source requirements in requires.aw.capabilities before serializing the bundle.
     config: plugin.manifest.config
       ? structuredClone(plugin.manifest.config)
       : undefined,

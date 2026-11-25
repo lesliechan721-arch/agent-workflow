@@ -5,7 +5,6 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const INPUT_KEYS = ['attempt', 'case', 'paths', 'phase', 'variant', 'version'];
-export const GUIDE_ROLE_NAME = 'aw-eval-source-agent-subagent-subagent';
 
 export const ROOT_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
@@ -139,25 +138,34 @@ function parseTomlString(source, key, file) {
 
 export async function workflowRoles(workspace, omitted = []) {
   const roleRoot = path.join(workspace, '.codex', 'agents');
-  const files = (await readdir(roleRoot)).filter((file) => file.endsWith('.toml')).sort();
+  let entries;
+  try {
+    entries = await readdir(roleRoot);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  const files = entries.filter((file) => file.endsWith('.toml')).sort();
   const roles = [];
+  const seen = new Set();
   for (const file of files) {
     const source = await readFile(path.join(roleRoot, file), 'utf8');
     const name = parseTomlString(source, 'name', file);
-    if (name !== GUIDE_ROLE_NAME) continue;
+    if (seen.has(name)) {
+      throw new Error(`Materialized workspace contains duplicate role ${name}.`);
+    }
+    seen.add(name);
+    const configFile = path.posix.join('.codex', 'agents', file);
+    if (omitted.includes(name)) {
+      // Codex can discover role files in the trusted attempt workspace.
+      await rm(path.join(workspace, configFile));
+      continue;
+    }
     roles.push({
       name,
       description: parseTomlString(source, 'description', file),
-      configFile: path.posix.join('.codex', 'agents', file),
+      configFile,
     });
-  }
-  if (omitted.includes(GUIDE_ROLE_NAME)) {
-    // Codex can discover role files in the trusted attempt workspace.
-    for (const { configFile } of roles) await rm(path.join(workspace, configFile));
-    return [];
-  }
-  if (roles.length !== 1) {
-    throw new Error(`Materialized spawn-subagent must contain role ${GUIDE_ROLE_NAME} exactly once, got ${roles.length}.`);
   }
   return roles;
 }

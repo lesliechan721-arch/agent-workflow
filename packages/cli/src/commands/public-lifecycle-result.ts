@@ -7,6 +7,7 @@ import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../out
 import { commandPackageRecoveryActions, commandResult, safePublicMessage, type PublicCommandProducerResult } from '../output/public-result.js';
 import { isOpenCodePermission } from '../platforms/opencode-permissions.js';
 import { redactString } from '../output/redact.js';
+import { isConfigDiagnostic, isInstallConfigBlocked } from '../utils/plugin-config-diagnostics.js';
 import { skillInvocationDiagnostics } from '../output/skill-invocation-notices.js';
 import { deliveryNoticeMessage, HOST_PERMISSION_ADDITIONAL_IMPACT, hostPermissionImpactMessage,
   INVOCATION_POLICY_NOT_APPLIED, isDeliveryNoticeCode, isSkippedPermissionReason, projectComponentDelivery, projectComponentGap,
@@ -115,10 +116,12 @@ const messages: Record<string, string> = {
   stateInventoryFailed: 'The local output inventory is incomplete. Inspect the detected location before recovery.',
 };
 
-function safeRecoveryDetail(detail: Diagnostic['detail']): Diagnostic['detail'] {
-  if (!detail || !/^[A-Za-z][A-Za-z0-9._-]*$/u.test(detail.reasonCode)) return undefined;
-  const safe = (value: string): boolean => !/[\u0000-\u001f\u007f-\u009f]/u.test(value) && redactString(value) === value;
+export function safeRecoveryDetail(detail: Diagnostic['detail']): Diagnostic['detail'] {
+  if (!detail || typeof detail.reasonCode !== 'string' || !/^[A-Za-z][A-Za-z0-9._-]*$/u.test(detail.reasonCode)) return undefined;
+  const safe = (value: unknown): value is string => typeof value === 'string' && !/[\u0000-\u001f\u007f-\u009f]/u.test(value) && redactString(value) === value;
+  const fieldKeys = Array.isArray(detail.fieldKeys) ? [...new Set(detail.fieldKeys.filter((key) => typeof key === 'string' && key.length > 0 && safe(key)))].sort() : [];
   return { reasonCode: detail.reasonCode,
+    ...(fieldKeys.length ? { fieldKeys } : {}),
     ...(detail.path && safe(detail.path) && (path.isAbsolute(detail.path) || path.win32.isAbsolute(detail.path))
       ? { path: detail.path } : {}),
     ...(detail.configKey && safe(detail.configKey) ? { configKey: detail.configKey } : {}),
@@ -170,6 +173,22 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   return { code, severity, message: isDeliveryNoticeCode(code) ? deliveryNoticeMessage(code, detail, combinedSubject.field)
     : messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
+}
+
+/** Configuration fixes must name the affected provider and target, not its consumer. */
+export function configRecoveryActions(diagnostics: readonly Diagnostic[]): NextAction[] {
+  const actions = new Map<string, NextAction>();
+  const shellWord = (value: string): string => /^[A-Za-z0-9_./-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  for (const diagnostic of diagnostics.filter(isConfigDiagnostic)) {
+    const { pluginId, target } = diagnostic.subject ?? {};
+    if (!pluginId || !target) continue;
+    const key = `${pluginId}\0${target}`;
+    if (diagnostic.detail?.fieldKeys?.length) for (const field of diagnostic.detail.fieldKeys) {
+      const command = `aw plugin config set ${shellWord(pluginId)} ${shellWord(field)} --platform ${shellWord(target)} --value-json '...'`;
+      actions.set(`${key}\0${field}`, { kind: 'manual', message: `Set the field using ${command} (replace '...' with valid JSON), or open aw to configure the target.` });
+    } else actions.set(key, { kind: 'manual', message: `Open aw to inspect or repair the configuration for ${pluginId} (${target}).` });
+  }
+  return [...actions.values()];
 }
 
 export function projectDeploymentNotices(targets: readonly RecoveryTarget[]): Diagnostic[] {
@@ -464,7 +483,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
     diagnostics.push(...target.blockers.filter(({ code }) => !isDeliveryNoticeCode(code)).map((entry) =>
-      publicDiagnostic(entry, ['userSkillProviderNotReady', 'permissionRelatedProjectUpdateIncomplete'].includes(entry.code) ? entry.subject ?? subject : subject)));
+      publicDiagnostic(entry, isConfigDiagnostic(entry) || ['userSkillProviderNotReady', 'permissionRelatedProjectUpdateIncomplete'].includes(entry.code) ? entry.subject ?? subject : subject)));
     diagnostics.push(...(target.reasons ?? []).filter(({ code }) => code !== SKILL_INVOCATION_NOTICE && !isDeliveryNoticeCode(code))
       .map((entry) => publicDiagnostic(entry, entry.subject ?? subject, entry.code === 'hostPermissionRestored' ? 'info' : 'warning')));
     for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
@@ -486,7 +505,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   const inventory = inventoryRecovery(result.diagnostics, receipt);
-  result.nextActions.push(...inventory.actions);
+  result.nextActions.push(...inventory.actions, ...configRecoveryActions(result.diagnostics));
   if (!receipt.ok) {
     const statusContext = recoveryStatusContext(receipt);
     result.nextActions.push(...excludedProviders.values());
@@ -498,6 +517,8 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Inspect the current requirements and local target policy.', requiresConfirmation: false },
       { kind: 'manual', message: `Check the current ${receipt.unconfirmedSavedState === 'intent' ? 'requirements' : 'target policy'} before preparing the original request again.` });
+    } else if (isInstallConfigBlocked(receipt)) {
+      result.nextActions.push({ kind: 'manual', message: 'Retry the original plugin install request after resolving the configuration diagnostics.' });
     } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
       result.nextActions.push({ kind: 'manual',
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });

@@ -82,6 +82,7 @@ function page(options: ConfigReadOptions): ConfigPageViewModel {
   const context = options.context ?? 'user';
   return {
     pluginId, profile, context, layer: { profile, context },
+    configurableLayers: ['common', 'codex', 'claude'],
     storedCount: profile === 'common' ? 2 : 0,
     presets: [{ id: 'declared', title: '插件方案', description: '由 Manifest 声明', values: { mode: 'safe' } }],
     groups: [{
@@ -348,7 +349,7 @@ function objectAndFlagPage(options: ConfigReadOptions): ConfigPageViewModel {
   const definition: ConfigFieldViewModel['definition'] = { type: 'object', properties: {
     model: { type: 'string', required: true }, effort: { type: 'string', required: true }, hidden: { type: 'number' },
   }, additionalProperties: false };
-  return { pluginId, profile, context, layer: { profile, context }, storedCount: 1, presets: [], groups: [{
+  return { pluginId, profile, context, layer: { profile, context }, configurableLayers: ['common', 'codex', 'claude'], storedCount: 1, presets: [], groups: [{
     id: 'main', title: '常用', advanced: false, fields: [{
       ...field('profile', profile), title: '模型配置', type: 'object', definition, configured: true, canUnset: true,
       value: object, effectiveValue: object, draftValue: object, defaultValue: object,

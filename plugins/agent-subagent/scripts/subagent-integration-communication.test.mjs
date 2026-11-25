@@ -60,13 +60,13 @@ test('installed start preserves UTF-8 input, environment and one captured execut
   assert.equal(await fs.readFile(f.generations, 'utf8'), 'generation\n');
 });
 
-// Test Value Gate: compare the delivered default with the Skill asset and prove
-// the empty override works even when a missing default would fail the start.
+// Test Value Gate: compare the delivered default with the shared source rendered into
+// the Skill and prove the empty override works even when a missing default would fail the start.
 test('installed default instructions match the Skill and can be explicitly disabled', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
   const installedAsset = path.join(f.installed, 'assets', 'task-instructions.md');
   const [defaultInstructions, skillInstructions] = await Promise.all([
-    fs.readFile(installedAsset), fs.readFile(new URL('../skills/spawn-subagent/assets/task-instructions.md', import.meta.url)),
+    fs.readFile(installedAsset), fs.readFile(new URL('../shared/task-instructions.md', import.meta.url)),
   ]);
   assert.deepEqual(defaultInstructions, skillInstructions);
   const prompt = '  原始任务。\r\nKeep formatting.\n';

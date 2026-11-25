@@ -4,8 +4,8 @@
     "kind": "codex-workflow",
     "unitUnderTest": "spawn-subagent",
     "participants": [
-      "codex-advisor",
-      "codex-explore"
+      "consult-advisor",
+      "explore-facts"
     ],
     "policy": {
       "optimization": "precision-first",
@@ -42,8 +42,8 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
-        "profile": "advisorGeneralProfile",
-        "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
+        "profile": "advisorProfile",
+        "instructionsFile": "consult-advisor/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -90,8 +90,8 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "advisor",
-        "profile": "advisorGeneralProfile",
-        "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
+        "profile": "advisorProfile",
+        "instructionsFile": "consult-advisor/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -138,8 +138,8 @@
         ],
         "requiredMode": "workspace",
         "role": "advisor",
-        "profile": "advisorGeneralProfile",
-        "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
+        "profile": "advisorProfile",
+        "instructionsFile": "consult-advisor/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -188,8 +188,8 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
-        "profile": "standardProfile",
-        "instructionsFile": "codex-explore/assets/explore-instructions.md"
+        "profile": "exploreProfile",
+        "instructionsFile": "explore-facts/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -235,8 +235,8 @@
           "执行者默认不加载协调Skill、不再次委派。真实执行者工具trace、材料访问、答复和文件diff支持判断，缺证据保持unknown。"
         ],
         "role": "explore",
-        "profile": "standardProfile",
-        "instructionsFile": "codex-explore/assets/explore-instructions.md"
+        "profile": "exploreProfile",
+        "instructionsFile": "explore-facts/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -282,8 +282,8 @@
         ],
         "requiredMode": "workspace",
         "role": "explore",
-        "profile": "standardProfile",
-        "instructionsFile": "codex-explore/assets/explore-instructions.md"
+        "profile": "exploreProfile",
+        "instructionsFile": "explore-facts/SKILL.md"
       },
       "expected": {
         "criteria": {
@@ -330,8 +330,8 @@
         ],
         "exposeInstalledCoordinatorAssets": true,
         "role": "advisor",
-        "profile": "advisorGeneralProfile",
-        "instructionsFile": "codex-advisor/assets/advisor-instructions.md"
+        "profile": "advisorProfile",
+        "instructionsFile": "consult-advisor/SKILL.md"
       },
       "expected": {
         "criteria": {

@@ -7,7 +7,7 @@
       "optimization": "critical",
       "falseNegativeCost": "critical",
       "falsePositiveCost": "critical",
-      "rationale": "丢失显式字段、错误选择 role、近似 context 或在不兼容 schema 上继续启动都会违反委派合同；任一关键 routing 错误都不能由其它 case 抵消。"
+      "rationale": "丢失显式字段、错误传递 role、近似 context 或在不兼容 schema 上继续启动都会违反委派合同；任一关键 routing 错误都不能由其它 case 抵消。"
     }
   },
   "cases": [
@@ -29,7 +29,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -40,10 +40,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -64,7 +64,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -75,10 +75,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -99,7 +99,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -110,10 +110,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -134,7 +134,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -145,10 +145,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -169,7 +169,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -180,10 +180,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -204,7 +204,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -215,10 +215,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -239,7 +239,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -250,10 +250,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -274,7 +274,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -285,10 +285,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -309,7 +309,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -320,10 +320,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -344,7 +344,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -355,10 +355,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。"
       }
     },
     {
@@ -379,7 +379,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": false,
@@ -393,7 +393,7 @@
         "outcome": "透传显式model，保留canonical task角色；未指定的effort按本例公开参数要求处理。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -414,7 +414,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -428,7 +428,7 @@
         "outcome": "透传显式model，保留canonical task角色；未指定的effort按本例公开参数要求处理。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -449,7 +449,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": "high",
               "fork_context": false,
@@ -463,7 +463,7 @@
         "outcome": "只透传 reasoning_effort。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -484,7 +484,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": "high",
               "fork_context": null,
@@ -498,7 +498,7 @@
         "outcome": "只透传 reasoning_effort。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -508,7 +508,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=aw-eval-source-agent-subagent-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=explorer；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -519,7 +519,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": "explorer",
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -540,7 +540,7 @@
       "input": {
         "sourceCaseId": "custom_agent_type_only",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=aw-eval-source-agent-subagent-subagent；立即启动，不传 model 或 effort，使用干净上下文。",
+        "prompt": "$spawn-subagent 委派已获准。用户明确指定 agent_type=explorer；立即启动，不传 model 或 effort，使用干净上下文。",
         "files": []
       },
       "expected": {
@@ -551,7 +551,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": "explorer",
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -583,7 +583,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": false,
@@ -594,10 +594,10 @@
             ]
           }
         },
-        "outcome": "透传两个显式字段，保留canonical task role。"
+        "outcome": "透传两个显式字段，不传 agent_type（沿用宿主默认角色）。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -618,7 +618,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": "xhigh",
               "fork_context": null,
@@ -629,10 +629,10 @@
             ]
           }
         },
-        "outcome": "透传两个显式字段，保留canonical task role。"
+        "outcome": "透传两个显式字段，不传 agent_type（沿用宿主默认角色）。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。"
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。"
       }
     },
     {
@@ -655,7 +655,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": false,
@@ -666,10 +666,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，通过公开V1 model/effort字段验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并保留canonical task role。"
       }
     },
@@ -693,7 +693,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -704,10 +704,10 @@
             ]
           }
         },
-        "outcome": "使用canonical task role与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
+        "outcome": "使用宿主默认角色（不传 agent_type）与本次复杂度profile的实际配置；默认 native 不生成 model/effort 覆盖；保持干净上下文，不携带其它子任务的override。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并保留canonical task role。"
       }
     },
@@ -760,7 +760,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -774,7 +774,7 @@
         "outcome": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -827,7 +827,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": null,
@@ -841,7 +841,7 @@
         "outcome": "V2 部分 fork 可与显式 model 组合；V1 停止。"
       },
       "audit": {
-        "rationale": "显式model/effort保持逐字段要求；执行方法必须来自已绑定task角色，不把无agent_type解释成角色规则缺失。",
+        "rationale": "显式model/effort保持逐字段要求；执行边界与默认指令来自本 Skill 及 assets/task-instructions.md，不把无agent_type解释成角色规则缺失。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -863,7 +863,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -877,7 +877,7 @@
         "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "rationale": "完整历史不改变worker角色；未指定角色时沿用宿主默认角色，核心边界由任务提示纳入。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
         "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
@@ -899,7 +899,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -913,7 +913,7 @@
         "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "rationale": "完整历史不改变worker角色；未指定角色时沿用宿主默认角色，核心边界由任务提示纳入。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
         "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
@@ -937,7 +937,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": "gpt-5.6-terra",
               "reasoning_effort": null,
               "fork_context": true,
@@ -951,7 +951,7 @@
         "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "rationale": "完整历史不改变worker角色；未指定角色时沿用宿主默认角色，核心边界由任务提示纳入。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
         "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
@@ -1033,7 +1033,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1047,7 +1047,7 @@
         "outcome": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
       }
     },
@@ -1069,7 +1069,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": true,
@@ -1083,7 +1083,7 @@
         "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "rationale": "完整历史不改变worker角色；未指定角色时沿用宿主默认角色，核心边界由任务提示纳入。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
         "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
@@ -1105,7 +1105,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1119,7 +1119,7 @@
         "outcome": "保持canonical task角色和指定完整历史；model/effort按当前schema保留独立显式值，互斥参数不发送。"
       },
       "audit": {
-        "rationale": "完整历史不改变worker角色；canonical task仍通过真实role的developer通道加载。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
+        "rationale": "完整历史不改变worker角色；未指定角色时沿用宿主默认角色，核心边界由任务提示纳入。V2全历史不能与model/effort override组合；缺实际role加载证明不宣称通道资格。",
         "minimalCounterexample": "当前宿主确实缺所需角色或不支持硬要求时，启动前报告实际缺口。"
       }
     },
@@ -1132,10 +1132,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 aw-eval-source-agent-subagent-subagent。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，调用方明确指定 agent_type=fixture-audit-role，但当前 agent_type 列表没有 fixture-audit-role。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "aw-eval-source-agent-subagent-subagent"
+          "fixture-audit-role"
         ]
       },
       "expected": {
@@ -1148,11 +1148,11 @@
             "block_reason": "preset_role_unavailable"
           }
         },
-        "outcome": "缺失canonical task role时阻断。"
+        "outcome": "缺失调用方指定的 role 时阻断。"
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 aw-eval-source-agent-subagent-subagent 角色后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 fixture-audit-role 角色后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1164,10 +1164,10 @@
       "input": {
         "sourceCaseId": "missing_preset_role",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，但当前 agent_type 列表没有 aw-eval-source-agent-subagent-subagent。不要回退到 model override 或其它 role；说明阻断。",
+        "prompt": "$spawn-subagent 一个简单只读任务已获准委派，调用方明确指定 agent_type=fixture-audit-role，但当前 agent_type 列表没有 fixture-audit-role。不要回退到 model override 或其它 role；说明阻断。",
         "files": [],
         "omit_roles": [
-          "aw-eval-source-agent-subagent-subagent"
+          "fixture-audit-role"
         ]
       },
       "expected": {
@@ -1180,11 +1180,11 @@
             "block_reason": "preset_role_unavailable"
           }
         },
-        "outcome": "缺失canonical task role时阻断。"
+        "outcome": "缺失调用方指定的 role 时阻断。"
       },
       "audit": {
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
-        "minimalCounterexample": "恢复 aw-eval-source-agent-subagent-subagent 角色后，应使用该 preset 启动一次，而不是保持阻断。"
+        "minimalCounterexample": "恢复 fixture-audit-role 角色后，应使用该 preset 启动一次，而不是保持阻断。"
       }
     },
     {
@@ -1196,7 +1196,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v1",
-        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=aw-eval-source-agent-subagent-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=explorer 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1225,7 +1225,7 @@
       "input": {
         "sourceCaseId": "fixed_role_custom_conflict",
         "runtimeProfile": "v2",
-        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=aw-eval-source-agent-subagent-subagent 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+        "prompt": "$spawn-subagent 委派已获准。当前 schema 明确说明 agent_type=explorer 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
         "files": []
       },
       "expected": {
@@ -1265,7 +1265,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1279,7 +1279,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1303,7 +1303,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1317,7 +1317,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1341,7 +1341,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1355,7 +1355,7 @@
         "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1379,7 +1379,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1393,7 +1393,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1417,7 +1417,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1431,7 +1431,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     },
@@ -1455,7 +1455,7 @@
               "max": 1
             },
             "arguments": {
-              "agent_type": "aw-eval-source-agent-subagent-subagent",
+              "agent_type": null,
               "model": null,
               "reasoning_effort": null,
               "fork_context": null,
@@ -1469,7 +1469,7 @@
         "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
       },
       "audit": {
-        "rationale": "角色迁移为canonical task；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
+        "rationale": "使用宿主默认角色（不传 agent_type）；保留原难度判断目的，v2通过真实model/effort验证所选profile，不再靠多个role名称推断档位。",
         "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
       }
     }

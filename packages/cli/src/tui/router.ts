@@ -41,7 +41,8 @@ export type ConfigResumeRoute =
       layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
-      mode?: 'choices' | 'custom';
+      mode?: 'choices' | 'custom' | 'suggestions';
+      suggestionParent?: string;
     })
   | (ConfigArrayEditorScope & {
       name: 'configObjectPropertyEditor';
@@ -133,7 +134,7 @@ export type TuiRoute =
       name: 'configFields';
       pluginId: string;
       layer: ConfigRouteLayer;
-      view?: 'options' | 'values';
+      view?: 'options' | 'values' | 'residuals';
     }
   | (ConfigArrayEditorScope & {
       name: 'configFieldEditor';
@@ -141,7 +142,8 @@ export type TuiRoute =
       layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
-      mode?: 'choices' | 'custom';
+      mode?: 'choices' | 'custom' | 'suggestions';
+      suggestionParent?: string;
     })
   | (ConfigArrayEditorScope & {
       name: 'configObjectPropertyEditor';

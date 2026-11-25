@@ -6,7 +6,6 @@ import { validateIntrospectionRequest } from './protocol.mjs';
 
 const MODEL_LIMIT = 128;
 const CODEX_PAGE_LIMIT = 128;
-const antigravityEfforts = ['low', 'medium', 'high', 'xhigh', 'max'];
 const probeFrame = { protocolVersion: ADAPTER_PROTOCOL_VERSION, type: 'introspection', status: 'supported' };
 const unavailable = (code, message) => ({
   ...probeFrame, environment: { status: 'unavailable', code }, diagnostics: [{ code, message }],
@@ -168,10 +167,12 @@ async function antigravityModels(_request, options) {
   const listing = await run('models');
   const models = normalizedModels(listing.stdout.split(/\r?\n/), (line) => {
     const columns = line.split('\t');
-    if (columns.length === 2 && columns[1].trim()) return { id: columns[0].trim(), displayName: columns[1].trim() };
+    // agy exposes effort as part of a model ID, not as an independently
+    // selectable effort menu for that model.
+    if (columns.length === 2 && columns[1].trim()) return { id: columns[0].trim(), displayName: columns[1].trim(), efforts: [] };
   });
   if (listing.code !== 0 || !models.length) fail('introspectionFailed', 'Antigravity did not return a model directory.');
-  return { models, supportedEfforts: [...antigravityEfforts] };
+  return { models };
 }
 
 const probes = new Map([

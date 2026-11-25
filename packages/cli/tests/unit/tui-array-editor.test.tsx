@@ -58,8 +58,8 @@ const id = request.dependencyValues.id ?? 'top';
 const provider = request.providerConfigValues.providers?.[0]?.id ?? 'unknown';
 const value = id + '/' + provider;
 console.log(JSON.stringify(mode === 'offline'
-  ? { schemaVersion: 1, status: 'unavailable', items: [], message: 'Provider offline' }
-  : { schemaVersion: 1, status: 'ok', items: [{
+  ? { schemaVersion: 2, status: 'unavailable', items: [], message: 'Provider offline' }
+  : { schemaVersion: 2, status: 'ok', items: [{
     value: mode === 'invalid' ? 123 : value,
     title: mode === 'invalid' ? 'Wrong model type' : value,
   }] }));
@@ -168,7 +168,7 @@ console.log(JSON.stringify(mode === 'offline'
   await vi.waitFor(() => {
     const frame = ui.lastFrame();
     if (fieldKey === 'fixed') expect(frame).toContain('第一方案');
-    else if (fieldKey === 'suggested') expect(frame).toContain('Static model');
+    else if (fieldKey === 'suggested') expect(frame).toContain('自定义');
     else if (objectField) expect(frame).toContain('使用此完整对象');
     else {
       expect(frame).toContain('添加一项');
@@ -270,7 +270,8 @@ describe('array editor with real config runtime', () => {
       expect(probeRuns).toHaveLength(1);
       expect(ui.lastFrame()).toContain('正在获取动态建议');
     });
-    expect(ui.lastFrame()).toContain('Static model');
+    expect(ui.lastFrame()).toContain('自定义');
+    expect(ui.lastFrame()).not.toContain('Static model');
     await keys(ui, '\r', 'manual-r', '\r');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
     expect(probeRuns[0]!.signal?.aborted).toBe(true);
@@ -286,7 +287,7 @@ describe('array editor with real config runtime', () => {
     dependencies.getConfigSuggestions = (lookup, run, signal) => getSuggestions(lookup,
       (prepared) => run({ ...prepared, run: (runSignal) => new Promise((resolve) => {
         delayed = { signal: runSignal, deliver: () => resolve({
-          schemaVersion: 1, status: 'ok', items: [{ title: 'Expired model', value: 'expired' }],
+          schemaVersion: 2, status: 'ok', items: [{ title: 'Expired model', value: 'expired' }],
         }) };
       }) }), signal);
     const openSuggestions = () => controller.push({
@@ -349,9 +350,10 @@ describe('array editor with real config runtime', () => {
     await fs.writeFile(probeModePath, 'invalid');
     await keys(ui, '\r', '\r', 'r');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('正在获取动态建议'));
-    await focusAction(ui, 'Static model');
+    expect(ui.lastFrame()).not.toContain('Static model');
     await fs.ensureFile(path.join(path.dirname(probeModePath), 'release-suggestions'));
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('没有动态建议'), { timeout: 5000 });
+    await focusAction(ui, 'Static model');
     expect(ui.lastFrame()).toMatch(/› [○●◆] Static model/u);
     expect(ui.lastFrame()).not.toContain('Wrong model type');
   });

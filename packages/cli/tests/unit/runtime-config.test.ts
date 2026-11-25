@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeConfigSnapshot, createRuntimeConfigOrigin, createRuntimeConfigBinding, type RuntimeInstalledIdentity, type PluginConfigSchema } from '@lesliechan721/aw-plugin-core';
+import { createRuntimeConfigSnapshot, createRuntimeConfigOrigin, createRuntimeConfigBinding, normalizePluginConfigDefinition, selectPluginConfigProfile, type RuntimeInstalledIdentity, type PluginConfigSchema } from '@lesliechan721/aw-plugin-core';
 import { injectInstalledRuntimeConfig, createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { writeDynamicSkillTree } from '../../src/utils/dynamic-skill-tree.js';
 import { readRuntimeConfig } from '../../authoring/assets/aw-runtime-config.mjs';
@@ -75,6 +75,29 @@ describe('runtime config reader boundary', () => {
       });
       expect(snapshots['shared-id']!.installedIdentity).toMatchObject({ platform, scope: 'project', configScope: 'project', skillKey: 'current-name' });
     }
+  });
+  it('writes only the declared runtime key when another valid v5 field is platform-only', async () => {
+    const config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
+      shared: { type: 'string' }, platformSpecific: { type: 'string', platformOnly: true },
+    } });
+    const manifest: NormalizedPluginManifest = { schemaVersion: 4, name: 'namespaced-plugin', version: '1.0.0',
+      description: 'V5 runtime config', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      requires: { aw: { capabilities: ['aw.installed-runtime-config.v2'] } }, config, artifacts: { configKeys: ['shared', 'platformSpecific'] },
+    };
+    const definition = selectPluginConfigProfile(config, 'codex');
+    const snapshots = createArtifactRuntimeConfigSnapshots({ manifest, platform: 'codex', scope: 'project',
+      components: [{ id: 'runtime-skill', kind: 'skill', name: 'runtime-skill', content: { files: {} }, runtimeConfig: { keys: ['shared'] } }],
+      config: { mode: 'artifact-render', targetScope: 'project', schema: definition.fields, definition,
+        values: { shared: 'visible', platformSpecific: 'not-requested' }, sources: { shared: 'default', platformSpecific: 'default' }, issues: [], stores: {} },
+    });
+    const tree = { skillKey: 'runtime-skill', files: { 'SKILL.md': Buffer.from('---\nname: runtime-skill\ndescription: Runtime test\n---\n') } };
+    await injectInstalledRuntimeConfig(tree, snapshots['runtime-skill']);
+    const skillRoot = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'runtime-skill');
+    await writeDynamicSkillTree(skillRoot, tree);
+    expect(await fs.readJson(path.join(skillRoot, '.aw-runtime-config.json'))).toMatchObject({
+      allowedKeys: ['shared'], effectiveValues: { shared: 'visible' },
+    });
+    expect(await fs.readFile(path.join(skillRoot, '.aw-runtime-config.json'), 'utf8')).not.toContain('not-requested');
   });
   it('validates the dependency closure at installation and returns only requested allowed keys', async () => {
     const item = await installed();

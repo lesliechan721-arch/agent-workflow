@@ -1,4 +1,5 @@
 import type { PlatformName, Scope } from '../types.js';
+import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import type {
   DependencyPlacementPlan,
   DependencyPlacementTarget,
@@ -11,6 +12,7 @@ export interface ReconcileTargetPlan extends DependencyPlacementTarget {
   state: ReconcileTargetState;
   action: ReconcileTargetAction;
   errorCode?: string;
+  configDiagnostic?: RecoveryDiagnostic;
   preservedScope?: Scope;
   order: number;
 }
@@ -26,6 +28,7 @@ export interface ReconcileActualTarget {
   state: ReconcileTargetState;
   action: ReconcileTargetAction;
   errorCode?: string;
+  configDiagnostic?: RecoveryDiagnostic;
   preservedScope?: Scope;
   order: number;
 }
@@ -77,6 +80,7 @@ export function createReconcileOperationPlan(options: {
         ...(errorCode
           ? { errorCode }
           : {}),
+        ...(actual.configDiagnostic ? { configDiagnostic: actual.configDiagnostic } : {}),
         ...(actual.preservedScope ? { preservedScope: actual.preservedScope } : {}),
         order: actual.order,
       };

@@ -75,6 +75,7 @@ function configPage(options: ConfigReadOptions): ConfigPageViewModel {
   const context = options.context ?? 'user';
   return {
     pluginId, profile, context, layer: { profile, context },
+    configurableLayers: ['common', 'codex', 'claude', 'cursor', 'generic'],
     storedCount: 0,
     presets: [],
     groups: [{

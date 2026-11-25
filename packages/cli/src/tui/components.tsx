@@ -346,6 +346,7 @@ function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): Diagnosti
       { label: 'reason', value: detail.reasonCode },
       ...(detail.path ? [{ label: 'location', value: detail.path }] : []),
       ...(detail.configKey ? [{ label: 'config key', value: detail.configKey }] : []),
+      ...(detail.fieldKeys?.length ? [{ label: 'config fields', value: detail.fieldKeys.join(', ') }] : []),
     ] : []),
     ...inventoryRecoveryActions(recovery).flatMap((action) => action.kind === 'manual'
       ? [{ label: 'manual', value: action.message }] : []),

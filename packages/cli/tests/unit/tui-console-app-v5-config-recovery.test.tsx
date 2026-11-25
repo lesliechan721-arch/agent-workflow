@@ -377,8 +377,12 @@ describe('ConsoleAppV4', () => {
     activePage.groups[0]!.fields[0]!.effectiveDisplayValue = '当前Codex标记';
     const value = controller({ getConfigPage: vi.fn((_pluginId, options) => options.platform === undefined
       ? pending.promise : Promise.resolve(configPageForProfile(activePage, options))) });
-    value.push({ name: 'configFields', pluginId: activePage.pluginId, layer: { profile: 'common', context: 'user' } });
+    // Read a known active layer first. The tab cycle isn't available until
+    // the current plugin's configured layer list has been discovered.
+    value.push({ name: 'configFields', pluginId: activePage.pluginId, layer: { profile: 'codex', context: 'user' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(4);
+    await input(instance, '\u001B[Z');
+    expect(value.snapshot.router.current.route).toMatchObject({ layer: { profile: 'common' } });
     await chooseConfigProfile(instance, value, 'codex');
     expect(instance.lastFrame()).toContain('当前Codex标记');
     const oldPage = configPage(); oldPage.groups[0]!.fields[0]!.effectiveDisplayValue = '过期公共标记'; pending.resolve(oldPage);

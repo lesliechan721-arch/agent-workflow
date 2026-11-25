@@ -430,6 +430,10 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
         ...producers.flatMap((producer) => producer.recoveryActions),
       ])]
       : backend.recoveryActions;
+    for (const dependency of dependencies.filter((entry) => entry.action === 'block' && entry.configDiagnostic)) {
+      const blocker = dependency.configDiagnostic!;
+      if (!target.blockers.some((entry) => JSON.stringify(entry) === JSON.stringify(blocker))) target.blockers.push(blocker);
+    }
     for (const failure of backendTargets.filter((entry) => entry.state === 'failed')) {
       block(target, failure.errorCode ?? 'nativeRecoveryFailed');
     }

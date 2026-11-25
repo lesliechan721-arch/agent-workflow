@@ -148,13 +148,20 @@ export interface PluginConfigValueReference {
 export interface PluginConfigSuggestionsDeclaration {
   plugin?: string;
   provider: string;
+  hint?: string;
   dependsOn?: string[];
+}
+export interface PluginConfigObjectSuggestionsDeclaration extends PluginConfigSuggestionsDeclaration {
+  title?: string;
+  description?: string;
+  targets: string[];
 }
 export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   title?: string;
   description?: string;
   default?: Value;
   required?: boolean;
+  platformOnly?: boolean;
   sensitive?: never;
 }
 interface PluginConfigPlainStringField extends Omit<PluginConfigFieldBase<string>, 'sensitive'> {
@@ -205,15 +212,15 @@ type PluginConfigNonSensitiveScalarField =
   | PluginConfigBooleanField;
 export type PluginConfigScalarPropertyField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField,
-  'default' | 'sensitive'
-> & { sensitive?: never };
-export interface PluginConfigLeafArrayField extends Omit<PluginConfigFieldBase<PluginConfigScalarArray>, 'default'> {
+  'default' | 'sensitive' | 'platformOnly'
+> & { sensitive?: never; platformOnly?: never; clearsOnChange?: string[] };
+export interface PluginConfigLeafArrayField extends Omit<PluginConfigFieldBase<PluginConfigScalarArray>, 'default' | 'platformOnly'> {
   type: 'array';
   items: PluginConfigAdditionalPropertiesField;
   choices?: PluginConfigChoices<PluginConfigScalarArray>;
   validation?: Omit<PluginConfigArrayValidation, 'uniqueBy'>;
 }
-export interface PluginConfigLeafObjectField extends Omit<PluginConfigFieldBase<PluginConfigScalarObject>, 'default'> {
+export interface PluginConfigLeafObjectField extends Omit<PluginConfigFieldBase<PluginConfigScalarObject>, 'default' | 'platformOnly'> {
   type: 'object';
   properties?: never;
   additionalProperties: PluginConfigAdditionalPropertiesField;
@@ -233,7 +240,7 @@ export interface PluginConfigNestedObjectField {
   description?: string;
 }
 export interface PluginConfigNestedObjectArrayField
-  extends Omit<PluginConfigFieldBase<PluginConfigObject[]>, 'default'> {
+  extends Omit<PluginConfigFieldBase<PluginConfigObject[]>, 'default' | 'platformOnly'> {
   type: 'array';
   items: PluginConfigNestedObjectField;
   validation?: PluginConfigArrayValidation;
@@ -241,8 +248,8 @@ export interface PluginConfigNestedObjectArrayField
 export type PluginConfigObjectPropertyField = PluginConfigNestedPropertyField | PluginConfigNestedObjectArrayField;
 export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
   PluginConfigNonSensitiveScalarField,
-  'default' | 'required' | 'sensitive' | 'suggestions'
-> & { sensitive?: never; suggestions?: never };
+  'default' | 'required' | 'sensitive' | 'suggestions' | 'platformOnly'
+> & { sensitive?: never; suggestions?: never; platformOnly?: never; clearsOnChange?: never };
 interface PluginConfigObjectFieldBase extends PluginConfigFieldBase<PluginConfigObject> {
   type: 'object';
   choices?: PluginConfigChoices<PluginConfigObject>;
@@ -252,6 +259,7 @@ export interface PluginConfigFixedObjectField extends PluginConfigObjectFieldBas
   properties: Record<string, PluginConfigObjectPropertyField>;
   additionalProperties?: false;
   variants?: PluginConfigObjectVariants;
+  suggestions?: PluginConfigObjectSuggestionsDeclaration;
 }
 export interface PluginConfigObjectVariant {
   properties: Record<string, PluginConfigObjectPropertyField>;
@@ -267,15 +275,16 @@ export interface PluginConfigKeyValueObjectField extends PluginConfigObjectField
   choices?: PluginConfigChoices<PluginConfigScalarObject>;
   properties?: never;
   variants?: never;
+  suggestions?: never;
   additionalProperties: PluginConfigAdditionalPropertiesField;
 }
 export type PluginConfigObjectField =
   | PluginConfigFixedObjectField
   | PluginConfigKeyValueObjectField;
 export type PluginConfigArrayItemField = DistributiveOmit<
-  PluginConfigNonSensitiveScalarField | PluginConfigObjectField,
-  'default' | 'required' | 'sensitive' | 'suggestions'
-> & { default?: never; required?: never; sensitive?: never; suggestions?: never };
+  PluginConfigAdditionalPropertiesField | PluginConfigObjectField,
+  'default' | 'required' | 'sensitive' | 'platformOnly'
+> & { default?: never; required?: never; sensitive?: never; platformOnly?: never };
 export interface PluginConfigArrayField extends PluginConfigFieldBase<PluginConfigArray> {
   type: 'array';
   items: PluginConfigArrayItemField;
@@ -301,20 +310,20 @@ export interface PluginConfigPresentation {
   fieldViews?: Record<string, { summary: string; itemSummary?: never } | { itemSummary: string; summary?: never }>;
   groups?: PluginConfigPresentationGroup[];
 }
-type PluginConfigLegacyScalarField = DistributiveOmit<PluginConfigScalarField, 'const' | 'suggestions'>;
-type PluginConfigLegacyScalarPropertyField = DistributiveOmit<PluginConfigScalarPropertyField, 'const' | 'suggestions'>;
+type PluginConfigLegacyScalarField = DistributiveOmit<PluginConfigScalarField, 'const' | 'suggestions' | 'platformOnly'>;
+type PluginConfigLegacyScalarPropertyField = DistributiveOmit<PluginConfigScalarPropertyField, 'const' | 'suggestions' | 'clearsOnChange' | 'platformOnly'>;
 type PluginConfigLegacyAdditionalPropertiesField = DistributiveOmit<PluginConfigAdditionalPropertiesField, 'const'>;
 type PluginConfigLegacyObjectField =
-  | (Omit<PluginConfigFixedObjectField, 'properties' | 'variants' | 'default' | 'choices'> & {
+  | (Omit<PluginConfigFixedObjectField, 'properties' | 'variants' | 'default' | 'choices' | 'suggestions' | 'platformOnly'> & {
       properties: Record<string, PluginConfigLegacyScalarPropertyField>;
       default?: PluginConfigScalarObject;
       choices?: PluginConfigChoices<PluginConfigScalarObject>;
     })
-  | (Omit<PluginConfigKeyValueObjectField, 'additionalProperties'> & {
+  | (Omit<PluginConfigKeyValueObjectField, 'additionalProperties' | 'platformOnly'> & {
       additionalProperties: PluginConfigLegacyAdditionalPropertiesField;
     });
 type PluginConfigLegacyArray = PluginConfigScalarArray | PluginConfigScalarObject[];
-type PluginConfigLegacyArrayField = Omit<PluginConfigArrayField, 'default' | 'choices' | 'items'> & {
+type PluginConfigLegacyArrayField = Omit<PluginConfigArrayField, 'default' | 'choices' | 'items' | 'platformOnly'> & {
   default?: PluginConfigLegacyArray;
   choices?: PluginConfigChoices<PluginConfigLegacyArray>;
   items: DistributiveOmit<PluginConfigLegacyScalarField | PluginConfigLegacyObjectField, 'default' | 'required' | 'sensitive'> & {

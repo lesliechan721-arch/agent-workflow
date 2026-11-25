@@ -83,7 +83,7 @@ export interface RecoveryInventoryInput {
   extraObserved?: Array<{
     pluginId: string; agent: AgentId | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
-    content?: RecoveryTarget['content']; reasons?: RecoveryTarget['reasons']; backend?: unknown; expectedVersion?: string; installedVersion?: string;
+    content?: RecoveryTarget['content']; reasons?: RecoveryTarget['reasons']; blockers?: RecoveryTarget['blockers']; backend?: unknown; expectedVersion?: string; installedVersion?: string;
   }>;
 }
 

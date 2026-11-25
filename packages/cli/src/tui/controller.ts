@@ -1,6 +1,7 @@
 import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
 import type { ConfigSuggestionLookup } from './config-suggestions.js';
-import type { ConfigSuggestionsResponseV1, PreparedConfigSuggestions } from '../utils/plugin-config-suggestions.js';
+import { hasRecommendedHints } from '../utils/plugin-config-suggestion-runner.js';
+import type { ConfigSuggestionsResponseV2, PreparedConfigSuggestions } from '../utils/plugin-config-suggestions.js';
 import { isPlatformTarget, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import { agentLabel } from './glossary.js';
 import crypto from 'node:crypto';
@@ -98,6 +99,7 @@ import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import { hasStatusInstallationEvidence } from './scoped-inventory.js';
 import { buildScopedInventory,
   type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
+import { guidedSkipWarning } from './guided-setup.js';
 import { projectScopedRecoveryHistory, type ScopedTuiPlan } from './scoped-flow.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import type { RecoveryCommand } from '../recovery/coordinator.js';
@@ -106,6 +108,7 @@ import {
   TuiRouter,
   type ConfigInvalidStoreEvidence,
   type ConfigResumeRoute,
+  type ConfigRouteLayer,
   type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
@@ -977,10 +980,10 @@ export interface TuiControllerDependencies {
   ) => Promise<ConfigReferenceContext>;
   getConfigSuggestions?: (
     lookup: ConfigSuggestionLookup,
-    run: (prepared: Pick<PreparedConfigSuggestions, 'cacheKey' | 'project' | 'run'>) =>
-      Promise<ConfigSuggestionsResponseV1>,
+    run: (prepared: Pick<PreparedConfigSuggestions, 'kind' | 'hint' | 'sharedCacheKey' | 'hintCacheKey' | 'project' | 'run'>) =>
+      Promise<ConfigSuggestionsResponseV2>,
     signal: AbortSignal,
-  ) => Promise<ConfigSuggestionsResponseV1>;
+  ) => Promise<ConfigSuggestionsResponseV2>;
   getConfigResetAvailability?: (
     pluginId: string,
     options: ConfigProfileOptions,
@@ -1712,7 +1715,7 @@ export class TuiController {
   #taskRetryIntent?: PluginWriteTaskIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
-  readonly #configSuggestions = new Map<string, ConfigSuggestionsResponseV1>();
+  readonly #configSuggestions = new Map<string, ConfigSuggestionsResponseV2>();
   #lastRecordedResultId?: string;
   readonly #operationDiagnostics = new Map<string, {
     diagnostics: SafeOperationDiagnostic[];
@@ -2238,7 +2241,12 @@ export class TuiController {
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
       targetRevisions: this.#status.targetRevisions,
-      recoveryDiagnostics: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => status.errors),
+      recoveryDiagnostics: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => [
+        ...status.errors,
+        ...(status.extraObserved ?? []).flatMap((target) => !target.agent ? [] :
+          (target.blockers ?? []).filter(({ code }) => ['requiredConfigMissing', 'configInvalid', 'invalidConfig'].includes(code))
+            .map((entry) => ({ ...entry, subject: { pluginId: target.pluginId, target: target.agent!, scope: target.scope, ...entry.subject } }))),
+      ]),
       recoveryTargets: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => [
         ...(status.inventory ?? []).flatMap((root) => root.targetResults),
         ...(status.observedTargets ?? []).filter((target) => target.scope === status.scope
@@ -2747,7 +2755,8 @@ export class TuiController {
     const isBatch = plan.kind === 'recovery' && (plan.plan.command === 'install' || plan.plan.command === 'sync')
       && plan.plan.receipt.requestedTargets.length > 1;
     const promise = this.dependencies.executeScopedTask(plan).then((outcome) => {
-      const recordByDefault = isBatch || this.#progress.installProgress !== undefined;
+      const skipped = plan.kind === 'recovery' ? plan.skippedConfigTargets ?? [] : [];
+      const recordByDefault = isBatch || skipped.length > 0 || this.#progress.installProgress !== undefined;
       if (outcome.kind === 'recovery' && (recordByDefault || outcome.receipt.targetResults.some(({ reasons }) =>
         reasons?.some(({ code }) => code === SKILL_INVOCATION_NOTICE)))) {
         const operationId = `scoped-${crypto.randomUUID()}`;
@@ -2755,6 +2764,22 @@ export class TuiController {
           operationId, recordId: `${this.#sessionEpoch}:${operationId}`, epoch: this.#sessionEpoch,
           createdAtMs: this.dependencies.now?.() ?? Date.now(),
         });
+        for (const target of skipped) {
+          const id = `${record.summary.recordId}:skipped-config:${record.diagnostics.length}`;
+          const position = target.profile === 'common' ? undefined
+            : { pluginId: target.pluginId, platform: target.profile, scope: target.context };
+          record.diagnostics.push({ id, code: 'requiredConfigMissing', stage: 'preflight',
+            safeMessage: guidedSkipWarning([target]), causes: [],
+            detailLines: target.fieldKeys,
+            ...(position ? { target: position } : {}),
+          });
+          if (position) record.targets.push({ ...position, state: 'skipped', errorCode: 'requiredConfigMissing', diagnosticIds: [id] });
+        }
+        if (skipped.length > 0) {
+          record.summary.message = outcome.receipt.ok ? '已就绪平台恢复完成；待配置平台保留 requiredConfigMissing 告警。'
+            : `${record.summary.message} 待配置平台保留 requiredConfigMissing 告警。`;
+        }
+        record.summary.diagnosticCount = record.diagnostics.length;
         if (recordByDefault || record.diagnostics.some(({ code }) => code === SKILL_INVOCATION_NOTICE)) {
           this.#operationHistory.record(record);
         }
@@ -3146,6 +3171,20 @@ export class TuiController {
       pluginId,
       layer: { profile: options.platform ?? 'common', context: options.context ?? 'user' },
     });
+    this.#publish();
+  }
+
+  beginGuidedConfig(pluginId: string, layer: ConfigRouteLayer): string {
+    this.#assertAcceptingActions();
+    const origin = this.#router.snapshot.current;
+    const flow = this.#router.beginFlow('configEdit', origin.route, this.#router.snapshot.currentFrameId, origin.context);
+    this.#router.push({ name: 'configFields', pluginId, layer });
+    this.#publish();
+    return flow.id;
+  }
+
+  finishGuidedConfig(flowId: string): void {
+    this.#router.finishFlowById(flowId, 'configEdit');
     this.#publish();
   }
 
@@ -4407,9 +4446,9 @@ export class TuiController {
 
   async getConfigSuggestions(
     lookup: ConfigSuggestionLookup, refresh: boolean, signal: AbortSignal,
-  ): Promise<ConfigSuggestionsResponseV1> {
+  ): Promise<ConfigSuggestionsResponseV2> {
     this.#assertAcceptingActions();
-    if (!this.dependencies.getConfigSuggestions) return { schemaVersion: 1, status: 'unavailable', items: [] };
+    if (!this.dependencies.getConfigSuggestions) return { schemaVersion: 2, status: 'unavailable', items: [] };
     const combined = AbortSignal.any([this.#abort.signal, signal]);
     const frameId = this.#router.snapshot.currentFrameId;
     const epoch = this.#sessionEpoch;
@@ -4422,18 +4461,28 @@ export class TuiController {
     };
     return this.#trackRead(this.dependencies.getConfigSuggestions(structuredClone(lookup), async (prepared) => {
       verifyRequest();
-      if (!refresh) {
-        const cached = this.#configSuggestions.get(prepared.cacheKey);
-        if (cached) {
+      const { kind, hint, sharedCacheKey, hintCacheKey } = prepared;
+      const keys = kind === 'object' ? [sharedCacheKey, hintCacheKey] : [hint === undefined ? sharedCacheKey : hintCacheKey];
+      if (refresh) {
+        this.#configSuggestions.delete(sharedCacheKey);
+        this.#configSuggestions.delete(hintCacheKey);
+      } else {
+        for (const key of keys) {
+          const cached = this.#configSuggestions.get(key);
+          if (!cached) continue;
           // Once a value is recognized as sensitive, keep it out of this shared cache entry.
           const redacted = cloneFrozen(prepared.project(cached, 'cache'));
-          this.#configSuggestions.set(prepared.cacheKey, redacted);
+          this.#configSuggestions.set(key, redacted);
+          if (kind === 'object' && key === sharedCacheKey && !hasRecommendedHints(redacted)) continue;
           return cloneFrozen(prepared.project(redacted));
         }
-      } else this.#configSuggestions.delete(prepared.cacheKey);
-      const response = cloneFrozen(await prepared.run(combined));
+      }
+      const response = cloneFrozen(prepared.project(await prepared.run(combined), 'cache'));
       verifyRequest();
-      if (response.status === 'ok') this.#configSuggestions.set(prepared.cacheKey, response);
+      if (response.status === 'ok') {
+        const shared = kind === 'object' ? hasRecommendedHints(response) : hint === undefined;
+        this.#configSuggestions.set(shared ? sharedCacheKey : hintCacheKey, response);
+      }
       return cloneFrozen(prepared.project(response));
     }, combined));
   }

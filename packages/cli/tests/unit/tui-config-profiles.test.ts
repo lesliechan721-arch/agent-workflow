@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { prepareRecovery, executeRecovery } from '../../src/recovery/coordinator.js';
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -71,6 +72,10 @@ async function fixture(withGenericSkill = false) {
     { id: 'team', type: 'path', primary: true, path: sourceRoot },
   ] }, expectedDigest: initial.digest, env: isolation.env });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+  await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+    schemaVersion: 2, kind: 'aw-deployment-preferences',
+    targets: withGenericSkill ? ['generic'] : ['codex', 'claude'], exclusions: [],
+  });
   const dependencies = createTuiControllerDependencies(createCliExecutionContext({
     cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
   }));

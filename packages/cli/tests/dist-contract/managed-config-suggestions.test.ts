@@ -40,7 +40,8 @@ const request = JSON.parse(input);
 await fs.appendFile(${JSON.stringify(adapterObserved)}, JSON.stringify({ request, home: process.env.AW_HOME }) + ${JSON.stringify('\n')});
 if (request.executor === 'stalled') setInterval(() => {}, 1000);
 else console.log(JSON.stringify({ protocolVersion: 6, type: 'introspection', status: 'supported',
-  environment: { status: 'available' }, models: [{ id: 'fixture-live', displayName: 'Fixture Live', isDefault: true }] }));
+  environment: { status: 'available' }, models: [{ id: 'fixture-live', displayName: 'Fixture Live', isDefault: true,
+    efforts: ['medium', 'high'], defaultEffort: 'high' }] }));
 `);
   const { data: { commands: [{ id: commandId }] } } = await run(['command', 'install', adapterRoot, '--name', 'probe-fixture', '--runner', 'node', '--entry', 'adapter.mjs']);
 
@@ -59,8 +60,11 @@ else console.log(JSON.stringify({ protocolVersion: 6, type: 'introspection', sta
         { key: 'managed', adapter: 'custom-managed', commandId },
         { key: 'stalled', adapter: 'custom-managed', commandId, models: [{ id: 'fixture-static' }] },
       ] },
-      profile: { type: 'object', properties: {
+      profile: { type: 'object', additionalProperties: false, suggestions: {
+        provider: 'executor-model-profile', dependsOn: ['executor'], targets: ['model', 'reasoningEffort'], hint: 'strong',
+      }, properties: {
         executor: { type: 'string' }, model: { type: 'string', suggestions: { provider: 'executor-models', dependsOn: ['executor'] } },
+        reasoningEffort: { type: 'string', suggestions: { provider: 'executor-efforts', dependsOn: ['executor', 'model'] } },
       } },
     } };
   });
@@ -73,14 +77,24 @@ else console.log(JSON.stringify({ protocolVersion: 6, type: 'introspection', sta
   const suggestions = (executor: string, ...options: string[]) => run([
     'plugin', 'config', 'suggestions', 'fixture/agent-subagent', 'profile.model', '--dep', `executor=${executor}`, ...options,
   ]);
-  expect(await suggestions('managed')).toMatchObject({ status: 'success', data: { status: 'ok', items: [
+  expect(await suggestions('managed')).toMatchObject({ status: 'success', data: { kind: 'scalar', status: 'ok', items: [
     { value: 'fixture-live', title: 'Fixture Live', source: 'dynamic', recommended: true },
   ] } });
-  expect(await suggestions('stalled', '--timeout-ms', '4500')).toMatchObject({ status: 'success', data: { status: 'ok', items: [
+  expect(await suggestions('stalled', '--timeout-ms', '4500')).toMatchObject({ status: 'success', data: { kind: 'scalar', status: 'ok', items: [
     { value: 'fixture-static', title: 'fixture-static', source: 'configured' },
   ], diagnostics: [{ code: 'introspectionTimeout' }] } });
+  expect(await run(['plugin', 'config', 'suggestions', 'fixture/agent-subagent', 'profile', '--dep', 'executor=managed']))
+    .toMatchObject({ status: 'success', data: { kind: 'object', status: 'ok', items: [
+      { title: '沿用后端默认', unset: ['model', 'reasoningEffort'] },
+      { title: 'Fixture Live', set: { model: 'fixture-live' }, source: 'dynamic', recommended: true, children: { items: [
+        { title: '沿用模型默认', unset: ['reasoningEffort'] },
+        { title: 'medium', set: { reasoningEffort: 'medium' } },
+        { title: 'high', set: { reasoningEffort: 'high' }, recommended: true,
+          recommendedHints: ['fast', 'balanced', 'strong', 'deep', 'max'] },
+      ] } },
+    ] } });
   const observed = (await fs.readFile(adapterObserved, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  expect(observed).toEqual(['managed', 'stalled'].map((executor) => ({ home: layout.awHomeDir, request: {
+  expect(observed).toEqual(['managed', 'stalled', 'managed'].map((executor) => ({ home: layout.awHomeDir, request: {
     protocolVersion: 6, type: 'introspect', executor, workspace: cwd, args: [],
   } })));
   expect(await fs.pathExists(shadowAwUsed)).toBe(false);

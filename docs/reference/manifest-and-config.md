@@ -97,7 +97,10 @@ aw dev plugin capabilities --surface config --json
   - `aw.plugin-config-unique-by.v1`：使用对象数组唯一键声明时派生要求。
   - `aw.plugin-config-value-ref.v1`：使用本地值引用时派生要求。
   - `aw.plugin-config-cross-plugin-value-ref.v1`：使用跨插件值引用时派生要求。
-  - `aw.plugin-config-suggestions.v1`：使用动态建议字段或提供建议脚本时派生要求。
+  - `aw.plugin-config-suggestions.v2`：使用动态建议字段或提供建议脚本时派生要求。
+  - `aw.plugin-config-platform-only.v1`：顶层字段要求按平台配置时派生。
+  - `aw.plugin-config-clears-on-change.v1`：标量属性或可复用定义声明关联清理时派生。
+  - `aw.plugin-config-ref-override.v1`：本地引用覆写 `platformOnly` 或 `suggestions` 时派生。
   - `aw.plugin-config-summary.v1`：使用配置摘要展示时派生要求。
   - `aw.plugin-config-array.v1`：使用数组配置字段时派生要求。
   - `aw.installed-runtime-config.v2`：使用运行时配置读取时声明。
@@ -214,7 +217,8 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 - **默认值继承规则**：平台分支中替换的字段若未显式声明 `default`，**绝不继承**公共字段声明的 `default`。
 - **安全约束不可削弱**：平台分支只能强化而不能削弱安全限制（例如不得将公共声明的 sensitive 字段在平台分支降级为非敏感字段）。
 - **有效值解析顺序（Effective Value Resolution）**：
-  - 生效配置解析顺序固定为：`defaults(compileSchema(P)) < common < platforms[P]`，严格按顶层键的存在性整体覆盖。
+  - 共享字段的生效配置解析顺序为 `defaults(compileSchema(P)) < common < platforms[P]`，严格按顶层键的存在性整体覆盖。
+  - 顶层字段可声明 `platformOnly: true`。各平台继承其字段定义，公共配置页隐藏该字段及空分组。它与仅在平台分支声明的字段都只读取该平台的覆盖和默认值。旧 `common` 值不能满足平台必填要求。平台分支须保留基线的 `platformOnly: true`，共享命令的 `refreshKeys` 只可引用公共字段。
   - `false`、`0`、空字符串 `""` 以及空数组 `[]` 是**实际有效值**，不能视为空或未设置。
   - 项目目录仅提供读取与 apply 的上下文，AW 不存在项目级配置持久化层（所有配置均持久化在用户 Store v6 中）。
   - 无效的高层覆盖不能降级运行；若删除或 unset 平台覆盖后暴露了无效的公共 `common` 配置，系统判定为配置无效（`invalidConfig`），**严禁用 schema 默认值静默替代**。
@@ -225,7 +229,7 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 - `definitions`：用于复用对象或字段形状。
 - `$ref` 语法：仅允许使用指向本地定义的 JSON Pointer，格式固定为 `#/config/definitions/<Name>`。
 - 安全命名：定义名称必须符合合法标识符规范，严格拒绝 `__proto__`、`constructor`、`prototype`。
-- 引用覆盖规则：引用处仅允许覆盖 `title`、`description`、`default`、`required`。覆盖后的 default 必须通过目标定义的完整类型与约束校验。
+- 引用覆盖规则：v3/v4 允许覆盖 `title`、`description`、`default`、`required`。v5 另允许覆盖 `platformOnly`、`suggestions`。展开后仍按所在位置校验。打包时把源码引用所需的能力固化到 `requires.aw.capabilities`，包括展开后看不到的覆写和未使用定义中的关联清理。
 - 子属性约束：子属性可引用非敏感标量定义，但不能声明 `default`；动态 KV 子属性不能声明 `required`。
 - 限制指标：
   - 最多声明 64 个 definitions。
@@ -269,7 +273,9 @@ MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`
 Config v5 的非敏感标量字段或固定对象的标量属性可以声明 `suggestions`，包括数组项内的属性。示例为 `"suggestions": { "provider": "executor-models", "dependsOn": ["executor"] }`。字段允许自由输入，可同时保留 `choices.allowCustom: true` 的静态预设。含 `const`、`valueRef` 或封闭预设的字段不能声明建议。
 
 - `provider` 匹配 `^[a-z][a-z0-9-]{0,63}$`。省略 `plugin` 时由本插件的 `scripts.config.suggestions` 处理。跨插件时填写同源直接依赖的插件裸名，Catalog 会核对提供方脚本。
-- `dependsOn` 最多列出 8 个互不重复的同级非敏感属性，包括当前变体的属性。顶层字段省略此项或填空数组。
+- `dependsOn` 最多列出 8 个互不重复的同级非敏感属性，包括当前变体的属性。顶层标量字段省略此项或填空数组。可选 `hint` 匹配 `^[a-z0-9][a-z0-9-]{0,31}$`，用于同一提供方的不同推荐档位。
+- 顶层固定对象及顶层数组的固定对象项可声明复合建议。对象须有非空 `properties` 和显式 `additionalProperties: false`，并允许自由输入。除 `provider`、`plugin`、`dependsOn`、`hint` 外，复合声明要求 `targets`，可选 `title`（1–64 个字符）和 `description`（1–256 个字符）。`targets` 包含 1–8 个不同的可编辑标量属性，可来自公共或变体分支，不能含敏感值、常量、值引用、封闭预设、分支判别属性或依赖属性。请求只含当前分支可用的目标。
+- 固定对象的标量属性可用 `clearsOnChange` 指定 1–8 个不同的同级属性。在 TUI 草稿中修改或删除该属性，会请求确认并清理这些已设置的兄弟值。目标可来自变体，不能是自身、常量或分支判别属性。可复用的标量定义可以携带此声明，直接用作顶层字段时会被拒绝。CLI 提交完整值时按原值校验。
 - 建议仅供选择，自由输入、值校验、保存和应用沿用字段 schema。脚本声明、输入输出及限额见[配置建议脚本](plugin-runtime.md#配置建议脚本)。
 
 #### 数组内唯一键（`uniqueBy`）与值引用（`valueRef`）
@@ -286,7 +292,7 @@ Config v5 的非敏感标量字段或固定对象的标量属性可以声明 `su
 - **闭包与完整关系校验**：
   - 保存、有效配置读取和 apply 均强制校验依赖闭包；若候选列表失效，系统直接报错，严禁返回残缺的部分列表。
   - 删除仍被 consumer 引用的 key 会直接失败（正确流程为：先新增目标 key，切换 consumer 引用，最后删除旧 key）。
-  - 跨插件引用按相同平台与 common profile 配对核验。
+  - 跨插件引用按消费者与提供方的对应可配置层配对核验。停用平台的历史配置保留，重新启用后恢复校验。
   - 普通保存操作不仅检查当前插件，还会保护授权来源视图中此前有效、且可能尚未安装的 consumer。
   - 显式恢复例外：`aw plugin config reset` 作为恢复通道，允许清除当前 profile 覆盖并报告可能因此失效的下游引用。
 

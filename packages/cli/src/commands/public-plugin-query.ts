@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
 import { commandResult, type CommandResult, type NextAction } from '../output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentNotices, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
+import { configRecoveryActions, inventoryRecoveryActions, publicDiagnostic, projectDeploymentNotices, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
 import { isDeliveryNoticeCode } from '../output/component-delivery.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
@@ -13,6 +13,7 @@ import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { readRecoveryStatus } from '../recovery/status.js';
+import { isConfigDiagnostic } from '../utils/plugin-config-diagnostics.js';
 
 import { recoveryRootDisposition, userSkillProviderRepairs, type RecoveryTarget } from '../recovery/receipt.js';
 
@@ -162,6 +163,10 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
       const disposition = recoveryRootDisposition(root, both, declared(root.pluginId, 'user') !== false);
       syncActions.set(positionKey(root.pluginId, disposition.scope, root.agent), recoverySyncAction(disposition, reason));
     }
+    for (const target of extraObserved) {
+      diagnostics.push(...(target.blockers ?? []).filter(isConfigDiagnostic).map((entry) => publicDiagnostic(entry,
+        entry.subject ?? { pluginId: target.pluginId, target: target.agent ?? undefined, scope: target.scope })));
+    }
     for (const target of extraObserved.filter((entry) => entry.agent === 'opencode')) {
       for (const observation of target.deploymentObservations ?? []) {
         diagnostics.push(...observation.after.diagnostics.filter((entry) =>
@@ -196,7 +201,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
       allSatisfied: status.allSatisfied, inSync: status.inSync },
     { status: configurationBlocked ? 'blocked' : incomplete || hasBlockers ? validPartialResults ? 'partial' : 'blocked' : 'success',
       diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()],
-      nextActions: [...inventoryRecoveryActions(diagnostics), ...syncActions.values()] });
+      nextActions: [...inventoryRecoveryActions(diagnostics), ...configRecoveryActions(diagnostics), ...syncActions.values()] });
   } catch (error) {
     return queryFailure(command, failureCode(error, 'statusUnavailable'));
   }

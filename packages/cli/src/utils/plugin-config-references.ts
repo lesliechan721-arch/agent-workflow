@@ -4,7 +4,6 @@ import path from 'node:path';
 import {
   validatePluginConfigCandidate,
   selectPluginConfigProfile,
-  PLATFORM_TARGETS,
   type PlatformTarget,
   getPluginConfigDependencyFields,
   formatPluginConfigIssue,
@@ -14,6 +13,8 @@ import {
 
 import type { NormalizedPluginManifest, PluginMeta, Scope } from '../types.js';
 import { resolveWorkContext } from '../intent/work-context.js';
+import { observePreferences, type PreferencesObservation } from '../intent/deployment-preferences.js';
+import { resolveConfigurableLayers } from './config-platforms.js';
 import { resolveCatalogOperationContext, type CatalogOperationContext } from './catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { readPluginManifest } from './manifest.js';
@@ -235,12 +236,20 @@ export async function resolvePluginConfigReferenceConsumers(options: {
   plugin: PluginMeta;
   env?: NodeJS.ProcessEnv;
   plugins?: readonly PluginMeta[];
+  preferences?: PreferencesObservation;
 }): Promise<PluginMeta[]> {
   const plugins = await resolvePluginConfigReferencePlugins({ sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
     env: options.env, plugins: options.plugins });
+  const preferences = options.preferences ?? await observePreferences({ scope: 'user', cwd: options.plugin.rootDir, env: options.env });
   return [options.plugin, ...plugins.filter((plugin) => plugin.manifest.name !== options.plugin.manifest.name
-    && [undefined, ...PLATFORM_TARGETS].some((platform) => providerReferences(plugin, options.plugin, plugins, platform).length > 0))];
+    && configValidationProfiles(plugin, preferences).some((platform) => providerReferences(plugin, options.plugin, plugins, platform).length > 0))];
+}
+
+/** The same profiles participate in mutation validation, reference discovery and Review evidence. */
+export function configValidationProfiles(plugin: PluginMeta, preferences: PreferencesObservation): Array<PlatformTarget | undefined> {
+  const pluginId = plugin.pluginId ?? (plugin.sourceId ? `${plugin.sourceId}/${plugin.manifest.name}` : plugin.manifest.name);
+  return resolveConfigurableLayers(pluginId, plugin.manifest, preferences).map((layer) => layer === 'common' ? undefined : layer);
 }
 
 function rawEffectiveValues(config: ResolvedEffectivePluginConfig): Record<string, unknown> {
@@ -259,6 +268,7 @@ export async function analyzePluginConfigReferenceMutation(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   plugins?: readonly PluginMeta[];
+  preferences?: PreferencesObservation;
   beforeStores: { user: PluginConfigStore; project?: PluginConfigStore };
   afterStores: { user: PluginConfigStore; project?: PluginConfigStore };
 }): Promise<{ consumers: PluginConfigReferenceConsumerImpact[]; blockedReferences: string[];
@@ -266,21 +276,24 @@ export async function analyzePluginConfigReferenceMutation(options: {
   options = { ...options, scope: options.context ?? options.scope };
   const result = { consumers: [] as PluginConfigReferenceConsumerImpact[], blockedReferences: [] as string[],
     unreadableConsumers: [] as string[], removesCandidates: false, evidence: [] as unknown[] };
-  const profiles: Array<PlatformTarget | undefined> = options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS];
+  const preferences = options.preferences ?? await observePreferences(options);
+  const profiles = configValidationProfiles(options.plugin, preferences).filter((platform) => !options.platform || platform === options.platform);
   const potentialFields = profiles.some((platform) => options.plugin.manifest.config
     && Object.values(selectPluginConfigProfile(options.plugin.manifest.config, platform).fields).some((field) => field.type === 'array' && field.items.type === 'object'));
   if (!potentialFields) return result;
   const identity = { sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity };
+  const commonFields = selectPluginConfigProfile(options.plugin.manifest.config!, undefined).fields;
   const canRemove = profiles.some((platform) => Object.entries(selectPluginConfigProfile(options.plugin.manifest.config!, platform).fields).some(([field, schema]) => {
     if (schema.type !== 'array' || schema.items.type !== 'object') return false;
     const key = schema.validation?.uniqueBy;
     if (!key) return false;
     const value = (stores: typeof options.beforeStores) => {
       const user = stores.user;
-      const common = user.common ?? user.values;
+      const common = user.common ?? (user.platform ? {} : user.values);
       const values = platform ? user.platforms?.[platform] ?? {} : {};
-      return Object.hasOwn(values, field) ? values[field] : Object.hasOwn(common, field) ? common[field] : schema.default;
+      const inheritsCommon = !platform || Object.hasOwn(commonFields, field) && !schema.platformOnly;
+      return Object.hasOwn(values, field) ? values[field] : inheritsCommon && Object.hasOwn(common, field) ? common[field] : schema.default;
     };
     const before = value(options.beforeStores), after = value(options.afterStores);
     if (!Array.isArray(before)) return false;
@@ -295,8 +308,7 @@ export async function analyzePluginConfigReferenceMutation(options: {
     result.evidence.push({ sourceId: options.plugin.sourceId, unavailable: true });
     return result;
   }
-  const consumers = plugins.filter((plugin) => plugin.manifest.name !== options.plugin.manifest.name
-    && [undefined, ...PLATFORM_TARGETS].some((platform) => providerReferences(plugin, options.plugin, plugins, platform).length > 0));
+  const consumers = plugins.filter((plugin) => plugin.manifest.name !== options.plugin.manifest.name);
   for (const platform of profiles) {
     const scope = options.scope;
     const resolveProvider = async (stores: typeof options.beforeStores) => {
@@ -320,6 +332,7 @@ export async function analyzePluginConfigReferenceMutation(options: {
       continue;
     }
     for (const consumer of consumers) {
+      if (!configValidationProfiles(consumer, preferences).includes(platform)) continue;
       const refs = providerReferences(consumer, options.plugin, plugins, platform);
       if (!refs.length) continue;
       const removes = refs.some((ref) => {

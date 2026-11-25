@@ -74,7 +74,7 @@ test('keeps the public command and actual scope when the process has no snapshot
 test('binds component receipts to the requested command and public status and exit code', async (t) => {
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-receipt-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
-  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: ['agent-subagent', 'codex-enhance']
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: ['agent-subagent', 'agent-explore', 'agent-advisor']
     .map(name => ({ name, dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest' })) }));
   const commands = ['target.set', 'source.add', 'source.sync', 'plugin.install', 'plugin.status'];
   for (const { request, command = request, status, exitCode, diagnostics = [], valid = false } of [
@@ -117,7 +117,7 @@ test('binds component receipts to the requested command and public status and ex
 test('records separate, redacted failures from the public component Catalog report', async (t) => {
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-catalog-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
-  const roleNames = { 'agent-subagent': ['subagent'], 'codex-enhance': ['codex-explore', 'codex-advisor'] };
+  const roleNames = { 'agent-subagent': [], 'agent-explore': [], 'agent-advisor': [] };
   const staticPlugins = ['first-static', 'second-static', 'third-static'];
   const names = [...Object.keys(roleNames), ...staticPlugins];
   await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: names.map(name => ({
@@ -142,7 +142,7 @@ test('records separate, redacted failures from the public component Catalog repo
 
   const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
     executeCommand: async () => ({ exitCode: 0 }),
-    async executeAw(_launcher, args, { env }) {
+    async executeAw(_launcher, args, { env, cwd }) {
       const command = args.slice(0, 2).join('.');
       if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'generic', installations: [] }] });
       if (command === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
@@ -150,6 +150,13 @@ test('records separate, redacted failures from the public component Catalog repo
       }));
       if (command === 'plugin.status') return publicResponse(command, { targetResults: targets, inSync: true,
         allSatisfied: true, counts: { pending: 0 } });
+      if (args[2] === pluginId('agent-subagent')) {
+        for (const skill of ['spawn-subagent', 'explore-facts', 'consult-advisor']) {
+          const directory = path.join(cwd, '.agents', 'skills', skill);
+          await fs.mkdir(directory, { recursive: true });
+          await fs.writeFile(path.join(directory, 'SKILL.md'), skill);
+        }
+      }
       if (args[2] === pluginId('first-static')) {
         throw Object.assign(new Error(privateText), { name: 'ProviderProcessCleanupError', env: { credentials: privateText },
           result: { ...publicResponse(command, {}), exitCode: 1, stdout: JSON.stringify({
@@ -212,7 +219,7 @@ test('records separate, redacted failures from the public component Catalog repo
 test('scopes the Codex candidate native trace to the failing Project install', async (t) => {
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-codex-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
-  const pluginIds = ['agent-subagent', 'codex-enhance'].map(name => `qualification-official/${name}`);
+  const pluginIds = ['agent-subagent', 'agent-explore', 'agent-advisor'].map(name => `qualification-official/${name}`);
   await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: pluginIds.map(id => ({
     name: id.split('/')[1], dependencies: [], version: '1.0.0', artifactDigest: 'fixture-digest',
   })) }));
@@ -227,7 +234,7 @@ test('scopes the Codex candidate native trace to the failing Project install', a
       clientPath: process.env.PATH, traceEntry: process.execPath }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args, { env }) {
-        const command = args.slice(0, 2).join('.');
+        const command = args.slice(0, args[1] === 'config' ? 3 : 2).join('.');
         if (command !== 'plugin.install') {
           assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
           assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, undefined);
@@ -537,7 +544,7 @@ test('exposes both acquired clients in one isolated public PATH', async t => {
 test('Grok only offers trust recovery for a fully explained dependency chain', () => {
   const row = (pluginId, blocker) => ({ pluginId, scope: 'user', target: 'grok', blockerCodes: [blocker] });
   const parent = row('official/agent-subagent', 'nativeTrustRequired');
-  const child = row('official/codex-enhance', 'dependencyInstallFailed');
+  const child = row('official/agent-explore', 'dependencyInstallFailed');
   const grandchild = row('official/consumer', 'dependencyInstallFailed');
   const value = { data: { targetResults: [grandchild, child, parent] }, diagnostics: [] };
   const edges = new Map([[parent.pluginId, []], [child.pluginId, [parent.pluginId]], [grandchild.pluginId, [child.pluginId]]]);

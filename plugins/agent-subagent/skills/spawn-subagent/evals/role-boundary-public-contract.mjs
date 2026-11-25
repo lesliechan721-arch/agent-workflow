@@ -28,6 +28,12 @@ async function run(command, args, { cwd, env, input } = {}) {
 }
 
 async function json(file) { return JSON.parse(await readFile(file, 'utf8')); }
+async function codexAgentFiles(workspace) {
+  return readdir(path.join(workspace, '.codex', 'agents')).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+}
 async function action(fixture, { command, input }) {
   const result = await run(process.execPath, [path.join(fixture.fixtures, command[1])], {
     env: fixture.env, cwd: fixture.workspace,
@@ -98,8 +104,9 @@ async function main() {
     const entrypoint = path.join(root, 'adapter.mjs');
     await Promise.all([mkdir(bin), mkdir(temp), mkdir(home)]);
     await writeFile(path.join(bin, 'aw'), `#!${process.execPath}\nimport { spawnSync } from 'node:child_process';\nconst result=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(cli)},...process.argv.slice(2)],{stdio:'inherit'});if(result.error)throw result.error;process.exitCode=result.status??1;\n`, { mode: 0o700 });
+    const versionOutputs = { codex: 'codex-cli 0.140.0', claude: 'Claude Code 0.140.0', agy: 'agy 0.140.0' };
     for (const backend of ['codex', 'claude', 'agy']) {
-      await writeFile(path.join(bin, backend), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv.length === 3 && process.argv[2] === '--version') {\n  console.log(${JSON.stringify(`${backend === 'codex' ? 'codex-cli' : backend} 0.140.0`)});\n} else {\n  writeFileSync(${JSON.stringify(forbidden)},'unexpected model CLI');process.exitCode=127;\n}\n`, { mode: 0o700 });
+      await writeFile(path.join(bin, backend), `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv.length === 3 && process.argv[2] === '--version') {\n  console.log(${JSON.stringify(versionOutputs[backend])});\n} else {\n  writeFileSync(${JSON.stringify(forbidden)},'unexpected model CLI');process.exitCode=127;\n}\n`, { mode: 0o700 });
     }
     await writeFile(entrypoint, `import { appendFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
@@ -140,15 +147,12 @@ lines.once('line', async (line) => {
       generalTaskProfile: { executor: 'fixture-external' },
     };
     const composition = await prepareSpec(root, env, { 'agent-subagent': agentSubagent,
-      'codex-enhance': { advisorGeneralProfile: { executor: 'fixture-external' } } }, 'joint-workflow', 'project-composition');
+      'agent-explore': {}, 'agent-advisor': { advisorProfile: { executor: 'fixture-external' } } }, 'joint-workflow', 'project-composition');
     const guideOnly = await prepareSpec(root, env, { 'agent-subagent': agentSubagent }, 'joint-guide-only', 'project-default');
     for (const id of ['J11', 'J17']) {
       const current = await fixture(root, env, composition, id);
-      assert.deepEqual(current.request.roles.map(({ name }) => name).sort(), [
-        'aw-eval-source-agent-subagent-subagent',
-        'aw-eval-source-codex-enhance-codex-advisor',
-        'aw-eval-source-codex-enhance-codex-explore',
-      ]);
+      assert.deepEqual(current.request.roles, []);
+      assert.deepEqual(await codexAgentFiles(current.workspace), []);
       const state = await action(current, current.request.evaluation.setupActions[0]);
       const options = invocation(current, state);
       const installed = await inspectGuideCommand(current.workspace, state.commandSelector, options.env);
@@ -208,9 +212,9 @@ lines.once('line', async (line) => {
 
     const j15 = await fixture(root, env, guideOnly, 'J15');
     assert.deepEqual(j15.request.roles, []);
-    assert.deepEqual(await readdir(path.join(j15.workspace, '.codex', 'agents')), []);
+    assert.deepEqual(await codexAgentFiles(j15.workspace), []);
     const custom = await action(j15, j15.request.evaluation.setupActions[0]);
-    await assert.rejects(readFile(path.join(j15.workspace, '.agents', 'skills', 'codex-advisor', 'SKILL.md')), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(j15.workspace, '.agents', 'skills', 'consult-advisor', 'SKILL.md')), { code: 'ENOENT' });
     await writeFile(path.join(j15.workspace, '.role-boundary-fixture', 'finish'), '');
     const result = await guide(j15.workspace, ['start', '--executor', custom.execution.executor,
       '--prompt-file', custom.promptFile, '--instructions-file', custom.instructionsFile], invocation(j15, custom));

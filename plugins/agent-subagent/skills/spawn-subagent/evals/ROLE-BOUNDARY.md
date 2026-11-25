@@ -2,7 +2,7 @@
 
 联合 workflow 保留 J01–J18，直接执行者保留 W01–W08。J15 仍在只暴露 Guide 的 `joint-guide-only` suite。旧 `worker-instructions` 改名为 `executor-instructions`，用例文件同步改名。角色是本次 Eval 的职责标签，不是产品中的 worker 注册项。
 
-`run-role-boundary-evals.mjs` 从该次 EvalSpec 绑定的 Skill 读取 Guide 命令名称、`executor-selection.md` 的执行器表及所选角色的 profile 表。公开 Eval prepare 把构建后的 Guide 命令资源和隔离 profile 的运行配置绑定到本次私有 fixture。原生执行者通过公共 Engine 的 developer 输入收到独立指令，外部执行者通过 `aw command run <来源>/agent-subagent/codex -- start` 启动，用 `--prompt-file` 传入任务，再凭原句柄 wait/result。实际运行由 AW 的命令配置读取器校验来源和允许字段。
+`run-role-boundary-evals.mjs` 从该次 EvalSpec 绑定的 Skill 读取 Guide 命令名称、`executor-selection.md` 的执行器表及所选角色的 profile 表。公开 Eval prepare 把构建后的 Guide 命令资源和隔离 profile 的运行配置绑定到本次私有 fixture。探索／顾问职责从各自已安装 Skill 内联模板提取，不注册专属原生角色；原生执行者通过公共 Engine 的 developer 输入收到独立指令，外部执行者通过 `aw command run <来源>/agent-subagent/codex -- start` 启动，用 `--prompt-file` 传入任务，再凭原句柄 wait/result。实际运行由 AW 的命令配置读取器校验来源和允许字段。
 
 外部资格用例需要真实配置，可向公开准备入口提供插件字段 map：
 
@@ -24,8 +24,8 @@ J15 使用只包含 Guide 的 `project-default`，需将 `agent-subagent.general
 | J01 | 直接第二意见及父任务查证；保留单个只读执行者，不强制先 Explore |
 | J02 | 陌生文档事实调查、实际原引用、只读和真实终态 |
 | J03 | 本次实际 Explore 产物交给 Advisor；独立执行最终选择函数验收 |
-| J04 | 原生角色与 profile、干净上下文；新增新上下文同时发现 Advisor/Explore 与 Guide 的加载 trace |
-| J05 | 外部 Explore 不依赖原生角色存在；保留执行器和只读边界 |
+| J04 | 中性默认角色与独立 profile、干净上下文；新增新上下文同时发现 Advisor/Explore 与 Guide 的加载 trace |
+| J05 | 外部 Explore 不依赖原生中性角色存在；保留执行器和只读边界 |
 | J06 | 显式原生角色要求不可满足时停止；不换执行器或资料目的地 |
 | J07 | 结论限于两份明确授权的工作区文件，标出全仓结论所需证据 |
 | J08 | 先咨询再释放新证据；用户明确给出的两次预算仍有效，等待不算新生成 |
@@ -48,7 +48,7 @@ J15 使用只包含 Guide 的 `project-default`，需将 `agent-subagent.general
 | W07 | 可见协调 Skill 和可用委派工具下，执行者不重新协调或委派 |
 | W08 | 明确授权的单文件写入与实际结果；在真实可执行授权写入的 workspace 后端上运行，不通过 supports 字段证明权限 |
 
-其他 suite 包括：Guide 的 trigger、routing、lifecycle、lifecycle-timeout、coordinator-behavior；Explore 的 trigger、model-selection、workflow、output-contract、coordinator-behavior；Advisor 的 role-boundary-trigger、coordinator-behavior。原生 lifecycle 仍验证同一有效执行者续接、独立新交付和一次生成的等待，不承诺外部后台恢复。等待窗口与重审模型要求由用例明确给出，不从默认角色指令推导。Explore 只记录角色可用清单，不以角色文件 digest 或 developer 授权布尔证明精确宿主采用。Advisor 的旧 manual/conservative/off 触发条件改为真实咨询安排、重要判断卡点及当前任务限制；明确用户预算用例仍保留。新增五个只读配置选择探针覆盖 general 缺省、design 缺省回退、合法 debug、非法 review 和不可用 design executor；这些探针不声称真实服务支持。
+其他 suite 包含 Guide 的 trigger、routing、lifecycle、lifecycle-timeout、coordinator-behavior，以及独立插件的触发场景。原生 lifecycle 仍验证同一有效执行者续接、独立新交付和一次生成的等待，不承诺外部后台恢复。等待窗口与重审模型要求由用例明确给出，不从默认角色指令推导；探索与顾问的职责由实际委派提示和读取轨迹验证，而不是按专用角色名判定。模型 Eval 沿用独立审核与实际运行证据。
 
 ## Fixture 与证据范围
 

@@ -3,7 +3,6 @@ import { spawn } from 'node:child_process';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { resolvePreferencesPath, writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
-import { parseCodexRoleFile } from '../../src/utils/codex-roles.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import path from 'node:path';
 import fs from 'fs-extra';
@@ -16,12 +15,11 @@ import {
   preparePluginNativeTools,
 } from '@lesliechan721/aw-plugin-core';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
-import { readPluginConfigStore } from '../../src/utils/plugin-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { SKILL_OWNER_MARKER, type SkillOwnerMarker } from '../../src/utils/ownership.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
-import { prepareSubagentForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
+import { prepareSubagentForNativeFixture } from '../helpers/subagent-native-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -31,8 +29,12 @@ import {
   createCodexNativeTestRuntime,
   installWriteCommand,
   readFixtureRequirements,
-  prepareCodexEnhancePublicCommandFixture,
+  replaceCatalogSourcesConfig,
+  prepareSubagentCompositionPublicCommandFixture,
 } from '../helpers/write-command-fixture.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 function nativePackage(runtime: { packageRoots: Map<string, string> }, name: string) {
   const matches = [...runtime.packageRoots].filter(([id]) => id.startsWith(`${name}@`));
@@ -85,6 +87,8 @@ describe('five namespaced write commands', () => {
     await run(['target', 'set', 'codex', '--context', 'project']);
     const [content, skills, toolkit] = ['staged/agent-content-toolkit', 'staged/agent-skill-toolkit', 'staged/aw-development-toolkit'] as const;
     const guide = 'staged/agent-subagent';
+    await run(['plugin', 'config', 'set', guide, 'generalTaskProfile', '--platform', 'codex',
+      '--value-json', '{"executor":"native"}']);
     const capabilityRequirements = { requires: { aw: {
       capabilities: expect.arrayContaining(['aw.managed-commands.v2', 'aw.native-tools.v3']),
     } } };
@@ -147,7 +151,7 @@ describe('five namespaced write commands', () => {
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex', 'claude'] });
-    const { isolation, runtime, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    const { isolation, runtime, runPublic } = await prepareSubagentCompositionPublicCommandFixture();
     const claude = await createClaudeNativeTestRuntime(isolation);
     const project = platform === 'claude'
       ? path.join(isolation.layout.fixtureCwd, 'claude-backend-project') : isolation.layout.fixtureCwd;
@@ -266,7 +270,8 @@ describe('five namespaced write commands', () => {
       const schema = await invoke(['plugin', 'config', 'schema', guideSelector, '--platform', platform, '--json']);
       expect(schema.exitCode, schema.stderr).toBe(0);
       expect(JSON.parse(schema.stdout)).toMatchObject({ data: { fields: {
-        simpleTaskProfile: { properties: { model: { suggestions: { provider: 'executor-models', dependsOn: ['executor'] } } } },
+        simpleTaskProfile: { suggestions: { provider: 'executor-model-profile', hint: 'fast' },
+          properties: { model: { suggestions: { provider: 'executor-models', dependsOn: ['executor'] } } } },
       } } });
       const suggestions = await invoke(['plugin', 'config', 'suggestions', guideSelector, 'simpleTaskProfile.model',
         '--platform', platform, '--dep', 'executor=fixture', '--json']);
@@ -329,7 +334,7 @@ describe('five namespaced write commands', () => {
 
   it('keeps one Guide package and applies only the chosen platform across independent projects', async () => {
     // Test Value Gate: the installed Guide agrees with its manifest, rendered calls, and exact host permissions.
-    const { isolation, runtime: codex } = await prepareCodexEnhancePublicCommandFixture();
+    const { isolation, runtime: codex } = await prepareSubagentCompositionPublicCommandFixture();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
     const claudeRoot = path.join(cwd, 'claude-project');
     await fs.ensureDir(path.join(claudeRoot, '.git'));
@@ -371,7 +376,7 @@ describe('five namespaced write commands', () => {
     const piSettings = await fs.readJson(path.join(cwd, '.pi', 'settings.json'));
     expect(piSettings.packages).toHaveLength(1);
     const piPackage = path.resolve(cwd, '.pi', piSettings.packages[0]);
-    expect(await fs.readdir(path.join(piPackage, 'agents'))).toEqual([expect.stringMatching(/-subagent\.md$/u)]);
+    await expect(fs.pathExists(path.join(piPackage, 'agents'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(piPackage, 'skills', 'spawn-subagent', 'SKILL.md'))).resolves.toBe(true);
     const piCommand = await installedGuidePackage(env);
     expect(piCommand.runtimeConfigPlatforms).toEqual(['pi']);
@@ -412,225 +417,132 @@ describe('five namespaced write commands', () => {
     expect(after[1].effectiveValues.subagentRetentionHours).toBe(72);
   }, 120_000);
 
-  it('cleans codex-enhance project roles when the Guide command package pointer is missing', async (test) => {
+  it('cleans exploration project outputs even when the Guide command package pointer is missing', async () => {
     // Missing weak command state must not block cleanup of exact scoped output.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex'] });
-    const timing = createCommandTestTiming(test);
-    const { isolation, runtime, runPublic } = await timing.measure(
-      'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
-    );
-    expect(await runPublic([
-      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    // Each plugin has two shared package batches and one project Agent batch.
-    // Lock rechecks and manager resolution must reuse these successful inputs.
-    expect(timing.rendererCalls).toBe(6);
-    const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
-    const subagentCacheRoot = nativePackage(runtime, 'agent-subagent').root;
-    await fs.remove(await guidePackagePointer(isolation.env));
+    const { isolation, runtime, runPublic } = await prepareSubagentCompositionPublicCommandFixture();
+    const id = 'team/agent-explore';
+    const config = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    expect(await runPublic(['plugin', 'install', id, '--scope', 'project', '--yes']))
+      .toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    const explore = nativePackage(runtime, 'agent-explore');
+    expect((await readCodexConfigFile(config)).snapshot.plugins[explore.registrationId]?.enabled).toBe(true);
+    await expect(fs.pathExists(path.join(explore.root, 'scripts/aw-instructions.mjs'))).resolves.toBe(true);
     const intentPath = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-intents.json');
     const intentBefore = await fs.readFile(intentPath);
-
-    expect(await runPublic([
-      'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    expect(timing.rendererCalls).toBe(6);
-    for (const role of ['codex-explore', 'codex-advisor']) {
-      await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
-        `aw-team-codex-enhance-${role}.toml`))).resolves.toBe(false);
-    }
-    expect((await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
-      .snapshot.plugins[enhanceRegistrationId]?.enabled).not.toBe(true);
+    await fs.remove(await guidePackagePointer(isolation.env));
+    expect(await runPublic(['plugin', 'remove', '--only', 'outputs', id, '--target', 'codex', '--scope', 'project', '--yes']))
+      .toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    const after = (await readCodexConfigFile(config)).snapshot;
+    expect(after.plugins[explore.registrationId]?.enabled).not.toBe(true);
+    expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'))).snapshot.plugins[explore.registrationId]?.enabled).not.toBe(true);
     await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
-    await expect(fs.pathExists(path.join(subagentCacheRoot, 'skills', 'spawn-subagent', 'SKILL.md')))
-      .resolves.toBe(true);
+    await expect(fs.pathExists(path.join(nativePackage(runtime, 'agent-subagent').root, 'skills', 'spawn-subagent', 'SKILL.md'))).resolves.toBe(true);
   }, 30_000);
 
-  it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async (test) => {
-    // Test Value Gate: real config writes rematerialize the affected Skills while their project roles and the Guide snapshot stay intact.
+  it('rematerializes exploration Skill without changing advisor or Guide output through public commands', async () => {
+    // Real config apply updates one dynamic consumer and preserves independent packages and the command snapshot.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex'] });
-    const timing = createCommandTestTiming(test);
-    const { isolation, sourceIdentity, logicalIdentity, runtime, runPublic } =
-      await timing.measure('fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing));
-    const roleKeys = ['codex-explore', 'codex-advisor'];
-    const assertRoleInstructions = (roleKey: string, delivered: string | undefined, shared: string) => {
-      if (typeof delivered !== 'string') throw new Error('Expected native role developer instructions.');
-      if (roleKey === 'subagent') {
-        expect(delivered).toBe(shared);
-        return;
-      }
-      const prefix = `${shared.trimEnd()}\n\n`;
-      expect(delivered.startsWith(prefix)).toBe(true);
-      const local = delivered.slice(prefix.length);
-      // Check the native developer-channel scope; this does not prove model compliance.
-      expect(local.split(roleKey)).toHaveLength(2);
-      const task = roleKey === 'codex-advisor' ? '咨询' : '调查';
-      expect(local).toContain(`不要通过 ${roleKey} 将同一${task}重新委派`);
-      expect(local).toContain(`只限制重复父级${task}编排`);
-      expect(local).toContain('不禁止为不同有界子目标采用本次任务允许的协作方法');
-      for (const other of ['codex-advisor', 'codex-explore'].filter((key) => key !== roleKey)) {
-        expect(local).not.toContain(other);
-      }
-    };
-    expect(await runPublic([
-      'plugin', 'config', 'set', 'team/codex-enhance', 'standardProfile', '--context', 'project',
-      '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
-    ])).toMatchObject({ exitCode: 0 });
-    expect(await runPublic([
-      'plugin', 'config', 'set', 'team/codex-enhance', 'standardProfile', '--context', 'user',
-      '--value-json', '{"model":"user-standard","reasoningEffort":"max"}',
-    ])).toMatchObject({
-      exitCode: 0,
-      payload: { status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } } },
-    });
-    const projectInstall = await runPublic([
-      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
-    expect(projectInstall, JSON.stringify(projectInstall, null, 2))
-      .toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    const cacheRoot = nativePackage(runtime, 'codex-enhance').root;
-    const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
-    const subagentCacheRoot = nativePackage(runtime, 'agent-subagent').root;
-    const skillKeys = ['codex-explore', 'codex-advisor'];
-    const skillPaths = skillKeys.map((skill) =>
-      path.join(cacheRoot, 'skills', skill, 'SKILL.md'));
-    for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
-    for (const skill of skillKeys) {
-      await expect(fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'skills', skill)))
-        .resolves.toBe(false);
-    }
-    const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
-    const currentGuideSnapshot = async () => {
-      const pack = await installedGuidePackage(isolation.env);
-      return fs.readJson(path.join(pack.resourceRoot!, commandRuntimeConfigSnapshotPath('codex')));
-    };
-    const initialSnapshot = await currentGuideSnapshot();
-    expect(initialSnapshot).toMatchObject({
-      schemaVersion: 1,
-      platform: 'codex',
-      producer: { sourceId: 'team', pluginName: 'agent-subagent' },
-      allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
-      effectiveValues: { subagentCommands: [], subagentRetentionHours: 24 },
-    });
-    expect(await fs.pathExists(path.join(subagentCacheRoot, 'skills', 'spawn-subagent',
-      AW_RUNTIME_CONFIG_BINDING_PATH))).toBe(false);
-    for (const skill of ['codex-explore', 'codex-advisor']) {
-      await expect(fs.pathExists(path.join(cacheRoot, 'skills', skill, AW_RUNTIME_CONFIG_BINDING_PATH)))
-        .resolves.toBe(false);
-    }
-    const initialReceipt = await fs.readJson(
-      path.join(cacheRoot, SKILL_OWNER_MARKER),
-    ) as SkillOwnerMarker;
-    expect(initialReceipt.nativeProjection?.components.filter((component) => component.relativeOutputs.some((file) => file.endsWith('/SKILL.md')))
-      .map((component) => component.nativeName).sort()).toEqual([
-      'codex-advisor', 'codex-explore',
+    const { isolation, runtime, runPublic } = await prepareSubagentCompositionPublicCommandFixture();
+    const id = 'team/agent-explore';
+    const saveProfile = (model: string, effort: string, apply = false) => runPublic([
+      'plugin', 'config', 'set', id, 'exploreProfile', '--context', 'project', '--platform', 'codex',
+      '--value-json', JSON.stringify({ executor: 'native', model, reasoningEffort: effort }), ...(apply ? ['--apply', '--yes'] : []),
     ]);
-    const userStore = await readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, logicalIdentity,
-      pluginName: 'codex-enhance', scope: 'user',
-      cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    });
-    expect(userStore.values.standardProfile).toEqual({
-      model: 'user-standard', reasoningEffort: 'max',
-    });
-    const rolePaths = roleKeys.map((role) => path.join(
-      isolation.layout.fixtureCwd, '.codex', 'agents', `aw-team-codex-enhance-${role}.toml`,
-    ));
-    const initialRoleBytes = await Promise.all(rolePaths.map((file) => fs.readFile(file, 'utf8')));
-    const instructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
-    for (const [index, content] of initialRoleBytes.entries()) {
-      const role = parseCodexRoleFile(content);
-      expect(initialSkillBytes[index]!.toString('utf8')).toContain(`\`${role.name}\` 角色`);
-      expect(role.model).toBeUndefined();
-      expect(role.modelReasoningEffort).toBeUndefined();
-      const sharedInstructions = await fs.readFile(path.join(
-        cacheRoot, 'skills', skillKeys[index]!, 'assets', instructionFiles[index]!,
-      ), 'utf8');
-      assertRoleInstructions(roleKeys[index]!, role.developerInstructions, sharedInstructions);
+    expect(await saveProfile('initial-explore', 'high')).toMatchObject({ exitCode: 0 });
+    expect(await runPublic(['plugin', 'install', id, 'team/agent-advisor', '--scope', 'project', '--yes']))
+      .toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+    const explore = nativePackage(runtime, 'agent-explore');
+    const advisor = nativePackage(runtime, 'agent-advisor');
+    const guide = nativePackage(runtime, 'agent-subagent');
+    const exploreFile = path.join(explore.root, 'skills/explore-facts/SKILL.md');
+    const advisorFile = path.join(advisor.root, 'skills/consult-advisor/SKILL.md');
+    const guideSkillFile = path.join(guide.root, 'skills/spawn-subagent/SKILL.md');
+    const guideRole = path.join(isolation.layout.fixtureCwd, '.codex/agents/aw-team-agent-subagent-subagent.toml');
+    await expect(fs.pathExists(guideRole)).resolves.toBe(false);
+    const initialExplore = await fs.readFile(exploreFile, 'utf8');
+    const initialAdvisor = await fs.readFile(advisorFile);
+    const initialGuideSkill = await fs.readFile(guideSkillFile);
+    const initialSnapshot = await installedGuidePackage(isolation.env).then(pack =>
+      fs.readJson(path.join(pack.resourceRoot!, commandRuntimeConfigSnapshotPath('codex'))));
+    expect(initialExplore).toContain('"initial-explore"');
+    expect(initialSnapshot).toMatchObject({ allowedKeys: ['subagentCommands', 'subagentRetentionHours'],
+      effectiveValues: { subagentCommands: [], subagentRetentionHours: 24 } });
+    for (const [root, name] of [[explore.root, 'explore-facts'], [advisor.root, 'consult-advisor']]) {
+      const receipt = await fs.readJson(path.join(root!, SKILL_OWNER_MARKER)) as SkillOwnerMarker;
+      expect(receipt.nativeProjection?.components.filter(component => component.relativeOutputs.some(file => file.endsWith('/SKILL.md')))
+        .map(component => component.nativeName)).toEqual([name]);
+      await expect(fs.pathExists(path.join(root!, 'skills', name!, AW_RUNTIME_CONFIG_BINDING_PATH))).resolves.toBe(false);
     }
-    const subagentRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-agent-subagent-subagent.toml');
-    const initialSubagentRoleBytes = await fs.readFile(subagentRolePath, 'utf8');
-    const installedSubagentRole = parseCodexRoleFile(initialSubagentRoleBytes);
-    expect(await fs.readFile(path.join(subagentCacheRoot, 'skills/spawn-subagent/SKILL.md'), 'utf8'))
-      .toContain(`\`${installedSubagentRole.name}\``);
-    expect(installedSubagentRole.model).toBeUndefined();
-    expect(installedSubagentRole.modelReasoningEffort).toBeUndefined();
-    assertRoleInstructions('subagent', installedSubagentRole.developerInstructions,
-      await fs.readFile(path.join(subagentCacheRoot, 'skills/spawn-subagent/assets/task-instructions.md'), 'utf8'));
-    expect(initialSkillBytes[0].toString('utf8')).toContain('"user-standard"');
-    expect(initialSkillBytes[1].toString('utf8')).not.toContain('"user-standard"');
-    expect(await runPublic([
-      'plugin', 'config', 'set', 'team/codex-enhance', 'standardProfile', '--context', 'user',
-      '--value-json', '{"model":"saved-standard","reasoningEffort":"medium"}',
-    ])).toMatchObject({
-      exitCode: 0,
-      payload: { status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested' } } },
-    });
-    await expect(currentGuideSnapshot()).resolves.toEqual(initialSnapshot);
-    for (const [index, file] of skillPaths.entries()) {
-      await expect(fs.readFile(file)).resolves.toEqual(initialSkillBytes[index]);
-    }
-    const rematerialized = await runPublic([
-      'plugin', 'config', 'set', 'team/codex-enhance', 'standardProfile', '--context', 'project',
-      '--value-json', '{"model":"updated-standard","reasoningEffort":"high"}',
-      '--apply', '--yes',
-    ]);
-    expect(rematerialized, JSON.stringify(rematerialized)).toMatchObject({ exitCode: 0 });
-    await expect(fs.readFile(skillPaths[0], 'utf8')).resolves.toContain('"updated-standard"');
-    await expect(fs.readFile(skillPaths[0]!)).resolves.not.toEqual(initialSkillBytes[0]);
-    for (const index of [1]) {
-      await expect(fs.readFile(skillPaths[index]!)).resolves.toEqual(initialSkillBytes[index]);
-    }
-    await expect(currentGuideSnapshot()).resolves.toEqual(initialSnapshot);
-    for (const [index, file] of rolePaths.entries()) {
-      await expect(fs.readFile(file, 'utf8')).resolves.toBe(initialRoleBytes[index]);
-    }
-    await expect(fs.readFile(subagentRolePath, 'utf8')).resolves.toBe(initialSubagentRoleBytes);
-    const projectOnlyConfig = await readCodexConfigFile(path.join(
-      isolation.layout.fixtureCwd, '.codex', 'config.toml',
-    ));
-    const projectOnlyUserConfig = await readCodexConfigFile(path.join(
-      isolation.env.CODEX_HOME!, 'config.toml',
-    ));
-    expect(projectOnlyConfig.snapshot.plugins[enhanceRegistrationId]?.enabled).toBe(true);
-    expect(projectOnlyUserConfig.snapshot.plugins[enhanceRegistrationId]?.enabled).not.toBe(true);
-    await fs.remove(await guidePackagePointer(isolation.env));
-    expect(await runPublic([
-      'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
-    await expect(fs.pathExists(subagentRolePath)).resolves.toBe(true);
-    expect(await runPublic([
-      'plugin', 'remove', '--only', 'outputs', 'team/agent-subagent', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
-    } });
-    await expect(fs.pathExists(subagentRolePath)).resolves.toBe(false);
-    expect((await readCodexConfigFile(path.join(
-      isolation.layout.fixtureCwd, '.codex', 'config.toml',
-    ))).snapshot.plugins[enhanceRegistrationId]?.enabled).not.toBe(true);
+    expect(await saveProfile('saved-explore', 'medium')).toMatchObject({ exitCode: 0, payload: { data: { apply: { state: 'skipped' } } } });
+    await expect(fs.readFile(exploreFile, 'utf8')).resolves.toBe(initialExplore);
+    expect(await saveProfile('updated-explore', 'high', true)).toMatchObject({ exitCode: 0 });
+    await expect(fs.readFile(exploreFile, 'utf8')).resolves.toContain('"updated-explore"');
+    await expect(fs.readFile(advisorFile)).resolves.toEqual(initialAdvisor);
+    await expect(fs.readFile(guideSkillFile)).resolves.toEqual(initialGuideSkill);
+    await expect(fs.pathExists(guideRole)).resolves.toBe(false);
+    const guidePackage = await installedGuidePackage(isolation.env);
+    await expect(fs.readJson(path.join(guidePackage.resourceRoot!, commandRuntimeConfigSnapshotPath('codex')))).resolves.toEqual(initialSnapshot);
   }, 120_000);
 
-  it('preserves codex-enhance project roles while adding and removing the user root through public commands', async (test) => {
+  it('preserves synthetic Codex project roles while adding and removing the user root through public commands', async (test) => {
     // Test Value Gate: shared package activation cannot move or remove independent scoped Agent output.
-    const machine = getCurrentSourceTestIsolation();
-    await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
-      { ...createEmptyPreferences(), targets: ['codex'] });
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    await writePreferences({ scope: 'user', cwd, env }, { ...createEmptyPreferences(), targets: ['codex'] });
     const timing = createCommandTestTiming(test);
-    const { isolation, runtime, runPublic } = await timing.measure(
-      'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
-    );
-    const cwd = isolation.layout.fixtureCwd;
-    const env = isolation.env;
-    const roleNames = ['codex-explore', 'codex-advisor'];
-    const projectRoles = roleNames.map((role) => path.join(cwd, '.codex', 'agents', `aw-team-codex-enhance-${role}.toml`));
-    const userRoles = roleNames.map((role) => path.join(env.CODEX_HOME!, 'agents', `aw-team-codex-enhance-${role}.toml`));
-    const projectInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
+    const pluginName = 'synthetic-role-fixture';
+    const selector = `team/${pluginName}`;
+    const sourceRoot = path.join(cwd, 'synthetic-role-catalog');
+    const pluginRoot = path.join(sourceRoot, 'plugins', pluginName);
+    const configureManifest = (manifest: {
+      platforms?: string[];
+      skills?: string;
+      extensions?: Record<string, unknown>;
+      command?: Record<string, unknown>;
+    }) => {
+      manifest.platforms = ['codex'];
+      manifest.skills = './skills';
+      manifest.extensions = {
+        agents: [{ name: 'reviewer', description: 'Synthetic Codex role.', prompt: 'Review carefully.\n' }],
+      };
+      manifest.command = {
+        sourceDir: './commands',
+        mode: 'static',
+        routes: { subcommands: [{ name: 'ping', runner: 'node', entry: 'ping.mjs' }] },
+      };
+    };
+    await timing.measure('fixture-step', 'catalog.build', async () => {
+      await fs.outputFile(
+        path.join(pluginRoot, 'skills', 'role-skill', 'SKILL.md'),
+        '---\nname: role-skill\ndescription: Synthetic role skill.\n---\nUse reviewer.\n',
+      );
+      await fs.outputFile(path.join(pluginRoot, 'commands', 'ping.mjs'), 'export {};\n');
+      await createCatalogSnapshotFixture(sourceRoot, pluginName, [], 'Synthetic role fixture\n', configureManifest);
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+        expectedDigest: snapshot.digest,
+        env,
+      });
+      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const result = await runCliEntry([...args, '--json'], { cwd, env, interactive: false, nativeCliRunner: runtime.nativeCliRunner });
+      return { exitCode: result.exitCode, payload: result.parseJsonStdout<Record<string, unknown>>() };
+    };
+    const roleNames = ['reviewer'];
+    const projectRoles = roleNames.map((role) => path.join(cwd, '.codex', 'agents', `aw-team-${pluginName}-${role}.toml`));
+    const userRoles = roleNames.map((role) => path.join(env.CODEX_HOME!, 'agents', `aw-team-${pluginName}-${role}.toml`));
+    const projectInstall = await runPublic(['plugin', 'install', selector, '--scope', 'project', '--yes']);
     expect(projectInstall, JSON.stringify(projectInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    const cacheRoot = nativePackage(runtime, 'codex-enhance').root;
-    const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
+    const cacheRoot = nativePackage(runtime, pluginName).root;
+    const registrationId = nativePackage(runtime, pluginName).registrationId;
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
     const projectRoleBytes = await Promise.all(projectRoles.map((file) => fs.readFile(file)));
     const projectLocation = { scope: 'project' as const, cwd, env };
@@ -640,10 +552,10 @@ describe('five namespaced write commands', () => {
     const preferencesBefore = await fs.readFile(preferencesPath);
     const foreignRole = path.join(cwd, '.codex', 'agents', 'foreign.toml');
     await fs.outputFile(foreignRole, 'developer_instructions = "foreign bytes"\n');
-    const userInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'user', '--yes']);
+    const userInstall = await runPublic(['plugin', 'install', selector, '--scope', 'user', '--yes']);
     expect(userInstall, JSON.stringify(userInstall)).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
-      data: { targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/codex-enhance', scope: 'user', execution: 'applied' }),
-        expect.objectContaining({ pluginId: 'team/codex-enhance', scope: 'project', deploymentReceipts: expect.arrayContaining([
+      data: { targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: selector, scope: 'user', execution: 'applied' }),
+        expect.objectContaining({ pluginId: selector, scope: 'project', deploymentReceipts: expect.arrayContaining([
           expect.objectContaining({ after: expect.objectContaining({ scopeActivation: 'unknown', registration: 'present' }) }),
         ]) })]) } } });
     for (const file of userRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
@@ -652,7 +564,7 @@ describe('five namespaced write commands', () => {
     }
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     const scopedStatus = await readRecoveryStatus({ cwd, env, cliVersion: '1.0.0', targets: ['codex'], nativeCliRunner: runtime.nativeCliRunner });
-    expect(scopedStatus.inventory?.filter((entry) => entry.pluginId === 'team/codex-enhance')
+    expect(scopedStatus.inventory?.filter((entry) => entry.pluginId === selector)
       .flatMap((entry) => entry.targetResults), JSON.stringify(scopedStatus)).toContainEqual(expect.objectContaining({
         scope: 'project', providerScope: 'project', content: 'unknown', satisfaction: 'unknown', blockers: [],
         deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
@@ -668,28 +580,31 @@ describe('five namespaced write commands', () => {
       .not.toContain('componentOutputMissing');
     const userRoleBytes = await Promise.all(userRoles.map((file) => fs.readFile(file)));
     await fs.remove(userRoles[0]!);
-    const drifted = await runPublic(['plugin', 'status', 'team/codex-enhance', '--context', 'user']);
+    const drifted = await runPublic(['plugin', 'status', selector, '--context', 'user']);
     expect(drifted).toMatchObject({ exitCode: 0, payload: { status: 'success',
       data: { counts: { blocked: 0, pending: 1 }, inventory: [expect.objectContaining({
         targetResults: [expect.objectContaining({ content: 'absent', satisfaction: 'pending', blockerCodes: [] })],
       })] },
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'componentOutputMissing', severity: 'warning',
-        subject: { pluginId: 'team/codex-enhance', target: 'codex', scope: 'user' } })]),
+        subject: { pluginId: selector, target: 'codex', scope: 'user' } })]),
       nextActions: expect.arrayContaining([expect.objectContaining({
-        argv: ['aw', 'plugin', 'sync', 'team/codex-enhance', '--context', 'user', '--target', 'codex'],
+        argv: ['aw', 'plugin', 'sync', selector, '--context', 'user', '--target', 'codex'],
       })]) } });
     expect(drifted.payload).not.toMatchObject({ diagnostics: expect.arrayContaining([
       expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
     ]) });
     const userBeforeSync = await observeIntent(userLocation);
-    const synced = await runPublic(['plugin', 'sync', 'team/codex-enhance', '--context', 'user', '--yes']);
+    const synced = await runPublic(['plugin', 'sync', selector, '--context', 'user', '--yes']);
     expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     await expect(observeIntent(userLocation)).resolves.toEqual(userBeforeSync);
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     for (const [index, file] of userRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(userRoleBytes[index]);
     for (const [index, file] of projectRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(projectRoleBytes[index]);
-    await fs.writeFile(await guidePackagePointer(env), '{broken');
-    const removed = await runPublic(['plugin', 'remove', 'team/codex-enhance', '--scope', 'user', '--yes']);
+    const { packages } = await listManagedCommandPackages(env);
+    const installedCommand = packages.find((entry) => entry.selector === selector);
+    expect(installedCommand?.resourceRoot).toBeDefined();
+    await fs.writeFile(path.resolve(installedCommand!.resourceRoot!, '..', '..', 'current.json'), '{broken');
+    const removed = await runPublic(['plugin', 'remove', selector, '--scope', 'user', '--yes']);
     expect(removed).toMatchObject({ exitCode: 4, payload: {
       status: 'partial', data: { changes: { requirements: 'changed' } },
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
@@ -699,19 +614,16 @@ describe('five namespaced write commands', () => {
     for (const [index, file] of projectRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(projectRoleBytes[index]);
     for (const file of userRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(cwd, '.codex', 'config.toml')))
-      .snapshot.plugins[enhanceRegistrationId]?.enabled).toBe(true);
-    await expect(fs.pathExists(path.join(cacheRoot, 'skills', 'codex-explore', 'SKILL.md'))).resolves.toBe(true);
+      .snapshot.plugins[registrationId]?.enabled).toBe(true);
+    await expect(fs.pathExists(path.join(cacheRoot, 'skills', 'role-skill', 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(fs.readFile(preferencesPath)).resolves.toEqual(preferencesBefore);
     const cleanup = (pluginId: string) => runPublic(['plugin', 'remove', '--only', 'outputs', pluginId,
       '--target', 'codex', '--scope', 'project', '--yes']);
-    expect(await cleanup('team/codex-enhance')).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
-    expect(await cleanup(guideSelector)).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
+    expect(await cleanup(selector)).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'commandBindingInvalid' })]),
     } });
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(cwd, '.codex', 'agents', 'aw-team-agent-subagent-subagent.toml')))
-      .resolves.toBe(false);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
   }, 120_000);

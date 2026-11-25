@@ -4,6 +4,11 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
+import { statusCommandV8 } from '../../src/commands/status-v6.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
+import { portableRecoveryLayout } from '../../src/portable/recovery-layout.js';
+import { observePortableSkill, portableOwnedTreeDigest, publishPortableSkill } from '../../src/portable/writer.js';
+import { portableJsonDigest } from '../../src/portable/historical-materialization.js';
 import { addRoot, removeRoot } from '../../src/intent/intent-store.js';
 import { writePreferences } from '../../src/intent/deployment-preferences.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -74,7 +79,7 @@ async function client(platform: PlatformTarget, env: NodeJS.ProcessEnv, version?
       : invocation.args.includes('--help') && platform === 'grok' ? 'plugin install list enable disable uninstall update --json' : platform === 'codex' ? JSON.stringify({ installed: [], available: [] }) : '[]' }));
   return runner;
 }
-async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic?: boolean; artifactScopes?: Array<'user' | 'project'>; mixed?: boolean; version?: string; empty?: boolean; scope?: 'user' | 'project'; available?: boolean } = {}) {
+async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic?: boolean; artifactScopes?: Array<'user' | 'project'>; mixed?: boolean; version?: string; empty?: boolean; scope?: 'user' | 'project'; available?: boolean; requiredConfig?: boolean; platforms?: PlatformTarget[] } = {}) {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'project');
   const source = path.join(isolation.layout.fixtureCwd, 'catalog');
@@ -87,7 +92,8 @@ async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic
   if (options.dynamic) await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'),
     `import fs from 'node:fs';fs.writeFileSync(process.env.AW_RENDER_SENTINEL,'ran');console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n`);
   await createCatalogSnapshotFixture(source, 'demo', [], 'Demo', (manifest) => {
-    manifest.platforms = [platform];
+    manifest.platforms = options.platforms ?? [platform];
+    if (options.requiredConfig) manifest.config = { schemaVersion: 5, fields: { profile: { type: 'string', required: true } } };
     if (options.mixed) manifest.extensions = { instructions: [{ name: 'context', title: 'Context', content: 'Use this context.', coverage: ['main'] }] };
     if (!options.empty && !options.dynamic) manifest.skills = './skills';
     if (options.dynamic) {
@@ -102,7 +108,7 @@ async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic
   const logicalIdentity = await readCatalogSnapshotLogicalIdentity(source);
   const sourceIdentity = await calculateCatalogSourceIdentity(configuredSource);
   await addRoot({ cwd, env, scope }, 'local/demo', logicalIdentity);
-  await writePreferences({ scope: 'user', cwd, env }, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [platform], exclusions: [] });
+  await writePreferences({ scope: 'user', cwd, env }, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: options.platforms ?? [platform], exclusions: [] });
   env.AW_RENDER_SENTINEL = sentinel;
   const runner = options.available && platform !== 'generic' ? await client(platform, env, options.version) : vi.fn<NativeCliRunner>(async () => { throw new Error('Unexpected native invocation'); });
   return { isolation, cwd, source, env, scope, sentinel, sourceIdentity, logicalIdentity, runner,
@@ -925,6 +931,88 @@ describe('status safety and recovery evidence', () => {
     expect(await fs.readFile(path.join(layout.packageRoot, 'index.ts'), 'utf8')).toBe('owned orphan');
   });
 
+  // Test Value Gate: a retained output from another Catalog identity must stay discoverable for cleanup without requiring the new plugin's configuration.
+  it.each(['generic', 'opencode'] as const)('distinguishes old and current Catalog identity in %s residual configuration status', async (platform) => {
+    const platforms: PlatformTarget[] = ['generic', 'opencode'];
+    const value = await fixture(platform, { available: true, requiredConfig: true, platforms });
+    await removeRoot({ cwd: value.cwd, env: value.env, scope: 'user' }, 'local/demo');
+    const installResidue = async (current: boolean) => {
+      if (platform === 'generic') {
+        const context = await createScopeContext({ scope: 'user', cwd: value.cwd, env: value.env, readOnly: true });
+        try {
+          const destinationRoot = portableRecoveryLayout(context).targetRoot(platform);
+          // The old output deliberately sorts after the current one, so cached config checks cannot leak between identities.
+          const skill = current ? 'current-example' : 'old-example';
+          const identity = { pluginId: 'local/demo', logicalIdentity: current ? value.logicalIdentity : 'previous-catalog',
+            platform, scope: 'user' as const, skill };
+          const sourceDir = path.join(value.isolation.layout.fixtureCwd, skill);
+          await fs.outputFile(path.join(sourceDir, 'SKILL.md'), `---\nname: ${skill}\ndescription: Example.\n---\nExample.\n`);
+          await fs.outputFile(path.join(sourceDir, 'README.md'), 'Example.\n');
+          const expectedDigest = await portableOwnedTreeDigest(sourceDir);
+          await publishPortableSkill({ sourceDir, destinationRoot, identity, expectedDigest, configDigest: portableJsonDigest({}),
+            observed: await observePortableSkill({ destinationRoot, skill, identity }) });
+        } finally { await context.dispose(); }
+      } else {
+        const { layout, component } = await placement({ ...value, sourceIdentity: current ? value.sourceIdentity : `sha256:${'b'.repeat(64)}` }, platform);
+        if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
+        await fs.outputFile(path.join(layout.packageRoot, 'index.ts'), 'retained content');
+        await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity });
+      }
+    };
+    await installResidue(false);
+    const read = async () => {
+      const before = await snapshot(value.isolation.layout.rootDir);
+      const recovery = await value.read();
+      const summary = await statusCommandV8({ scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0', nativeCliRunner: value.runner });
+      expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+      expect(recovery.extraObserved).toContainEqual(expect.objectContaining({ pluginId: 'local/demo', agent: platform, scope: 'user' }));
+      expect(recovery.ownedTargets).toContainEqual({ pluginId: 'local/demo', agent: platform, scope: 'user' });
+      return { recovery, summary: summary.pluginSummaries.find((entry) => entry.pluginId === 'local/demo') };
+    };
+    const previous = await read();
+    expect(previous.recovery.extraObserved.flatMap((entry) => entry.blockers ?? [])).not.toContainEqual(expect.objectContaining({ code: 'requiredConfigMissing' }));
+    expect(previous.summary?.configIssues).toBeUndefined();
+    expect(previous.recovery.existingTargets).not.toContainEqual({ pluginId: 'local/demo', agent: platform, scope: 'user' });
+
+    await installResidue(true);
+    const current = await read();
+    expect(current.recovery.extraObserved.flatMap((entry) => entry.blockers ?? [])).toContainEqual(expect.objectContaining({ code: 'requiredConfigMissing' }));
+    expect(current.summary?.configIssues).toEqual([expect.objectContaining({ key: 'profile', platform, scope: 'user', type: 'missing-required' })]);
+    if (platform === 'generic') {
+      const previousOutput = current.recovery.extraObserved.find((entry) => (entry.backend as { logicalIdentity?: string })?.logicalIdentity === 'previous-catalog');
+      expect(previousOutput).toBeDefined();
+      expect(previousOutput?.blockers ?? []).not.toContainEqual(expect.objectContaining({ code: 'requiredConfigMissing' }));
+    }
+
+    await addRoot({ cwd: value.cwd, env: value.env, scope: 'user' }, 'local/demo', value.logicalIdentity);
+    const demanded = await statusCommandV8({ scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0', nativeCliRunner: value.runner });
+    expect(demanded.pluginSummaries.find((entry) => entry.pluginId === 'local/demo')?.configIssues).toEqual(
+      expect.arrayContaining(platforms.map((platform) => expect.objectContaining({ key: 'profile', platform, scope: 'user', type: 'missing-required' }))));
+  });
+
+  // Test Value Gate: an excluded root contributes no target demand to its dependency, but another valid root still needs it.
+  it('only checks undeployed dependency configuration for actual target requirements', async () => {
+    const value = await fixture('cursor');
+    await createDependencyCatalogSnapshotFixture(value.source, [
+      { name: 'provider', configureManifest: (manifest) => {
+        manifest.platforms = ['cursor'];
+        manifest.config = { schemaVersion: 5, fields: { profile: { type: 'string', required: true } } };
+      } },
+      { name: 'demo', dependencies: ['provider'], configureManifest: (manifest) => { manifest.platforms = ['cursor']; } },
+      { name: 'consumer', dependencies: ['provider'], configureManifest: (manifest) => { manifest.platforms = ['cursor']; } },
+    ]);
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
+    await writePreferences({ scope: 'user', cwd: value.cwd, env: value.env }, { schemaVersion: 2, kind: 'aw-deployment-preferences',
+      targets: ['cursor'], exclusions: [{ plugin: 'local/demo', target: 'cursor' }] });
+    const read = async () => (await statusCommandV8({ scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0', nativeCliRunner: value.runner }))
+      .pluginSummaries.find((entry) => entry.pluginId === 'local/provider');
+    const excluded = await read();
+    expect(excluded).toBeDefined();
+    expect(excluded?.configIssues).toBeUndefined();
+    await addRoot({ cwd: value.cwd, env: value.env, scope: 'user' }, 'local/consumer', value.logicalIdentity);
+    expect((await read())?.configIssues).toContainEqual(expect.objectContaining({ key: 'profile', platform: 'cursor', scope: 'user', type: 'missing-required' }));
+  });
+
   it('does not invent target demand when preferences have no selected platform', async () => {
     const value = await fixture();
     await writePreferences({ scope: 'user', cwd: value.cwd, env: value.env }, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [], exclusions: [] });
@@ -997,7 +1085,8 @@ describe('status safety and recovery evidence', () => {
     const before = await snapshot(value.isolation.layout.rootDir);
     const status = await value.read();
     expect(target(status).observation).toBe('unknown');
-    expect(target(status).blockers).toContainEqual(expect.objectContaining({ code: 'nativeObservationFailed' }));
+    expect(target(status).blockers).toContainEqual(expect.objectContaining({ code: 'configInvalid', detail: { reasonCode: 'invalidConfig', fieldKeys: ['mode'] } }));
+    expect(target(status).blockers).not.toContainEqual(expect.objectContaining({ code: 'nativeObservationFailed' }));
     expect(status.allSatisfied).not.toBe(true);
     expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
   });

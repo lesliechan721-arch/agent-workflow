@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 4,
+  "name": "agent-advisor",
+  "version": "0.1.0",
+  "description": "面向任意工作的独立只读第二意见：在任务中途陷入判断卡点或高代价拍板前自发求助独立顾问（未配置覆盖且允许外发时优先异构外部模型），主会话逐条核验后再裁决。",
+  "platforms": [
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "copilot",
+    "grok",
+    "generic"
+  ],
+  "marketplace": {
+    "category": "workflow",
+    "tags": [
+      "advisor",
+      "second-opinion",
+      "reasoning",
+      "subagent",
+      "readonly",
+      "cross-model"
+    ],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Agent Advisor",
+    "shortDescription": "跨平台、全领域的独立第二意见顾问与异构视角咨询",
+    "capabilities": [
+      "Skills",
+      "Instructions"
+    ]
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    },
+    "tests": {
+      "node": [
+        "./scripts/advisor-artifacts.test.mjs"
+      ]
+    }
+  },
+  "config": {
+    "schemaVersion": 5,
+    "definitions": {
+      "agentExecutor": {
+        "type": "string",
+        "title": "执行器",
+        "description": "native 或 agent-subagent 已注册的 subagentCommands key；省略时按 native 解释。",
+        "valueRef": {
+          "plugin": "agent-subagent",
+          "field": "subagentCommands",
+          "key": "key",
+          "include": [
+            "native"
+          ]
+        },
+        "clearsOnChange": [
+          "model",
+          "reasoningEffort"
+        ],
+        "validation": {
+          "minLength": 1
+        }
+      },
+      "agentModel": {
+        "type": "string",
+        "title": "模型",
+        "description": "留空沿用宿主/后端默认。",
+        "suggestions": {
+          "plugin": "agent-subagent",
+          "provider": "executor-models",
+          "dependsOn": [
+            "executor"
+          ]
+        },
+        "validation": {
+          "minLength": 1
+        }
+      },
+      "agentReasoningEffort": {
+        "type": "string",
+        "title": "推理强度",
+        "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+        "choices": {
+          "allowCustom": true,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            }
+          ]
+        },
+        "suggestions": {
+          "plugin": "agent-subagent",
+          "provider": "executor-efforts",
+          "dependsOn": [
+            "executor",
+            "model"
+          ]
+        },
+        "validation": {
+          "minLength": 1
+        }
+      },
+      "agentProfile": {
+        "type": "object",
+        "properties": {
+          "executor": {
+            "$ref": "#/config/definitions/agentExecutor"
+          },
+          "model": {
+            "$ref": "#/config/definitions/agentModel"
+          },
+          "reasoningEffort": {
+            "$ref": "#/config/definitions/agentReasoningEffort"
+          }
+        },
+        "additionalProperties": false,
+        "suggestions": {
+          "plugin": "agent-subagent",
+          "provider": "executor-model-profile",
+          "title": "选择推荐模型组合",
+          "description": "按当前执行器实时目录原子选择模型与推理强度。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
+      }
+    },
+    "fields": {
+      "advisorProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "platformOnly": true,
+        "title": "常规顾问配置",
+        "description": "可选。用于重要判断卡点的第二意见；省略时若任务允许外发且 agent-subagent 有可用异构外部执行器则优先异构外部执行器，否则沿用 agent-subagent 的 complex 档位。",
+        "suggestions": {
+          "plugin": "agent-subagent",
+          "provider": "executor-model-profile",
+          "hint": "strong",
+          "title": "选择推荐顾问模型组合",
+          "description": "优先推荐高判断力的主力模型组合（可切换外部执行器以固定异构顾问）。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
+      },
+      "deepAdvisorProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "platformOnly": true,
+        "title": "深度顾问配置",
+        "description": "可选。用于高歧义、不可逆或全局复杂决策的第二意见；省略时若任务允许外发优先可用异构外部执行器（高难深度），否则沿用 agent-subagent 的 advanced 档位。",
+        "suggestions": {
+          "plugin": "agent-subagent",
+          "provider": "executor-model-profile",
+          "hint": "deep",
+          "title": "选择推荐深度顾问模型组合",
+          "description": "优先推荐最高深度推理模型组合。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
+      },
+      "advisorCustomProfiles": {
+        "type": "array",
+        "platformOnly": true,
+        "title": "顾问自定义路由",
+        "description": "可选。按数组顺序采用首个适用范围匹配项（如“安全与并发方案”“长文论证与策略评估”）；未匹配时再按常规/深度顾问规则执行。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "$ref": "#/config/definitions/agentExecutor"
+            },
+            "model": {
+              "$ref": "#/config/definitions/agentModel"
+            },
+            "reasoningEffort": {
+              "$ref": "#/config/definitions/agentReasoningEffort"
+            }
+          },
+          "additionalProperties": false,
+          "suggestions": {
+            "plugin": "agent-subagent",
+            "provider": "executor-model-profile",
+            "hint": "strong",
+            "title": "选择推荐模型组合",
+            "dependsOn": [
+              "executor"
+            ],
+            "targets": [
+              "model",
+              "reasoningEffort"
+            ]
+          }
+        }
+      }
+    },
+    "presentation": {
+      "groups": [
+        {
+          "id": "consult-advisor",
+          "title": "consult-advisor",
+          "fields": [
+            "advisorProfile",
+            "deepAdvisorProfile",
+            "advisorCustomProfiles"
+          ]
+        }
+      ],
+      "summaries": {
+        "modelAndEffort": {
+          "kind": "join",
+          "parts": [
+            {
+              "path": "/executor"
+            },
+            {
+              "path": "/model"
+            },
+            {
+              "path": "/reasoningEffort"
+            }
+          ],
+          "separator": "/",
+          "missing": "自动路由"
+        }
+      },
+      "fieldViews": {
+        "advisorProfile": {
+          "summary": "modelAndEffort"
+        },
+        "deepAdvisorProfile": {
+          "summary": "modelAndEffort"
+        }
+      }
+    }
+  },
+  "artifacts": {
+    "configKeys": [
+      "advisorProfile",
+      "deepAdvisorProfile",
+      "advisorCustomProfiles"
+    ],
+    "sourceDirs": [
+      "./shared",
+      "./skills/consult-advisor"
+    ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-config.v5",
+        "aw.plugin-config-array.v1",
+        "aw.plugin-config-value-ref.v1",
+        "aw.plugin-config-cross-plugin-value-ref.v1",
+        "aw.plugin-config-summary.v1",
+        "aw.plugin-config-suggestions.v2",
+        "aw.plugin-config-platform-only.v1",
+        "aw.plugin-config-clears-on-change.v1",
+        "aw.plugin-config-ref-override.v1"
+      ]
+    }
+  },
+  "dependencies": [
+    "agent-subagent"
+  ]
+}

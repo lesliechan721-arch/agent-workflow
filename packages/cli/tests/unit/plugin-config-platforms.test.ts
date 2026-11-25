@@ -22,6 +22,7 @@ import { collectPluginConfigReferenceEvidence } from '../../src/utils/plugin-con
 import { analyzePluginConfigMutationImpact } from '../../src/utils/plugin-config-impact.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 
 function fixture(config: unknown, name = 'demo', dependencies: string[] = []) {
   const isolation = getCurrentSourceTestIsolation();
@@ -98,6 +99,7 @@ describe('user common and platform configuration', () => {
     expect(await fs.pathExists(resolvePluginConfigStorePath(f.store))).toBe(false);
     expect((await resolveEffectivePluginConfig({ ...f.store, manifest: f.plugin.manifest, context: 'user' })).projectRoot).toBe('');
     execFileSync('git', ['init', '-q'], { cwd: f.cwd });
+    await setTargets(f.store, ['codex']);
     const saved = await applyPluginConfigWrite({ plugin: f.plugin, scope: 'user', context: 'project', platform: 'codex',
       cwd: f.cwd, env: f.env, request: { updates: { enabled: false } } });
     expect(saved).toMatchObject({ scope: 'user', context: 'project', configWrite: 'succeeded' });
@@ -164,6 +166,7 @@ describe('user common and platform configuration', () => {
   it('rejects removing the valid platform repair while reset clears only that platform', async () => {
     const f = fixture({ schemaVersion: 5, fields: { mode: { type: 'number' } },
       platforms: { codex: { fields: { mode: { type: 'string' } } } } });
+    await setTargets(f.store, ['codex']);
     await writePluginConfigStore({ ...f.store, values: { mode: 2 } });
     await writePluginConfigStore({ ...f.store, platform: 'codex', values: { mode: 'native' } });
     const write = { plugin: f.plugin, pluginName: f.plugin.manifest.name, scope: 'user' as const,
@@ -177,6 +180,49 @@ describe('user common and platform configuration', () => {
     expect(reset).toMatchObject({ configWrite: 'succeeded', resetDisposition: 'clearedLayer' });
     expect(reset.effective?.issues).toEqual([expect.objectContaining({ key: 'mode', source: 'common' })]);
     expect((await readPluginConfigStore(f.store)).values).toEqual({ mode: 2 });
+  });
+
+  // Test Value Gate: historical common keys must never satisfy platform-specific required values.
+  it('redacts stale common keys and resolves platform-only and branch-only fields independently', async () => {
+    const f = fixture({ schemaVersion: 5, fields: { shared: { type: 'string' },
+      profile: { type: 'string', platformOnly: true, required: true } },
+    platforms: { codex: { fields: { branch: { type: 'string', required: true } } } } });
+    await writePluginConfigStore({ ...f.store, values: { shared: 'keep', profile: 'stale', branch: 'stale' } });
+    expect(await f.resolve('codex')).toMatchObject({ values: { shared: 'keep' },
+      sources: { shared: 'common', profile: 'missing', branch: 'missing' },
+      issues: expect.arrayContaining([{ key: 'profile', type: 'missing-required', source: 'missing',
+        message: expect.any(String) }, { key: 'branch', type: 'missing-required', source: 'missing', message: expect.any(String) }]) });
+    const common = await resolveConfigRead({ plugin: f.plugin, ...f.store });
+    expect(common.fields).toEqual(expect.arrayContaining(['profile', 'branch'].map((key) =>
+      expect.objectContaining({ key, effectiveValue: '[redacted]', canSet: false, canUnset: true }))));
+    const written = await applyPluginConfigWrite({ plugin: f.plugin, ...f.store, request: { removeKeys: ['profile', 'branch'] } });
+    expect(written.staleRemovedKeys).toEqual(['profile', 'branch']);
+    expect((await readPluginConfigStore(f.store)).values).toEqual({ shared: 'keep' });
+  });
+
+  // A platform branch can make a formerly common field platform-only without blocking legitimate common edits.
+  it('does not treat an unchanged platform-only issue as an error in the edited common layer', async () => {
+    const f = fixture({ schemaVersion: 5, fields: { model: { type: 'string' } },
+      platforms: { codex: { fields: { model: { type: 'string', required: true, platformOnly: true } } } } });
+    await setTargets(f.store, ['codex']);
+    await expect(applyPluginConfigWrite({ ...f.store, plugin: f.plugin, request: { updates: { model: 'common-model' } } }))
+      .resolves.toMatchObject({ configWrite: 'succeeded' });
+    expect(await f.resolve('codex')).toMatchObject({ sources: { model: 'missing' },
+      issues: [expect.objectContaining({ key: 'model', type: 'missing-required' })] });
+    await expect(applyPluginConfigWrite({ ...f.store, plugin: f.plugin, platform: 'codex', request: { updates: { model: 'codex-model' } } }))
+      .resolves.toMatchObject({ configWrite: 'succeeded' });
+  });
+
+  // Test Value Gate: removing the whole schema must not strand its identity-bound user overrides.
+  it('allows explicit historical cleanup even after the plugin drops its config declaration', async () => {
+    const f = fixture({ schemaVersion: 5, fields: { oldValue: { type: 'string' } } });
+    await writePluginConfigStore({ ...f.store, platform: 'codex', values: { oldValue: 'stale' } });
+    delete f.plugin.manifest.config;
+    const read = await resolveConfigRead({ ...f.store, plugin: f.plugin, platform: 'codex' });
+    expect(read.fields).toEqual([expect.objectContaining({ key: 'oldValue', canSet: false, canUnset: true, effectiveValue: '[redacted]' })]);
+    const write = await applyPluginConfigWrite({ ...f.store, plugin: f.plugin, platform: 'codex', request: { removeKeys: ['oldValue'] } });
+    expect(write).toMatchObject({ configWrite: 'succeeded', staleRemovedKeys: ['oldValue'] });
+    expect((await readPluginConfigStore({ ...f.store, platform: 'codex' })).values).toEqual({});
   });
 
   // Test Value Gate: explicit project context is a source/preview boundary, never a second value store.
@@ -221,6 +267,7 @@ async function referenceFixture() {
   const consumer = fixture({ schemaVersion: 5, fields: { selected: { type: 'string',
     valueRef: { plugin: 'provider', field: 'registry', key: 'id' } } } }, 'consumer', ['provider']);
   const plugins = [provider.plugin, consumer.plugin];
+  await setTargets(provider.store, ['codex', 'claude']);
   for (const f of [provider, consumer]) await fs.outputJson(f.plugin.manifestPath, f.plugin.manifest);
   await writePluginConfigStore({ ...provider.store, values: { registry: [{ id: 'shared' }] } });
   await writePluginConfigStore({ ...provider.store, platform: 'codex', values: { registry: [{ id: 'codex' }] } });
@@ -255,6 +302,38 @@ describe('configuration references by platform', () => {
       cwd: f.provider.cwd, env: f.provider.env, visibleTargets: [], referencePlugins: f.plugins,
       commandDiscovery: { packages: [], errors: [] }, mutation: { kind: 'patch', updates: { registry: [{ id: 'shared' }, { id: 'new' }] } } });
     expect(impact.referenceBlockers).toEqual([]);
+  });
+
+  // Test Value Gate: a stopped platform's saved reference must not lock its provider registry.
+  it('preserves historical references but checks them again after enabling their target', async () => {
+    const f = await referenceFixture();
+    await writePluginConfigStore({ ...f.consumer.store, values: {} });
+    await writePluginConfigStore({ ...f.consumer.store, platform: 'claude', values: { selected: 'shared' } });
+    const write = { plugin: f.provider.plugin, ...f.provider.store, request: { updates: { registry: [] } },
+      rebuildRuntime: { referencePlugins: f.plugins } };
+    await setTargets(f.provider.store, ['codex']);
+    await expect(applyPluginConfigWrite(write)).resolves.toMatchObject({ configWrite: 'succeeded' });
+    expect((await readPluginConfigStore({ ...f.consumer.store, platform: 'claude' })).values).toEqual({ selected: 'shared' });
+    expect((await f.resolve('claude')).issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'selected', code: expect.stringMatching(/^valueRef/u) })]));
+    await writePluginConfigStore({ ...f.provider.store, values: { registry: [{ id: 'shared' }] } });
+    await setTargets(f.provider.store, ['codex', 'claude']);
+    await expect(applyPluginConfigWrite(write)).rejects.toMatchObject({ code: 'configReferenceInUse' });
+  });
+
+  // Test Value Gate: a discarded common registry is not a real source of platform reference candidates.
+  it('does not infer that clearing a stale common registry removes platform candidates', async () => {
+    const registry = { type: 'array', platformOnly: true, default: [], validation: { uniqueBy: 'id' },
+      items: { type: 'object', properties: { id: { type: 'string', required: true } }, additionalProperties: false } };
+    const provider = fixture({ schemaVersion: 5, fields: { shared: { type: 'string' }, registry } }, 'provider');
+    const consumer = fixture({ schemaVersion: 5, fields: { selected: { type: 'string', platformOnly: true,
+      valueRef: { plugin: 'provider', field: 'registry', key: 'id' } } } }, 'consumer', ['provider']);
+    await setTargets(provider.store, ['codex']);
+    await writePluginConfigStore({ ...provider.store, values: { shared: 'keep', registry: [{ id: 'stale' }] } });
+    await fs.outputFile(resolvePluginConfigStorePath(consumer.store), '{broken');
+    const receipt = await applyPluginConfigWrite({ ...provider.store, plugin: provider.plugin,
+      request: { removeKeys: ['registry'] }, rebuildRuntime: { referencePlugins: [provider.plugin, consumer.plugin] } });
+    expect(receipt).toMatchObject({ configWrite: 'succeeded', staleRemovedKeys: ['registry'] });
+    expect((await readPluginConfigStore(provider.store)).values).toEqual({ shared: 'keep' });
   });
 
   // Test Value Gate: stale review detection must bind actual schema/profile identity and all bytes read from provider stores.

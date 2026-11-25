@@ -11,6 +11,7 @@
 - **用户级意图（User Intent）**：保存在用户个人配置目录（`<AW_HOME>/plugin-intents.json`），记录用户全局期望启用的插件集合。
 - **项目级意图（Project Intent）**：保存在当前项目根目录的声明文件中（`<projectRoot>/.agent-workflows/plugin-intents.json`），记录当前仓库共享的插件需求。
 - **本机部署偏好（DeploymentPreferences schema 2）**：记录用户在本机上选择的目标客户端平台（`codex`、`claude` 等），由 `aw target set` 维护。
+- **可配置平台**：按规范平台顺序取插件支持与本机 `targets` 的交集，再减去该插件的 `exclusions`。偏好缺失或目标为空时，平台列表为空。偏好损坏或不可读时返回对应的强配置诊断，先修复偏好再继续写入。
 - **选择与可用性分离**：九个 target 的选择仅由用户保存；发现结果不自动删除已选项。可用性为 available/missing/unsupported/unknown/notApplicable，generic 为 notApplicable。CLI 新增不可用目标需要显式 force；TUI 的本机草稿与保存时确认规则见 [TUI](tui.md)。
 - **意图与清理边界**：
   取消项目需求（Intent）仅代表逻辑诉求的移除，**绝对不授予删除共享产物或未证实归属输出的权限**。具体清理门禁参见[插件生命周期](lifecycle.md#ownership-与删除权限)。
@@ -62,6 +63,8 @@ flowchart TD
 - **精确选择**：先解析完整必要依赖、provider、共享位置和碰撞关系，再对所选插件/target 观察。显式选择依赖时 inventory 包含该依赖及 requiredBy、需求和提供者 scope，不把它提升为 Intent root。无过滤查询仍按直接根聚合。
 - **已有现场**：没有 Intent 的短名称与来源限定查询都保留匹配的 Native 残留。显式 Native-only target 不读取独立 generic 目录；按插件选择时，无关 Portable 输出仅检查安全路径和身份，内容保持 unknown。选中输出仍完整检查，无法确认范围的损坏保留覆盖缺口，浅观察不提供删除授权。
 - **全局与本次完成**：selection 保留 plugins/targets 数组及 targetOrigin。allSatisfied/inSync 继续总结授权读取上下文；明确不满足优先为 false，尚未观察的需求或残留使结论为 null，完整满足才为 true。可选 coverage.requestComplete 表示本次选择及必要依赖/共享/碰撞证据是否完整；未选目标未观察不单独使精确请求失败。
+
+对有实际 Intent 需求或已观察到安装现场的插件，在对应的活跃平台与 scope 校验有效配置；没有需求的残留安装不会触发其他平台的配置校验。缺失必填字段报告 `requiredConfigMissing` 及该平台的 `detail.fieldKeys`；已有值无效或 Store 损坏按配置问题呈现。额外现场和 generic 准备保留这些诊断，仅在 Catalog 中列出的插件不会因未初始化而产生状态问题。
 
 ### 2.2 平台、产品面与组件事实
 
@@ -173,12 +176,13 @@ Core compile/select profile 借用对象修改前复制，不跨命令缓存；�
   ```text
   defaults(compileSchema(P)) < common < platforms[P]
   ```
-  按顶层键存在性覆盖。`false`、`0`、空字符串和空数组都是合法实际值。对象与数组按顶层字段整体覆盖替换，**不做深合并（deep merge）**。
+  该顺序适用于公共可配置字段。仅平台分支声明的字段以及 `platformOnly: true` 的字段只读取该平台默认值和覆盖；公共层历史值不会满足该平台的必填要求。按顶层键存在性覆盖。`false`、`0`、空字符串和空数组都是合法实际值。对象与数组按顶层字段整体覆盖替换，**不做深合并（deep merge）**。
 - **校验与容错规则**：
   - common 最终值不符合平台 schema 时明确失败，合法平台覆盖可遮蔽 common。
   - 平台覆盖无效时不得回退运行；删除平台覆盖后若 common 无效，则明确报告无效。
   - 读取严格保留 JSON 原始类型，不做隐式类型转换（coercion，例如不把 `"123"` 自动转为 `123`）。
   - 内存规范化不改变磁盘；同义写入不重写文档，Review 仍绑定原始 bytes。
+- **历史残留层**：停用或排除平台时保留该层值，设置页仅展示脱敏摘要并允许重置。无公共可配置字段的插件同样可清理残留公共层。仍有公共字段时，公共层中的旧键按单键脱敏显示并支持 `unset`，其他公共值继续生效。重新启用平台后重检保存值。
 - **旧版格式拒绝**：旧版 `plugin-config.local`、Store v5 及更早文档拒绝读取，保留原文件并提供显式重置入口；所有新写入均为 Store v6。
 - **并发与原子提交**：写入时必须获取唯一的 `AW_HOME` 进程写锁，使用同目录独占临时文件，并在完成写入后通过原子 `rename` 提交。
 
@@ -216,7 +220,7 @@ sequenceDiagram
   - JSON stdout 仅输出一个安全回执，敏感值不进入 argv、诊断或 Review。
 - **Config Review 证据绑定**：
   - Config Review 与锁内 writer 使用同一用户文档、profile、context 和有效输入证据。
-  - `common` 变化检查公共及已知相关平台，平台变化只检查该平台；same-platform `valueRef` 的 provider 使用相同编译配置。
+  - `common` 变化检查公共及该插件当前活跃平台，平台变化只检查该平台；same-platform `valueRef` 的 provider 使用相同编译配置。
   - 普通保存保护授权来源中原先有效的引用，包括尚未安装的消费者。
   - apply 通过联合恢复计划刷新既有受影响的原生平台、generic 与共享命令包。缺失输出提示同步。命令包发布前复核 Active 版本、现有归属、安装证据、资源与可见权限影响。证据变动时重新准备 Review。失败阻断相关消费者，独立目标继续。apply 沿用现有 Intent 与目标。
   - 平台共享影响以实际渲染单元和组件为依据。命令包单独记录路由变化和按平台的配置快照差异。带 `--platform` 的应用只可能更新该平台快照。公共配置改变时可刷新动态路由和已受影响的快照。完整条件见[命令包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。

@@ -1,6 +1,8 @@
 import { catalogGenerationErrorCode } from './catalog-generation-error.js';
 import { CatalogPluginNotFoundError } from './multi-source-catalog.js';
 import { resolveWorkContext } from '../intent/work-context.js';
+import { observePreferences } from '../intent/deployment-preferences.js';
+import { assertConfigLayerWritable, ConfigLayerError, resolveActiveConfigPlatforms } from './config-platforms.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryTarget } from '../recovery/receipt.js';
@@ -150,6 +152,24 @@ function skippedApply(
   reason: Extract<ConfigApplyResult, { state: 'skipped' }>['reason'],
 ): Extract<ConfigApplyResult, { state: 'skipped' }> {
   return { state: 'skipped', reason, targetResults: [] };
+}
+
+async function observeConfigLayerError(options: { plugin: PluginMeta; platform?: PlatformTarget;
+  scope: Scope; cwd: string; env?: NodeJS.ProcessEnv }): Promise<ConfigLayerError | undefined> {
+  const { plugin } = options;
+  try {
+    assertConfigLayerWritable(plugin.pluginId ?? (plugin.sourceId ? `${plugin.sourceId}/${plugin.manifest.name}` : plugin.manifest.name),
+      plugin.manifest, await observePreferences(options), options.platform);
+  } catch (error) {
+    if (!(error instanceof ConfigLayerError)) throw error;
+    return error;
+  }
+  return undefined;
+}
+
+export function configApplyLayerFailure(error: ConfigLayerError): ConfigApplyResult {
+  return { state: 'unavailable', reason: 'targetDiscoveryFailed', targetResults: [],
+    error: { stage: 'targetValidation', code: error.code, message: error.message } };
 }
 
 export function configActiveAvailabilityError(error: unknown): Pick<ConfigApplyError, 'code' | 'message'> | undefined {
@@ -517,6 +537,13 @@ export async function preparePluginConfigApply(
       throw Object.assign(new Error('The plugin is unavailable in Active Catalog.'), { code: 'pluginUnavailable' });
     }
   }
+  const pluginId = options.plugin.pluginId ?? (options.plugin.sourceId
+    ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : options.plugin.manifest.name);
+  const preferences = await observePreferences(options);
+  resolveActiveConfigPlatforms(pluginId, options.plugin.manifest, preferences);
+  for (const selected of [...(options.platform ? [options.platform] : []), ...(options.targets ?? [])]) {
+    assertConfigLayerWritable(pluginId, options.plugin.manifest, preferences, selected);
+  }
   const plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
     plugins: referencePlugins });
   const selectors = plugins.map((plugin) => plugin.pluginId ?? plugin.manifest.name);
@@ -749,6 +776,8 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
     } catch (error) {
       if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal)
         || readSafeOperationError(error)) throw error;
+      if (error instanceof ConfigLayerError) return { configWrite: 'notStarted', overallState: 'failed',
+        apply: configApplyLayerFailure(error), otherProjectsMayRequireSync: false };
       const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
       const code = (error as { code?: unknown })?.code;
       if (code === 'sourceActiveUnavailable' || code === 'pluginUnavailable') {
@@ -813,8 +842,10 @@ async function applyPluginConfigWriteUnlocked(options: ApplyPluginConfigWriteOpt
     currentPluginError: options.pluginError, scope: options.scope, platform: options.platform, cwd: options.cwd, env: options.env });
   const plugin = schemaAccess.plugin;
   const definition = plugin?.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, options.platform) : undefined;
-  if (!plugin || !definition) throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${pluginName}" does not declare an AW config schema.`);
-  const updates = await coercePluginConfigUpdates({ schema: definition.fields, updates: requestedUpdates, cwd: options.cwd });
+  if (!plugin || !definition && (Object.keys(requestedUpdates).length > 0 || removeKeys.length === 0)) {
+    throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${pluginName}" does not declare an AW config schema.`);
+  }
+  const updates = await coercePluginConfigUpdates({ schema: definition?.fields ?? {}, updates: requestedUpdates, cwd: options.cwd });
   const impact = await analyzePluginConfigMutationImpact({ plugin, scope: options.scope, platform: options.platform,
     cwd: options.cwd, env: options.env, visibleTargets: [], commandDiscovery: { packages: [], errors: [] },
     referencePlugins: options.rebuildRuntime?.referencePlugins, mutation: { kind: 'patch', updates, removeKeys } });
@@ -900,13 +931,18 @@ export async function applyPluginConfigWrite(
     token: options.awHomeMutationToken,
     action: async (awHomeMutationToken) => {
       await options.reviewPreflight?.();
+      const hasUpdates = Object.keys(options.request.updates ?? {}).length > 0;
+      const layerError = options.plugin && (hasUpdates || options.apply)
+        ? await observeConfigLayerError({ ...options, plugin: options.plugin }) : undefined;
+      if (layerError && hasUpdates) throw layerError;
       let configCommitted = false;
       try {
-        const selection = await prepareConfigMutationApplySelection({ ...options, awHomeMutationToken });
+        const selection = layerError ? undefined : await prepareConfigMutationApplySelection({ ...options, awHomeMutationToken });
         const saved = await applyPluginConfigWriteUnlocked({ ...options, scope: options.context ?? options.scope,
           apply: false, awHomeMutationToken, rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken } });
         configCommitted = true;
         if (options.apply !== true || !options.plugin) return saved;
+        if (layerError) return { ...saved, overallState: 'partial', apply: configApplyLayerFailure(layerError) };
         if (saved.apply.state === 'skipped' && saved.apply.reason === 'noConfigChange') return saved;
         if (selection?.skipReason) return { ...saved, apply: skippedApply(selection.skipReason) };
         const applied = await applyPluginConfig({ ...options, ...selection, plugin: options.plugin, awHomeMutationToken });
@@ -1079,10 +1115,13 @@ export async function resetPluginConfigWithHelper(
     token: options.awHomeMutationToken,
     action: async (awHomeMutationToken) => {
       await options.reviewPreflight?.();
-      const selection = await prepareConfigMutationApplySelection({ ...options, awHomeMutationToken });
+      const layerError = options.plugin && options.apply
+        ? await observeConfigLayerError({ ...options, plugin: options.plugin }) : undefined;
+      const selection = layerError ? undefined : await prepareConfigMutationApplySelection({ ...options, awHomeMutationToken });
       const saved = await resetPluginConfigWithHelperUnlocked({ ...options, scope: options.context ?? options.scope,
         apply: false, awHomeMutationToken, rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken } });
       if (options.apply !== true) return saved;
+      if (layerError) return { ...saved, overallState: 'partial', apply: configApplyLayerFailure(layerError) };
       if (!options.plugin) {
         const apply = unavailableApply('sourceUnavailable', 'source');
         const cause = configActiveAvailabilityError(options.pluginError);

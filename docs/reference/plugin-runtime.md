@@ -112,11 +112,15 @@ reader 同时核对来源证据与 binding；原生产物所在包具有当前 n
 
 在 `scripts.config.suggestions` 声明 `{ "runner": "node", "path": "./scripts/config-suggestions.mjs", "timeoutMs": 10000 }`。入口及其依赖必须位于可分发的插件文件闭包内。AW 从 Active Catalog 取得提供方，插件安装前即可查询。在插件根目录以当前 Node 启动脚本，stdin 收一个 UTF-8 JSON 对象后关闭，stdout 只写一个响应对象，最多 1 MiB。
 
-请求带 `schemaVersion: 1`、`provider`、`profile`、按名称和数字索引分段的 `fieldPath`、调用者 `cwd`、`consumer` 和 `providerPlugin`。两个插件身份均含 `pluginId`、`name`、`version`，提供方另含 `rootDir`。平台层请求带 `platform`，公共层省略。已填的依赖属性位于 `dependencyValues`，提供方的非敏感有效配置位于 `providerConfigValues`。同插件查询叠加当前草稿，正在编辑的对象可包含部分有效属性，数组保留行的位置。跨插件查询使用提供方已保存的有效值。Store 损坏或无法读取时以空对象为基础，同插件仍叠加当前草稿。
+请求带 `schemaVersion: 2`、`kind`（`scalar` 或 `object`）、可选 `hint`、`provider`、`profile`、按名称和数字索引分段的 `fieldPath`、调用者 `cwd`、`consumer` 和 `providerPlugin`。两个插件身份均含 `pluginId`、`name`、`version`，提供方另含 `rootDir`。平台层请求带 `platform`，公共层省略。对象建议还带当前变体可编辑的 `targets`。已填的依赖属性位于 `dependencyValues`，提供方的非敏感有效配置位于 `providerConfigValues`。同插件查询叠加当前草稿，正在编辑的对象可包含部分有效属性，数组保留行的位置。跨插件查询使用提供方已保存的有效值。Store 损坏或无法读取时以空对象为基础，同插件仍叠加当前草稿。
 
 `deadlineAt` 给出本次执行时限的 Unix 毫秒时间戳，供探针预留返回静态候选的时间。AW 还可在请求中提供 `commandHost: { schemaVersion: 1, nodeExecutable, cliEntry, awHome }`。这三个绝对路径指向当前 Node、当前 AW 的公开 CLI 入口和本次 AW home，供兼容的提供方查询已注册命令。此对象只提供路径。命令仍须通过公开 `command show` 和 `command run` 接口进行验证和调用。
 
-响应使用 `{ schemaVersion: 1, status, items, message?, diagnostics? }`。`status` 为 `ok`、`unsupported` 或 `unavailable`。每项提供匹配目标类型的标量 `value` 和 `title`（1–128 字符），另可给出 `description`（最多 256 字符）、`recommended` 和 `source`（`dynamic`、`configured` 或 `merged`）。脚本最多提供 128 个唯一值、一个推荐项。AW 按目标字段筛选 `ok` 的候选，保留通过校验的第一项推荐。`unsupported` 和 `unavailable` 向调用方返回空候选列表。状态说明最多 256 字符，安全诊断最多 8 条，每条含 `code` 和 `message`。
+响应为 `{ schemaVersion: 2, status, items, message?, diagnostics? }`。`ok` 返回可选项，`not-applicable` 表示已确认不支持，`no-probe` 表示没有探针，`unavailable` 表示运行失败。后三态的 `items` 为空。成功也可以带 `message`，例如说明正在使用离线预设。消息最多 256 个字符，诊断最多 8 条，各含 `code` 和 `message`。
+
+- 标量项提供 `value` 和 `title`。候选标题长 1–128 个字符，可选 `description` 最多 256 个字符。`source` 可取 `dynamic`、`configured`、`merged` 或 `builtin`。顶层最多 128 项，标量按值去重。
+- 对象项用 `set` 与 `unset` 原子更新目标属性。可直接选择叶项，也可用 `children: { title?, items }` 提供第二层选择，每组最多 32 项。同一项的设置键和清除键互斥，子项可覆盖父项的操作。合并后至少改变一个目标键，值须符合当前分支，且不能清除必填属性。仅含 `unset` 的叶项有效。无有效子项的容器会被移除。同级叶项按合并后的操作去重。
+- 对象叶项可声明 `recommendedHints`。AW 保留最多八个格式有效、互异且通过脱敏检查的标识。字段投影优先匹配当前 `hint`，省略时匹配 `balanced`。有有效标识但无命中时无推荐；完全没有有效标识时采用静态 `recommended`。命中子项时也高亮父项。标量和容器上的 `recommendedHints` 会被忽略。会话可按来源、提供方版本、平台、目标属性、依赖和提供方配置复用带推荐标识的成功响应，逐字段重新校验。
 
 脚本可用宿主 PATH 和工具登录环境，AW 清除内部控制环境变量，过滤敏感配置并清理输出。默认超时 10 秒，可指定 1000–30000 毫秒。在 macOS 和 Linux 上，脚本及其所有后代必须留在 AW 创建的进程组内。启动探针请使用默认的 `detached: false`，避免调用 `setsid` 或另建进程组。AW 在脚本结束、取消或超时时清理该组，主动离组的后代超出清理范围。Windows 使用外层 Job 收尾。输出超限、无效或执行失败时，编辑器仍允许手工填写。
 

@@ -80,6 +80,7 @@ function sensitivePage(options: ConfigReadOptions): ConfigPageViewModel {
   return {
     pluginId,
     profile, context, layer: { profile, context },
+    configurableLayers: ['common', 'generic'],
     storedCount: 0,
     presets: [],
     groups: [{

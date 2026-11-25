@@ -78,8 +78,11 @@ const adapterFacts: Readonly<Partial<Record<
   },
   config: {
     'config.presentation': { conflicts: 'Schema mutation and sensitive or path values in presets.' },
+    'config.fields.<key>.platformOnly': { requires: 'Config v5 and aw.plugin-config-platform-only.v1. Set the value on each selected platform.' },
+    'config.fields.<key>.properties.<property>.clearsOnChange': { requires: 'Config v5 and aw.plugin-config-clears-on-change.v1. Targets must be writable siblings.' },
+    'config.fields.<key>.$ref': { requires: 'Overriding platformOnly or suggestions requires Config v5 and aw.plugin-config-ref-override.v1.' },
     'config.fields.<key>.suggestions': {
-      requires: 'A local suggestion script or explicit same-source direct provider dependency.',
+      requires: 'aw.plugin-config-suggestions.v2 and a local suggestion script or a same-source direct provider dependency. Fixed objects require 1..8 editable scalar targets.',
       conflicts: 'Sensitive, constant, value reference and preset-only fields.',
     },
   },

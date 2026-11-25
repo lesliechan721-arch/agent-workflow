@@ -337,9 +337,10 @@ test('Claude forwards settings and sends only initialize with no process token',
 });
 
 // Test Value Gate: a status-only or nonzero listing must not be confused with
-// a catalog. Real TSV output supplies the display label and known effort menu.
+// a catalog. Real TSV output supplies a label and an ID with no separate effort menu.
 test('Antigravity checks agy and parses only model rows', async (t) => {
   const state = await fixture(t);
+  const models = Array.from({ length: 27 }, (_, i) => ({ id: `agy-model-${i}`, displayName: `Agy Model ${i}`, efforts: [] }));
   await installCli(state.bin, 'agy', 'agy', `
     ${testEnvironmentChecks}
     const args = process.argv.slice(2);
@@ -347,14 +348,14 @@ test('Antigravity checks agy and parses only model rows', async (t) => {
     else {
       assert.deepEqual(args, ['models']);
       console.log('Fetching available models...');
-      if (!process.env.FIXTURE_EMPTY) console.log('agy-model\\tAgy Model');
+      if (!process.env.FIXTURE_EMPTY) console.log(${JSON.stringify(models.map(({ id, displayName }) => `${id}\t${displayName}`).join('\n'))});
     }
   `);
   const result = await runAdapter(state, 'antigravity', { args: ['--model', 'must-not-pass'] });
   assert.equal(result.code, 0);
   assert.deepEqual(JSON.parse(result.stdout), {
     protocolVersion: 6, type: 'introspection', status: 'supported', environment: { status: 'available' },
-    models: [{ id: 'agy-model', displayName: 'Agy Model' }], supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    models,
   });
   state.env.FIXTURE_EMPTY = '1';
   const empty = await runAdapter(state, 'antigravity');

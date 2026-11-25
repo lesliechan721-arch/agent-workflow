@@ -6,7 +6,7 @@ import { createScopeContext, type ScopeContext } from '../intent/scope-context.j
 import { resolveIntentPath } from '../intent/intent-store.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import type { StatusScopedTarget } from '../commands/status-v6.js';
-import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
+import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic, type PortableExtraObservation } from '../portable/recovery.js';
 import { readJointDemand, deriveJointDemand, projectSkillCandidates, isInstalledSkillProvider, hasReadyProviderSkills, type JointPlacement, type ProjectSkillProvider, type JointDemandSnapshot } from './joint-demand.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryComponentGaps, type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryTarget } from './receipt.js';
@@ -21,6 +21,8 @@ import { piAgentConsumerDiagnostic, piProjectListsUserSkills } from '../platform
 import { gapSupplementFiles } from '../platforms/supplement-layout.js';
 import { inspectPlatformSupplementState } from '../platforms/supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { resolveActiveConfigPlatforms } from '../utils/config-platforms.js';
+import { configStatusDiagnostics, configReadDiagnostic, isConfigDiagnostic } from '../utils/plugin-config-diagnostics.js';
 import { createPlatformInputEvidence, matchesPlatformEmptyState, readPlatformDeliveryState, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { deliveryNoticeMessage, INVOCATION_POLICY_NOT_APPLIED } from '../output/component-delivery.js';
 import { piProjectEmptyDeliveryObserved } from '../platforms/lifecycle-native.js';
@@ -81,7 +83,7 @@ export interface RecoveryStatus {
   retainedProjectPackages?: Array<ExistingTarget & { dependencies: string[] | null }>;
   ownedTargets?: Array<{ pluginId: string; agent: AgentId; scope: Scope }>;
   extraObserved: Array<Omit<Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope' | 'delivery' | 'observation' | 'content' | 'reasons' | 'backend' | 'deploymentObservations' | 'expectedVersion' | 'installedVersion'>, 'agent'>
-    & { agent: AgentId | null }>;
+    & { agent: AgentId | null; blockers?: RecoveryDiagnostic[] }>;
   coverage: { native: boolean; portable: boolean; scopes?: Scope[]; projectRoot?: string; requestComplete?: boolean };
   inSync: boolean | null;
   counts: { blocked: number; unconfirmed: number; pending: number; ready: number };
@@ -116,11 +118,11 @@ export interface ReadRecoveryStatusOptions {
   observationPlugins?: ReadonlySet<string>;
 }
 
-const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFailed', 'configReadFailed',
-  'configInvalid', 'componentInspectionFailed', 'targetInspectionFailed', 'codexNativeObservationFailed',
+const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFailed', 'configReadFailed', 'componentInspectionFailed', 'targetInspectionFailed', 'codexNativeObservationFailed',
   'nativeObservationFailed', 'nativeObservationUnavailable']);
 function isNativeReadError({ code, detail }: RecoveryDiagnostic, needsOwnership = true): boolean {
-  return NATIVE_READ_ERRORS.has(code) || needsOwnership && (code === 'nativeConfigurationUnreadable'
+  return NATIVE_READ_ERRORS.has(code) || (code === 'configInvalid' && detail?.reasonCode === 'configReadFailed')
+    || needsOwnership && (code === 'nativeConfigurationUnreadable'
     || code === 'nativeMarketplaceUnconfirmed' && detail !== undefined);
 }
 export function isTargetObservationReadError(entry: RecoveryDiagnostic): boolean {
@@ -160,6 +162,34 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
       && resolveDelivery(root.plugin.manifest, platform, demand.scope)?.kind === 'native'
       && (!demand.targetRequirements || demand.targetRequirements.some((item) => item.pluginId === root.pluginId && item.target === platform)));
     if (!roots.length) return { observations, existing, owned };
+    // Configuration is independent of the host's availability. Preserve these blockers if discovery fails.
+    const configuredRoots = await mapInstallReads(roots, async (root) => {
+      options.signal?.throwIfAborted();
+      const observation: NativeObservation = { pluginId: root.pluginId, expectedVersion: root.plugin?.manifest.version, platform, content: 'unknown', blockers: [], reasons: [], deploymentObservations: [] };
+      observations.push(observation);
+      const plugin = root.plugin!;
+      const active = demand.preferences.state === 'valid'
+        && resolveActiveConfigPlatforms(root.pluginId, plugin.manifest, demand.preferences).includes(platform);
+      const configSubject = { pluginId: root.pluginId, target: platform, scope: demand.scope };
+      const configForScope = async (scope: Scope, cwd: string) => {
+        try {
+          const config = await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, sourceId: plugin.sourceId ?? root.sourceId,
+            sourceIdentity: plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
+            manifest: plugin.manifest, platform, scope, cwd, env: context.env, referencePlugins: demand.plugins });
+          const blockers = configStatusDiagnostics(config.issues);
+          if (active) observation.blockers.push(...blockers.map((blocker) => ({ ...blocker, subject: configSubject })));
+          return blockers.length ? undefined : config;
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          const blocker = configReadDiagnostic(error);
+          if (active) observation.blockers.push({ ...blocker, subject: configSubject });
+          return undefined;
+        }
+      };
+      // Missing clients/bindings cannot hide a known configuration problem. Keep inspecting live ownership.
+      const scopedConfig = await configForScope(demand.scope, context.executionCwd);
+      return { root, observation, configForScope, scopedConfig };
+    }, { signal: options.signal, limit: 1 });
     const adapter = getAgentPluginAdapter(platform);
     let ownedSession: CodexNativeObservationSession | undefined;
     try {
@@ -178,11 +208,9 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           }
         }
       }
-      for (const root of roots) {
+      for (const { root, observation, configForScope, scopedConfig } of configuredRoots) {
         options.signal?.throwIfAborted();
-        const observation: NativeObservation = { pluginId: root.pluginId, expectedVersion: root.plugin?.manifest.version, platform, content: 'unknown', blockers: [], reasons: [], deploymentObservations: [] };
         let nativePackage: NonNullable<(typeof existing)[number]['nativePackage']> | undefined;
-        observations.push(observation);
         try {
           const plugin = root.plugin!;
           const resolution = await adapter.resolve(ctx, { plugin: {
@@ -201,7 +229,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           if (!resolution.bindings.length) {
             observation.blockers.push(...resolution.exclusions.map((entry) => diagnostic(entry.reasonCode)));
             observation.blockers.push(...discovery.diagnostics.map((entry) => ({ code: entry.code, message: entry.message })));
-            if (!observation.blockers.length) observation.blockers.push(diagnostic(discovery.availability === 'missing' ? 'client-missing' : 'nativeObservationUnavailable'));
+            if (!observation.blockers.some((blocker) => !isConfigDiagnostic(blocker))) observation.blockers.push(diagnostic(discovery.availability === 'missing' ? 'client-missing' : 'nativeObservationUnavailable'));
             continue;
           }
           const states: NativeObservation['content'][] = [];
@@ -253,6 +281,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope,
                 ...(nativePackage ? { nativePackage } : {}) });
             }
+            if (!scopedConfig) { states.push('unknown'); continue; }
             const unmet: ComponentUnmet[] = [];
             const staticPackageIds = new Set<string>();
             const staticSupplements: PluginComponent[] = [];
@@ -267,13 +296,12 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               }
               const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
                 profile });
-              inputUnits.push({ renderUnit: unit, capabilities,
-                config: await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, sourceId: binding.plugin.sourceId,
-                  sourceIdentity: binding.plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
-                  manifest: plugin.manifest, platform, scope: unit.renderScope.kind,
-                  cwd: unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : context.executionCwd,
-                  env: context.env, referencePlugins: demand.plugins }) });
+              const config = unit.renderScope.kind === demand.scope ? scopedConfig
+                : await configForScope(unit.renderScope.kind, unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : context.executionCwd);
+              if (config) inputUnits.push({ renderUnit: unit, capabilities, config });
             }
+            // Do not feed invalid config to input-evidence creation or report a native read failure for it.
+            if (inputUnits.length !== renderUnits.length) { states.push('unknown'); continue; }
             const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits, commandRoutes }).catch((error: unknown) => {
               rethrowFatalError(error);
               options.signal?.throwIfAborted();
@@ -582,7 +610,10 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
     } catch (error) {
       rethrowFatalError(error);
       options.signal?.throwIfAborted();
-      for (const root of roots) observations.push({ pluginId: root.pluginId, platform, content: 'unknown', blockers: [diagnostic('nativeObservationFailed')] });
+      for (const { observation } of configuredRoots) {
+        observation.content = 'unknown';
+        observation.blockers.push(diagnostic('nativeObservationFailed'));
+      }
     } finally {
       await ownedSession?.dispose();
     }
@@ -688,7 +719,10 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
             cliVersion: options.cliVersion ?? '0.0.0', catalogOperationContext: demand.catalogOperationContext,
             excludedPluginIds: demand.userProviders?.[agent] }, options.catalogReadScope);
           options.signal?.throwIfAborted();
-          target.blockers.push(...portable.blockers.filter((code) => code !== 'previousDeploymentRetained').map((code) => portablePreparationDiagnostic(portable, diagnostic(code),
+          const activeConfig = root.plugin && demand.preferences.state === 'valid'
+            && resolveActiveConfigPlatforms(root.pluginId, root.plugin.manifest, demand.preferences).includes(agent);
+          target.blockers.push(...portable.blockers.filter((code) => code !== 'previousDeploymentRetained'
+            && (activeConfig || !isConfigDiagnostic({ code }))).map((code) => portablePreparationDiagnostic(portable, diagnostic(code),
             agent as import('../portable/recovery-layout.js').PortableAgent)));
           if (portable.policyNotices?.length) target.reasons = [...target.reasons ?? [], ...portable.policyNotices];
           const gaps = (portable.unmet ?? []).filter((gap) => gap.agent === agent);
@@ -718,7 +752,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           if ((blockingGap || observed.some((entry) => entry.disposition === 'retain')) && target.content !== 'conflict') target.content = 'unknown';
           target.backend = observed.map((entry) => ({ skill: entry.skill, agent: entry.agent,
             ownership: entry.ownership, observation: entry.observation, associatedAgents: entry.associatedAgents }));
-          if (target.blockers.some(isTargetObservationReadError)) {
+          if (target.blockers.some((entry) => !isConfigDiagnostic(entry) && isTargetObservationReadError(entry))) {
             errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
           }
         } catch (error) {
@@ -805,13 +839,25 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       && (!options.observationPlugins || options.observationPlugins.has(`${entry.sourceId}/${entry.pluginName}`)
         || options.observationPlugins.has(entry.pluginName))
       && (!options.targets || options.targets.includes(entry.platform)));
+    const portableExtra = options.targets && !options.targets.includes('generic') ? { targets: [], complete: true }
+      : await inspectPortableExtraInstalled({
+        scope: options.scope, context, env: context.env, signal: options.signal, plugins: options.observationPlugins,
+      });
+    options.signal?.throwIfAborted();
+    const sourceCandidates = [...candidates, ...portableExtra.targets.flatMap((target) => {
+      if (demand.preferences.state !== 'valid' || !demand.preferences.value.targets.includes(target.agent)) return [];
+      if (options.observationPlugins && !options.observationPlugins.has(target.pluginId)
+        && !options.observationPlugins.has(parsePluginId(target.pluginId).pluginName)) return [];
+      const { sourceId, pluginName } = parsePluginId(target.pluginId);
+      return [{ sourceId, pluginName }];
+    })];
     const observedPlugins = new Map(demand.plugins.map((plugin) => [plugin.pluginId, plugin]));
     const catalog = demand.catalogOperationContext ?? options.catalogOperationContext;
     const catalogSources = options.catalogSources ?? new Map<string, CatalogOperationContext['catalog']['sources'][number]>();
     for (const source of catalog?.catalog.sources ?? []) if (!catalogSources.has(source.sourceId)) catalogSources.set(source.sourceId, source);
-    if (candidates.some((entry) => !observedPlugins.has(`${entry.sourceId}/${entry.pluginName}`))) {
+    if (sourceCandidates.some((entry) => !observedPlugins.has(`${entry.sourceId}/${entry.pluginName}`))) {
       try {
-        const missing = [...new Set(candidates.map((entry) => entry.sourceId!))].filter((id) => !catalogSources.has(id));
+        const missing = [...new Set(sourceCandidates.map((entry) => entry.sourceId!))].filter((id) => !catalogSources.has(id));
         if (missing.length) {
           const config = await readCatalogSourcesConfigSnapshot(context.env);
           const configured = new Set(config.config.sources.map((source) => source.id));
@@ -827,33 +873,48 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         rethrowFatalError(error);
         options.signal?.throwIfAborted();
       }
-      for (const candidate of candidates) {
+      for (const candidate of sourceCandidates) {
         const pluginId = `${candidate.sourceId}/${candidate.pluginName}`;
         if (observedPlugins.has(pluginId)) continue;
         const source = catalogSources.get(candidate.sourceId!)?.resolution;
         if (!source?.manifest.entries.some((entry) => entry.name === candidate.pluginName)) continue;
-        try {
-          const plugin = await readPluginManifest(path.join(source.rootDir, 'plugins', candidate.pluginName!), { mode: 'bundle' });
-          Object.assign(plugin, { pluginId, sourceId: candidate.sourceId, sourceIdentity: source.sourceIdentity,
-            catalogLogicalIdentity: source.logicalIdentity });
-          observedPlugins.set(pluginId, plugin);
-        } catch (error) {
-          rethrowFatalError(error);
-          options.signal?.throwIfAborted();
+        // Configuration references need the retained plugin's dependency closure as well as its own manifest.
+        let dependencyEntries: Array<{ name: string }>;
+        try { dependencyEntries = resolvePluginDependencyClosure(source.manifest.entries, [candidate.pluginName!]); }
+        catch { dependencyEntries = [{ name: candidate.pluginName! }]; }
+        for (const { name } of dependencyEntries) {
+          const id = `${source.sourceId}/${name}`;
+          if (observedPlugins.has(id)) continue;
+          try {
+            const plugin = await readPluginManifest(path.join(source.rootDir, 'plugins', name), { mode: 'bundle' });
+            Object.assign(plugin, { pluginId: id, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
+              catalogLogicalIdentity: source.logicalIdentity });
+            observedPlugins.set(id, plugin);
+          } catch (error) {
+            rethrowFatalError(error);
+            options.signal?.throwIfAborted();
+          }
         }
       }
     }
     let selectedAgents: AgentId[] = [];
     try { selectedAgents = selectAgents({ preferences: demand.preferences, targets: options.targets }).agents; }
     catch { /* The status result reports invalid strong state without extending observations. */ }
+    // Keep old owners in the residual/cleanup inventory. Only bind a current
+    // manifest for native observation when the recorded identity is compatible.
+    // Older Native owners may omit the source identity; keep their existing observation path.
+    const currentCandidates = candidates.filter((candidate) => {
+      const plugin = observedPlugins.get(`${candidate.sourceId}/${candidate.pluginName}`);
+      return plugin && (!candidate.sourceIdentity || candidate.sourceIdentity === plugin.sourceIdentity);
+    });
     const observationDemand: DemandSnapshot = { ...demand, plugins: [...observedPlugins.values()],
-      roots: [...new Map([...(demand.roots ?? []), ...candidates.flatMap((candidate) => {
+      roots: [...new Map([...(demand.roots ?? []), ...currentCandidates.flatMap((candidate) => {
         const pluginId = `${candidate.sourceId}/${candidate.pluginName}`;
         const plugin = observedPlugins.get(pluginId);
         return plugin ? [{ pluginId, sourceId: candidate.sourceId!, plugin, sourceState: 'ready' as const, blockers: [] }] : [];
       })].map((root) => [root.pluginId, root])).values()],
       targetRequirements: demand.targetRequirements ? [...demand.targetRequirements,
-        ...candidates.map((entry) => ({ pluginId: `${entry.sourceId}/${entry.pluginName}`, target: entry.platform as PlatformName }))] : undefined };
+        ...currentCandidates.map((entry) => ({ pluginId: `${entry.sourceId}/${entry.pluginName}`, target: entry.platform as PlatformName }))] : undefined };
     const adapters = options.nativeObservations ? { observations: [], existing: [], owned: [] }
       : await withStatusNativeQueries({ ...options, targets: [...new Set([...selectedAgents, ...candidates.map((entry) => entry.platform!)])] },
         (nativeOptions) => readAdapterObservations(nativeOptions, context, observationDemand, candidates));
@@ -879,7 +940,9 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         expectedVersion: adapters.observations.find((item) => item.pluginId === entry.pluginId && item.platform === entry.agent)?.expectedVersion,
         installedVersion: adapters.observations.find((item) => item.pluginId === entry.pluginId && item.platform === entry.agent)?.installedVersion,
         delivery: { kind: 'native', platform: entry.agent as PlatformName },
-        observation: 'unknown', content: 'unknown', deploymentObservations: adapters.observations.find((observation) =>
+        observation: 'unknown', content: 'unknown', blockers: adapters.observations.find((observation) =>
+          observation.pluginId === entry.pluginId && observation.platform === entry.agent)?.blockers.filter(isConfigDiagnostic),
+        deploymentObservations: adapters.observations.find((observation) =>
           observation.pluginId === entry.pluginId && observation.platform === entry.agent)?.deploymentObservations }));
     const inventoryOwned = candidates.flatMap((entry) => {
       // A verified Antigravity copy remains a native retirement candidate when
@@ -893,7 +956,10 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
     });
     for (const entry of inventoryOwned) {
       if (!expected(entry.pluginId, entry.agent) && !nativeExtraObserved.some((target) => target.pluginId === entry.pluginId && target.agent === entry.agent)) {
-        nativeExtraObserved.push({ ...entry, delivery: { kind: 'native', platform: entry.agent }, observation: 'unknown', content: 'unknown' });
+        const current = currentCandidates.some((candidate) => `${candidate.sourceId}/${candidate.pluginName}` === entry.pluginId
+          && candidate.platform === entry.agent);
+        nativeExtraObserved.push({ ...entry, delivery: { kind: 'native', platform: entry.agent }, observation: 'unknown', content: 'unknown',
+          ...(current ? { blockers: adapters.observations.find((observation) => observation.pluginId === entry.pluginId && observation.platform === entry.agent)?.blockers.filter(isConfigDiagnostic) } : {}) });
       }
     }
     const retainedProjectPackages: NonNullable<RecoveryStatus['retainedProjectPackages']> = [];
@@ -929,17 +995,34 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         delivery: { kind: 'native', platform: agent }, observation: 'unknown', content: 'unknown',
         backend: { retainedPackage: true, ownedComponents: [{ ...component, state: 'present' }] } });
     }
-    const portableExtra = options.targets && !options.targets.includes('generic') ? { targets: [], complete: true }
-      : await inspectPortableExtraInstalled({
-        scope: options.scope, context, env: context.env, signal: options.signal, plugins: options.observationPlugins,
-      });
-    options.signal?.throwIfAborted();
-    const portableObserved: RecoveryStatus['extraObserved'] = portableExtra.targets
-      .filter((entry) => !expected(entry.pluginId, entry.agent))
-      .map((entry) => ({ pluginId: entry.pluginId, agent: entry.agent, scope: options.scope,
+    const portableConfigBlockers = new Map<string, RecoveryDiagnostic[]>();
+    const portableObserved: RecoveryStatus['extraObserved'] = [];
+    for (const entry of portableExtra.targets.filter((item) => !expected(item.pluginId, item.agent))) {
+      const plugin = observedPlugins.get(entry.pluginId);
+      const key = `${entry.pluginId}\0${entry.agent}`;
+      const current = plugin?.catalogLogicalIdentity !== undefined && plugin.catalogLogicalIdentity === entry.logicalIdentity;
+      if (current && !portableConfigBlockers.has(key) && demand.preferences.state === 'valid'
+        && (!options.observationPlugins || options.observationPlugins.has(entry.pluginId)
+          || options.observationPlugins.has(parsePluginId(entry.pluginId).pluginName))
+        && resolveActiveConfigPlatforms(entry.pluginId, plugin.manifest, demand.preferences).includes(entry.agent)) {
+        let blockers: RecoveryDiagnostic[];
+        try {
+          const config = await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, manifest: plugin.manifest,
+            platform: entry.agent, scope: options.scope, cwd: context.executionCwd, env: context.env, referencePlugins: [...observedPlugins.values()] });
+          blockers = configStatusDiagnostics(config.issues);
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          blockers = [configReadDiagnostic(error)];
+        }
+        portableConfigBlockers.set(key, blockers.map((blocker) => ({ ...blocker, subject: { pluginId: entry.pluginId, target: entry.agent, scope: options.scope } })));
+      }
+      const blockers = current ? portableConfigBlockers.get(key) : undefined;
+      portableObserved.push({ pluginId: entry.pluginId, agent: entry.agent, scope: options.scope,
         delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
-        observation: entry.observation, content: entry.content,
-        backend: { skill: entry.skill, logicalIdentity: entry.logicalIdentity } }));
+        observation: entry.observation, content: entry.content, ...(blockers?.length ? { blockers } : {}),
+        backend: { skill: entry.skill, logicalIdentity: entry.logicalIdentity } });
+    }
     const extraObserved = [...nativeExtraObserved, ...portableObserved];
     const relevantErrors = ownerInventory.errors.filter((error) => {
       const relevance = error.relevance;
@@ -985,9 +1068,17 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         if (target.content === 'satisfied') { target.content = 'unknown'; target.observation = 'unknown'; }
       }
     }
+    // Installed-current evidence must not bind a retained old Catalog's Skill to
+    // the new source. Unresolved sources remain observable, and ownedTargets
+    // below still keeps every exact residual for cleanup.
+    const portableCurrent = (target: PortableExtraObservation): boolean => {
+      const identity = observedPlugins.get(target.pluginId)?.catalogLogicalIdentity
+        ?? catalogSources.get(parsePluginId(target.pluginId).sourceId!)?.resolution?.logicalIdentity;
+      return identity === undefined || target.logicalIdentity === identity;
+    };
     result.existingTargets = [
       ...adapters.existing,
-      ...portableExtra.targets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: options.scope })),
+      ...portableExtra.targets.filter(portableCurrent).map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: options.scope })),
     ];
     result.retainedProjectPackages = retainedProjectPackages;
     result.ownedTargets = [

@@ -32,8 +32,7 @@
     "displayName": "Agent Subagent",
     "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
     "capabilities": [
-      "Skills",
-      "Agents"
+      "Skills"
     ]
   },
   "scripts": {
@@ -111,6 +110,10 @@
             "native"
           ]
         },
+        "clearsOnChange": [
+          "model",
+          "reasoningEffort"
+        ],
         "validation": {
           "minLength": 1
         }
@@ -187,7 +190,19 @@
             "$ref": "#/config/definitions/agentReasoningEffort"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "title": "选择推荐模型组合",
+          "description": "按当前执行器实时目录原子选择模型与推理强度。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
       },
       "permissionMode": {
         "type": "string",
@@ -238,6 +253,7 @@
           "efforts": {
             "type": "array",
             "title": "支持的推理强度",
+            "description": "省略时继承动态探针结果或标记为未知；显式设为空数组 [] 表示该模型不支持独立推理强度（effortSupport: none）。",
             "items": {
               "type": "string",
               "validation": {
@@ -250,6 +266,15 @@
               "uniqueItems": true
             }
           },
+          "defaultEffort": {
+            "type": "string",
+            "title": "默认推理强度",
+            "description": "可选；须包含在有效 efforts 列表中。",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
           "default": {
             "type": "boolean",
             "title": "默认模型"
@@ -259,46 +284,129 @@
       }
     },
     "fields": {
-      "simpleTaskProfile": {
-        "$ref": "#/config/definitions/agentProfile",
-        "title": "简单任务配置",
-        "description": "simple 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true
-      },
       "generalTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
-        "title": "常规任务配置",
-        "description": "general 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true
+        "platformOnly": true,
+        "title": "常规任务基线配置",
+        "description": "当前平台的必填基线（general 档位），也是其他省略档位的默认继承目标。",
+        "required": true,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "balanced",
+          "title": "选择常规任务推荐组合",
+          "description": "优先推荐均衡主力模型组合，也可显式选择沿用宿主默认。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
+      },
+      "simpleTaskProfile": {
+        "$ref": "#/config/definitions/agentProfile",
+        "platformOnly": true,
+        "title": "简单任务配置",
+        "description": "可选。simple 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "fast",
+          "title": "选择轻量快速推荐组合",
+          "description": "优先推荐低延迟、低成本的模型组合。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
       },
       "complexTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
+        "platformOnly": true,
         "title": "复杂任务配置",
-        "description": "complex 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true
+        "description": "可选。complex 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "strong",
+          "title": "选择复杂主力推荐组合",
+          "description": "优先推荐强推理与多步验证能力更强的主力组合。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
       },
       "advancedTaskProfile": {
         "$ref": "#/config/definitions/agentProfile",
+        "platformOnly": true,
         "title": "高难任务配置",
-        "description": "advanced 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true
+        "description": "可选。advanced 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "deep",
+          "title": "选择高难深度推荐组合",
+          "description": "优先推荐最高深度推理模型组合。",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ]
+        }
+      },
+      "taskCustomProfiles": {
+        "type": "array",
+        "platformOnly": true,
+        "title": "通用委派自定义配置",
+        "description": "可选。按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "$ref": "#/config/definitions/agentExecutor"
+            },
+            "model": {
+              "$ref": "#/config/definitions/agentModel"
+            },
+            "reasoningEffort": {
+              "$ref": "#/config/definitions/agentReasoningEffort"
+            }
+          },
+          "additionalProperties": false,
+          "suggestions": {
+            "provider": "executor-model-profile",
+            "hint": "balanced",
+            "title": "选择推荐模型组合",
+            "description": "按当前执行器实时目录原子选择模型与推理强度。",
+            "dependsOn": [
+              "executor"
+            ],
+            "targets": [
+              "model",
+              "reasoningEffort"
+            ]
+          }
+        }
       },
       "subagentCommands": {
         "type": "array",
         "title": "外部执行器",
-        "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。配置不替代任务授权。",
+        "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。支持 common 共享与平台覆盖；配置不替代任务授权。",
         "items": {
           "type": "object",
           "properties": {
@@ -571,36 +679,34 @@
         },
         "default": 24,
         "required": true
-      },
-      "taskCustomProfiles": {
-        "type": "array",
-        "title": "通用委派自定义配置",
-        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
-        "items": {
-          "type": "object",
-          "properties": {
-            "applicability": {
-              "type": "string",
-              "title": "适用范围",
-              "required": true,
-              "validation": {
-                "minLength": 1
-              }
+      }
+    },
+    "platforms": {
+      "generic": {
+        "fields": {
+          "generalTaskProfile": {
+            "$ref": "#/config/definitions/agentProfile",
+            "platformOnly": true,
+            "title": "常规任务基线配置",
+            "description": "generic 通用平台豁免必填初始化，默认沿用当前宿主原生子代理。",
+            "default": {
+              "executor": "native"
             },
-            "executor": {
-              "$ref": "#/config/definitions/agentExecutor"
-            },
-            "model": {
-              "$ref": "#/config/definitions/agentModel"
-            },
-            "reasoningEffort": {
-              "$ref": "#/config/definitions/agentReasoningEffort"
+            "required": true,
+            "suggestions": {
+              "provider": "executor-model-profile",
+              "hint": "balanced",
+              "title": "选择常规任务推荐组合",
+              "dependsOn": [
+                "executor"
+              ],
+              "targets": [
+                "model",
+                "reasoningEffort"
+              ]
             }
-          },
-          "additionalProperties": false
-        },
-        "default": [],
-        "required": true
+          }
+        }
       }
     },
     "presentation": {
@@ -609,8 +715,8 @@
           "id": "spawn-subagent",
           "title": "spawn-subagent",
           "fields": [
-            "simpleTaskProfile",
             "generalTaskProfile",
+            "simpleTaskProfile",
             "complexTaskProfile",
             "advancedTaskProfile",
             "taskCustomProfiles"
@@ -658,10 +764,10 @@
         }
       },
       "fieldViews": {
-        "simpleTaskProfile": {
+        "generalTaskProfile": {
           "summary": "modelAndEffort"
         },
-        "generalTaskProfile": {
+        "simpleTaskProfile": {
           "summary": "modelAndEffort"
         },
         "complexTaskProfile": {
@@ -678,8 +784,8 @@
   },
   "artifacts": {
     "configKeys": [
-      "simpleTaskProfile",
       "generalTaskProfile",
+      "simpleTaskProfile",
       "complexTaskProfile",
       "advancedTaskProfile",
       "taskCustomProfiles",
@@ -698,7 +804,10 @@
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
         "aw.plugin-config-summary.v1",
-        "aw.plugin-config-suggestions.v1",
+        "aw.plugin-config-suggestions.v2",
+        "aw.plugin-config-platform-only.v1",
+        "aw.plugin-config-clears-on-change.v1",
+        "aw.plugin-config-ref-override.v1",
         "aw.managed-commands.v2",
         "aw.cli-output.v2",
         "aw.native-tools.v3"

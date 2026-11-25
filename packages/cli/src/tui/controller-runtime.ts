@@ -1,4 +1,7 @@
 import { readAgentSettings, previewAgentSettings, saveAgentSettings } from './agent-settings.js';
+import { observePreferences } from '../intent/deployment-preferences.js';
+import { resolveConfigurableLayers, classifyResidualConfigLayers } from '../utils/config-platforms.js';
+import { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import { selectPluginConfigProfile, getPluginConfigReferenceChoices, PLATFORM_TARGETS, NATIVE_PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
 import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
 import { preparePluginConfigSuggestions } from '../utils/plugin-config-suggestions.js';
@@ -1930,11 +1933,6 @@ export function createTuiControllerDependencies(
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
-            for (const key of intent.removeKeys ?? []) {
-              if (!definition.fields[key]) {
-                throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
-              }
-            }
           }
           const impact = intent.retryApply ? undefined : await analyzePluginConfigMutationImpact({
             plugin,
@@ -2077,11 +2075,6 @@ export function createTuiControllerDependencies(
                 updates: intent.updates ?? {},
                 cwd: context.cwd,
               });
-              for (const key of intent.removeKeys ?? []) {
-                if (!definition.fields[key]) {
-                  throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
-                }
-              }
             }
             const impact = intent.kind === 'configSave' && !intent.retryApply
               ? await analyzePluginConfigMutationImpact({
@@ -2456,11 +2449,6 @@ export function createTuiControllerDependencies(
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
-            for (const key of intent.removeKeys ?? []) {
-              if (!definition.fields[key]) {
-                throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
-              }
-            }
           },
         });
         return;
@@ -2525,6 +2513,16 @@ export function createTuiControllerDependencies(
             signal,
           });
           const userStore = stores.user;
+          const preferences = await observePreferences({ scope: 'user', cwd: context.cwd, env: context.env });
+          const configurableLayers = resolveConfigurableLayers(pluginId, plugin.manifest, preferences);
+          const residualLayers = classifyResidualConfigLayers(userStore, configurableLayers).map(({ layer }) => {
+            const fields = selectPluginConfigProfile(plugin.manifest.config!, layer === 'common' ? undefined : layer).fields;
+            const stored = layer === 'common' ? userStore.common : userStore.platforms?.[layer];
+            return { profile: layer, keys: Object.keys(stored ?? {}).sort().map((key) => {
+              const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
+              return field && !field.sensitive && !configObjectHasSensitiveChild(field) ? key : '[redacted]';
+            }) };
+          });
           const read = await resolveConfigRead({
             pluginName: plugin.manifest.name,
             plugin,
@@ -2568,7 +2566,7 @@ export function createTuiControllerDependencies(
             effectiveRawValues: effectiveRaw.values,
             sharedNativeRefreshKeys: new Set(plugin.manifest.artifacts?.configKeys ?? []),
           });
-          return { ...page, editEvidence: {
+          return { ...page, configurableLayers, residualLayers, editEvidence: {
             platform: config.platform,
             context: config.context ?? 'user',
             sourceIdentity: source.sourceIdentity,

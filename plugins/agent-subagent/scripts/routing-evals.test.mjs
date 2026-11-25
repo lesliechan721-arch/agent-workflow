@@ -239,7 +239,7 @@ function testMechanicalAssertions() {
   const expected = {
     spawn_calls: { min: 1, max: 1 },
     arguments: {
-      agent_type: 'aw-eval-source-agent-subagent-subagent',
+      agent_type: null,
       model: null,
       reasoning_effort: null,
       fork_turns: '2',
@@ -254,7 +254,6 @@ function testMechanicalAssertions() {
     exit_code: null,
     spawn_calls: [{
       arguments: {
-        agent_type: 'aw-eval-source-agent-subagent-subagent',
         message: 'verify',
         fork_turns: '2',
       },
@@ -280,12 +279,12 @@ function testMechanicalAssertions() {
     load_evidence: null,
   };
   assert.equal(evaluateRoutingRun(explicitlyInjected, expected, 'with_skill').passed, true);
-  const inheritedWrongly = {
+  const unexpectedRole = {
     ...passingRun,
-    spawn_calls: [{ arguments: { message: 'verify', fork_turns: '2' } }],
+    spawn_calls: [{ arguments: { agent_type: 'unexpected-role', message: 'verify', fork_turns: '2' } }],
   };
   assert.equal(
-    evaluateRoutingRun(inheritedWrongly, expected, 'with_skill').passed,
+    evaluateRoutingRun(unexpectedRole, expected, 'with_skill').passed,
     false,
   );
 

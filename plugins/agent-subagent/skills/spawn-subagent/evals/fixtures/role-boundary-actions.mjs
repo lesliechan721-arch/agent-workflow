@@ -185,8 +185,8 @@ export async function observeInstalledRuntimeConfig({ packageView, selector, key
 // Read only the published tables for caller-side selection. Profiles are not runtime config.
 export const PROFILE_ROWS = {
   'spawn-subagent/references/executor-selection.md': { simple: 'simpleTaskProfile', general: 'generalTaskProfile', complex: 'complexTaskProfile', advanced: 'advancedTaskProfile' },
-  'codex-explore/SKILL.md': { quick: 'quickProfile', standard: 'standardProfile', deep: 'deepProfile' },
-  'codex-advisor/SKILL.md': { general: 'advisorGeneralProfile', advanced: 'advisorAdvancedProfile', expert: 'advisorExpertProfile' },
+  'explore-facts/SKILL.md': { '常规 / 快速探索': 'exploreProfile', '深度探索': 'deepExploreProfile' },
+  'consult-advisor/SKILL.md': { '常规顾问': 'advisorProfile', '深度顾问': 'deepAdvisorProfile' },
 };
 /** Synthetic source tables for provider and public CLI fixtures; no backend claims. */
 export function fixtureProfileSources(values) {
@@ -198,17 +198,23 @@ export function fixtureProfileSources(values) {
       return `| ${label} | Explicit fixture | ${cell(profile.executor ?? 'native')} | ${cell(profile.model)} | ${cell(profile.reasoningEffort)} |`;
     }).join('\n') + '\n']));
 }
+async function profileSource(workspace, relative) {
+  return readFile(await file(workspace, `.agents/skills/${relative}`, true), 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+}
+/** Observes the emitted table/compact baseline, never guessing a model ID or external preference. */
 export async function observeInstalledProfiles(workspace) {
   const values = {};
+  const guidePath = 'spawn-subagent/references/executor-selection.md';
   for (const [relative, labels] of Object.entries(PROFILE_ROWS)) {
-    const source = await readFile(await file(workspace, `.agents/skills/${relative}`, true), 'utf8').catch((error) => {
-      if (error.code === 'ENOENT') return '';
-      throw error;
-    });
+    const source = await profileSource(workspace, relative) + (relative === guidePath ? '\n' + await profileSource(workspace, 'spawn-subagent/SKILL.md') : '');
     for (const line of source.split('\n')) {
-      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
-      const key = labels[cells[0]];
+      const cells = line.split('|').slice(1, -1).map(cell => cell.trim());
+      const key = labels[cells[0]?.replace(/（继承 general）$/u, '')];
       if (!key) continue;
+      if (relative !== guidePath && !cells[2]?.startsWith('`')) continue; // unconfigured consumer: method chooses inheritance/heterogeneous route
       if (cells.length !== 5 || Object.hasOwn(values, key)) throw new Error('fixtureProfileTableInvalid');
       const profile = {};
       for (const [index, field] of ['executor', 'model', 'reasoningEffort'].entries()) {
@@ -221,11 +227,43 @@ export async function observeInstalledProfiles(workspace) {
       }
       values[key] = profile;
     }
+    if (relative === guidePath && !values.generalTaskProfile) {
+      const compact = source.split('\n').find(line => line.startsWith('当前全部难度档位'));
+      if (compact?.includes('共用 `native`（宿主默认）')) values.generalTaskProfile = { executor: 'native' };
+      else if (compact) {
+        const baseline = compact.split('共用 `general` 基线：')[1];
+        const executor = baseline?.match(/^`([^`]+)`（/u)?.[1];
+        if (!executor) throw new Error('fixtureProfileTableInvalid');
+        const profile = { executor: executor === 'native' ? executor : JSON.parse(executor) };
+        for (const [, key, value] of baseline.matchAll(/`(model|reasoningEffort)`: `("[^`]+")`/gu)) profile[key] = JSON.parse(value);
+        values.generalTaskProfile = profile;
+      }
+    }
   }
-  for (const key of Object.values(PROFILE_ROWS['spawn-subagent/references/executor-selection.md'])) {
-    values[key] ??= { executor: 'native' };
-  }
+  if (!values.generalTaskProfile) throw new Error('fixtureProfileTableInvalid');
+  for (const key of Object.values(PROFILE_ROWS[guidePath])) values[key] ??= structuredClone(values.generalTaskProfile);
   return values;
+}
+/** Copy the installed inline executor template, not the coordinating Skill. */
+export async function readExecutorInstructions(workspace, relative, { task, paths = [] } = {}) {
+  const source = await readFile(await file(workspace, `.agents/skills/${relative}`), 'utf8');
+  if (!['explore-facts/SKILL.md', 'consult-advisor/SKILL.md'].includes(relative)) return source;
+  const blocks = source.match(/(?:^>[^\n]*(?:\n|$))+/gmu) ?? [];
+  if (blocks.length !== 1) throw new Error('fixtureInlineInstructionsUnavailable');
+  const template = blocks[0].replace(/^> ?/gmu, '');
+  if (!task) return template;
+  const scope = paths.length ? paths.join('、') : '仅限本次任务明确授权的工作区材料；可达不等于已获授权。';
+  const slots = {
+    '目标问题': task,
+    '核查范围与边界': scope,
+    '已知线索': '无额外线索；直接核查获准材料。',
+    '原始目标与硬约束': task,
+    '一手材料与可达路径': scope,
+    '已尝试与真实观察': '未提供预先判断或验证结果。',
+    '待决分叉与行动影响': '依据本次任务的合同与实际材料给出判断和下一步验证。',
+  };
+  return template.replace(/^\*\*(.+?)\*\*：<[^>\n]+>$/gmu, (line, label) =>
+    Object.hasOwn(slots, label) ? `**${label}**：${slots[label]}` : line);
 }
 async function readInstalled(workspace, selector, env) {
   const packageView = await inspectGuideCommand(workspace, selector, env);
@@ -246,7 +284,7 @@ async function installLab(workspace, fixtures, operation) {
     || !isDeepStrictEqual(prepared.command.runtimeConfig?.keys, ['subagentCommands', 'subagentRetentionHours'])
     || !Array.isArray(prepared.effectiveValues?.subagentCommands)) throw new Error('fixtureCommandSourceUnavailable');
   const localControl = ['single-write-disconnect', 'invalid-workspace-files'].includes(operation);
-  const profileKey = localControl || operation === 'custom-instructions-install' ? 'generalTaskProfile' : 'advisorGeneralProfile';
+  const profileKey = localControl || operation === 'custom-instructions-install' ? 'generalTaskProfile' : 'advisorProfile';
   const execution = localControl ? { executor: 'fixture-control' } : values[profileKey];
   const commands = localControl
     ? [{ key: execution.executor, adapter: 'custom', command: process.execPath, entrypoint: await file(fixtures, 'fixtures/single-write-disconnect.mjs') }]
@@ -282,14 +320,16 @@ async function installLab(workspace, fixtures, operation) {
   await jsonCommand('aw', ['dev', 'catalog', 'build', '--workspace-root', catalog, '--out', snapshot, '--json'], { env, cwd: project });
   await jsonCommand('aw', ['source', 'add', 'role-boundary-eval', '--path', snapshot, '--primary', '--no-auto-check', '--yes', '--json'], { env, cwd: project });
   await jsonCommand('aw', ['source', 'sync', 'role-boundary-eval', '--yes', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['target', 'set', 'codex', '--force', '--json'], { env, cwd: project });
   const selector = 'role-boundary-eval/role-boundary-lab';
   await jsonCommand('aw', ['command', 'package', 'sync', selector, '--yes', '--json'], { env, cwd: project });
   const active = await readInstalled(project, selector, env);
   const instructionsFile = path.join(lab, 'instructions.md'), promptFile = path.join(lab, 'task.md');
   const instructions = operation === 'custom-instructions-install'
     ? 'Read README.md and return its two facts with original source lines. Stay read-only. Do not delegate or load coordinator Skills.\n'
-    : await readFile(await file(path.join(workspace, '.agents', 'skills'), localControl
-      ? 'spawn-subagent/assets/task-instructions.md' : 'codex-advisor/assets/advisor-instructions.md'), 'utf8');
+    : await readExecutorInstructions(workspace, localControl
+      ? 'spawn-subagent/assets/task-instructions.md' : 'consult-advisor/SKILL.md',
+    { task: 'Read README.md and src/select.js. Give a bounded second opinion. Stay read-only.', paths: ['README.md', 'src/select.js'] });
   await writeFile(instructionsFile, instructions);
   await writeFile(promptFile, operation === 'custom-instructions-install'
     ? 'Read README.md and return its two facts with original line numbers. Stay read-only.\n'

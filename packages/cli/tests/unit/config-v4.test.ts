@@ -18,6 +18,7 @@ import { readManagedCommandRuntimeConfigSnapshot } from '../../src/utils/managed
 import { createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 
 const sourceIdentity = `sha256:${'4'.repeat(64)}`;
 
@@ -52,6 +53,7 @@ async function guideConfigFixture() {
   if (command.mode !== 'static') throw new Error('Expected the shipped Guide to have static routes.');
   plugin.manifest.config = normalizePluginConfigDefinition(source.config);
   plugin.manifest.command = command;
+  await setTargets(store, ['codex']);
   await fs.outputJson(plugin.manifestPath, { ...source, name: plugin.manifest.name });
   const entries = new Set(command.routes.subcommands.map(({ entry }) => entry));
   if (command.routes.fallback) entries.add(command.routes.fallback.entry);
@@ -74,12 +76,17 @@ describe('Config Definition v4 CLI boundaries', () => {
     const { store, plugin, save, runtimeValues } = await guideConfigFixture();
     const defaults = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
     for (const key of ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile']) {
-      expect(defaults.values[key]).toEqual({ executor: 'native' });
+      expect(defaults.values).not.toHaveProperty(key);
     }
+    const missing = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user', platform: 'codex' });
+    expect(missing.values).not.toHaveProperty('generalTaskProfile');
+    expect(missing.issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'generalTaskProfile' })]));
+    const generic = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user', platform: 'generic' });
+    expect(generic.values.generalTaskProfile).toEqual({ executor: 'native' });
     const commands = [
       { key: 'claude-catalog', adapter: 'claude-code', description: 'Working review catalog',
         modelsPolicy: 'override', models: [
-          { id: 'fixture-review', description: 'Review model', efforts: ['high'], default: true },
+          { id: 'fixture-review', description: 'Review model', efforts: ['high'], defaultEffort: 'high', default: true },
           { id: 'fixture-fast', efforts: ['low'] },
         ] },
       { key: 'claude-default', adapter: 'claude-code' },
@@ -97,9 +104,12 @@ describe('Config Definition v4 CLI boundaries', () => {
         }))),
     ];
     const generalTaskProfile = { executor: 'claude-catalog', model: 'fixture-review', reasoningEffort: 'high' };
-    await save({ subagentCommands: commands, generalTaskProfile });
-    const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
+    await save({ subagentCommands: commands });
+    await expect(save({ generalTaskProfile })).rejects.toThrow();
+    await save({ generalTaskProfile }, 'codex');
+    const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user', platform: 'codex' });
     expect(config.values).toMatchObject({ subagentCommands: commands, generalTaskProfile });
+    expect(config.values).not.toHaveProperty('simpleTaskProfile');
     expect(await runtimeValues()).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
@@ -138,6 +148,7 @@ describe('Config Definition v4 CLI boundaries', () => {
   // zero must survive saving, and invalid values must preserve the prior file.
   it('saves Guide retention hours including zero and rejects invalid ranges atomically', async () => {
     const { store, plugin, save, runtimeValues } = await guideConfigFixture();
+    await save({ generalTaskProfile: { executor: 'native' } }, 'codex');
     const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
     for (const subagentRetentionHours of [maximum, 1, 0]) {
       await save({ subagentRetentionHours });
@@ -215,6 +226,7 @@ describe('Config Definition v4 CLI boundaries', () => {
   // Test Value Gate: whole-layer override and dependency validation protect materialized runtime values.
   it('uses whole-field platform overrides and validates runtime dependency closure without resolving envFrom', async () => {
     const { store, plugin, save } = fixture();
+    await setTargets(store, ['codex']);
     await save({ subagentCommands: [{ key: 'remote', title: 'User', adapter: 'codex', args: ['--user'], envFrom: { TOKEN: 'HOST_TOKEN' } }],
       advisorProfile: { executor: 'remote' } });
     await save({ subagentCommands: [{ key: 'remote', title: 'Project', adapter: 'oracle', args: [], envFrom: { TOKEN: 'HOST_TOKEN' } }] }, 'codex');
