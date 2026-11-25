@@ -61,11 +61,11 @@
       "audit": {"rationale": "单页视觉、对比度与交互体验的只读设计诊断属于本技能适用场景。", "minimalCounterexample": "要求对整个功能 PR 做工程正确性、安全与测试覆盖的正式代码审查时应路由到代码审查能力。", "allowedVariance": "可作为直接入口或辅助能力加载，不要求修改文件。"}
     },
     {
-      "id": "backend_only",
+      "id": "frontend_build_tooling_only",
       "split": "validation",
-      "tags": ["negative", "boundary"],
-      "input": {"query": "为订单 API 增加分页参数校验，只改服务端，不涉及网页。", "expectedLoad": false},
-      "audit": {"rationale": "没有视觉、交互或前端设计对象。", "minimalCounterexample": "增加分页控件布局与状态要求时可加载。", "allowedVariance": "其他开发能力可以加载，本断言只检查 frontend-design。"}
+      "tags": ["negative", "boundary", "near-miss"],
+      "input": {"query": "调整这个前端项目的 Vite 构建分包与 sourcemap 输出配置，缩短打包耗时，不改动任何页面样式、布局或交互。", "expectedLoad": false},
+      "audit": {"rationale": "虽然面向前端工程项目，但任务纯属构建工具与产物配置优化，不涉及界面视觉、布局排版或交互体验设计。", "minimalCounterexample": "要求根据页面加载体验重新设计骨架屏、字体回退与首屏视觉层次时可加载本技能。", "allowedVariance": "其他开发能力可以加载，本断言只检查不误触发 frontend-design。"}
     },
     {
       "id": "frontend_logic_bugfix_only",

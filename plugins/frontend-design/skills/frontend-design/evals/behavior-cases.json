@@ -239,7 +239,7 @@
     {
       "id": "popover-hover-and-touch-craft",
       "split": "validation",
-      "tags": ["motion", "interaction", "artifact"],
+      "tags": ["motion", "interaction", "artifact", "holdout"],
       "prompt": "使用 frontend-design，打磨 toolbar.html 中筛选浮层和工具栏按钮的交互与动效体验，兼顾桌面鼠标、触屏和键盘用户。保留现有筛选选项和按钮文案；只改 toolbar.html，不联网，不安装依赖。",
       "assertions": [
         "筛选浮层从触发器锚定展开（非无依据居中 scale(0)），使用自然短促的 ease-out 过渡（如轻缩放、轻位移配合透明度或等价清晰展开），移除 transition: all 与迟缓的 ease-in。",
@@ -346,6 +346,90 @@
         "rationale": "与保留既有系统及开放方向探索形成对照：明确指定方向的重做应直接换掉旧视觉而非只做微调。",
         "minimalCounterexample": "只要求保留品牌的局部调整时不得更换整体视觉。",
         "allowedVariance": "允许多种平静阅读布局，不把某个颜色、字号或 DOM 结构作为唯一正确解。"
+      }
+    },
+    {
+      "id": "non-hero-immediate-resume",
+      "split": "validation",
+      "tags": ["new-work", "format-fit", "artifact"],
+      "prompt": "使用 frontend-design，依据 resume.md 制作一份个人在线简历页，写到 resume.html。你可自行决定视觉方向；使用原生 HTML/CSS，不联网，不安装依赖。",
+      "assertions": [
+        "直接进入真实简历文稿内容，首屏即呈现姓名、角色与核心履历，不前置全屏营销横幅、空洞口号或虚构统计条。",
+        "完整保留 resume.md 中的姓名、时间段、经历、项目、技能与联系方式，不编造奖项、数据指标或作品外链；正文段落与经历列表字阶克制统一，无多余装饰徽章或伪编号噪音。",
+        "使用原生 HTML/CSS 且窄屏可读、语义与焦点正常；仅修改 resume.html，诚实说明实际检查与未验证范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "resume.md": "# 林栖\n前端与设计系统工程师 · 杭州 · linqi@example.org\n\n## 工作经历\n- 2023–2026 辰星工业软件｜高级前端工程师\n  - 主导多端设计系统 tokens 与表格、表单无障碍组件维护。\n  - 推动排产与质检工作台性能与键盘效率重构。\n- 2020–2023 禾木数据｜前端工程师\n  - 负责报表查看器与权限配置后台的响应式改造。\n\n## 代表项目\n- 工厂质检异常看板：整合批次筛选、键盘快捷审核与打印视图。\n- 设计系统文档站：统一组件示例、对比度校验与版本变更记录。\n\n## 技能与教育\n- 技能：HTML/CSS、TypeScript、React、可访问性（WCAG 2.2）、浏览器渲染排查\n- 教育：2016–2020 浙江工业大学 软件工程 本科\n"
+        }
+      },
+      "expected": {
+        "output": "交付打开即扫读正文、克制且信息完整的离线简历页。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["resume.html"],
+        "artifacts": [{"path": "resume.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "检验非 Hero 即时内容形态判断：简历与新闻、文档、目录、工具同类，重点是打开即见文稿本体，而非套用营销落地页首屏横幅。",
+        "minimalCounterexample": "若 brief 明确要求以大幅视觉作品影像为核心的作品集官网，则允许作品本体主导首屏构图。",
+        "allowedVariance": "允许单栏文稿或克制双栏布局，允许使用本地系统字体，不锁死具体字号像素值、色值或 DOM 写法。"
+      }
+    },
+    {
+      "id": "polish-filter-chrome-and-nav",
+      "split": "validation",
+      "tags": ["refinement", "anti-slop", "interaction", "artifact"],
+      "prompt": "使用 frontend-design，整理 catalog.html 这页课程目录的顶部导航、筛选切换和卡片信息呈现，让桌面和手机上都更清爽易用。保留现有品牌色、全部 4 门课程数据、分类筛选与报名链接；只改 catalog.html，不联网，不安装依赖。",
+      "assertions": [
+        "顶部导航在桌面端保持单行紧凑且品牌标题层级高于导航链接；若顶栏保持固定，滚动时与下方内容有清晰底面分离而不互相重叠。",
+        "将分类筛选从分散的粗描边按钮墙整理为连贯紧凑的选择控件（如分段切换、Tab、单选组、select 或去噪音且清晰表达选中与可访问状态的紧凑筛选条），保持 4 门课程筛选与报名链接真实可用。",
+        "移除卡片中无信息职责的非交互装饰徽章、伪 LIVE 遥测圆点、非真实顺序的编号前缀与持续悬浮动画，改用清晰排版层级呈现课程元信息；保留品牌色、全部课程事实，仅改 catalog.html 并如实报告验证范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "catalog.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>工坊课程目录</title><style>:root{--brand:#0f4c5c;--ink:#16202a;--surface:#ffffff}body{margin:0;padding-top:64px;font-family:system-ui;color:var(--ink);background:#f6f8fa}header{position:fixed;top:0;left:0;right:0;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;background:transparent;z-index:10}.brand{font-size:13px;font-weight:400;color:var(--brand)}nav{display:flex;gap:16px;flex-wrap:wrap}nav a{font-size:16px;font-weight:700;color:var(--ink);text-decoration:none}main{max-width:960px;margin:0 auto;padding:24px 20px 120px}.filters{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0 24px}.filter-btn{padding:8px 16px;border:2px solid #94a3b8;border-radius:999px;background:#fff;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px}.card{background:var(--surface);border:1px solid #cbd5e1;border-radius:12px;padding:20px;animation:bob 2.2s ease-in-out infinite}@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}.chips{display:flex;gap:6px;margin-bottom:8px}.chip{font-size:11px;padding:2px 8px;border:1px solid #cbd5e1;border-radius:999px;text-transform:uppercase}.live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#16a34a;margin-right:4px}section{margin-top:48px}.faq-item{padding:16px 0;border-bottom:1px solid #e2e8f0}</style><header><span class='brand'>器物设计工坊</span><nav aria-label='主导航'><a href='#courses'>课程列表</a><a href='#faq'>常见问题</a><a href='#apply'>报名方式</a></nav></header><main><h1>秋季设计工作坊课程</h1><p>以下四门专题工作坊相互独立，可按兴趣任选报名，无先后修读顺序。</p><div class='filters'><button type='button' class='filter-btn' data-cat='all'>全部</button><button type='button' class='filter-btn' data-cat='type'>排版</button><button type='button' class='filter-btn' data-cat='interaction'>交互</button><button type='button' class='filter-btn' data-cat='motion'>动效</button></div><section id='courses' class='grid'><article class='card' data-cat='type'><div class='chips'><span class='chip'><span class='live-dot'></span>LIVE</span><span class='chip'>HOT</span><span class='chip'>TOP</span></div><h2>01 / 中文网页排版实务</h2><p>聚焦中文与西文混排的行长、标点挤压、字重回退和响应式标题折行，结合真实站点案例逐项调试。</p><p>常设小班 · 3 小时 · 12 人 · ¥280</p><a href='#apply'>报名</a></article><article class='card' data-cat='interaction'><div class='chips'><span class='chip'>NEW</span><span class='chip'>FEATURED</span></div><h2>02 / 表单与浮层可访问性</h2><p>围绕键盘焦点流、标签关联、错误反馈与对话框/弹层隔离，演练常见无障碍问题的定位与修复。</p><p>常设小班 · 3 小时 · 12 人 · ¥280</p><a href='#apply'>报名</a></article><article class='card' data-cat='motion'><div class='chips'><span class='chip'>PRO</span><span class='chip'>CRAFT</span></div><h2>03 / 界面动效节奏与中断</h2><p>从触发频率、缓动曲线与连续点击中断出发，重写高频工作台菜单、抽屉与提示条的过渡细节。</p><p>常设小班 · 3 小时 · 10 人 · ¥320</p><a href='#apply'>报名</a></article><article class='card' data-cat='type'><div class='chips'><span class='chip'>PICK</span><span class='chip'>STUDIO</span></div><h2>04 / 长文档阅读版式</h2><p>梳理目录定位、代码块、表格与注释的视觉分工，让长篇技术文档与指南在桌面和手机上都耐读。</p><p>常设小班 · 3 小时 · 10 人 · ¥260</p><a href='#apply'>报名</a></article></section><section id='faq'><h2>常见问题</h2><div class='faq-item'><h3>需要自带电脑吗？</h3><p>建议携带安装现代浏览器的笔记本电脑，现场提供离线练习素材与本地参考示例。</p></div><div class='faq-item'><h3>是否提供线上录播回放？</h3><p>工作坊以现场实操与点评为主，不设线上回放；课后会发放离线示例包供复盘。</p></div><div class='faq-item'><h3>临时有事可以改期吗？</h3><p>开课前 48 小时邮件通知即可免费顺延至下一期同主题小班。</p></div></section><section id='apply'><h2>报名方式</h2><p>发送课程名称、姓名与联系电话至 workshop@example.org，名额按邮件先后确认。</p></section></main><script>const btns=document.querySelectorAll('.filter-btn');const cards=document.querySelectorAll('.card');btns.forEach(b=>b.addEventListener('click',()=>{const c=b.dataset.cat;cards.forEach(card=>{card.hidden=c!=='all'&&card.dataset.cat!==c})}));</script></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付导航清晰无碰撞、筛选控件连贯且去除装饰噪音的清爽课程目录页。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["catalog.html"],
+        "artifacts": [{"path": "catalog.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "检验对吸顶导航碰撞、品牌与导航层级倒置、筛选按钮墙、非交互装饰徽章、伪 LIVE 遥测圆点、非顺序编号前缀与空转悬浮动画的综合治理，同时保留既有品牌色与真实筛选功能。",
+        "minimalCounterexample": "若对象是包含真实业务或系统状态的产品界面，真实语义状态标识可保留，但仍应与装饰性营销徽章区分。",
+        "allowedVariance": "筛选控件允许使用语义化的 tabs、radiogroup、segmented toggle、原生 select，或去除独立粗描边按钮墙噪音并具备清晰选中态与 aria-pressed 的紧凑筛选条；顶栏允许改为常规文档流或带清晰背景与分隔线的 sticky 顶栏；不锁死单一样式写法。"
+      }
+    },
+    {
+      "id": "preserve-real-status-badges",
+      "split": "validation",
+      "tags": ["refinement", "product", "anti-slop", "holdout"],
+      "prompt": "使用 frontend-design，清理 tickets.html 这页工单详情与关联列表里的杂乱样式，让客服人员一眼看清工单当前状态、优先级与处理说明。保留现有品牌色、全部工单字段、状态信息与转派链接；只改 tickets.html，不联网，不安装依赖。",
+      "assertions": [
+        "保留非表格内的真实业务语义状态标识（如工单详情头部与关联工单列表中的“已阻塞”“处理中”“待复核”），状态清晰可扫且不只靠颜色传达，不因反装饰徽章规则误删真实状态。",
+        "移除无信息职责的装饰营销徽章（如 HOT、VIP、AI POWERED）及伪 LIVE 呼吸圆点，减少视觉干扰。",
+        "保留现有品牌色、全部工单编号、负责人、时间、说明与转派操作，保持工作型界面克制；仅改 tickets.html 并如实报告验证范围。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "tickets.html": "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>工单 #TK-4092</title><style>:root{--brand:#1e40af;--ink:#111827;--surface:#ffffff}body{margin:0;padding:24px;font-family:system-ui;color:var(--ink);background:#f3f4f6}main{max-width:760px;margin:0 auto}.panel{background:var(--surface);border:1px solid #d1d5db;border-radius:8px;padding:20px;margin-bottom:16px}.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}.status-blocked{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}.status-progress{background:#dbeafe;color:#1e40af;border:1px solid #93c5fd}.status-review{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}.deco{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid #cbd5e1;text-transform:uppercase}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#16a34a;margin-right:4px}ul{list-style:none;padding:0;margin:0}li{padding:12px 0;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;gap:12px;align-items:center}a{color:var(--brand)}</style><main><article class='panel'><div class='row'><span class='deco'><span class='dot'></span>LIVE</span><span class='deco'>HOT</span><span class='deco'>AI POWERED</span></div><h1>工单 #TK-4092：华东仓打印任务超时</h1><div class='row'><span class='status status-blocked'>已阻塞</span><span>优先级：高</span><span>负责人：周明</span><span>更新于 11-25 10:15</span></div><p>原因：打印代理节点证书过期，等待运维更新后恢复出单。</p><a href='#reassign'>转派给运维值班</a></article><section class='panel'><h2>关联工单</h2><ul><li><div><strong>#TK-4095 华东仓标签机离线</strong><div class='row'><span class='deco'>VIP</span><span>负责人：林岚</span></div></div><span class='status status-progress'>处理中</span></li><li><div><strong>#TK-4088 夜间补打队列重试</strong><div class='row'><span class='deco'>NEW</span><span>负责人：陈拓</span></div></div><span class='status status-review'>待复核</span></li></ul></section><section id='reassign' class='panel'><h2>转派说明</h2><p>请附带报错日志编号联系值班工程师。</p></section></main></html>\n"
+        }
+      },
+      "expected": {
+        "output": "交付去除装饰噪音同时清晰保留真实工单语义状态的工作型页面。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": ["tickets.html"],
+        "artifacts": [{"path": "tickets.html", "exists": true}]
+      },
+      "audit": {
+        "rationale": "Holdout 反向对照用例，检验反非交互装饰徽章规则不会在操作型产品详情/列表中误删真实业务语义状态标识。",
+        "minimalCounterexample": "若页面卡片中的胶囊均为无业务状态的营销宣传词（如 HOT/NEW/FEATURED），则应移除而非保留。",
+        "allowedVariance": "允许以清晰胶囊、描边标签或等价可读状态样式呈现真实业务状态，不锁死具体 DOM 或色彩数值。"
       }
     }
   ]
