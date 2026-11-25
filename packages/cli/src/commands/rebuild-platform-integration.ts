@@ -552,6 +552,21 @@ export class PlatformRebuildSession {
     const evidence = sources?.grokScopeEvidence;
     if (!['grok-cli', 'grok-directory'].includes(binding.route) || operation !== 'ensure'
       || receipt.diagnostics.some((item) => item.severity === 'error') || sources?.observation !== 'complete' || !evidence) return;
+    const incomplete = receipt.effects.filter((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status));
+    if (incomplete.length) {
+      // First registration can be refused without touching the native copy,
+      // while an independent rule is confirmed. Never normalize uncertain
+      // native mutations or other failures against a sibling's frozen plan.
+      const registration = prepared.plan.effects.find(({ kind }) => kind === 'register');
+      const refusal = incomplete.find((effect) => effect.id === registration?.id && effect.status === 'blocked'
+        && effect.diagnostics.some(({ code }) => code === 'nativeTrustRequired')
+        && effect.diagnostics.every(({ code, severity }) => severity !== 'error' || code === 'nativeTrustRequired'));
+      if (binding.route !== 'grok-cli' || receipt.after.registration !== 'absent' || !refusal
+        || receipt.effects.some(({ mutation }) => mutation === 'possible')
+        || incomplete.some((effect) => effect.mutation !== 'none' || effect !== refusal
+          && !(effect.status === 'skipped' && effect.diagnostics.length > 0
+            && effect.diagnostics.every(({ code }) => code === 'deploymentDependencyFailed')))) return;
+    }
     const scope = binding.scope.kind;
     const scopeRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : layout.activationPath;
     const { before, packageComponent: owner, bundle, contributions } = prepared.driverState;
@@ -569,7 +584,7 @@ export class PlatformRebuildSession {
     // native refresh explains a change to the User inventory in this operation.
     const installedRoot = refreshed ? path.join(scopeRoot, 'installed-plugins', registrationId) : undefined;
     const root = installedRoot ?? path.normalize(layout.packageRoot);
-    if ((refreshed || binding.route === 'grok-directory' && packagePublished) && priorSources?.observation === 'complete'
+    if (!incomplete.length && (refreshed || binding.route === 'grok-directory' && packagePublished) && priorSources?.observation === 'complete'
       && receipt.after.package === 'present' && receipt.after.ownership === 'aw' && bundle
       && owner?.kind === 'owned-directory' && owner.path === layout.packageRoot && identity?.route === binding.route
       && identity.sourceLocation === layout.packageRoot) {
@@ -1738,9 +1753,12 @@ export class PlatformRebuildSession {
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
             continue;
           }
-          if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
-            || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
+          if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')) continue;
+          // A Grok rule can be independently written even when native package
+          // registration needs explicit trust. Account for the confirmed rule
+          // bytes before considering the next target, not for the blocked package.
           this.recordGrokWrites(prepared, receipt, publication?.mutation === 'confirmed', writtenFiles, shadowedUsers.get(prepared.plan.binding.id));
+          if (receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
           const piInventoryKey = piProjectInventoryKey(prepared.plan.binding, prepared.plan.evidence.layout.activationPath);
           if (piInventoryKey && piProjectEmptyDeliveryObserved(prepared.plan.binding, prepared.driverState.before)
             && receipt.after.registration === 'present' && receipt.after.ownership === 'aw' && receipt.after.configuration?.activation === 'enabled'
