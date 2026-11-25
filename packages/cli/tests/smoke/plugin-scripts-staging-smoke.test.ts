@@ -218,10 +218,12 @@ describe('plugin scripts staging smoke', () => {
     const prepare = (config: Awaited<ReturnType<typeof renderer.resolveArtifactRenderConfig>>) =>
       renderer.preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user',
         kinds: renderUnit.kinds, capabilities, config, cwd: temporary, commandEnv: env });
-    const zeroConfig = await prepare(await renderer.resolveArtifactRenderConfig(configOptions));
-    expect(zeroConfig.resources.files.some((file) => file.path.startsWith('references/'))).toBe(false);
+    const generalTaskProfile = { executor: 'native' };
+    await configStore.writePluginConfigStore({ ...configOptions, values: { generalTaskProfile } });
+    const baseline = await prepare(await renderer.resolveArtifactRenderConfig(configOptions));
+    expect(baseline.resources.files.some((file) => file.path.startsWith('references/'))).toBe(false);
     const subagentCommands = [{ key: 'local-codex', adapter: 'codex' }];
-    await configStore.writePluginConfigStore({ ...configOptions, values: { subagentCommands } });
+    await configStore.writePluginConfigStore({ ...configOptions, values: { generalTaskProfile, subagentCommands } });
     const prepared = await prepare(await renderer.resolveArtifactRenderConfig(configOptions));
     expect(prepared.expected.unmet).toEqual([]);
     expect(prepared.expected.components.map(({ id }) => id)).toEqual(['spawn-subagent-skill']);

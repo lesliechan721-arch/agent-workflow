@@ -41,7 +41,8 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'decision-kit': EXPECTED_PLATFORMS,
   'aw-development-toolkit': EXPECTED_PLATFORMS,
   'browser-use': EXPECTED_PLATFORMS,
-  'codex-enhance': EXPECTED_PLATFORMS,
+  'agent-explore': EXPECTED_PLATFORMS,
+  'agent-advisor': EXPECTED_PLATFORMS,
   'dev-workflow': EXPECTED_PLATFORMS,
   'frontend-design': EXPECTED_PLATFORMS,
   'git-toolkit': EXPECTED_PLATFORMS,
@@ -368,7 +369,8 @@ describe('build smoke', () => {
       }
     }
     for (const [pluginName, skillName] of [
-      ['codex-enhance', 'codex-explore'],
+      ['agent-explore', 'explore-facts'],
+      ['agent-advisor', 'consult-advisor'],
       ['agent-subagent', 'spawn-subagent'],
     ]) {
       await expect(fs.pathExists(path.join(
@@ -407,13 +409,14 @@ describe('build smoke', () => {
       }>;
     };
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-advisor',
       'agent-content-toolkit',
+      'agent-explore',
       'agent-skill-toolkit',
       'agent-subagent',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
-      'codex-enhance',
       'decision-kit',
       'dev-workflow',
       'frontend-design',
@@ -421,13 +424,14 @@ describe('build smoke', () => {
       'human-content',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-advisor',
       'agent-content-toolkit',
+      'agent-explore',
       'agent-skill-toolkit',
       'agent-subagent',
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
-      'codex-enhance',
       'decision-kit',
       'dev-workflow',
       'frontend-design',
@@ -466,8 +470,8 @@ describe('build smoke', () => {
           }),
         }),
         expect.objectContaining({
-          name: 'codex-enhance',
-          source: './plugins/codex-enhance',
+          name: 'agent-explore',
+          source: './plugins/agent-explore',
           policy: expect.objectContaining({
             products: ['CLAUDE', 'CODEX'],
           }),
@@ -486,105 +490,26 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'decision-kit', 'codex', 'skills', 'decision-kit')),
     ).resolves.toBe(false);
-    await Promise.all([
-      path.join(
-        outputRoot,
-        'plugins',
-        'codex-enhance',
-        '.codex-plugin',
-        'plugin.json',
-      ),
-      path.join(
-        outputRoot,
-        'plugins',
-        'codex-enhance',
-        'skills',
-        'codex-explore',
-        'SKILL.md',
-      ),
-      path.join(
-        outputRoot,
-        'plugins',
-        'codex-enhance',
-        'skills',
-        'codex-explore',
-        'agents',
-        'openai.yaml',
-      ),
-      path.join(
-        outputRoot,
-        'plugins',
-        'agent-subagent',
-        'skills',
-        'spawn-subagent',
-        'SKILL.md',
-      ),
-      path.join(
-        outputRoot,
-        'plugins',
-        'agent-subagent',
-        'skills',
-        'spawn-subagent',
-        'agents',
-        'openai.yaml',
-      ),
-      path.join(
-        outputRoot,
-        'plugins',
-        'codex-enhance',
-        'scripts',
-        'render-artifacts.mjs',
-      ),
-    ].map(async (requiredPath) => {
-      await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
-    }));
-    await expect(
-      fs.pathExists(
-        path.join(
-          outputRoot,
-          'plugins',
-          'codex-enhance',
-          '.claude-plugin',
-          'plugin.json',
-        ),
-      ),
-    ).resolves.toBe(true);
-    await expect(
-      fs.readJson(
-        path.join(
-          outputRoot,
-          'plugins',
-          'codex-enhance',
-          '.agents-plugin',
-          'plugin.json',
-        ),
-      ),
-    ).resolves.toMatchObject({
-      name: 'codex-enhance',
-      interface: {
-        capabilities: ['Skills', 'Agents'],
-      },
-      scripts: {
-        artifacts: {
-          render: {
-            runner: 'node',
-            path: './scripts/render-artifacts.mjs',
-          },
-        },
-      },
-      artifacts: {
-        configKeys: expect.arrayContaining(['quickProfile', 'advisorGeneralProfile']),
-        sourceDirs: ['./skills/codex-explore', './skills/codex-advisor'],
-      },
-    });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'codex-enhance', '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      name: 'codex-enhance',
-    });
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
-    ).resolves.toBe(false);
+    for (const [plugin, skill, keys] of [
+      ['agent-explore', 'explore-facts', ['exploreProfile', 'deepExploreProfile', 'exploreCustomProfiles']],
+      ['agent-advisor', 'consult-advisor', ['advisorProfile', 'deepAdvisorProfile', 'advisorCustomProfiles']],
+    ] as const) {
+      const pluginRoot = path.join(outputRoot, 'plugins', plugin);
+      for (const relative of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json',
+        `skills/${skill}/SKILL.md`, `skills/${skill}/agents/openai.yaml`, 'scripts/render-artifacts.mjs', 'shared/trigger-instruction.md']) {
+        await expect(fs.pathExists(path.join(pluginRoot, relative))).resolves.toBe(true);
+      }
+      await expect(fs.readJson(path.join(pluginRoot, '.agents-plugin/plugin.json'))).resolves.toMatchObject({
+        name: plugin, interface: { capabilities: ['Skills', 'Instructions'] },
+        scripts: { artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } } },
+        artifacts: { configKeys: expect.arrayContaining([...keys]), sourceDirs: ['./shared', `./skills/${skill}`] },
+      });
+      await expect(fs.readJson(path.join(pluginRoot, '.codex-plugin/plugin.json'))).resolves.toMatchObject({ name: plugin });
+      await expect(fs.pathExists(path.join(pluginRoot, 'claude'))).resolves.toBe(false);
+    }
+    for (const relative of ['SKILL.md', 'agents/openai.yaml']) {
+      await expect(fs.pathExists(path.join(outputRoot, 'plugins/agent-subagent/skills/spawn-subagent', relative))).resolves.toBe(true);
+    }
     expect(catalogManifest).toMatchObject({
       schemaVersion: 7,
       catalogVersion: sourceMetadata.catalog.version,
@@ -602,10 +527,12 @@ describe('build smoke', () => {
     expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v7']);
     expect(catalogManifest.entries.every((entry) =>
       entry.requires.aw.capabilities.includes('aw.plugin-manifest.v4'))).toBe(true);
-    expect(catalogManifest.entries.find((entry) => entry.name === 'codex-enhance')).toMatchObject({
-      dependencies: ['agent-subagent'],
-      requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-config-cross-plugin-value-ref.v1']) } },
-    });
+    for (const plugin of ['agent-explore', 'agent-advisor']) {
+      expect(catalogManifest.entries.find(entry => entry.name === plugin)).toMatchObject({
+        dependencies: ['agent-subagent'],
+        requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-config-cross-plugin-value-ref.v1']) } },
+      });
+    }
     const subagentRoot = path.join(outputRoot, 'plugins', 'agent-subagent');
     const subagentBundle = await fs.readJson(path.join(subagentRoot, '.agents-plugin', 'plugin.json'));
     // Dynamic components are determined at preparation; the published bundle must carry their declared inputs and renderer.

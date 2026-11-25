@@ -777,11 +777,8 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
     await write(instance, 's');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('已保存，是否更新插件？'));
-    expect(configured).toBe(true);
-    await escape(instance);
-    await write(instance, 'b');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask'));
+    expect(configured).toBe(true);
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', scope: 'user', command: 'sync',

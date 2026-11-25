@@ -58,7 +58,7 @@
         "requiresCodexProjectConfig": true
       },
       {
-        "id": "codex-explorer-role",
+        "id": "fixture-researcher-role",
         "platform": "codex",
         "scopes": ["user", "project"],
         "target": "codex.agentRole",
@@ -66,7 +66,7 @@
         "states": ["present"],
         "refreshKeys": ["explorerModel", "modelReasoningEffort"],
         "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explorer"
+        "roleKey": "fixture-researcher"
       }
     ]
   },

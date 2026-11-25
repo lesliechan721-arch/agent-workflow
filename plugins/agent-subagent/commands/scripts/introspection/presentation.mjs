@@ -31,7 +31,17 @@ export function executorPresentation(executor, host) {
 }
 
 export function supportedDefaultEffort(value, efforts) {
-  return value && (!efforts?.length || efforts.includes(value)) ? value : undefined;
+  return value && (efforts === undefined || efforts.includes(value)) ? value : undefined;
+}
+
+// An explicit empty model array overrides a general executor menu. An absent
+// array inherits that menu only when there is a non-empty one to inherit.
+export function effectiveModelEfforts(model, supportedEfforts) {
+  return Array.isArray(model?.efforts) ? model.efforts : supportedEfforts?.length ? supportedEfforts : undefined;
+}
+
+export function effortSupport(efforts) {
+  return !Array.isArray(efforts) ? 'unknown' : efforts.length ? 'separate' : 'none';
 }
 
 export function presentModel(model, { display, action }) {
@@ -54,7 +64,7 @@ export function presentIntrospectionFrame(frame, presentation) {
   const defaultModel = models?.find((model) => model.id === requestedDefault);
   const effort = action(rawEffort);
   for (const model of models ?? []) {
-    const effectiveEfforts = model.efforts?.length ? model.efforts : supportedEfforts;
+    const effectiveEfforts = effectiveModelEfforts(model, supportedEfforts);
     const validated = supportedDefaultEffort(model.defaultEffort, effectiveEfforts);
     if (model === defaultModel) {
       model.isDefault = true;
@@ -66,7 +76,8 @@ export function presentIntrospectionFrame(frame, presentation) {
       if (!validated) delete model.defaultEffort;
     }
   }
-  const defaultEffort = defaultModel?.defaultEffort ?? (requestedDefault === undefined ? supportedDefaultEffort(effort, supportedEfforts) : undefined);
+  const defaultEffort = defaultModel?.defaultEffort ?? (requestedDefault === undefined
+    ? supportedDefaultEffort(effort, effectiveModelEfforts(undefined, supportedEfforts)) : undefined);
   const environment = rawEnvironment.status === 'unavailable' ? { status: 'unavailable', code: diagnosticCode(rawEnvironment.code) }
     : { status: 'available' };
   const diagnostics = rawDiagnostics?.map((entry) => ({ code: diagnosticCode(entry.code), message: bounded(display(entry.message), 2048),

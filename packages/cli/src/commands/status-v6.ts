@@ -1,6 +1,11 @@
 import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import { selectAgents } from '../intent/deployment-preferences.js';
+import { resolveActiveConfigPlatforms } from '../utils/config-platforms.js';
+import { configStatusDiagnostics } from '../utils/plugin-config-diagnostics.js';
+import { createScopeContext } from '../intent/scope-context.js';
+import { inspectPortableExtraInstalled, type PortableExtraObservation } from '../portable/recovery.js';
 import { readDemand, demandNativeProjection, type DemandSnapshot } from '../recovery/demand.js';
+import { deriveJointDemand } from '../recovery/joint-demand.js';
 import type { NativeObservation } from '../recovery/status.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1495,6 +1500,28 @@ async function statusCommandV8InSession(options: {
   const coversPlatform = (value: unknown): value is 'codex' | 'claude' =>
     (value === 'codex' || value === 'claude') && platforms.includes(value);
   const scopes = selectedScopes(options.scope);
+  const installedPortableByScope = new Map<Scope, PortableExtraObservation[]>();
+  for (const scope of scopes) {
+    const preferences = observedDemands.get(scope)?.preferences;
+    if (preferences?.state !== 'valid' || !preferences.value.targets.includes('generic')) continue;
+    try {
+      const context = await createScopeContext({ scope, cwd: options.cwd, env, readOnly: true });
+      try {
+        const installed = await inspectPortableExtraInstalled({ scope, context, env: context.env, signal: options.signal });
+        installedPortableByScope.set(scope, installed.targets);
+      } finally { await context.dispose(); }
+    } catch (error) { throwIfCancelled(error); }
+  }
+  const userDemand = observedDemands.get('user');
+  const projectDemand = observedDemands.get('project');
+  const configRequirementKey = (pluginId: string, scope: Scope, target: PlatformTarget) => `${pluginId}\0${scope}\0${target}`;
+  const requiredConfigTargets = new Set(userDemand ? deriveJointDemand({
+    context: { context: projectDemand ? 'project' : 'user', cwd: options.cwd,
+      scopes: projectDemand ? ['user', 'project'] : ['user'], ...(projectDemand && projectRoot ? { projectRoot } : {}) },
+    user: userDemand, project: projectDemand,
+    preferences: userDemand.preferences.state === 'valid' ? userDemand.preferences.value : null,
+  }).placements.flatMap((placement) => placement.contributions.map((contribution) =>
+    configRequirementKey(placement.pluginId, contribution.scope, placement.target))) : []);
 
   const selectorErrors: Array<{ code: string; message: string }> = [];
   const parsedSelectors: PlannedStatusSelector[] = [];
@@ -1737,65 +1764,81 @@ async function statusCommandV8InSession(options: {
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let configIssues: StatusV8PluginSummary['configIssues'];
               let configDiagnostic: StatusV8PluginSummary['configDiagnostic'];
-              if (plugin.manifest.config?.fields) {
+              if (plugin.manifest.config) {
                 const issues = new Map<string, NonNullable<StatusV8PluginSummary['configIssues']>[number]>();
-                for (const platform of ['codex', 'claude'] as const) {
-                if (!supportsPlatform(plugin.manifest, platform)) continue;
                 for (const scope of scopes) {
-                  try {
-                    const resolved = scope === 'project'
-                      ? await resolveProjectArtifactRenderConfig({
-                          sourceId: plugin.sourceId,
-                          sourceIdentity: plugin.sourceIdentity,
-                          logicalIdentity: plugin.catalogLogicalIdentity,
-                          pluginName: plugin.manifest.name,
-                          manifest: plugin.manifest,
+                  const scopedDemand = observedDemands.get(scope);
+                  if (!scopedDemand) continue;
+                  // Strong preference errors are already reported through demand; never fall back to every platform.
+                  if (scopedDemand.preferences.state !== 'valid') continue;
+                  const active = resolveActiveConfigPlatforms(plugin.pluginId, plugin.manifest, scopedDemand.preferences);
+                  for (const platform of active) {
+                    const installed = platform === 'generic'
+                      ? installedPortableByScope.get(scope)?.some((target) =>
+                          target.agent === platform && target.pluginId === plugin.pluginId
+                          && target.logicalIdentity === plugin.catalogLogicalIdentity)
+                      : ownerInventory.references.some((reference) =>
+                          reference.platform === platform
+                          && reference.sourceId === plugin.sourceId && reference.pluginName === plugin.manifest.name
+                          && (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+                          && (!reference.sourceIdentity || reference.sourceIdentity === plugin.sourceIdentity)
+                          && reference.scope === scope && (scope === 'user' || reference.projectKey === currentProjectKey));
+                    if (!installed && !requiredConfigTargets.has(configRequirementKey(plugin.pluginId, scope, platform))) continue;
+                    try {
+                      const resolved = scope === 'project'
+                        ? await resolveProjectArtifactRenderConfig({
+                            sourceId: plugin.sourceId,
+                            sourceIdentity: plugin.sourceIdentity,
+                            logicalIdentity: plugin.catalogLogicalIdentity,
+                            pluginName: plugin.manifest.name,
+                            manifest: plugin.manifest,
+                            platform,
+                            cwd: options.cwd,
+                            env,
+                          })
+                        : await resolveEffectivePluginConfig({
+                            sourceId: plugin.sourceId,
+                            sourceIdentity: plugin.sourceIdentity,
+                            logicalIdentity: plugin.catalogLogicalIdentity,
+                            pluginName: plugin.manifest.name,
+                            manifest: plugin.manifest,
+                            platform,
+                            targetScope: 'user',
+                            cwd: options.cwd,
+                            env,
+                          });
+                      for (const issue of resolved.issues) {
+                        const source = issue.source ?? 'missing';
+                        const configIssue = {
+                          scope,
                           platform,
-                          cwd: options.cwd,
-                          env,
-                        })
-                      : await resolveEffectivePluginConfig({
-                          sourceId: plugin.sourceId,
-                          sourceIdentity: plugin.sourceIdentity,
-                          logicalIdentity: plugin.catalogLogicalIdentity,
-                          pluginName: plugin.manifest.name,
-                          manifest: plugin.manifest,
+                          type: issue.type,
+                          key: issue.key,
+                          title: resolved.schema[issue.key]?.title ?? issue.key,
+                          source,
+                        } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
+                        issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                      }
+                      for (const override of resolved.unsupportedLayerOverrides) {
+                        const configIssue = {
+                          scope,
                           platform,
-                          targetScope: 'user',
-                          cwd: options.cwd,
-                          env,
-                        });
-                    for (const issue of resolved.issues) {
-                      const source = issue.source ?? 'missing';
-                      const configIssue = {
+                          type: override.type,
+                          key: override.key,
+                          title: resolved.schema[override.key]?.title ?? override.key,
+                          source: override.source,
+                        } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
+                        issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                      }
+                    } catch (error) {
+                      throwIfCancelled(error);
+                      configDiagnostic ??= {
                         scope,
-                        platform,
-                        type: issue.type,
-                        key: issue.key,
-                        title: resolved.schema[issue.key]?.title ?? issue.key,
-                        source,
-                      } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
-                      issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                        code: 'configReadFailed',
+                        message: '插件设置当前不可读。未读取或显示设置值。',
+                      };
                     }
-                    for (const override of resolved.unsupportedLayerOverrides) {
-                      const configIssue = {
-                        scope,
-                        platform,
-                        type: override.type,
-                        key: override.key,
-                        title: resolved.schema[override.key]?.title ?? override.key,
-                        source: override.source,
-                      } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
-                      issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
-                    }
-                  } catch {
-                    configDiagnostic ??= {
-                      scope,
-                      code: 'configReadFailed',
-                      message: '插件设置当前不可读。未读取或显示设置值。',
-                    };
                   }
-                }
                 }
                 configIssues = [...issues.values()];
               }
@@ -3489,7 +3532,7 @@ async function statusCommandV8InSession(options: {
   const nativeObservations: NativeObservation[] = available.flatMap((entry) =>
     (['codex', 'claude'] as const).map((platform): NativeObservation => {
       const observed = entry.states[platform]?.[scope];
-      const blockers = (observed?.errors ?? []).map((error) => ({
+      const blockers: NativeObservation['blockers'] = (observed?.errors ?? []).map((error) => ({
         code: error.code, message: `${error.code}: 项目 Native 目标尚未满足。`,
       }));
       const nativeInventoryErrors = inventoryErrors.filter((error) => inventoryErrorMatchesSelection({
@@ -3507,10 +3550,15 @@ async function statusCommandV8InSession(options: {
         || scope === 'project' && error.scope === 'user')) {
         blockers.push({ code: 'nativeStateUnreadable', message: '无法读取 Codex 激活配置。' });
       }
-      if (entry.configDiagnostic) blockers.push({ code: 'configReadFailed', message: '无法读取插件配置。' });
-      if (entry.configIssues?.some((issue) => issue.scope === scope)) {
-        blockers.push({ code: 'configInvalid', message: '项目配置需要处理。' });
+      const scopedPreferences = observedDemands.get(scope)?.preferences;
+      if (entry.configDiagnostic?.scope === scope && scopedPreferences?.state === 'valid'
+        && resolveActiveConfigPlatforms(`${entry.source.id}/${entry.name}`, { platforms: entry.platforms }, scopedPreferences).includes(platform)) {
+        blockers.push({ code: 'configInvalid', message: 'Plugin configuration could not be read.', detail: { reasonCode: 'configReadFailed' } });
       }
+      const configBlockers = configStatusDiagnostics((entry.configIssues ?? []).flatMap((issue) =>
+        issue.scope === scope && issue.platform === platform && (issue.type === 'missing-required' || issue.type === 'invalid-config')
+          ? [{ type: issue.type, key: issue.key, message: '' }] : []));
+      blockers.push(...configBlockers);
       if (observed?.state === 'error' && !blockers.some((error) =>
         /Unsupported$|collision|conflict|foreign/iu.test(error.code))) {
         blockers.push({ code: 'nativeObservationFailed', message: '无法完成项目 Native 现场观察。' });

@@ -51,7 +51,9 @@ test('a custom adapter receives one v6 no-task frame and the merged directory pr
   assert.equal(result.environment, 'available');
   assert.equal(result.defaultModel, 'added');
   assert.deepEqual(result.models.map((m) => m.id), ['first', 'second', 'added']);
-  assert.deepEqual(result.models[0].efforts, ['low']);
+  assert.deepEqual(result.models[0].efforts, []);
+  assert.equal(result.models[0].effortSupport, 'none');
+  assert.equal(result.models[1].effortSupport, 'unknown');
   assert.equal(result.models[0].isDefault, undefined);
   assert.equal(result.models[2].origin, 'configured');
   assert.ok(!JSON.stringify(result).includes(env.API_KEY));
@@ -134,7 +136,7 @@ test('short environment switches preserve real model identifiers and registry fi
   const summary = await inspectRegistry([executor], {}, options);
   assert.match(summary, /local\tcustom\tmerge\t0\tfalse\tfalse/u);
   const output = await inspectRegistry([executor], { executor: 'local', json: true }, options);
-  assert.deepEqual(JSON.parse(output).models, models);
+  assert.deepEqual(JSON.parse(output).models, models.map((model) => ({ ...model, effortSupport: 'unknown' })));
   for (const credential of credentials) assert.ok(!output.includes(credential));
 });
 
@@ -227,7 +229,8 @@ test('inspect strips controls before redaction and omits changed IDs and efforts
       assert.equal(result.defaultModel, undefined);
       assert.equal(result.defaultEffort, undefined);
       assert.deepEqual(result.supportedEfforts, ['high']);
-      assert.deepEqual(result.models, [{ id: 'safe-model', displayName: 'Before [redacted] after', description: '[redacted]', efforts: ['high'] }]);
+      assert.deepEqual(result.models, [{ id: 'safe-model', displayName: 'Before [redacted] after', description: '[redacted]', efforts: ['high'],
+        effortSupport: 'separate' }]);
       assert.deepEqual(result.diagnostics, [{ code: 'introspectionDiagnostic', message: '[redacted]', field: '[redacted]' }]);
     }
   }
@@ -258,6 +261,46 @@ test('inspect only marks effective overlays as merged and keeps defaults tied to
   const appended = await inspect([{ id: 'manual', default: true }]);
   assert.equal(appended.defaultModel, 'manual');
   assert.equal(appended.defaultEffort, undefined);
+});
+
+// Explicitly unsupported models must not inherit the executor-level menu;
+// default effort choices must match the actual merged directory.
+test('inspect distinguishes effort support, validates configured defaults, and does not add Claude presets', async () => {
+  const executor = { key: 'local', adapter: 'claude-code' };
+  const frame = { ...dynamic, defaultModel: 'first', defaultEffort: 'high', supportedEfforts: ['high'], models: [
+    { id: 'first', efforts: [], defaultEffort: 'high' },
+    { id: 'second' },
+    { id: 'third', efforts: ['high'], defaultEffort: 'high' },
+  ] };
+  const config = { ...executor, models: [
+    { id: 'first', defaultEffort: 'high' },
+    { id: 'second', defaultEffort: 'high', default: true },
+    { id: 'third', defaultEffort: 'low' },
+    { id: 'fourth', efforts: ['low'], defaultEffort: 'low' },
+  ] };
+  const options = { env: {}, probe: () => frame };
+  const output = JSON.parse(await inspectRegistry([config], { executor: 'local', json: true }, options));
+  assert.deepEqual(output.models.map((model) => [model.id, model.effortSupport, model.defaultEffort]), [
+    ['first', 'none', undefined], ['second', 'separate', 'high'], ['third', 'separate', 'high'], ['fourth', 'separate', 'low'],
+  ]);
+  assert.deepEqual(output.diagnostics.map((item) => [item.code, item.severity]), [
+    ['introspectionDefaultEffortUnsupported', 'warning'], ['introspectionDefaultEffortUnsupported', 'warning'],
+  ]);
+  assert.equal(output.defaultEffort, 'high');
+  const text = await inspectRegistry([config], { executor: 'local' }, options);
+  assert.match(text, /first \[efforts=none\]/);
+  assert.match(text, /second \[default\] \[efforts=high\] \[default_effort=high\]/);
+  assert.match(text, /severity="warning"/);
+  for (const model of [
+    { id: 'manual', efforts: ['high'], defaultEffort: 'low' },
+    { id: 'manual', efforts: [], defaultEffort: 'high' },
+    { id: 'manual', defaultEffort: '' },
+    { id: 'manual', defaultEffort: 'x'.repeat(65) },
+  ]) {
+    await assert.rejects(introspectExecutor({ ...executor, models: [model] }, { probe: assert.fail }), { code: 'executorInvalid' });
+  }
+  const offline = JSON.parse(await inspectRegistry([executor], { executor: 'local', json: true }, { env: {}, probe: () => undefined }));
+  assert.deepEqual(offline.models, []);
 });
 
 test('inspect keeps text and parseable JSON under the receipt budget', async () => {

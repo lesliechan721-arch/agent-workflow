@@ -21,6 +21,8 @@
 
 `--only` 只接受一个值。install 不支持 outputs-only。requirements-only 不接受 `--target` 或 `--script-timeout`。普通 remove 不接受 `--target`；outputs-only 必须提供至少一个 target，可清理已从本机策略关闭的平台。`--delete-config` 不能与 `--only` 组合。普通 remove 默认清理本次请求释放、没有独立声明或其他消费者且归属可确认的依赖；`--keep-dependencies` 保留它们，不能与 `--only` 组合。普通 remove 的 `--force` 绕过仍被其他插件依赖的阻断，但保留消费者并继续执行所有删除安全检查；outputs-only 的 `--force` 仅用于受限损坏输出恢复，requirements-only 不接受它。保留需求时，后续 sync 可重新部署。普通 install 在保存需求前检查有效平台集合，空集合返回 `noTargetsEnabled`。
 
+普通 install 若所有实际候选目标（不含已排除、不受支持或预检已确认不适用的目标）均因缺少或无效配置受阻，则在保存需求、启用首次安装的来源候选和部署前返回 `blocked`（退出码 3）。修复配置后重新执行原 install；若来源尚无 Active，先用 `aw source sync` 显式启用来源。`install --only requirements` 不受此部署配置门禁限制。部分目标已就绪时仍保存全局需求并处理独立就绪目标；有已完成部分或业务变更时返回 `partial`（退出码 4）。
+
 普通 remove 完整校验 Active 和联合依赖；插件已下架时，须由健康 Active 证明缺席。Active 不可验证时保留需求和输出。两个 only 模式分别支持离线取消合法声明中的完整 ID，以及依据现场 ownership 清理输出。foreign、shared 和未知归属内容保持不动，force 不扩大删除权限。完整领域门禁见[生命周期](../maintainers/architecture/lifecycle.md)。
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
@@ -65,6 +67,7 @@ type Diagnostic = {
     reasonCode: string;
     path?: string;
     configKey?: string;
+    fieldKeys?: string[];
     skippedPermissionActions?: Array<'allow' | 'ask' | 'deny' | 'sandbox'>;
     skillInvocationControls?: Array<{
       feature: 'skill.invocation.manual' | 'skill.invocation.model' | 'skill.visibility';
@@ -101,7 +104,7 @@ type Confirmation = {
 - `command` 是已解析的稳定命令 ID，例如 `plugin.install`、`source.sync`、`dev.catalog.publish.apply`；无法识别命令时为 null，不把任意输入回显成命令 ID。
 - `data` 始终是对象。不同业务有明确的类型；列表通常使用 `items`。请求尚未完成归一化、且未执行业务变更时，允许使用严格的空对象 `{}`，即使命令 ID 已经识别。已完成的空列表才输出 `[]`，不能用它替代尚未取得的事实。
 - `status` 描述这次调用是否完成；`data` 描述插件、来源、配置等业务事实。插件尚未就绪不等于 status 查询执行失败。
-- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey、Skill 调用控制或跳过的命令权限动作。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
+- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 包含可信细分 reasonCode 以及适用的安全文件位置 path、配置键 configKey、该平台缺失或无效的字段列表 fieldKeys、Skill 调用控制或跳过的命令权限动作。调用控制来自固定 feature 和取值，其中两个 invocation feature 使用 `true` 或 `false`，visibility 使用 `visible` 或 `hidden`。诊断不回显配置值、凭据、原生 stderr 或异常栈。subject 承载相关插件、来源、target、scope 与字段。
 - 业务对象自身的 schemaVersion、Manifest schema 和配置定义版本位于相应 data 内，与顶层输出协议版本分别管理。
 - data 使用显式投影，不直接 JSON.stringify 内部 backend、Error、renderer context 或整个服务对象。单次请求内部的锁、进程句柄和授权对象不属于输出协议。
 
@@ -130,7 +133,7 @@ macOS 和 Linux 上，默认处理 `SIGINT` 或 `SIGTERM` 时，CLI 先清理当
 
 先判断输入错误，再判断执行是否开始及实际/可能的变更，不以 errors 数量机械决定结果。有结果不确定时明确标记 unknown，不把 partial 解释成所有修改都已确定成功。
 
-多来源查询中，部分来源失败但其它来源有有效数据时返回 partial，保留有效数据。已知配置不足、来源缺失或未确认的写操作返回 blocked。仅有 warning 不自动使命令失败。不可捕获的进程终止、宿主强杀或 stdout 故障不能保证输出完整 JSON；文档不得承诺这种保证。
+多来源查询中，部分来源失败但其它来源有有效数据时返回 partial，保留有效数据。配置不足、来源缺失或未确认的写操作在没有已完成部分或业务变更时返回 blocked。仅有 warning 不自动使命令失败。不可捕获的进程终止、宿主强杀或 stdout 故障不能保证输出完整 JSON；文档不得承诺这种保证。
 
 ## 4. 业务 payload 的边界
 
@@ -150,10 +153,12 @@ macOS 和 Linux 上，默认处理 `SIGINT` 或 `SIGTERM` 时，CLI 先清理当
 要在命令行查询配置字段的动态候选，可运行下例。命令使用本机 Active Catalog 和已保存的配置，无需先安装插件。
 
 ```sh
-aw plugin config suggestions official/agent-subagent simpleTaskProfile.model --platform codex --dep executor=native --json
+aw plugin config suggestions official/agent-subagent generalTaskProfile --platform codex --dep executor=native --json
 ```
 
-字段路径按点分段，数组路径可省略数字索引。省略任一数组索引时，建议只使用 `--dep` 提供的依赖值。`--platform` 缺省为 common，`--context` 默认为 user。`--dep key=value` 可重复，按第一个等号分割并按声明类型解析。路径定位到已有配置对象时，未覆盖的依赖取该对象中的有效值。`--timeout-ms` 接受由 `0` 到 `9` 组成的十进制整数，取值范围为 1000 至 30000 毫秒。结果的 `data` 含 `pluginId`、`fieldPath`、`profile`、`provider`、`providerPluginId`、`status` 与 `items`。有效建议或提供方报告 `unsupported` 时退出 0，提供方不可用或运行失败时退出 1，参数或目标字段无效时返回空 `data` 并退出 2。提供方附带的诊断保留在 `data.diagnostics`，并映射到顶层 `diagnostics`。`unsupported` 时顶层警告仅来自提供方诊断。
+字段路径按点分段，数组路径可省略数字索引。省略任一数组索引时，建议只使用 `--dep` 提供的依赖值。`--platform` 缺省为 common，`--context` 默认为 user。`--dep key=value` 可重复，按第一个等号分割并按声明类型解析。路径定位到已有配置对象时，未覆盖的依赖取该对象中的有效值。`--timeout-ms` 接受由 `0` 到 `9` 组成的十进制整数，取值范围为 1000 至 30000 毫秒。结果的 `data` 含 `kind`、`pluginId`、`fieldPath`、`profile`、`provider`、`providerPluginId`、`status` 与 `items`。直接查询固定对象或对象数组项返回复合候选，查询标量属性返回单值候选。`ok`、`not-applicable` 和 `no-probe` 退出 0，后两种带警告；`unavailable` 退出 1。无效参数或字段路径退出 2。
+
+`set`、`edit`、`suggestions` 及显式选择平台的 `apply` 使用插件支持、本机已启用且未被该插件排除的目标。不可配置平台返回 `configPlatformNotEnabled`，缺少公共字段时写入或请求公共建议返回 `configCommonLayerUnavailable`，均为 `blocked`、退出 3。可用 `get`、`schema` 查看历史层，用 `unset` 清除指定旧键，或用 `reset --platform <target>` 清除停用平台保存的整层值。重新启用目标会重新检查保留的配置。安装或同步全部候选目标因缺少或无效配置受阻且没有业务变更时退出 3；有完成部分或业务变更（例如 `sync --refresh` 已启用新的 Active）时退出 4。
 
 `plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 

@@ -201,6 +201,17 @@ test('lost worker result is fixed once and expires without regenerating work', {
   const started = await f.start({ messages: ['Saved process message.'] });
   await f.initialized(started); await started.published();
   const before = await f.evidence(started.run);
+  // The adapter marker proves stdout was emitted, not that the worker has
+  // committed the message. Kill only after the saved-message premise holds.
+  await eventually(async () => {
+    const directory = path.join(before.directory, 'events');
+    for (const filename of await fs.readdir(directory)) {
+      if (!filename.endsWith('.json')) continue;
+      const event = JSON.parse(await fs.readFile(path.join(directory, filename), 'utf8'));
+      if (event.type === 'message' && event.text === 'Saved process message.') return true;
+    }
+    return false;
+  }, 'persisted process message before worker loss');
   process.kill(before.meta.worker.pid, 'SIGKILL');
   const result = await eventually(async () => {
     const response = await f.command(['result', '--run', started.run]); return response.code === 0 && response;

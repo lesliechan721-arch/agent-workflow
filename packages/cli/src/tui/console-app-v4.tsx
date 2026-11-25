@@ -1,9 +1,12 @@
+import { guidedFieldAvailable, guidedSetupPreflight, guidedSkipWarning, guidedSuggestionValue, type GuidedConfigTarget, type GuidedSetupPreflight } from './guided-setup.js';
 import { configReferenceKey, configReferenceValues, configReferenceScalars, configReferenceSelection, configReferenceMessage, configReferenceSource, configCrossLayerDependencies, type ConfigReferenceContext } from './config-references.js';
 import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, isNestedConfigObjectArray, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
 import { formatPluginConfigIssue, PLATFORM_TARGETS, PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PlatformTarget, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
 import { ConfigLeafEditor, type ConfigLeafEditorDraft } from './config-leaf-editor.js';
-import { configSuggestionScalar, useConfigSuggestions, type ConfigSuggestionLookup } from './config-suggestions.js';
+import { configSuggestionScalar, useConfigSuggestions, useConfigSuggestionsResponse, type ConfigSuggestionLookup } from './config-suggestions.js';
+import { objectSuggestionContext, objectSuggestionFallback, objectSuggestionGroupKey, applyObjectSuggestionPatch } from './config-object-suggestions.js';
+import { mergeObjectSuggestionPatches, type ObjectSuggestionPatch, type ObjectSuggestionItemV2 } from '../utils/plugin-config-suggestion-runner.js';
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { AgentManagement } from './agent-management.js';
 import type { AgentSettings } from './agent-settings.js';
@@ -212,7 +215,7 @@ function splitTaskLines(context: SplitTaskContext): string[] {
   ];
 }
 
-type ScopedTaskRequest = Parameters<TuiController['prepareScopedTask']>[0];
+type ScopedTaskRequest = Parameters<TuiController['prepareScopedTask']>[0] & { skippedConfigTargets?: GuidedConfigTarget[] };
 type ScopedRecoveryRequest = Extract<ScopedTaskRequest, { kind: 'recovery' }>;
 
 type ScopedUiFlow =
@@ -223,6 +226,7 @@ type ScopedUiFlow =
       scopes: Scope[]; focus: number }
   | { stage: 'targets'; scope: Scope; agents: AgentId[]; savedAgents: AgentId[]; focus: number }
   | { stage: 'preparing'; scope: Scope; request: 'recovery' | 'retire' | 'targets' | 'intent'; focus: number }
+  | { stage: 'setup'; scope: Scope; request: ScopedRecoveryRequest; preflight: GuidedSetupPreflight; focus: number }
   | { stage: 'review'; scope: Scope; request: ScopedTaskRequest; plan: ScopedTuiPlan; focus: number }
   | { stage: 'risk'; scope: Scope; request: ScopedTaskRequest; plan: ScopedTuiPlan; focus: number }
   | { stage: 'timeout'; scope: Scope; request: ScopedRecoveryRequest; focus: number }
@@ -853,7 +857,6 @@ function configObjectValue(value: unknown): PluginConfigObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as PluginConfigObject : undefined;
 }
 
-const CONFIG_PROFILE_KEYS: readonly ConfigProfileKey[] = ['common', ...PLATFORM_TARGETS];
 
 function configReadOptions(layer: ConfigRouteLayer): ConfigReadOptions {
   return {
@@ -1894,6 +1897,14 @@ export function ConsoleAppV4(props: {
   const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
   const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
   const [scopedFlow, setScopedFlow] = useState<ScopedUiFlow>();
+  const [guidedSetup, setGuidedSetup] = useState<{ target: GuidedConfigTarget; flowId: string; request?: ScopedRecoveryRequest }>();
+  const [guidedBadges, setGuidedBadges] = useState<Record<string, string>>({});
+  const [guidedNotice, setGuidedNotice] = useState<string>();
+  const [guidedBusy, setGuidedBusy] = useState(false);
+  const guidedTouched = useRef(new Set<string>());
+  const guidedPrefillKey = useRef<string | undefined>(undefined);
+  const guidedAbort = useRef<AbortController | undefined>(undefined);
+
   const [agentSettings, setAgentSettings] = useState<AgentSettings>();
   const [agentSettingsError, setAgentSettingsError] = useState<string>();
   const [agentWelcome, setAgentWelcome] = useState(false);
@@ -1938,6 +1949,7 @@ export function ConsoleAppV4(props: {
   const [, setClockTick] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
+  const [configLayerInfo, setConfigLayerInfo] = useState<Pick<ConfigPageViewModel, 'pluginId' | 'context' | 'configurableLayers' | 'residualLayers'> & { revision: number }>();
   const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<ConfigProfileKey, ConfigPageViewModel>>>({});
   const [configDrafts, setConfigDrafts] = useState<Partial<Record<ConfigProfileKey, ConfigLayerDraft>>>({});
   const [referenceContexts, setReferenceContexts] = useState<Partial<Record<ConfigProfileKey, ConfigReferenceContext>>>({});
@@ -1954,6 +1966,7 @@ export function ConsoleAppV4(props: {
   const [nestedPropertyRevision, setNestedPropertyRevision] = useState<string>();
   const [objectVariantPreview, setObjectVariantPreview] = useState<{
     routeKey: string;
+    variantSwitch: boolean;
     value: PluginConfigObject;
     removed: Array<{ property: string; value: PluginConfigObject[string] }>;
   }>();
@@ -2024,7 +2037,8 @@ export function ConsoleAppV4(props: {
     void props.controller.readAgentSettings().then((settings) => {
       if (!active) return;
       setAgentSettings(settings); setAgentSettingsError(undefined);
-      if (!agentWelcomeSeen.current && settings.preferences.targets.length === 0) {
+      if (!agentWelcomeSeen.current && settings.preferences.targets.length === 0
+        && !props.controller.snapshot.router.current.route.name.startsWith('config')) {
         agentWelcomeSeen.current = true; setAgentWelcome(true);
       }
     }).catch(() => { if (active) setAgentSettingsError('无法读取 Agent 设置'); });
@@ -2049,8 +2063,7 @@ export function ConsoleAppV4(props: {
       ...(snapshot.router.currentFlowId ? { flowId: snapshot.router.currentFlowId } : {}),
     });
   }
-  const configDraftCount = CONFIG_PROFILE_KEYS.reduce((count, profile) => {
-    const draft = configDrafts[profile];
+  const configDraftCount = Object.values(configDrafts).reduce((count, draft) => {
     return count + Object.keys(draft?.updates ?? {}).length + (draft?.removes.length ?? 0);
   }, 0);
   const editingProfile = 'layer' in route && route.layer ? route.layer.profile : undefined;
@@ -2261,6 +2274,13 @@ export function ConsoleAppV4(props: {
   const configRouteOwner = configRoute ? configOwnerKey(configRoute) : undefined;
   const configFlowPluginId = configRoute?.pluginId
     ?? (route.name === 'configLayer' ? route.pluginId : undefined);
+  const currentLayerInfo = configLayerInfo?.pluginId === configFlowPluginId && configLayerInfo?.context === configContext
+    && configLayerInfo.revision === configReadRevision ? configLayerInfo : undefined;
+  const activeConfigLayers = currentLayerInfo?.configurableLayers ?? [];
+  const activeConfigLayerSignature = activeConfigLayers.join(',');
+  const residualConfigLayers = currentLayerInfo?.residualLayers ?? [];
+
+
   useEffect(() => {
     const previous = previousExternalDraftValues.current;
     if (previous.configDrafts !== configDrafts
@@ -2319,11 +2339,11 @@ export function ConsoleAppV4(props: {
   const hasReferenceFields = [configPage, ...Object.values(configLayerPages)]
     .some((page) => page?.groups.some((group) => group.fields.some((field) => configReferenceScalars(field.definition).length > 0)));
   useEffect(() => {
-    if (!configFlowPluginId || !hasReferenceFields) return;
+    if (!configFlowPluginId || !hasReferenceFields || !activeConfigLayerSignature) return;
     const abort = new AbortController();
     setReferenceContexts({});
     setReferenceContextError(undefined);
-    void Promise.allSettled(CONFIG_PROFILE_KEYS.map(async (profile) => ({ profile,
+    void Promise.allSettled(activeConfigLayers.map(async (profile) => ({ profile,
       context: await props.controller.getConfigReferenceContext(configFlowPluginId, configReadOptions({ profile, context: configContext }),
         configDrafts[profile] ?? { updates: {}, removes: [] }, abort.signal),
     }))).then((results) => {
@@ -2333,19 +2353,37 @@ export function ConsoleAppV4(props: {
       if (results.some((result) => result.status === 'rejected')) setReferenceContextError('引用来源读取失败。请返回修复来源配置后重新打开设置。');
     });
     return () => abort.abort();
-  }, [props.controller, configFlowPluginId, configDrafts, configContext, hasReferenceFields, configReadRevision]);
+  }, [props.controller, configFlowPluginId, configDrafts, configContext, hasReferenceFields, configReadRevision, activeConfigLayerSignature]);
   const crossLayerDependencies = configCrossLayerDependencies(
     Object.fromEntries(Object.entries(configLayerPages).map(([profile, page]) => [profile,
       Object.fromEntries(page.groups.flatMap((group) => group.fields.map((field) => [field.key, field.definition])))])),
     configDrafts, referenceContexts,
   );
   const referenceContext = editingProfile ? referenceContexts[editingProfile] : undefined;
+  // A prefill finishes before dependent reference reads necessarily do.
+  // Until those reads settle, the visible confirmation must not look ready.
+  const configDraftInputsPending = Object.keys(configDrafts).some((profile) =>
+    !configLayerPages[profile as ConfigProfileKey]);
+  const configDraftReferencePending = activeConfigLayers.some((profile) => !referenceContexts[profile]
+    && Object.keys(configDrafts[profile]?.updates ?? {}).some((key) => configLayerPages[profile]?.groups.flatMap((group) => group.fields)
+      .some((field) => field.key === key && configReferenceScalars(field.definition).length)));
+  const guidedSavePending = guidedSetup && (guidedBusy || configDraftInputsPending || configDraftReferencePending);
+  useEffect(() => {
+    if (!guidedSetup || guidedSavePending) return;
+    setConfigActionError((error) => error === '正在读取引用来源，请稍后保存。' || error === '正在读取设置，请稍后保存。'
+      ? undefined : error);
+  }, [guidedSetup?.flowId, guidedSavePending]);
+
 
   const configDraftIssues = (() => {
     const issues: ConfigDraftIssue[] = [];
-    for (const profile of CONFIG_PROFILE_KEYS) {
-      const draft = configDrafts[profile];
+    for (const [profile, draft] of Object.entries(configDrafts) as Array<[ConfigProfileKey, ConfigLayerDraft]>) {
       if (!draft) continue;
+      if (currentLayerInfo && !activeConfigLayers.includes(profile)) {
+        for (const key of Object.keys(draft.updates)) issues.push({ profile, key, source: 'update' });
+        for (const key of draft.removes) issues.push({ profile, key, source: 'remove' });
+        continue;
+      }
       const page = configLayerPages[profile];
       if (!page) continue;
       const fields = new Map(page.groups.flatMap((group) => group.fields)
@@ -2375,19 +2413,27 @@ export function ConsoleAppV4(props: {
     return issues;
   })();
   useEffect(() => {
-    if (!configFlowPluginId) return;
+    if (!configFlowPluginId) {
+      setConfigLayerInfo(undefined);
+      setConfigLayerPages({});
+      setConfigPage(undefined);
+      return;
+    }
+    if (!currentLayerInfo) return;
     const abort = new AbortController();
-    setConfigLayerPages({});
-    void Promise.allSettled(CONFIG_PROFILE_KEYS.map(async (profile) => ({
+    const selected = configPage && configPage.pluginId === configFlowPluginId
+      && configPage.context === configContext && activeConfigLayers.includes(configPage.profile) ? configPage : undefined;
+    setConfigLayerPages(selected ? { [selected.profile]: selected } : {});
+    void Promise.allSettled(activeConfigLayers.filter((profile) => profile !== selected?.profile).map(async (profile) => ({
       key: profile,
       page: await props.controller.getConfigPage(configFlowPluginId, configReadOptions({ profile, context: configContext }), abort.signal),
     }))).then((results) => {
       if (abort.signal.aborted) return;
-      setConfigLayerPages(Object.fromEntries(results.flatMap((result) =>
-        result.status === 'fulfilled' ? [[result.value.key, result.value.page]] : [])));
+      setConfigLayerPages((current) => ({ ...Object.fromEntries(results.flatMap((result) =>
+        result.status === 'fulfilled' ? [[result.value.key, result.value.page]] : [])), ...current }));
     });
     return () => abort.abort();
-  }, [props.controller, configFlowPluginId, configContext, configReadRevision]);
+  }, [props.controller, configFlowPluginId, configContext, configReadRevision, activeConfigLayerSignature, Boolean(currentLayerInfo)]);
   useEffect(() => {
     if (!configRoute) return;
     const abort = new AbortController();
@@ -2416,7 +2462,20 @@ export function ConsoleAppV4(props: {
         if (abort.signal.aborted
           || expectedPluginId !== configRoute.pluginId
           || expectedLayer !== JSON.stringify(configRoute.layer)) return;
+        setConfigLayerInfo({
+          pluginId: page.pluginId, context: page.context, revision: configReadRevision,
+          configurableLayers: page.configurableLayers ?? [page.profile], residualLayers: page.residualLayers,
+        });
         setConfigPage(page);
+        const layers = page.configurableLayers ?? [page.profile];
+        if (layers.includes(page.profile)) setConfigLayerPages((pages) => ({ ...pages, [page.profile]: page }));
+        if (layers.length > 0 && !layers.includes(configRoute.layer.profile)) {
+          props.controller.replace({ name: 'configFields', pluginId: expectedPluginId,
+            layer: { ...configRoute.layer, profile: layers[0]! } });
+          setFocus(0); setScrollOffset(0);
+        } else if (layers.length === 0 && configRoute.name !== 'configFields') {
+          props.controller.replace({ name: 'configFields', pluginId: expectedPluginId, layer: configRoute.layer });
+        }
       })
       .catch((error: unknown) => {
         if (!abort.signal.aborted) {
@@ -2455,6 +2514,98 @@ export function ConsoleAppV4(props: {
       });
     return () => abort.abort();
   }, [configRoute?.pluginId, configRoute?.layer.profile, configContext, configReadRevision, props.controller]);
+
+  useEffect(() => {
+    if (guidedSetup && route.name === 'configFields' && route.pluginId === guidedSetup.target.pluginId
+      && snapshot.router.currentFlowId === guidedSetup.flowId && route.layer.profile !== guidedSetup.target.profile
+      && activeConfigLayers.includes(route.layer.profile)) {
+      setGuidedSetup({ ...guidedSetup, target: { ...guidedSetup.target, profile: route.layer.profile } });
+    }
+  }, [guidedSetup, route.name, route.name === 'configFields' ? route.layer.profile : undefined, activeConfigLayers.join('\0')]);
+  const guidedPage = guidedSetup && route.name === 'configFields' && !route.view
+    && route.pluginId === guidedSetup.target.pluginId && route.layer.profile === guidedSetup.target.profile
+    && snapshot.router.currentFlowId === guidedSetup.flowId && activeConfigLayers.includes(route.layer.profile) ? currentConfigPage : undefined;
+  const prefillGuided = async (page: ConfigPageViewModel, optional: boolean, abort: AbortController): Promise<void> => {
+    const guidance = guidedSetup;
+    if (!guidance) return;
+    setGuidedBusy(true);
+    const fields = page.groups.flatMap((group) => group.fields).filter((field) =>
+      guidedFieldAvailable(field) && !guidedTouched.current.has(field.key)
+      && !Object.hasOwn(configDrafts[page.profile]?.updates ?? {}, field.key)
+      && !configDrafts[page.profile]?.removes.includes(field.key)
+      && (optional ? !field.required && 'suggestions' in field.definition && field.definition.suggestions
+        : field.required || guidance.target.fieldKeys.includes(field.key)));
+    try {
+      for (const field of fields) {
+        if (abort.signal.aborted) break;
+        const suggestions = 'suggestions' in field.definition ? field.definition.suggestions : undefined;
+        let response: Awaited<ReturnType<TuiController['getConfigSuggestions']>> = {
+          schemaVersion: 2, status: 'no-probe', items: [],
+        };
+        if (suggestions) {
+          try {
+            response = await props.controller.getConfigSuggestions({
+              pluginId: page.pluginId,
+              options: configReadOptions({ profile: page.profile, context: page.context }),
+              fieldPath: [field.key],
+              // Unset object executor is intentionally omitted; the provider
+              // interprets this as native, so all hints share one cache slot.
+            }, false, abort.signal);
+          } catch (error) {
+            if (abort.signal.aborted || error instanceof Error && error.name === 'AbortError') return;
+            response = { schemaVersion: 2, status: 'unavailable', items: [] };
+          }
+        }
+        if (abort.signal.aborted || guidedTouched.current.has(field.key)) continue;
+        if (response.message) setGuidedNotice(safeConfigText(response.message));
+        const recommended = guidedSuggestionValue(field, response, !optional);
+        if (!recommended) continue;
+        setConfigDrafts((drafts) => {
+          const previous = drafts[page.profile] ?? { updates: {}, removes: [] };
+          if (guidedTouched.current.has(field.key) || Object.hasOwn(previous.updates, field.key) || previous.removes.includes(field.key)) return drafts;
+          return { ...drafts, [page.profile]: { ...previous,
+            updates: { ...previous.updates, [field.key]: recommended.value },
+            ...(page.editEvidence ? { editEvidence: { ...previous.editEvidence, [field.key]: page.editEvidence } } : {}),
+          } };
+        });
+        setGuidedBadges((badges) => ({ ...badges, [field.key]: recommended.badge }));
+        setDirty(true);
+      }
+    } finally {
+      if (!abort.signal.aborted) setGuidedBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (!guidedPage || !guidedSetup || draftOwner !== guidedPage.pluginId
+      || guidedPrefillKey.current === guidedSetup.flowId) return;
+    const key = guidedSetup.flowId;
+    const firstRequired = guidedPage.groups.flatMap((group) => group.fields).find((field) =>
+      guidedFieldAvailable(field) && (field.required || guidedSetup.target.fieldKeys.includes(field.key)));
+    if (firstRequired) {
+      const target = configFieldTarget(guidedPage, firstRequired.key);
+      if (target) {
+        props.controller.updatePageContext({ configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 });
+        setFocus(target.focusIndex); setScrollOffset(0);
+      }
+    }
+    const abort = new AbortController();
+    guidedAbort.current = abort;
+    void prefillGuided(guidedPage, false, abort).then(() => {
+      if (!abort.signal.aborted) guidedPrefillKey.current = key;
+    });
+    return () => {
+      abort.abort();
+      setGuidedBusy(false);
+    };
+  }, [guidedPage?.pluginId, guidedPage?.profile, guidedSetup?.flowId, draftOwner]);
+  useEffect(() => {
+    if (guidedSetup && snapshot.router.currentFlowId !== guidedSetup.flowId
+      && !configRoute) {
+      guidedAbort.current?.abort();
+      setGuidedSetup(undefined);
+      setGuidedBusy(false);
+    }
+  }, [snapshot.router.currentFlowId, guidedSetup?.flowId, configRoute?.pluginId]);
 
   useEffect(() => {
     if (route.name !== 'configUnavailable'
@@ -2643,9 +2794,10 @@ export function ConsoleAppV4(props: {
   }, [snapshot.router.currentFrameId, route.name,
     route.name === 'review' || route.name === 'result' ? route.operationId : '']);
 
-  const activeTopField = route.name === 'configFieldEditor'
+  const activeTopField = editingProfile && activeConfigLayers.includes(editingProfile)
+    && (route.name === 'configFieldEditor'
     || route.name === 'configObjectPropertyEditor'
-    || route.name === 'configFieldAction'
+    || route.name === 'configFieldAction')
     ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
     : undefined;
   const editorRoute = route.name === 'configFieldEditor' || route.name === 'configObjectPropertyEditor' ? route : undefined;
@@ -2710,6 +2862,7 @@ export function ConsoleAppV4(props: {
       || configRoute.name === 'configFields'
       || configRoute.name === 'configSave'
       || !currentConfigPage
+      || !currentLayerInfo
       || activeField) return;
     props.controller.replace({
       name: 'configFields',
@@ -2756,8 +2909,13 @@ export function ConsoleAppV4(props: {
   );
   const suggestionMenu = Boolean(suggestedScalar && (route.name === 'configFieldEditor' && route.mode !== 'custom'
     || route.name === 'configObjectPropertyEditor' && route.stage === 'choices'));
+  const objectSuggestionDefinition = activeField?.definition.type === 'object' && !nestedArray
+    ? activeField.definition : undefined;
+  const objectSuggestions = objectSuggestionDefinition && activeObjectDraft
+    ? objectSuggestionContext(objectSuggestionDefinition, activeObjectDraft) : undefined;
+  const objectSuggestionMenu = route.name === 'configFieldEditor' && route.mode === 'suggestions' && Boolean(objectSuggestions);
   const suggestionLookup = (() => {
-    if (!suggestedScalar || !editorRoute || !activeTopField || !configFieldCanSet(activeTopField)) return undefined;
+    if ((!suggestedScalar && !objectSuggestionMenu) || !editorRoute || !activeTopField || !configFieldCanSet(activeTopField)) return undefined;
     const property = editorRoute.name === 'configObjectPropertyEditor' ? editorRoute.propertyKey : undefined;
     const selectedDraft = editorRoute.layer.profile === 'common' ? undefined : configDrafts[editorRoute.layer.profile];
     const commonDraft = configDrafts.common;
@@ -2765,14 +2923,14 @@ export function ConsoleAppV4(props: {
       pluginId: editorRoute.pluginId,
       options: configReadOptions(editorRoute.layer),
       fieldPath: property === undefined ? activeFieldPath : [...activeFieldPath, property],
-      dependencyValues: property === undefined ? {} : activeObjectDraft,
+      dependencyValues: objectSuggestionMenu ? objectSuggestions?.draft : property === undefined ? {} : activeObjectDraft,
       draftLayers: {
         ...(commonDraft ? { common: { updates: commonDraft.updates, removes: commonDraft.removes } } : {}),
         ...(selectedDraft ? { platform: { updates: selectedDraft.updates, removes: selectedDraft.removes } } : {}),
       },
     };
-    if (property !== undefined && activeObjectDraft) {
-      let workingObject = activeObjectDraft;
+    if ((property !== undefined || objectSuggestionMenu) && activeObjectDraft) {
+      let workingObject = objectSuggestionMenu ? objectSuggestions!.draft : activeObjectDraft;
       if (nestedArray && arrayItem && activeArrayDraft && parentObjectDraft) {
         const workingArray = editConfigArrayDraft(activeArrayDraft, { kind: 'set', rowId: arrayItem.rowId, value: activeObjectDraft });
         workingObject = { ...parentObjectDraft, [nestedArray.propertyKey]: arrayDraftValue(workingArray) as PluginConfigObject[string] };
@@ -2784,7 +2942,13 @@ export function ConsoleAppV4(props: {
     }
     return lookup;
   })();
-  const suggestions = useConfigSuggestions(props.controller, snapshot.router.currentFrameId, suggestionLookup, suggestedScalar);
+  const suggestions = useConfigSuggestions(props.controller, snapshot.router.currentFrameId,
+    objectSuggestionMenu ? undefined : suggestionLookup, suggestedScalar);
+  const compositeSuggestions = useConfigSuggestionsResponse(props.controller, snapshot.router.currentFrameId,
+    objectSuggestionMenu ? suggestionLookup : undefined);
+  useLayoutEffect(() => {
+    if (objectSuggestionMenu) { setFocus(0); setScrollOffset(0); }
+  }, [compositeSuggestions.response, objectSuggestionMenu]);
   useLayoutEffect(() => {
     if (suggestionMenu) {
       setFocus(0);
@@ -3002,7 +3166,8 @@ export function ConsoleAppV4(props: {
     scalar: PluginConfigScalarField, current: unknown, select: (value: PluginConfigScalar) => void, custom: () => void,
   ): ActionItem[] => [
     { label: '自定义', run: custom },
-    ...(suggestions.items.length ? suggestions.items : scalar.choices?.presets ?? []).map((item) => ({
+    ...(suggestions.items.length ? suggestions.items
+      : suggestions.status && suggestions.status !== 'not-applicable' ? scalar.choices?.presets ?? [] : []).map((item) => ({
       label: `${safeConfigText(item.title)}${item.recommended ? '（推荐）' : ''}`,
       description: item.description ? safeConfigText(item.description) : undefined,
       selected: item.value === current,
@@ -3156,6 +3321,10 @@ export function ConsoleAppV4(props: {
   };
 
   const go = (next: TuiRoute): void => {
+    if (guidedSetup && route.name === 'configFields') {
+      guidedAbort.current?.abort();
+      setGuidedBusy(false);
+    }
     scopedFlowToken.current += 1;
     if (scopedFlow?.stage === 'preparing') props.controller.cancelScopedPreparation();
     if (scopedFlow?.stage === 'review' || scopedFlow?.stage === 'risk')
@@ -3202,20 +3371,38 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const beginScopedTask = (
-    request: Parameters<TuiController['prepareScopedTask']>[0],
+    request: ScopedTaskRequest,
     prepare = () => props.controller.prepareScopedTask(request),
+    continueGuided = false,
   ): void => {
     if (scopedFlowBusy.current) return;
     scopedFlowBusy.current = true;
     const token = ++scopedFlowToken.current;
     setShowTechnical(false); setBatchTargetOffset(0);
     setScopedFlow({ stage: 'preparing', scope: request.scope, request: request.kind, focus: 0 });
-    void prepare().then((plan) => {
+    void prepare().then(async (plan) => {
       if (scopedFlowToken.current !== token) {
         void props.controller.discardScopedPlan(plan);
         return;
       }
+      if (plan.kind === 'recovery' && request.kind === 'recovery') {
+        const preflight = guidedSetupPreflight(plan.plan);
+        if (preflight.targets.length) {
+          await props.controller.discardScopedPlan(plan);
+          if (scopedFlowToken.current !== token) return;
+          scopedFlowBusy.current = false;
+          if (continueGuided) {
+            openGuidedSetup(preflight.targets[0]!, request);
+          } else {
+            setScopedFlow({ stage: 'setup', scope: request.scope, request, preflight, focus: 0 });
+          }
+          return;
+        }
+      }
       scopedFlowBusy.current = false;
+      if (plan.kind === 'recovery' && request.skippedConfigTargets?.length) {
+        plan.skippedConfigTargets = request.skippedConfigTargets;
+      }
       setScopedFlow({ stage: 'review', scope: request.scope, request, plan, focus: 0 });
     }).catch((error) => {
       if (scopedFlowToken.current !== token) return;
@@ -3225,6 +3412,34 @@ export function ConsoleAppV4(props: {
           'recoveryPreparationFailed'), focus: 0 });
     });
   };
+  function openGuidedSetup(target: GuidedConfigTarget, request?: ScopedRecoveryRequest): void {
+    setScopedFlow(undefined);
+    guidedAbort.current?.abort();
+    guidedTouched.current.clear();
+    guidedPrefillKey.current = undefined;
+    setGuidedBadges({});
+    setGuidedNotice(undefined);
+    setGuidedBusy(false);
+    setConfigSaveState(undefined);
+    setConfigActionError(undefined);
+    const layer = { profile: target.profile, context: target.context };
+    const flowId = props.controller.beginGuidedConfig(target.pluginId, layer);
+    setGuidedSetup({ target, request, flowId });
+    setFocus(0); setScrollOffset(0);
+  }
+
+  function openIssueConfig(issue: UserIssueViewModel, fallbackPluginId: string): void {
+    const layer = issue.configLayer ?? { profile: issue.platform ?? 'common', context: issue.scope ?? 'user' };
+    if (issue.category === 'requiredConfigMissing' && (!issue.requiredFields?.length || issue.requiredFields.some((field) =>
+      field.type === 'missing-required'))) {
+      openGuidedSetup({ pluginId: issue.pluginId ?? fallbackPluginId, profile: layer.profile,
+        context: layer.context, fieldKeys: issue.requiredFields?.filter((field) => field.type === 'missing-required').map((field) => field.key) ?? [] });
+      return;
+    }
+    props.controller.beginGuidedConfig(issue.pluginId ?? fallbackPluginId, layer);
+    setFocus(0); setScrollOffset(0);
+  }
+
   const agentSummaries = (pluginId?: string): Partial<Record<PlatformTarget, { symbol: string; label: string; count: number }>> => {
     const entries = pluginId ? [pluginId] : props.controller.listPlugins({ mode: 'browse' }).map((entry) => entry.pluginId);
     return Object.fromEntries((agentSettings?.preferences.targets ?? []).map((target) => {
@@ -3288,8 +3503,7 @@ export function ConsoleAppV4(props: {
             errorCode: 'recoveryReprepareFailed', focus: 0 });
           return;
         }
-        setScopedFlow({ stage: 'review', scope: plan.scope,
-          request: nextRequest, plan: outcome.plan, focus: 0 });
+        beginScopedTask(nextRequest, async () => outcome.plan);
         return;
       }
       setScopedFlow({ stage: 'result', scope: plan.scope, plan,
@@ -3447,6 +3661,13 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const back = (): void => {
+    if (route.name === 'configFields' && guidedSetup && snapshot.router.currentFlowId === guidedSetup.flowId && !route.view) {
+      guidedAbort.current?.abort();
+      setGuidedSetup(undefined); setGuidedBusy(false);
+      props.controller.finishGuidedConfig(guidedSetup.flowId);
+      restorePageContext();
+      return;
+    }
     if (route.name === 'pluginContent') setContentReader(undefined);
     if (route.name === 'sourceEdit'
       && sourceDraft
@@ -4209,7 +4430,7 @@ export function ConsoleAppV4(props: {
   const configLayerLabel = (layer: Pick<ConfigRouteLayer, 'profile'>): string =>
     layer.profile === 'common' ? '公共设置' : agentLabel(layer.profile);
   const fieldValueText = (field: ConfigFieldViewModel, value: unknown, full = false, configured = value !== undefined): string =>
-    presentConfigValue({
+    !configFieldCanSet(field) && configFieldCanUnset(field) ? '[redacted]' : presentConfigValue({
       definition: field.definition,
       value,
       configured,
@@ -4236,7 +4457,7 @@ export function ConsoleAppV4(props: {
     return fieldValueText(targetField, value);
   };
   const pendingFieldTargets = (field: ConfigFieldViewModel): Array<{ profile: ConfigProfileKey; value: string }> =>
-    CONFIG_PROFILE_KEYS.flatMap((profile) => {
+    activeConfigLayers.flatMap((profile) => {
       const value = pendingFieldDisplay(field, profile);
       return value ? [{ profile, value }] : [];
     });
@@ -4244,7 +4465,7 @@ export function ConsoleAppV4(props: {
     return field.type;
   };
   const fieldEditorMode = (field: ConfigFieldViewModel): { mode: 'choices' } | Record<string, never> =>
-    (field.choices?.length ?? 0) > 0 || 'valueRef' in field.definition && field.definition.valueRef
+    (field.choices?.length ?? 0) > 0 && !(field.definition.type === 'object' && field.definition.suggestions) || 'valueRef' in field.definition && field.definition.valueRef
       || configSuggestionScalar(field.definition) ? { mode: 'choices' } : {};
   const openConfigTarget = (candidate: ConfigCandidate): void => {
     const currentFlowId = snapshot.router.currentFlowId;
@@ -4316,7 +4537,7 @@ export function ConsoleAppV4(props: {
     go({
       name: 'configFieldEditor', pluginId: configRoute.pluginId, layer: configRoute.layer,
       fieldKey: activeField.key, editor: activeField.definition.items.type,
-      ...(activeField.definition.items.choices || 'valueRef' in activeField.definition.items && activeField.definition.items.valueRef
+      ...(activeField.definition.items.choices && !(activeField.definition.items.type === 'object' && activeField.definition.items.suggestions) || 'valueRef' in activeField.definition.items && activeField.definition.items.valueRef
         || configSuggestionScalar(activeField.definition.items) ? { mode: 'choices' as const } : {}),
       arrayItem: { rowId },
       ...(nestedArray ? { nestedArray } : {}),
@@ -4446,30 +4667,42 @@ export function ConsoleAppV4(props: {
     if (referenceError) { setInputError(referenceError); return false; }
     const candidate = { ...activeObjectDraft, [propertyKey]: value };
     if (value === undefined) delete candidate[propertyKey];
+    const variants = activeField.definition.variants;
+    const variantSwitch = variants?.discriminator === propertyKey && activeObjectDraft[propertyKey] !== value;
     const issues = validatePluginConfigValue(activeField.definition, candidate, activeField.key)
-      .filter((issue) => issue.path.property === propertyKey);
+      .filter((issue) => issue.path.property === propertyKey && (value !== undefined || variantSwitch));
     if (issues.length > 0) {
       setInputError(issues.slice(0, 2).map(objectIssueText).join('；'));
       return false;
     }
-    const variants = activeField.definition.variants;
-    if (variants?.discriminator === propertyKey && activeObjectDraft[propertyKey] !== value) {
+    const removed: NonNullable<typeof objectVariantPreview>['removed'] = [];
+    const removeProperty = (property: string): void => {
+      if (!Object.hasOwn(candidate, property)) return;
+      removed.push({ property, value: candidate[property]! });
+      delete candidate[property];
+    };
+    const changed = activeObjectDraft[propertyKey] !== value
+      && !configValuesEqual(activeObjectDraft[propertyKey], value);
+    if (changed && definition && 'clearsOnChange' in definition) {
+      for (const property of definition.clearsOnChange ?? []) removeProperty(property);
+    }
+    if (variantSwitch) {
       const resolved = resolvePluginConfigObjectProperties(activeField.definition, candidate, activeField.key);
       if (resolved.issues.length) {
         setInputError(resolved.issues.slice(0, 2).map(objectIssueText).join('；'));
         return false;
       }
-      const removed: NonNullable<typeof objectVariantPreview>['removed'] = [];
       for (const property of Object.keys(candidate)) {
         const definition = resolved.properties[property];
         if (activeObjectProperties?.[property] && !definition
           || definition && 'const' in definition && definition.const !== undefined
             && Object.hasOwn(candidate, property) && candidate[property] !== definition.const) {
-          removed.push({ property, value: candidate[property]! });
-          delete candidate[property];
+          removeProperty(property);
         }
       }
-      setObjectVariantPreview({ routeKey, value: candidate as PluginConfigObject, removed });
+    }
+    if (variantSwitch || removed.length) {
+      setObjectVariantPreview({ routeKey, variantSwitch, value: candidate as PluginConfigObject, removed });
       setFocus(0);
       setBatchTargetOffset(0);
       return false;
@@ -4549,6 +4782,11 @@ export function ConsoleAppV4(props: {
     const updates = { ...previous.updates };
     const removes = new Set(previous.removes);
     const editEvidence = { ...previous.editEvidence };
+    if (guidedSetup?.target.pluginId === candidate.pluginId && guidedSetup.target.profile === layer.profile) {
+      for (const key of Object.keys(selectedCandidate.mutations)) guidedTouched.current.add(key);
+      setGuidedBadges((badges) => Object.fromEntries(Object.entries(badges)
+        .filter(([key]) => !guidedTouched.current.has(key))));
+    }
     for (const [key, mutation] of Object.entries(selectedCandidate.mutations)) {
       const field = fields.get(key)!;
       if (selectedCandidate.editEvidence) editEvidence[key] = selectedCandidate.editEvidence;
@@ -4672,7 +4910,7 @@ export function ConsoleAppV4(props: {
   };
   const discardInvalidConfigDraftChanges = (): void => {
     if (!configRoute || configDraftIssues.length === 0) return;
-    const nextDrafts = Object.fromEntries(CONFIG_PROFILE_KEYS.flatMap((profile) => {
+    const nextDrafts = Object.fromEntries((Object.keys(configDrafts) as ConfigProfileKey[]).flatMap((profile) => {
       const draft = configDrafts[profile];
       if (!draft) return [];
       const invalidForProfile = new Set(configDraftIssues
@@ -4703,7 +4941,7 @@ export function ConsoleAppV4(props: {
     apply = false,
   ): Extract<OperationIntent, { kind: 'configSaveBatch' }> | undefined => {
     if (!configRoute || configDraftCount === 0) return;
-    const groups = CONFIG_PROFILE_KEYS.flatMap((profile) => {
+    const groups = activeConfigLayers.flatMap((profile) => {
       const draft = configDrafts[profile];
       const page = configLayerPages[profile];
       if (!draft || !page || page.pluginId !== configRoute.pluginId || page.context !== configContext) return [];
@@ -4761,9 +4999,7 @@ export function ConsoleAppV4(props: {
       setConfigActionError(`请先保存来源配置，再编辑或保存引用配置：${[...new Set(crossLayerDependencies.map((entry) => entry.source))].join('、')}（公共设置）。请取消相关引用草稿后保存来源。`);
       return;
     }
-    if (CONFIG_PROFILE_KEYS.some((profile) => !referenceContexts[profile]
-      && Object.keys(configDrafts[profile]?.updates ?? {}).some((key) => configLayerPages[profile]?.groups.flatMap((group) => group.fields)
-        .some((field) => field.key === key && configReferenceScalars(field.definition).length)))) {
+    if (configDraftReferencePending) {
       setConfigActionError(referenceContextError ?? '正在读取引用来源，请稍后保存。');
       return;
     }
@@ -4772,7 +5008,10 @@ export function ConsoleAppV4(props: {
       return;
     }
     const intent = configSaveIntent();
-    if (!intent) return;
+    if (!intent) {
+      if (guidedSetup) setConfigActionError('正在读取设置，请稍后保存。');
+      return;
+    }
     const profiles = intent.groups.map((group) => group.platform ?? 'common');
     const context = intent.context ?? 'user';
     const previouslySaved = configSaveState?.status === 'error' && configSaveState.pluginId === intent.pluginId
@@ -4782,7 +5021,7 @@ export function ConsoleAppV4(props: {
     try {
       const result = await props.controller.saveConfigDraft(intent);
       const saved = new Set(result.savedProfiles);
-      const pendingApply = CONFIG_PROFILE_KEYS.filter((profile) => saved.has(profile) || previouslySaved.includes(profile));
+      const pendingApply = activeConfigLayers.filter((profile) => saved.has(profile) || previouslySaved.includes(profile));
       const nextDrafts = Object.fromEntries(Object.entries(configDrafts)
         .filter(([profile]) => !saved.has(profile as ConfigProfileKey))
         .map(([profile, draft]) => [profile, draft.editEvidence ? { ...draft, editEvidence: Object.fromEntries(
@@ -4805,7 +5044,21 @@ export function ConsoleAppV4(props: {
         setConfigReadRevision((revision) => revision + 1);
       }
       if (result.status === 'succeeded') {
-        setConfigSaveState({ status: 'saved', pluginId: intent.pluginId, profiles: pendingApply, context });
+        if (guidedSetup?.target.pluginId === intent.pluginId && snapshot.router.currentFlowId === guidedSetup.flowId) {
+          const { request, flowId } = guidedSetup;
+          guidedAbort.current?.abort();
+          setGuidedSetup(undefined); setGuidedBusy(false);
+          setConfigSaveState(undefined);
+          props.controller.finishGuidedConfig(flowId);
+          restorePageContext();
+          await props.controller.load();
+          if (props.controller.snapshot.phase === 'ready') {
+            if (request) beginScopedTask(request, undefined, true);
+            else void props.controller.refreshScopedInventory(context);
+          }
+        } else {
+          setConfigSaveState({ status: 'saved', pluginId: intent.pluginId, profiles: pendingApply, context });
+        }
       } else {
         const error = result.status === 'partial' ? '部分设置未保存。已保留未保存的草稿，请检查后重试。'
           : '设置未保存。已保留草稿，请检查后重试。';
@@ -4993,7 +5246,10 @@ export function ConsoleAppV4(props: {
       content = <AgentManagement controller={props.controller} settings={flow.settings}
         pluginId={flow.pluginId} columns={size.columns} rows={size.rows} summaries={agentSummaries(flow.pluginId)}
         active={!overlay}
-        onBack={closeScopedFlow} onExit={requestConfirmedExit} onSaved={setAgentSettings}
+        onBack={closeScopedFlow} onExit={requestConfirmedExit} onSaved={(settings) => {
+          setAgentSettings(settings);
+          if (configRoute) setConfigReadRevision((revision) => revision + 1);
+        }}
         onHome={() => { closeScopedFlow(); requestSessionNavigation('home'); }}
         onReload={() => { closeScopedFlow(); requestSessionNavigation('reload'); }}
         onHelp={() => { setOverlayFocus(0); setHelpPage(1); setOverlay('help'); }}
@@ -5062,10 +5318,31 @@ export function ConsoleAppV4(props: {
         columns={Math.max(8, size.columns - 8)} />}
         description={scriptTimeoutError ?? '此值只用于本次任务。'}
         status={scriptTimeoutError ? 'error' : undefined} />;
+    } else if (flow.stage === 'setup') {
+      title = '需要初始化平台配置';
+      description = '先完成所列插件的必填设置；保存后继续原安装或同步。';
+      actions = [
+        { label: '前往初始化配置（推荐）', run: () => openGuidedSetup(flow.preflight.targets[0]!, flow.request) },
+        ...(flow.preflight.readyTargets.length > 0 ? [{
+          label: '跳过未配置平台，仅继续已就绪平台',
+          run: () => beginScopedTask({ ...flow.request,
+            exactTargets: flow.preflight.readyTargets,
+            skippedConfigTargets: [...flow.request.skippedConfigTargets ?? [], ...flow.preflight.targets],
+          }),
+        }] : []),
+        { label: '取消', run: closeScopedFlow },
+      ];
+      readingText = flow.preflight.targets.map((target) =>
+        `${target.pluginId} · ${target.profile === 'common' ? '公共设置' : agentLabel(target.profile)} · ${target.fieldKeys.join('、') || '缺少必填设置'}`).join('\n');
+      help = '←→ 阅读 · ↑↓ 选择 · Enter 确认 · Esc 取消';
+      content = <Box flexDirection="column">
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(actions.length + 4)))}
+        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
+      </Box>;
     } else if (flow.stage === 'review') {
       title = '操作汇总';
       description = '确认需求、偏好、配置及输出影响。';
-      readingText = scopedPlanText(flow.plan, showTechnical);
+      readingText = [flow.request.skippedConfigTargets?.length ? guidedSkipWarning(flow.request.skippedConfigTargets) : undefined, scopedPlanText(flow.plan, showTechnical)].filter(Boolean).join('\n');
       help = '←→ 阅读 · ↑↓ 操作 · Enter 选择 · d 详情 · Esc 返回';
       actions = [
         { label: flow.plan.kind === 'targets' ? '确认保存本机工具'
@@ -5099,7 +5376,7 @@ export function ConsoleAppV4(props: {
     } else if (flow.stage === 'risk') {
       title = '操作汇总';
       description = '确认需求、偏好、配置及输出影响。';
-      readingText = scopedPlanText(flow.plan, showTechnical);
+      readingText = [flow.request.skippedConfigTargets?.length ? guidedSkipWarning(flow.request.skippedConfigTargets) : undefined, scopedPlanText(flow.plan, showTechnical)].filter(Boolean).join('\n');
       actions = [
         { label: '返回检查', run: () => setScopedFlow({ ...flow, stage: 'review', focus: 0 }) },
         { label: '确认并执行', run: () => executeScopedReview(flow.plan) },
@@ -5113,10 +5390,13 @@ export function ConsoleAppV4(props: {
       title = '恢复结果';
       help = '←→ 阅读 · ↑↓ 操作 · Enter 选择 · d 详情 · Esc 返回';
       description = flow.errorCode ? recoveryReason(flow.errorCode)
-        : flow.receipt ? flow.receipt.ok ? '请求已完成。' : '请求仍有未完成目标。'
+        : flow.receipt ? flow.receipt.ok ? flow.request?.skippedConfigTargets?.length ? '已就绪平台请求已完成；待配置平台仍保留。' : '请求已完成。' : '请求仍有未完成目标。'
           : '本机工具已保存。';
       readingText = flow.receipt ? scopedResultText(flow.receipt, showTechnical)
         : (flow.errorCode ? showTechnical ? flow.errorCode : recoveryReason(flow.errorCode) : undefined) ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
+      if (flow.request?.skippedConfigTargets?.length) {
+        readingText = [guidedSkipWarning(flow.request.skippedConfigTargets), readingText].filter(Boolean).join('\n');
+      }
       const failedPositions = flow.receipt?.targetResults.filter((target) =>
         (target.execution === 'failed' || target.execution === 'partial')
         && (target.observation === 'missing' || target.content === 'absent')) ?? [];
@@ -5152,7 +5432,7 @@ export function ConsoleAppV4(props: {
           exactTargets: retryTargets,
         }) }] : []),
       ];
-      content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
+      content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok || flow.request?.skippedConfigTargets?.length ? 'warning' : 'success'}
         title={description}>
         {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(actions.length + (showTechnical ? 5 : 4))))}
         <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
@@ -6664,17 +6944,13 @@ export function ConsoleAppV4(props: {
       const configField = issue?.requiredFields?.[0];
       if (issue?.group === 'config' || configField) {
         const fieldKey = configField?.key;
-        return [[`config:${target.pluginId}:${fieldKey ?? ''}`, {
+        return [[`config:${target.pluginId}:${issue?.configLayer?.profile ?? target.platform}:${fieldKey ?? ''}`, {
           label: fieldKey ? `完成设置：${configField?.title ?? fieldKey}` : `检查 ${candidate.displayName} 的设置`,
           description: `${targetLabel}；保存后返回任务重新读取当前证据`,
           status: 'warning',
           run: () => {
-            beginConfigFlow(target.pluginId);
-            props.controller.replace({
-              name: 'configFields',
-              pluginId: target.pluginId,
-              layer: { profile: 'common' },
-            });
+            if (issue) openIssueConfig(issue, target.pluginId);
+            else beginConfigFlow(target.pluginId);
           },
         }]];
       }
@@ -7427,12 +7703,36 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'configFields' && plugin) {
     const readonly = false;
     breadcrumb = `${plugin.displayName} / 设置`;
-    title = '插件设置';
+    title = guidedSetup ? '平台初始化引导' : '插件设置';
     description = undefined;
     if (configActionError) description = configActionError;
     help = 'Esc 返回';
-    if (!currentConfigPage) {
+    if (!currentConfigPage || !currentLayerInfo) {
       content = <StatusCard status="info" title="正在读取插件设置"><ProgressRow title="读取设置字段" state="active" /></StatusCard>;
+    } else if (route.view === 'residuals') {
+      title = '历史残留层';
+      description = '这些设置层未启用或不再可配，仅可清理整层；不会自动删除。';
+      actions = residualConfigLayers.map(({ profile, keys }) => ({
+        label: `重置${configLayerLabel({ profile })}`,
+        description: `${keys.length} 项 · ${keys.map(safeConfigText).join('、')}`,
+        status: 'error',
+        run: () => beginReview({ kind: 'configReset', pluginId: plugin.pluginId, scope: 'user',
+          ...configReadOptions({ profile, context: route.layer.context }),
+          changes: [{ key: 'residualLayer', title: `${configLayerLabel({ profile })}历史残留`,
+            before: `${keys.length} 项 · ${keys.map(safeConfigText).join('、')}`, after: '删除整层' }],
+        }),
+      }));
+      if (actions.length === 0) description = '已无历史残留层。';
+      content = suggestionRows(actions);
+    } else if (activeConfigLayers.length === 0) {
+      title = '没有可配置的设置层';
+      description = '这个插件在当前启用的 Agent 中没有可配置项。可到 Agent 管理启用适用的目标。';
+      actions = [{ label: '打开 Agent 管理', run: () => openAgentManagement() },
+        ...(residualConfigLayers.length ? [{ label: `历史残留层（${residualConfigLayers.length} 个）`,
+          run: () => go({ ...route, view: 'residuals' }) }] : [])];
+      content = <SemanticRows actions={actions} focus={focus} kind="action" compact />;
+    } else if (!activeConfigLayers.includes(route.layer.profile)) {
+      content = <ProgressRow title="读取活跃设置层" state="active" />;
     } else {
       visibleConfigTabs = configTabs(currentConfigPage);
       const requestedTab = snapshot.router.current.context.configGroupId;
@@ -7466,20 +7766,22 @@ export function ConsoleAppV4(props: {
                 description: field.description?.split('\n').map(safeConfigText).join('\n'),
                 issue: field.invalidOverrideIssue?.split('\n').map(safeConfigText).join('\n'),
                 invalid: Boolean(field.invalidOverrideIssue),
-                ...(targets.length ? { pending: '● 未保存' } : {}),
+                ...(targets.length ? { pending: guidedSetup && guidedBadges[field.key] && !guidedTouched.current.has(field.key) ? guidedBadges[field.key] : '● 未保存' } : {}),
               };
             })(),
             configKey: field.key,
             run: () => go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer,
                 fieldKey: field.key, editor: fieldEditor(field), ...fieldEditorMode(field) }),
           }));
+      const discardInvalidAction: ActionItem[] = configDraftIssues.length > 0 ? [{
+        label: '放弃无法保存的修改', status: 'warning', run: discardInvalidConfigDraftChanges,
+      }] : [];
       const operationActions: ActionItem[] = [
         ...(crossLayerDependencies.length ? [{ label: '取消相关引用草稿', status: 'warning' as const,
           description: '保留来源设置修改，只放弃依赖这些未保存值的引用草稿。', run: discardDependentConfigDrafts }] : []),
-        ...(configDraftIssues.length > 0 ? [{ label: '放弃无法保存的修改',
-          status: 'warning' as const, run: discardInvalidConfigDraftChanges }] : []),
+        ...discardInvalidAction,
         { actionId: 'config-reset-profile', label: '恢复默认值 [u]', status: 'error',
-          description: '删除当前 Agent 设置中的覆盖值，恢复继承。',
+          description: '删除当前 Agent 设置中的全部覆盖值，恢复继承。',
           run: () => beginReview({ kind: 'configReset', pluginId: plugin.pluginId, scope: 'user',
             ...configReadOptions(route.layer),
             changes: currentConfigPage.groups.flatMap((group) => group.fields).filter((field) => field.configured).map((field) => ({
@@ -7490,10 +7792,10 @@ export function ConsoleAppV4(props: {
       ];
       const configSaveAction: ActionItem = {
         actionId: 'config-save-summary',
-        label: '保存 [s]',
-        description: '保存设置后，可选择更新已安装的插件。',
+        label: guidedSetup ? '确认保存并继续 [s]' : '保存 [s]',
+        description: guidedSetup ? '仅确认后保存草稿并重新检查。' : '保存设置后，可选择更新已安装的插件。',
         status: configDraftCount > 0 ? 'info' : 'muted',
-        disabled: configDraftCount === 0 ? '没有待保存设置'
+        disabled: guidedSavePending ? '正在读取推荐或引用来源' : configDraftCount === 0 ? '没有待保存设置'
           : configDraftIssues.length > 0 ? '请先放弃失效草稿' : undefined,
         run: () => {
           setFocus(0);
@@ -7501,7 +7803,32 @@ export function ConsoleAppV4(props: {
           onSaveConfig();
         },
       };
-      bottomActions = [configSaveAction, ...operationActions, {
+      const residualAction: ActionItem[] = residualConfigLayers.length ? [{
+        label: `历史残留层（${residualConfigLayers.length} 个）`, run: () => go({ ...route, view: 'residuals' }),
+      }] : [];
+      const optionalFields = guidedPage?.groups.flatMap((group) => group.fields)
+        .filter((field) => !field.required && guidedFieldAvailable(field) && 'suggestions' in field.definition
+          && field.definition.suggestions && !guidedTouched.current.has(field.key)
+          && !Object.hasOwn(configDrafts[guidedPage.profile]?.updates ?? {}, field.key)) ?? [];
+      const guidedActions: ActionItem[] = optionalFields.length ? [{
+        actionId: 'guided-fill-optional',
+        label: '按推荐预填全部可选档位',
+        disabled: guidedBusy ? '正在获取推荐' : undefined,
+        run: () => {
+          const abort = new AbortController();
+          guidedAbort.current?.abort(); guidedAbort.current = abort;
+          void prefillGuided(guidedPage!, true, abort);
+        },
+      }] : [];
+      guidedActions.push(...discardInvalidAction);
+      if (guidedSetup && configDraftReferencePending && referenceContextError) {
+        guidedActions.push({
+          label: '重新读取引用来源',
+          description: '保留所有未保存草稿。',
+          run: () => setConfigReadRevision((revision) => revision + 1),
+        });
+      }
+      bottomActions = guidedSetup ? [configSaveAction, ...guidedActions] : [configSaveAction, ...operationActions, ...residualAction, {
         label: '设置选项', run: () => go({ ...route, view: 'options' }),
       }];
       actions = [...tabActions, ...bottomActions];
@@ -7511,7 +7838,7 @@ export function ConsoleAppV4(props: {
         actions = [{ label: '查看当前值的来源', run: () => {
           setBatchTargetOffset(0);
           go({ ...route, view: 'values' });
-        } }, ...operationActions];
+        } }, ...operationActions, ...residualAction];
       }
       const effectiveConfigFocus = Math.min(focus, Math.max(0, actions.length - 1));
       const focusedConfigField = activeGroup?.fields.find((field) =>
@@ -7528,26 +7855,35 @@ export function ConsoleAppV4(props: {
       }
       if (!readonly) {
         const canUnsetFocused = focusedConfigField
-          ? CONFIG_PROFILE_KEYS.some((profile) =>
+          ? activeConfigLayers.some((profile) =>
               configLayerPages[profile]?.groups.flatMap((group) => group.fields)
                 .some((field) => field.key === focusedConfigField.key && configFieldCanUnset(field)))
           : false;
         help = `↑↓ 选择 · Enter ${focusedConfigField ? '修改' : '选择'}${!route.view && visibleConfigTabs.length > 1
           ? ' · ←→ 分组' : ''}${(configCardNavigation?.pageCount ?? 1) > 1 ? ' · PgUp/PgDn 卡片全文' : ''}`
-          + `${configDraftCount > 0 ? ' · s 保存' : ''}${canUnsetFocused ? ' · u 恢复默认值' : ''} · Esc 返回`;
+          + `${configDraftCount > 0 ? ' · s 保存' : ''}${canUnsetFocused
+            ? focusedConfigField && !configFieldCanSet(focusedConfigField) ? ' · u 删除旧键' : ' · u 恢复默认值'
+            : ''} · Esc 返回`;
       }
       const totalFields = currentConfigPage.groups.reduce((count, group) => count + group.fields.length, 0);
       const countLabel = `${totalFields} 项${currentConfigPage.presets.length > 0 ? ` · ${currentConfigPage.presets.length} 个方案` : ''}`;
       description = configActionError ?? (configSaveState?.status === 'error' ? configSaveState.error
         : configSaveState?.status === 'saving' ? '正在保存设置…'
         : `${configLayerLabel(route.layer)} · 用户设置${route.layer.context === 'project' ? ' · 当前项目' : ''}`);
-      help += ' · Tab 切换 Agent';
+      if (activeConfigLayers.length > 1 && !guidedSetup && !route.view) help += ' · Tab 切换 Agent';
+      if (guidedSetup) {
+        description = guidedBusy ? '正在获取推荐；尚未保存。'
+          : configDraftInputsPending ? '正在读取设置；尚未保存。'
+          : configDraftReferencePending ? referenceContextError ?? '正在读取引用来源；尚未保存。'
+          : configActionError ?? guidedNotice ?? '推荐只填入草稿；确认前不会写入。';
+        help += ' · u 删除可选草稿 · g 预填可选档位';
+      }
       context = configDraftCount > 0 ? `${configDraftCount} 项待保存` : countLabel;
       content = route.view === 'options' ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
         : route.view === 'values' ? (() => {
           title = '完整设置值与来源';
           description = '显示各保存位置的完整安全值；敏感值不回显。';
-          readingText = CONFIG_PROFILE_KEYS.flatMap((profile) =>
+          readingText = activeConfigLayers.flatMap((profile) =>
             (configLayerPages[profile]?.groups.flatMap((group) => group.fields) ?? []).map((field) =>
               `${field.title} · ${configLayerLabel({ profile })}：${fieldValueText(field, field.draftValue ?? field.value, true, field.configured)}`)).join('\n');
           actions = [{ label: '返回设置', run: back }];
@@ -7558,7 +7894,7 @@ export function ConsoleAppV4(props: {
           </Box>;
         })() : <Box flexDirection="column">
         <Text color={tuiTheme.roles.focus} bold>
-          {route.layer.profile === 'common' ? '◎ 全部 Agent' : `${configLayerLabel(route.layer)} 专用`}  [Tab]
+          {route.layer.profile === 'common' ? '◎ 全部 Agent' : `${configLayerLabel(route.layer)} 专用`}{activeConfigLayers.length > 1 && !guidedSetup ? '  [Tab]' : ''}
         </Text>
         {!readonly && configDraftIssues.length > 0 ? <Callout
           status="warning"
@@ -7576,7 +7912,7 @@ export function ConsoleAppV4(props: {
       </Box>;
     }
   } else if (route.name === 'configSave' && plugin) {
-    const draftGroups = CONFIG_PROFILE_KEYS.flatMap((scope) => {
+    const draftGroups = activeConfigLayers.flatMap((scope) => {
       const draft = configDrafts[scope];
       const page = configLayerPages[scope];
       return draft && page ? [{ profile: scope, draft, changes: configChanges(page, draft) }] : [];
@@ -7644,10 +7980,17 @@ export function ConsoleAppV4(props: {
         offset={configSaveActionViewport.offset} limit={configSaveActionViewport.limit} />
     </Box>;
     }
+  } else if ((route.name === 'configFieldEditor' || route.name === 'configObjectPropertyEditor' || route.name === 'configFieldAction')
+    && plugin && (!currentConfigPage || !currentLayerInfo)) {
+    breadcrumb = `${plugin.displayName} / 设置`;
+    title = '正在读取设置字段';
+    help = 'Esc 返回';
+    content = <ProgressRow title="读取设置定义" state="active" />;
   } else if (route.name === 'configFieldEditor' && plugin && activeField) {
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title}`;
     const scalarReference = 'valueRef' in activeField.definition && activeField.definition.valueRef ? activeField.definition : undefined;
-    const showChoices = Boolean(scalarReference) || (activeField.choices?.length ?? 0) > 0 && route.mode !== 'custom';
+    const showChoices = Boolean(scalarReference) || (activeField.choices?.length ?? 0) > 0 && route.mode !== 'custom'
+      && !(activeField.definition.type === 'object' && activeField.definition.suggestions);
     const targetFields = [route.layer.profile].flatMap((profile) =>
       configLayerPages[profile]?.groups.flatMap((group) => group.fields).filter((field) => field.key === activeField.key) ?? []);
     const canSet = targetFields.some(configFieldCanSet);
@@ -7770,6 +8113,51 @@ export function ConsoleAppV4(props: {
         : (arrayItem ? itemValue : draftUpdates[activeField.key]) ?? activeField.value;
       actions = [{ label: '开启', selected: !activeField.sensitive && current === true, run: () => updateDraft(activeField.key, true) }, { label: '关闭', selected: !activeField.sensitive && current === false, run: () => updateDraft(activeField.key, false) }];
       content = <SemanticRows actions={[...actions]} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
+    } else if (objectSuggestionMenu && objectSuggestionDefinition && objectSuggestions) {
+      const response = compositeSuggestions.response;
+      const dynamicItems = response?.status === 'ok'
+        ? response.items.filter((item): item is ObjectSuggestionItemV2 => !('value' in item)) : [];
+      const items = dynamicItems.length ? dynamicItems
+        : response && response.status !== 'not-applicable'
+          ? objectSuggestionFallback(objectSuggestionDefinition, objectSuggestions) : [];
+      const parent = route.suggestionParent === undefined ? undefined
+        : items.find((item) => objectSuggestionGroupKey(item) === route.suggestionParent);
+      title = parent?.children?.title ?? parent?.title ?? objectSuggestions.declaration.title ?? '选择推荐组合';
+      description = response?.message ? safeConfigText(response.message)
+        : !response ? '正在获取动态建议…'
+          : response.status === 'not-applicable' ? '当前选择不支持此项，建议留空。'
+            : response.status !== 'ok' ? '暂时无法获取动态建议，可使用自定义值。'
+              : items.length === 0 ? '没有动态建议，可使用自定义值。' : objectSuggestions.declaration.description;
+      help = '↑↓ 移动 · Enter 使用 · r 刷新建议 · Esc 返回';
+      const sourceLabels = { dynamic: '动态', configured: '已配置', merged: '合并', builtin: '内置' };
+      const select = (patch: ObjectSuggestionPatch): void => {
+        if (![...Object.keys(patch.set ?? {}), ...patch.unset ?? []].every((key) => objectSuggestions.targets.includes(key))) {
+          setObjectError('建议已不适用于当前属性。请刷新建议。'); return;
+        }
+        const next = applyObjectSuggestionPatch(objectSuggestions.draft, patch);
+        const issues = validatePluginConfigValue(objectSuggestionDefinition, next, activeField.key)
+          .filter((issue) => issue.path.property !== undefined && objectSuggestions.targets.includes(issue.path.property));
+        if (issues.length) { setObjectError(issues.slice(0, 2).map(objectIssueText).join('；')); return; }
+        updateObjectDraft(next);
+        if (route.suggestionParent !== undefined) props.controller.back();
+        back();
+      };
+      const itemAction = (item: ObjectSuggestionItemV2, run: () => void): ActionItem => ({
+        label: `${safeConfigText(item.title)}${item.recommended ? '（推荐）' : ''}${item.children ? ' ▸' : ''}`,
+        description: item.description ? safeConfigText(item.description) : undefined,
+        meta: item.source ? sourceLabels[item.source] : undefined,
+        run,
+      });
+      if (route.suggestionParent === undefined) {
+        actions = [{ label: '自定义（逐项编辑）', run: back }, ...items.map((item) =>
+          itemAction(item, () => item.children
+            ? go({ ...route, suggestionParent: objectSuggestionGroupKey(item) }) : select(item)))];
+      } else {
+        actions = parent?.children?.items.map((item) => itemAction({ ...item, source: item.source ?? parent.source },
+          () => select(mergeObjectSuggestionPatches(parent, item)))) ?? [{ label: '返回建议', run: back }];
+      }
+      if (objectError) description = objectError;
+      content = suggestionRows(actions);
     } else if (route.editor === 'object' && activeField.definition.type === 'object' && activeObjectDraft) {
       const objectDefinition = activeField.definition;
       title = `编辑${activeField.title}`;
@@ -7825,6 +8213,24 @@ export function ConsoleAppV4(props: {
           },
         })),
       ];
+      if (objectSuggestions) {
+        const dependencyKeys = new Set(objectSuggestions.declaration.dependsOn ?? []);
+        const dependencyRows = propertyActions.filter((_action, index) => dependencyKeys.has(fixedEntries[index]?.[0] ?? ''));
+        const remainingRows = propertyActions.filter((_action, index) => !dependencyKeys.has(fixedEntries[index]?.[0] ?? ''));
+        const summary = objectSuggestions.targets.flatMap((key) =>
+          Object.hasOwn(activeObjectDraft, key) ? [propertySummary(key, objectSuggestions.properties[key]!)] : []);
+        const configuredDependency = [...dependencyKeys].some((key) => Object.hasOwn(activeObjectDraft, key));
+        propertyActions.splice(0, propertyActions.length, ...dependencyRows, {
+          label: objectSuggestions.declaration.title ?? '选择推荐组合',
+          description: objectSuggestions.declaration.description,
+          meta: summary.length ? summary.join(' / ') : configuredDependency
+            ? (activeObjectDraft.executor === 'native' ? '宿主默认' : '后端默认') : '未设置',
+          run: () => {
+            setObjectError(undefined);
+            go({ ...route, mode: 'suggestions' });
+          },
+        }, ...remainingRows);
+      }
       const objectOperationActions: ActionItem[] = [
         ...(objectDefinition.additionalProperties !== false ? [{
           label: '＋ 添加键值',
@@ -7895,7 +8301,7 @@ export function ConsoleAppV4(props: {
         : activeField.sensitive ? '当前值不会回显；留空不会自动删除旧值。' : suggestions.notice ?? activeField.description ?? '';
       content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activeField.sensitive} placeholder={activeField.placeholder} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? (activeField.sensitive ? '输入已隐藏。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
     }
-    if (canUnset) {
+    if (canUnset && !objectSuggestionMenu) {
       const unset: ActionItem = { label: '恢复继承', description: '选择要删除覆盖值的位置', run: () => removeDraft(activeField.key) };
       const inputEditor = canSet && !suggestionMenu && !showChoices && (route.editor === 'number' || route.editor === 'string');
       help += ' · Ctrl-R 恢复继承';
@@ -7912,20 +8318,25 @@ export function ConsoleAppV4(props: {
     const propertyTitle = definition && property ? definition.title ?? property : '动态键';
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title} / ${propertyTitle}`;
     if (activeVariantPreview) {
-      title = '确认分支切换';
+      title = activeVariantPreview.variantSwitch ? '确认分支切换' : '确认关联设置清理';
       description = '确认后仅更新当前对象草稿；完整设置仍需 Review 后保存。';
       const candidateIssues = validatePluginConfigValue(activeField.definition, activeVariantPreview.value, activeField.key);
       readingText = [
         activeVariantPreview.removed.length ? '将移除这些旧值：' : '没有需要移除的旧值。',
-        ...activeVariantPreview.removed.map((entry) => `${entry.property} = ${safeConfigText(JSON.stringify(entry.value))}`),
-        '切换后的实际配置：', safeConfigText(JSON.stringify(activeVariantPreview.value, null, 2)),
+        ...activeVariantPreview.removed.map((entry) => {
+          const property = activeObjectProperties?.[entry.property];
+          return `${entry.property} = ${activeField.sensitive || !property || property.sensitive || configObjectHasSensitiveChild(property)
+            ? '[redacted]' : safeConfigText(JSON.stringify(entry.value))}`;
+        }),
+        '变更后的实际配置：', safeConfigText(JSON.stringify(activeField.sensitive || configObjectHasSensitiveChild(activeField.definition)
+          ? '[redacted]' : activeVariantPreview.value, null, 2)),
         ...(candidateIssues.length ? ['需要补充或修正：', ...candidateIssues.map(objectIssueText)] : []),
       ].join('\n');
       actions = [{ label: '使用此候选草稿', run: () => {
         updateObjectDraft(activeVariantPreview.value);
         if (candidateIssues.length) setObjectError(candidateIssues.slice(0, 2).map(objectIssueText).join('；'));
         setObjectVariantPreview(undefined); back();
-      } }, { label: '取消切换', run: () => { setObjectVariantPreview(undefined); back(); } }];
+      } }, { label: activeVariantPreview.variantSwitch ? '取消切换' : '取消修改', run: () => { setObjectVariantPreview(undefined); back(); } }];
       content = <Box flexDirection="column">
         {readingPage(readingText, size.columns - 2, Math.max(1, pageActionBudget(4)))}
         <SemanticRows actions={actions} focus={focus} kind="action" compact />
@@ -7970,14 +8381,7 @@ export function ConsoleAppV4(props: {
           label: route.dynamic ? '删除动态键' : '删除属性',
           status: 'error',
           run: () => {
-            if (activeField.definition.type === 'object' && activeField.definition.variants?.discriminator === property) {
-              if (updateObjectProperty(property, undefined)) back();
-              return;
-            }
-            const next = { ...activeObjectDraft };
-            delete next[property];
-            updateObjectDraft(next);
-            back();
+            if (updateObjectProperty(property, undefined)) back();
           },
         },
       ];
@@ -8966,7 +9370,7 @@ export function ConsoleAppV4(props: {
       else if (entry.id === 'reAddSource' && issue.sourceId) beginIssueSourceAdd(issue.sourceId);
       else if (entry.id === 'viewSourceChange' && issue.sourceId) go({ name: 'sourceTechnical', sourceId: issue.sourceId });
       else if (entry.id === 'openConfig' && issue.pluginId) {
-        go({ name: 'configFields', pluginId: issue.pluginId, layer: { profile: 'common' } });
+        openIssueConfig(issue, issue.pluginId);
       }
       else if (entry.id === 'viewDependencies' && issue.pluginId) {
         go({ name: 'pluginDependencies', pluginId: issue.pluginId });
@@ -11475,7 +11879,7 @@ export function ConsoleAppV4(props: {
         }
         return;
       }
-      if (flow.stage === 'review' || flow.stage === 'risk' || flow.stage === 'result') {
+      if (flow.stage === 'setup' || flow.stage === 'review' || flow.stage === 'risk' || flow.stage === 'result') {
         if (input.toLowerCase() === 'y' && readingText !== undefined) {
           void copyToClipboard(readingText).then(() =>
             setCopyFeedback({ routeKey, message: '全文已复制' })).catch(() =>
@@ -11751,7 +12155,7 @@ export function ConsoleAppV4(props: {
           setChangedObjectDraftKeys([]);
           const discardedSourceDraft = sourceDraft;
           setSourceDraft(undefined);
-          setBatchDraft(undefined);
+          if (!guidedSetup) setBatchDraft(undefined);
           if (discardForExit) {
             requestExit({ code: 0, reason: 'user' });
           } else if (discardedSourceDraft) {
@@ -12097,17 +12501,17 @@ export function ConsoleAppV4(props: {
       setSourceInputError(undefined);
       return;
     }
-    if (suggestionMenu && input.toLowerCase() === 'r' && !key.ctrl && !key.meta) {
-      suggestions.refresh();
+    if ((suggestionMenu || objectSuggestionMenu) && input.toLowerCase() === 'r' && !key.ctrl && !key.meta) {
+      if (objectSuggestionMenu) { setObjectError(undefined); compositeSuggestions.refresh(); } else suggestions.refresh();
       return;
     }
-    if (route.name === 'configFieldEditor' && route.mode !== 'choices' && input === 'c'
+    if (route.name === 'configFieldEditor' && route.mode !== 'choices' && route.mode !== 'suggestions' && input === 'c'
       && (route.editor === 'array' || route.editor === 'object')) {
       if (route.editor === 'array') commitArray();
       else commitObjectDraft();
       return;
     }
-    if (route.name === 'configFieldEditor' && !arrayItem && !nestedArray && activeField && key.ctrl && input.toLowerCase() === 'r') {
+    if (route.name === 'configFieldEditor' && !objectSuggestionMenu && !arrayItem && !nestedArray && activeField && key.ctrl && input.toLowerCase() === 'r') {
       const canUnset = [route.layer.profile].some((profile) =>
         configLayerPages[profile]?.groups.flatMap((group) => group.fields)
           .some((field) => field.key === activeField.key && configFieldCanUnset(field)));
@@ -12329,9 +12733,9 @@ export function ConsoleAppV4(props: {
     }
     // Paste and composed text are data, never multiple background commands.
     if (input.length > 1 && !key.ctrl && !key.meta) return;
-    if (key.tab && route.name === 'configFields') {
-      const index = CONFIG_PROFILE_KEYS.indexOf(route.layer.profile);
-      const profile = CONFIG_PROFILE_KEYS[(index + (key.shift ? -1 : 1) + CONFIG_PROFILE_KEYS.length) % CONFIG_PROFILE_KEYS.length]!;
+    if (key.tab && !guidedSetup && route.name === 'configFields' && !route.view && activeConfigLayers.length > 1) {
+      const index = activeConfigLayers.indexOf(route.layer.profile);
+      const profile = activeConfigLayers[(index + (key.shift ? -1 : 1) + activeConfigLayers.length) % activeConfigLayers.length]!;
       props.controller.replace({ ...route, layer: { ...route.layer, profile } });
       setFocus(0); setScrollOffset(0); return;
     }
@@ -12452,6 +12856,10 @@ export function ConsoleAppV4(props: {
       back();
     } else if (globalAction === 'back'
       && (route.name === 'configFieldEditor' || route.name === 'configFieldAction')) {
+      if (route.name === 'configFieldEditor' && route.mode === 'suggestions') {
+        back();
+        return;
+      }
       if (nestedArray && !arrayItem) {
         closeNestedArray();
         return;
@@ -12567,10 +12975,28 @@ export function ConsoleAppV4(props: {
       } : draft);
       setFocus(0);
       setScrollOffset(0);
+    } else if (route.name === 'configFields' && guidedSetup && input.toLowerCase() === 'g') {
+      runAction(bottomActions.find((action) => action.actionId === 'guided-fill-optional'));
     } else if (route.name === 'configFields' && input.toLowerCase() === 's') {
       runAction(bottomActions[0]);
     } else if (route.name === 'configFields' && input.toLowerCase() === 'u') {
-      runAction(actions.find((action) => action.actionId === 'config-reset-profile'));
+      const focusedField = currentConfigPage?.groups.flatMap((group) => group.fields)
+        .find((field) => field.key === actions[focus]?.configKey);
+      if (guidedSetup && focusedField && !focusedField.required && configDrafts[route.layer.profile]?.updates[focusedField.key] !== undefined) {
+        guidedTouched.current.add(focusedField.key);
+        setGuidedBadges((badges) => Object.fromEntries(Object.entries(badges).filter(([key]) => key !== focusedField.key)));
+        const previous = configDrafts[route.layer.profile]!;
+        const updates = { ...previous.updates };
+        delete updates[focusedField.key];
+        const editEvidence = { ...previous.editEvidence };
+        delete editEvidence[focusedField.key];
+        const next = { ...configDrafts, [route.layer.profile]: { ...previous, updates, editEvidence } };
+        if (!Object.keys(updates).length && !previous.removes.length) delete next[route.layer.profile];
+        setConfigDrafts(next);
+        setDirty(Object.keys(next).length + changedObjectDraftKeys.length > 0);
+      } else if (focusedField && !configFieldCanSet(focusedField) && configFieldCanUnset(focusedField)) {
+        removeDraft(focusedField.key);
+      } else runAction(actions.find((action) => action.actionId === 'config-reset-profile'));
     } else if (route.name === 'configFields' && !route.view && visibleConfigTabs.length > 1
       && (key.leftArrow || key.rightArrow)) {
       const current = Math.max(0, visibleConfigTabs.findIndex((tab) => tab.id === activeConfigTabId));

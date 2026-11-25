@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import type { RecoveryStatus } from '../../src/recovery/status.js';
 import type { RecoveryTarget } from '../../src/recovery/receipt.js';
-import { observePreferences } from '../../src/intent/deployment-preferences.js';
+import { observePreferences, setTargets } from '../../src/intent/deployment-preferences.js';
 
 import { flattenStatusTargets, type StatusV8Payload } from '../../src/commands/status-v6.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
@@ -638,6 +638,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       { pluginId: 'team/demo', agent: 'codex', scope: 'user', content: 'satisfied' },
       { pluginId: 'team/demo', agent: 'codex', scope: 'project', content: 'drifted' },
     ]);
+    await setTargets({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, ['codex']);
     let reviewLogCount = 0;
     const debugLog = vi.fn((event: { type: string }) => {
       if (!event.type.startsWith('review.prepare.')) return undefined;

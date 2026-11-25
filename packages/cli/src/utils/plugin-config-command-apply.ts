@@ -1,6 +1,8 @@
 import { canonicalizeIdentityValue, getManagedCommandInvocationSelectors, selectPluginConfigProfile, type PlatformName } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CommandProducerResult, PluginMeta } from '../types.js';
+import { observePreferences } from '../intent/deployment-preferences.js';
+import { resolveActiveConfigPlatforms } from './config-platforms.js';
 import {
   describeManagedCommandRouteReview,
   describeManagedCommandRuntimeConfigChanges,
@@ -131,6 +133,7 @@ export async function prepareConfigCommandPackages(options: ApplyPluginConfigOpt
   const env = options.env ?? process.env;
   const signal = options.rebuildRuntime?.signal;
   const reviewed = options.expectedCommandPackageEvidence;
+  const preferences = await observePreferences(options);
   const readMutationConfig = options.mutation && options.plugin.manifest.config && targets.length
     ? createMutationConfigReader({ ...options, mutation: options.mutation }, referencePlugins) : undefined;
   const entries: ConfigCommandApplyCandidate[] = [];
@@ -147,7 +150,10 @@ export async function prepareConfigCommandPackages(options: ApplyPluginConfigOpt
       entries.push(entry);
       try {
         if (options.platform === 'generic') continue;
-        const operation = await inspectManagedCommandConfigApply({ ...input, platform: options.platform });
+        const activePlatforms = resolveActiveConfigPlatforms(packageSelector(target), plugin.manifest, preferences)
+          .filter((platform): platform is PlatformName => platform !== 'generic'
+            && (!options.targets || options.targets.includes(platform)));
+        const operation = await inspectManagedCommandConfigApply({ ...input, platform: options.platform, activePlatforms });
         if (!operation || inspectOnly) continue;
         if (prior?.blocker) { evidence.blocker = prior.blocker; continue; }
         if (reviewed && !prior?.record && operation.refreshRoutes) throw stale();

@@ -79,7 +79,8 @@ aw plugin status --context user
 | [`browser-use`](plugins/browser-use/) | 网页浏览器自动化交互与信息检索能力 | 九平台，按组件能力判定 |
 | [`git-toolkit`](plugins/git-toolkit/) | 创建规范本地原子提交，协调 merge/rebase/cherry-pick 冲突与语义交互 | 九平台，按组件能力判定 |
 | [`agent-subagent`](plugins/agent-subagent/) | 选择通用委派配置并管理外部子代理执行 | 九平台，按组件能力判定 |
-| [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中组织大范围只读探索与技术咨询；依赖 `agent-subagent` | 九平台，按组件能力判定 |
+| [`agent-explore`](plugins/agent-explore/) | 组织大范围、多来源只读事实调查；依赖 `agent-subagent` | 九平台，按组件能力判定 |
+| [`agent-advisor`](plugins/agent-advisor/) | 在重要判断卡点取得独立只读第二意见；依赖 `agent-subagent` | 九平台，按组件能力判定 |
 
 ### Agent 内容、Skill 与插件作者工具
 
@@ -109,7 +110,10 @@ Codex 使用 `$dev-workflow`（或 `$dev-design` / `$dev-build` / `$dev-review-l
 `git-commit` 保护范围外的 index 与工作树，创建符合规范的本地提交，绝不隐式 push。
 
 ### 探索陌生代码库
-`codex-explore` 将大范围证据调查交给只读探索子代理，主代理完成最终分析，不修改代码。
+`explore-facts` 将大范围证据调查交给只读探索子代理，主代理保留最终判断。
+
+### 取得独立第二意见
+`consult-advisor` 在重要判断卡点组织去锚定的只读咨询，主代理核验依据后决定是否采纳。
 
 ### 编写或评审 Agent 内容与 Skill
 `agent-content` 整理面向 Agent 的正文；`agent-skill-toolkit` 辅助设计可验证的 Eval 测试用例。

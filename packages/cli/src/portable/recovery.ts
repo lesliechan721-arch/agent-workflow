@@ -7,6 +7,7 @@ import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-ho
 import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
+import { PluginConfigDiagnosticError } from '../utils/plugin-config-diagnostics.js';
 import { mapInstallReads, type InstallAdmission } from '../recovery/install-concurrency.js';
 import type { ScopeContext } from '../intent/scope-context.js';
 import { parsePortableSkillFrontmatter, validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
@@ -88,6 +89,7 @@ interface PortablePreparationDiagnostic {
   agent: PortableAgent;
   stage: 'catalog-binding' | 'generation-path' | 'materialize' | 'materialization-read' | 'skill-validation' | 'output-observation';
   systemCode?: string;
+  configDiagnostic?: RecoveryDiagnostic;
 }
 
 const SAFE_FILESYSTEM_CODES = new Set([
@@ -97,9 +99,10 @@ const SAFE_FILESYSTEM_CODES = new Set([
 
 /** Supplement the existing blocker with fixed stages and known errno names only. */
 export function portablePreparationDiagnostic(prepared: PortablePreparation,
-  diagnostic: { code: string; message: string }, agent: PortableAgent): { code: string; message: string } {
+  diagnostic: RecoveryDiagnostic, agent: PortableAgent): RecoveryDiagnostic {
   const detail = prepared.diagnostics?.find((entry) => entry.code === diagnostic.code && entry.agent === agent);
   if (!detail) return diagnostic;
+  if (detail.configDiagnostic) return detail.configDiagnostic;
   return { ...diagnostic, message: `${diagnostic.message}准备阶段：${detail.stage}${detail.systemCode ? `；文件系统错误：${detail.systemCode}` : ''}。` };
 }
 export interface PortableExecutionTarget extends PortableTarget {
@@ -349,6 +352,13 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       }
     } catch (error) {
       if (recoveryInterruptionCode(error, options.signal)) throw error;
+      if (error instanceof PluginConfigDiagnosticError) {
+        for (const configDiagnostic of error.diagnostics) {
+          base.globalBlockers.push(configDiagnostic.code);
+          (base.diagnostics ??= []).push({ code: configDiagnostic.code, agent, stage, configDiagnostic });
+        }
+        continue;
+      }
       const code = error instanceof Error && /^(?:portable|operationReview)/u.test(error.message)
         ? error.message.split(':')[0]! : 'portablePreparationFailed';
       base.globalBlockers.push(code);

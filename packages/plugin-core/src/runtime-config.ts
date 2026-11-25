@@ -1,4 +1,4 @@
-import { compilePluginConfigDefinition, getPluginConfigDependencyKeys, validatePluginConfigCandidate } from './plugin-config.js';
+import { selectPluginConfigProfile, getPluginConfigDependencyKeys, validatePluginConfigCandidate } from './plugin-config.js';
 import type { PluginConfigSchema, PluginConfigValue, Scope, PlatformName, PluginConfigReferenceContext } from './types.js';
 
 export const AW_RUNTIME_CONFIG_BINDING_PATH = '.aw-runtime-config.json';
@@ -75,7 +75,9 @@ export function createRuntimeConfigSnapshot(options: {
   values: Record<string, PluginConfigValue>;
   referenceContext?: PluginConfigReferenceContext;
 }): RuntimeConfigSnapshot {
-  const definition = compilePluginConfigDefinition(options.definition, options.installedIdentity.platform);
+  // The manifest or renderer has already normalized the schema. A selected v5
+  // profile uses the compiled v4 shape, but can contain v5 field metadata.
+  const definition = selectPluginConfigProfile(options.definition, options.installedIdentity.platform);
   if (options.referenceContext?.platform !== undefined
     && options.referenceContext.platform !== options.installedIdentity.platform) {
     throw new Error('runtimeConfigInvalid: Reference context must use the installed platform.');

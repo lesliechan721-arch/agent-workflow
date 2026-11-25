@@ -10,7 +10,7 @@ import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 import type { CommandProducerResult, ConfigApplyTargetResult } from '../types.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
-import type { ConfigSuggestionItemV1 } from '../utils/plugin-config-suggestion-runner.js';
+import type { ConfigSuggestionItemV2, ObjectSuggestionPatch } from '../utils/plugin-config-suggestion-runner.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { SKILL_INVOCATION_NOTICE, type SkillInvocationControl } from '../utils/skill-invocation-warning.js';
 import { componentGapFeatures, componentGapOutcome, hasComponentDeliveryNotice, HOST_PERMISSION_ADDITIONAL_IMPACT, isDeliveryNoticeCode, isInstallationAdvisory,
@@ -54,7 +54,7 @@ export interface Diagnostic {
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
-  detail?: { reasonCode: string; path?: string; configKey?: string; skillInvocationControls?: SkillInvocationControl[];
+  detail?: { reasonCode: string; path?: string; configKey?: string; fieldKeys?: string[]; skillInvocationControls?: SkillInvocationControl[];
     skippedPermissionActions?: PermissionAction[]; permissionResource?: string; permissionAction?: Exclude<PermissionAction, 'sandbox'>;
     permissionChanges?: PermissionRuleChange[] };
 }
@@ -130,8 +130,20 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   if (result.command === 'plugin.config.suggestions' && Array.isArray(data.items)) {
     lines.push(`${Array.isArray(data.fieldPath) ? data.fieldPath.join('.') : ''} · ${data.profile} · ${data.status}`);
     if (typeof data.message === 'string') lines.push(data.message);
-    for (const { value, title, description, recommended } of data.items as ConfigSuggestionItemV1[]) {
-      lines.push(`- ${title} (${JSON.stringify(value)})${recommended ? ' · recommended' : ''}${description ? ` · ${description}` : ''}`);
+    const summarizePatch = (patch: ObjectSuggestionPatch): string => [
+      ...(Object.keys(patch.set ?? {}).length ? [`set ${JSON.stringify(patch.set)}`] : []),
+      ...(patch.unset?.length ? [`unset ${patch.unset.join(', ')}`] : []),
+    ].join(' · ');
+    const renderItem = (item: ConfigSuggestionItemV2, indent = ''): string => {
+      const detail = 'value' in item ? JSON.stringify(item.value) : summarizePatch(item);
+      return `${indent}- ${item.title}${detail ? ` (${detail})` : ''}${item.recommended ? ' · recommended' : ''}${item.description ? ` · ${item.description}` : ''}`;
+    };
+    for (const item of data.items as ConfigSuggestionItemV2[]) {
+      lines.push(renderItem(item));
+      if (!('value' in item) && item.children) {
+        if (item.children.title) lines.push(`  ${item.children.title}`);
+        for (const child of item.children.items) lines.push(renderItem(child, '  '));
+      }
     }
   }
   const request = data.request as { plugins?: string[]; scope?: string; context?: string; targets?: string[]; mode?: string } | undefined;
@@ -341,9 +353,12 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       continue;
     }
     if (!detail) continue;
-    lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
+    const configPosition = detail.fieldKeys?.length || detail.reasonCode === 'configReadFailed'
+      ? [diagnostic.subject?.pluginId, diagnostic.subject?.target, diagnostic.subject?.scope].filter(Boolean).join(' / ') : '';
+    lines.push(`${diagnostic.code}: ${diagnostic.message}${configPosition ? ` [${configPosition}]` : ''}`, `  Reason: ${detail.reasonCode}`);
     if (detail.path) lines.push(`  Location: ${detail.path}`);
     if (detail.configKey) lines.push(`  Config key: ${detail.configKey}`);
+    if (detail.fieldKeys?.length) lines.push(`  Config fields: ${detail.fieldKeys.join(', ')}`);
   }
   for (const action of result.nextActions) lines.push(action.kind === 'manual' ? `Next: ${action.message}` : `Next: ${action.argv.map((arg) => /\s/u.test(arg) ? JSON.stringify(arg) : arg).join(' ')}`);
   return `${lines.join('\n')}\n`;

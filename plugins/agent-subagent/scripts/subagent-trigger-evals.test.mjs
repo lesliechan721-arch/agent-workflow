@@ -14,13 +14,7 @@ import manifestDocument from '../skills/spawn-subagent/evals/manifest.json' with
 import triggerCorpusDocument from '../skills/spawn-subagent/evals/trigger-cases.json' with { type: 'json' };
 import compositionCorpusDocument from '../skills/spawn-subagent/evals/trigger-composition-cases.json' with { type: 'json' };
 
-const GUIDE_ROLE_NAMES = [
-  'aw-eval-source-agent-subagent-subagent',
-];
-const EXPLORE_ROLE_NAMES = [
-  'aw-eval-source-codex-enhance-codex-explore',
-];
-const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
+const DEFAULT_ROLE_NAMES = [];
 
 async function testEvalCorpus() {
   const manifest = manifestDocument;
@@ -43,7 +37,7 @@ async function testEvalCorpus() {
   assert.equal(compositionDocument.version, 1);
   assert.equal(compositionDocument.suite.kind, 'trigger');
   assert.equal(compositionDocument.suite.unitUnderTest, 'spawn-subagent');
-  assert.deepEqual(compositionDocument.suite.participants, ['codex-explore']);
+  assert.deepEqual(compositionDocument.suite.participants, ['explore-facts']);
   assert.equal(compositionDocument.suite.runtime.isolation, 'standard');
   assert.deepEqual(compositionDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
   assert.equal(compositionDocument.suite.runtime.forbidMultipleSkillLoads, false);
@@ -168,36 +162,36 @@ async function testFixtureVariants() {
   }
 }
 
-async function writeRuntimeSnapshot(root, { omitRole, duplicateRole } = {}) {
+async function writeRuntimeSnapshot(root, { roles = DEFAULT_ROLE_NAMES, duplicateRole } = {}) {
   const skillRoot = path.join(root, '.agents', 'skills', 'spawn-subagent');
-  const roleRoot = path.join(root, '.codex', 'agents');
-  await Promise.all([
-    mkdir(skillRoot, { recursive: true }),
-    mkdir(roleRoot, { recursive: true }),
-  ]);
+  await mkdir(skillRoot, { recursive: true });
   await writeFile(path.join(skillRoot, 'SKILL.md'), '# Materialized Guide\n', 'utf8');
   await writeFile(path.join(root, '.codex', 'config.toml'), '# materialized config\n', 'utf8');
-  await Promise.all(ROLE_NAMES.filter((name) => name !== omitRole).map((name) => writeFile(
-    path.join(roleRoot, `aw-guide-${name}.toml`),
-    [
-      `name = ${JSON.stringify(name)}`,
-      `description = ${JSON.stringify(`Role ${name}`)}`,
-      'developer_instructions = "Read-only role."',
-      '',
-    ].join('\n'),
-    'utf8',
-  )));
-  if (duplicateRole) {
-    await writeFile(
-      path.join(roleRoot, `duplicate-${duplicateRole}.toml`),
+  if (roles.length > 0 || duplicateRole) {
+    const roleRoot = path.join(root, '.codex', 'agents');
+    await mkdir(roleRoot, { recursive: true });
+    await Promise.all(roles.map((name) => writeFile(
+      path.join(roleRoot, `aw-guide-${name}.toml`),
       [
-        `name = ${JSON.stringify(duplicateRole)}`,
-        `description = ${JSON.stringify(`Duplicate role ${duplicateRole}`)}`,
+        `name = ${JSON.stringify(name)}`,
+        `description = ${JSON.stringify(`Role ${name}`)}`,
         'developer_instructions = "Read-only role."',
         '',
       ].join('\n'),
       'utf8',
-    );
+    )));
+    if (duplicateRole) {
+      await writeFile(
+        path.join(roleRoot, `duplicate-${duplicateRole}.toml`),
+        [
+          `name = ${JSON.stringify(duplicateRole)}`,
+          `description = ${JSON.stringify(`Duplicate role ${duplicateRole}`)}`,
+          'developer_instructions = "Read-only role."',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+    }
   }
 }
 
@@ -209,6 +203,7 @@ async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
   const previousContext = process.env.AW_PLUGIN_CONTEXT;
   try {
     await mkdir(authorSource, { recursive: true });
+    await mkdir(path.join(runtimeSnapshot, '.codex'), { recursive: true });
     await writeFile(path.join(authorSource, 'origin.txt'), 'author source\n', 'utf8');
     await writeRuntimeSnapshot(runtimeSnapshot);
     await writeFile(path.join(runtimeSnapshot, 'origin.txt'), 'runtime snapshot\n', 'utf8');
@@ -232,10 +227,7 @@ async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
         await readFile(path.join(current.root, 'origin.txt'), 'utf8'),
         'runtime snapshot\n',
       );
-      assert.deepEqual(
-        current.roles.map((role) => role.roleFile.name).sort(),
-        [...GUIDE_ROLE_NAMES].sort(),
-      );
+      assert.deepEqual(current.roles, []);
       await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
       await assert.rejects(readFile(path.join(current.root, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
     } finally {
@@ -256,25 +248,20 @@ async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
   }
 }
 
-async function testGuideRoleValidation() {
-  const cases = [
-    {
-      options: { omitRole: 'aw-eval-source-agent-subagent-subagent' },
-      expected: /role aw-eval-source-agent-subagent-subagent exactly once, got 0/,
-    },
-    {
-      options: { duplicateRole: 'aw-eval-source-agent-subagent-subagent' },
-      expected: /role aw-eval-source-agent-subagent-subagent exactly once, got 2/,
-    },
-  ];
-  for (const entry of cases) {
-    const runtimeSnapshot = await mkdtemp(path.join(os.tmpdir(), 'subagent-invalid-snapshot-'));
-    try {
-      await writeRuntimeSnapshot(runtimeSnapshot, entry.options);
-      await assert.rejects(createEvalWorkspace({ sourceRoot: runtimeSnapshot }), entry.expected);
-    } finally {
-      await rm(runtimeSnapshot, { recursive: true, force: true });
-    }
+async function testRoleDuplicateValidation() {
+  const runtimeSnapshot = await mkdtemp(path.join(os.tmpdir(), 'subagent-invalid-snapshot-'));
+  try {
+    await mkdir(path.join(runtimeSnapshot, '.codex'), { recursive: true });
+    await writeRuntimeSnapshot(runtimeSnapshot, {
+      roles: ['fixture-audit-role'],
+      duplicateRole: 'fixture-audit-role',
+    });
+    await assert.rejects(
+      createEvalWorkspace({ sourceRoot: runtimeSnapshot }),
+      /duplicate role fixture-audit-role/,
+    );
+  } finally {
+    await rm(runtimeSnapshot, { recursive: true, force: true });
   }
 }
 
@@ -282,7 +269,7 @@ async function main() {
   await testEvalCorpus();
   await testFixtureVariants();
   await testCustomProviderWorkspaceUsesRuntimeSnapshot();
-  await testGuideRoleValidation();
+  await testRoleDuplicateValidation();
   console.log('spawn-subagent trigger assets and provider workspace tests passed');
 }
 

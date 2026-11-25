@@ -24,9 +24,6 @@ const pluginContext = process.env.AW_PLUGIN_CONTEXT
 const sourceEvalRoot = pluginContext?.sourceRoot
   ? path.join(pluginContext.sourceRoot, 'skills', 'spawn-subagent', 'evals')
   : evalRoot;
-const roles = [
-  'aw-eval-source-agent-subagent-subagent',
-];
 
 async function invoke(runner, input, env = process.env) {
   return new Promise((resolve, reject) => {
@@ -46,14 +43,9 @@ async function invoke(runner, input, env = process.env) {
 }
 
 async function writeWorkspace(root) {
-  const roleRoot = path.join(root, '.codex', 'agents');
   const skillRoot = path.join(root, '.agents', 'skills', 'spawn-subagent');
-  await Promise.all([mkdir(roleRoot, { recursive: true }), mkdir(skillRoot, { recursive: true })]);
+  await mkdir(skillRoot, { recursive: true });
   await writeFile(path.join(skillRoot, 'SKILL.md'), '# Spawn Subagent\n');
-  await Promise.all(roles.map((name) => writeFile(
-    path.join(roleRoot, `${name}.toml`),
-    `name = ${JSON.stringify(name)}\ndescription = ${JSON.stringify(`${name} role`)}\ndeveloper_instructions = "Do the task."\n`,
-  )));
 }
 
 function adapterInput(phase, selectedCase, root) {
@@ -105,7 +97,7 @@ function v1RoutingEvidence() {
     ordinal: 1, threadId: 'root', parentThreadId: null,
     callId: 'spawn-simple', namespace: 'collaboration', tool: 'spawn_agent', status: 'completed',
     arguments: {
-      agent_type: 'aw-eval-source-agent-subagent-subagent', message: 'work', fork_context: false,
+      message: 'work', fork_context: false,
     },
     output: { agent_id: 'child', status: 'running' },
   };
@@ -128,7 +120,7 @@ function v1RoutingEvidence() {
       },
     }, {
       threadId: 'child', parentThreadId: 'root',
-      agentRole: 'aw-eval-source-agent-subagent-subagent',
+      agentRole: null,
       initialMessage: { kind: 'plaintext', text: 'work' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:child',
@@ -164,8 +156,7 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
       assert.equal(result.code, 0, result.stderr);
       const request = JSON.parse(result.stdout);
       assert.equal(request.model, null);
-      assert.deepEqual(request.roles.map(({ name }) => name), roles);
-      assert.equal(request.roles.every((role) => !path.isAbsolute(role.configFile)), true);
+      assert.deepEqual(request.roles, []);
       assert.deepEqual(request.multiAgent, {
         protocol: suite.id === 'routing' && document.cases[0].input.runtimeProfile === 'v1' ? 'v1' : 'v2',
         maxDepth: 1,
@@ -182,11 +173,14 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
     )).stdout);
     assert.equal(v2Request.model, null);
     assert.match(v2Request.prompt, /固定单行最终确认 `ROUTING_SPAWNED`/u);
+    const omittedRoleFile = path.join(root, 'workspace', 'subject', '.codex', 'agents', 'fixture-audit-role.toml');
+    await mkdir(path.dirname(omittedRoleFile), { recursive: true });
+    await writeFile(omittedRoleFile, 'name = "fixture-audit-role"\ndescription = "Audit role"\ndeveloper_instructions = "Do the task."\n');
     const missingRole = routing.cases.find((entry) => entry.id === 'missing_preset_role-v2');
     const omitted = await invoke('run-routing-evals.mjs', adapterInput('prepare', missingRole, root), env);
     assert.equal(omitted.code, 0, omitted.stderr);
     assert.deepEqual(JSON.parse(omitted.stdout).roles, []);
-    await assert.rejects(readFile(path.join(root, 'workspace', 'subject', v2Request.roles[0].configFile)), { code: 'ENOENT' });
+    await assert.rejects(readFile(omittedRoleFile), { code: 'ENOENT' });
     await assert.rejects(readFile(marker));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -208,7 +202,6 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
       tool: 'spawn_agent',
       linkedThreadId: 'child',
       arguments: {
-        agent_type: 'aw-eval-source-agent-subagent-subagent',
         message: 'work', task_name: 'work', fork_turns: 'none',
       },
       output: { agent_id: 'child', status: 'running' },

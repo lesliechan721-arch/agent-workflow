@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 
 import {
   selectPluginConfigProfile,
-  PLATFORM_TARGETS,
   NATIVE_PLATFORM_TARGETS,
   type PlatformTarget,
   supportsPlatform,
@@ -19,6 +18,8 @@ import type {
   Scope,
 } from '../types.js';
 import { ManagedCommandError, managedCommandDiagnostic, readManagedCommandPackage, readManagedCommandPackageView } from './managed-command-store.js';
+import { observePreferences } from '../intent/deployment-preferences.js';
+import { assertConfigLayerWritable } from './config-platforms.js';
 import {
   coercePluginConfigUpdates,
   readPluginConfigStore,
@@ -31,6 +32,7 @@ import {
 } from './plugin-config.js';
 import {
   analyzePluginConfigReferenceMutation,
+  configValidationProfiles,
   collectPluginConfigReferenceEvidence,
   pluginConfigHasExternalReferences,
   resolvePluginConfigReferenceContext,
@@ -293,8 +295,11 @@ export async function analyzePluginConfigMutationImpact(options: {
   commandDiscovery?: ManagedCommandPackageDiscovery; referencePlugins?: readonly PluginMeta[];
 }): Promise<PluginConfigMutationImpact> {
   options = { ...options, scope: options.context ?? options.scope };
-  const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({ ...options,
-    env: options.env ?? process.env, platformTargets: options.visibleTargets });
+  const preferences = await observePreferences(options);
+  const hasUpdates = options.mutation.kind === 'patch' && Object.keys(options.mutation.updates ?? {}).length > 0;
+  if (hasUpdates) assertConfigLayerWritable(options.plugin.pluginId ?? (options.plugin.sourceId
+    ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : options.plugin.manifest.name),
+  options.plugin.manifest, preferences, options.platform);
   const schema = options.plugin.manifest.config ? selectPluginConfigProfile(options.plugin.manifest.config, options.platform).fields : undefined;
   const identity = configIdentity(options.plugin);
   let user: PluginConfigStore;
@@ -316,15 +321,38 @@ export async function analyzePluginConfigMutationImpact(options: {
   const changedKeys = [...updatedKeys, ...removedKeys];
   const storeChanged = user.state === 'invalid' ? options.mutation.kind === 'reset' && user.exists || options.mutation.kind === 'patch'
     : changedKeys.length > 0;
+  const staleOnlyCleanup = !hasUpdates && options.mutation.kind === 'patch'
+    && requestedRemoveKeys.every((key) => !schema?.[key]);
+  const preferenceEvidence = preferences.state === 'valid' ? preferences.rawDigest : preferences.state;
+  // A stale-key deletion is independent of the current target policy.
+  const unconfirmedReset = options.mutation.kind === 'reset'
+    && (preferences.state === 'invalid' || preferences.state === 'unreadable');
+  const activeProfiles = (staleOnlyCleanup || unconfirmedReset) && (preferences.state === 'invalid' || preferences.state === 'unreadable')
+    ? [] : configValidationProfiles(options.plugin, preferences);
+  const profiles = activeProfiles.filter((platform) => !options.platform || platform === options.platform);
+  if (!activeProfiles.includes(options.platform)) {
+    return { impactState: unconfirmedReset ? 'unknown' : 'known', noEffectiveChange: !unconfirmedReset, storeChanged,
+      storeDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify({ stores: digestStores(stores),
+        platform: options.platform ?? null, preferences: preferenceEvidence })).digest('hex')}`,
+      changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets: [], sharedNativeRenderUnits: [],
+      commandPackages: options.commandDiscovery?.packages ?? [], affectedCommandPackages: [], commandDiscoveryErrors: [],
+      ...(unconfirmedReset ? { referenceWarnings: ['Deployment preferences are unavailable. Reset will clear the selected layer without checking active configuration references.'] } : {}) };
+  }
+  const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({ ...options,
+    env: options.env ?? process.env, platformTargets: options.visibleTargets });
   const visibleTargets = options.visibleTargets.filter((target) => (!options.platform || target.platform === options.platform)
-    && (options.scope === 'project' || target.scope === 'user'));
+    && (options.scope === 'project' || target.scope === 'user')
+    && preferences.state === 'valid' && preferences.value.targets.includes(target.platform)
+    && !preferences.value.exclusions.some((entry) => entry.target === target.platform
+      && entry.plugin === (target.pluginId ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${target.pluginName}` : target.pluginName))));
   const selectedCommands = { ...commands, packages: commands.packages.filter((target) => !options.platform
     || target.runtimeConfigKeys.length > 0) };
   let plugins: PluginMeta[];
   let currentReferences: unknown;
   try {
-    plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.referencePlugins });
-    const profiles = plugins.flatMap((plugin) => (options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS])
+    plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.referencePlugins, preferences });
+    const profiles = plugins.flatMap((plugin) => configValidationProfiles(plugin, preferences)
+      .filter((platform) => !options.platform || platform === options.platform)
       .map((platform) => ({ pluginName: plugin.manifest.name, scope: options.scope, platform })));
     currentReferences = await collectPluginConfigReferenceEvidence({ plugin: options.plugin, plugins,
       profiles, cwd: options.cwd, env: options.env });
@@ -333,7 +361,7 @@ export async function analyzePluginConfigMutationImpact(options: {
     currentReferences = { sourceUnavailable: true };
   }
   const currentStoreDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({ stores: digestStores(stores),
-    platform: options.platform ?? null, references: currentReferences })).digest('hex')}`;
+    platform: options.platform ?? null, preferences: preferenceEvidence, references: currentReferences })).digest('hex')}`;
   if (!schema || user.state === 'invalid') return { ...unknownImpact({ ...options, commands: selectedCommands, stores,
     visibleTargets, storeChanged, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, plugins }), storeDigest: currentStoreDigest };
   if (!storeChanged) return { impactState: commands.errors.length ? 'unknown' : 'known', noEffectiveChange: true,
@@ -345,7 +373,7 @@ export async function analyzePluginConfigMutationImpact(options: {
     for (const [key, value] of Object.entries(updates)) values[key] = value;
   }
   const afterStores = { user: replacePluginConfigStoreLayer(user, values, options.platform) };
-  const referenceImpact = await analyzePluginConfigReferenceMutation({ ...options, plugins: options.referencePlugins,
+  const referenceImpact = await analyzePluginConfigReferenceMutation({ ...options, plugins: options.referencePlugins, preferences,
     beforeStores: stores, afterStores });
   const referenceWarnings: string[] = [];
   const resolved = new Map<string, { before: ResolvedEffectivePluginConfig; after: ResolvedEffectivePluginConfig }>();
@@ -372,6 +400,7 @@ export async function analyzePluginConfigMutationImpact(options: {
     for (const target of dedupeTargets(visibleTargets)) {
       const plugin = allPlugins.get(target.pluginName);
       if (!plugin?.manifest.config) continue;
+      if (!configValidationProfiles(plugin, preferences).includes(target.platform)) continue;
       const pair = await consumerPair(target.pluginName, target.platform);
       let affected = !pair?.before || !pair.after;
       if (pair?.before && pair.after && (plugin.manifest.scripts?.preApply || plugin.manifest.dependencies?.length)) {
@@ -390,6 +419,7 @@ export async function analyzePluginConfigMutationImpact(options: {
       if (!plugin?.manifest.config) continue;
       const command = plugin.manifest.command;
       const matches = async (keys: string[], platform?: PlatformTarget) => {
+        if (!configValidationProfiles(plugin, preferences).includes(platform)) return false;
         const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
         const declared = keys.filter((key) => Object.hasOwn(definition.fields, key));
         if (declared.length === 0) return false;
@@ -401,24 +431,20 @@ export async function analyzePluginConfigMutationImpact(options: {
       const runtimeChanged = options.platform
         ? options.platform !== 'generic' && (command?.platforms.includes(options.platform) ?? target.runtimeConfigPlatforms.includes(options.platform)) && await matches(target.runtimeConfigKeys, options.platform)
         : await matches(target.runtimeConfigKeys)
-          || (target.producer.pluginName === options.plugin.manifest.name && target.runtimeConfigPlatforms.some((platform) => {
-            const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
-            const keys = target.runtimeConfigKeys.filter((key) => Object.hasOwn(definition.fields, key));
-            return getPluginConfigDependencyKeys(definition, keys).some((key) => changedKeys.includes(key));
-          }))
           || (await Promise.all(target.runtimeConfigPlatforms.map((platform) => matches(target.runtimeConfigKeys, platform)))).some(Boolean);
       if (routesChanged || runtimeChanged) affectedCommandPackages.push(target);
       if (routesChanged) for (const visible of visibleTargets) {
-        if (visible.pluginName === target.producer.pluginName && command?.platforms.includes(visible.platform)) affectedTargets.push(visible);
+        if (visible.pluginName === target.producer.pluginName && command?.platforms.includes(visible.platform)
+          && configValidationProfiles(plugin, preferences).includes(visible.platform)) affectedTargets.push(visible);
       }
     }
-    // Common edits bind every supported profile even when no installed output currently consumes it.
-    for (const platform of options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS]) {
+    // Common edits bind every active profile even when no installed output currently consumes it.
+    for (const platform of profiles) {
       try { await resolveProfile(platform); }
       catch { referenceWarnings.push(`${platform ?? 'common'} configuration reference impact is unknown.`); }
     }
     const storeDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({ stores: digestStores(stores),
-      platform: options.platform ?? null, references: currentReferences, mutationReferences: referenceImpact.evidence })).digest('hex')}`;
+      platform: options.platform ?? null, preferences: preferenceEvidence, references: currentReferences, mutationReferences: referenceImpact.evidence })).digest('hex')}`;
     return { impactState: commands.errors.length || referenceWarnings.length ? 'unknown' : 'known',
       noEffectiveChange: !affectedTargets.length && !affectedCommandPackages.length && !commands.errors.length,
       storeChanged, storeDigest, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets: dedupeTargets(affectedTargets),

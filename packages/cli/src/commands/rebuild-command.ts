@@ -36,6 +36,8 @@ import type {
 } from '../types.js';
 import { getCodexOperationRequirement, probeAgentVersion } from '../utils/agent-version.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { configIssueDiagnostic, configReadDiagnostic } from '../utils/plugin-config-diagnostics.js';
+import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import {
   catalogGenerationErrorCode,
@@ -3657,6 +3659,7 @@ async function runRebuildCommandInSession(
           action: 'install' | 'reinstall' | 'keep' | 'block';
           order: number;
           errorCode?: string;
+          configDiagnostic?: RecoveryDiagnostic;
         }> = [];
         const placementNodes: DependencyPlacementNodeInput[] = [];
         const blockingTargets = new Map<string, string>();
@@ -3850,6 +3853,7 @@ async function runRebuildCommandInSession(
               : requestedMethod === 'reinstall' ? 'reinstall' : 'install'
             : requestedMethod === 'reinstall' ? 'reinstall' : 'install';
           let errorCode: string | undefined;
+          let configDiagnostic: RecoveryDiagnostic | undefined;
           // Grok rules can be complete with an empty native package slot. Let
           // component preparation determine whether the current source needs a package.
           const grokRulesWithoutPackage = platform === 'grok' && requestedMethod === 'sync'
@@ -3950,25 +3954,32 @@ async function runRebuildCommandInSession(
             target.pluginId === entry.pluginId && target.platforms.includes(platform))?.blocker;
           if (!configPackageBlocker
             && !planOptions?.skipConfigValidation
-            && entry.plugin.manifest.config?.fields
+            && entry.plugin.manifest.config
             && (action === 'install' || action === 'reinstall')) {
-            const configs = await Promise.all(pluginConfigTargetRenderScopes(entry.plugin, {
-              pluginName: entry.plugin.manifest.name, platform, scope: resolvedScope,
-            }).map((scope) => resolveArtifactRenderConfig({
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              logicalIdentity: entry.source.logicalIdentity,
-              pluginName: entry.plugin.manifest.name,
-              manifest: entry.plugin.manifest,
-              referencePlugins: options.runtime?.referencePlugins,
-              scope,
-              platform,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-            })));
-            if (configs.some((effective) => effective.issues.length > 0)) {
+            try {
+              const configs = await Promise.all(pluginConfigTargetRenderScopes(entry.plugin, {
+                pluginName: entry.plugin.manifest.name, platform, scope: resolvedScope,
+              }).map((scope) => resolveArtifactRenderConfig({
+                sourceId: entry.source.sourceId,
+                sourceIdentity: entry.source.sourceIdentity,
+                logicalIdentity: entry.source.logicalIdentity,
+                pluginName: entry.plugin.manifest.name,
+                manifest: entry.plugin.manifest,
+                referencePlugins: options.runtime?.referencePlugins,
+                scope,
+                platform,
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+              })));
+              configDiagnostic = configIssueDiagnostic(configs.flatMap((effective) => effective.issues), 'invalidConfig');
+            } catch (error) {
+              executionContext.signal?.throwIfAborted();
+              configDiagnostic = configReadDiagnostic(error, 'invalidConfig');
+            }
+            if (configDiagnostic) {
               action = 'block';
-              errorCode = 'invalidConfig';
+              errorCode = configDiagnostic.code;
+              configDiagnostic.subject = { pluginId: entry.pluginId, target: platform, scope: resolvedScope };
             }
           }
           if (dependencyEnabled
@@ -4006,6 +4017,7 @@ async function runRebuildCommandInSession(
             action,
             order,
             ...(errorCode ? { errorCode } : {}),
+            ...(configDiagnostic?.code === errorCode ? { configDiagnostic } : {}),
           });
         }
         if (dependencyEnabled) {

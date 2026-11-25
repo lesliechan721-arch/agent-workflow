@@ -1607,7 +1607,7 @@ describe('codex-workflow raw rollout normalization', () => {
           type: 'item_completed',
           item: {
             type: 'CommandExecution', id: 'cmd-1',
-            command: 'sed -n 1,20p .agents/skills/codex-explore/SKILL.md',
+            command: 'sed -n 1,20p .agents/skills/explore-facts/SKILL.md',
             exit_code: 0, status: 'completed',
           },
         },
@@ -1692,7 +1692,7 @@ describe('codex-workflow raw rollout normalization', () => {
     ])
     expect(normalized.skillLoads).toEqual([
       { threadId: 'root', skill: 'decision-prototype', callId: null },
-      expect.objectContaining({ threadId: 'root', skill: 'codex-explore' }),
+      expect.objectContaining({ threadId: 'root', skill: 'explore-facts' }),
     ])
     expect(JSON.stringify(normalized.trace)).not.toContain('developer full text')
     expect(JSON.stringify(normalized.trace)).toContain('child prompt')

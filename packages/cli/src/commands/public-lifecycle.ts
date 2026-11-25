@@ -27,6 +27,7 @@ import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js'
 import { additionalPermissionEffects, deploymentConfirmationEffects, relatedProjectPermissionEffects, restorationEffects } from './deployment-confirmation.js';
 import { HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import type { OperationAction } from './operation-plan.js';
+import { isInstallConfigBlocked } from '../utils/plugin-config-diagnostics.js';
 
 export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
@@ -410,7 +411,16 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
       } else {
         preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, { ...runtime, catalogReadScope });
         reviewedRoots = preview.joint?.demand.roots;
-        if (preview.blockExecution) { const result = receiptResult(id, data, preview.receipt); await preview.context.dispose(); return withSourceFailures(result); }
+        if (preview.blockExecution) {
+          const result = receiptResult(id, data, preview.receipt);
+          if (isInstallConfigBlocked(preview.receipt)) for (const candidate of candidates) {
+            if (candidate.previousActive) continue;
+            result.nextActions.unshift({ kind: 'command', argv: ['aw', 'source', 'sync', candidate.sourceId],
+              reason: 'Activate the source explicitly before configuring the plugin.', requiresConfirmation: true });
+          }
+          await preview.context.dispose();
+          return withSourceFailures(result);
+        }
         if (!confirm([...effectsForPlan(preview, candidates.map((candidate) => candidate.sourceId)), ...sourceEffects])) {
           const result = confirmationRequired(preview.receipt);
           await preview.context.dispose();

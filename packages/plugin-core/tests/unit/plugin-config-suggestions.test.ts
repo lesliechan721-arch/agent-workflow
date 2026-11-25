@@ -36,8 +36,8 @@ describe('Config v5 dynamic suggestion declarations', () => {
       } } } },
     }, { scripts, dependencies: ['suggestion-provider'] }))
     assertPluginConfigSuggestionProviders(consumer.manifest, [consumer, provider])
-    expect(deriveAwCapabilitiesFromManifest(provider.manifest)).toContain('aw.plugin-config-suggestions.v1')
-    expect(deriveAwCapabilitiesFromManifest(consumer.manifest)).toContain('aw.plugin-config-suggestions.v1')
+    expect(deriveAwCapabilitiesFromManifest(provider.manifest)).toContain('aw.plugin-config-suggestions.v2')
+    expect(deriveAwCapabilitiesFromManifest(consumer.manifest)).toContain('aw.plugin-config-suggestions.v2')
     const config = selectPluginConfigProfile(consumer.manifest.config!)
     expect(config.fields.commands).toMatchObject({ items: { properties: { models: { items: { properties: {
       model: { suggestions: { provider: 'executor-models', dependsOn: ['executor'] } },
@@ -56,7 +56,7 @@ describe('Config v5 dynamic suggestion declarations', () => {
       .toThrow(/same-source dependency "suggestion-provider"/u)
     const provider = view(manifest('suggestion-provider', {}, { scripts, config: undefined }))
     expect(() => assertPluginConfigSuggestionProviders(consumer.manifest, [consumer, provider])).not.toThrow()
-    expect(deriveAwCapabilitiesFromManifest(consumer.manifest)).toContain('aw.plugin-config-suggestions.v1')
+    expect(deriveAwCapabilitiesFromManifest(consumer.manifest)).toContain('aw.plugin-config-suggestions.v2')
   })
 
   it('rejects invalid scalar placements, dependencies and provider declarations during manifest validation', () => {

@@ -9,6 +9,7 @@ import { normalizeAgents, observePreferences, resetTargets, setAgents,
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
+import type { GuidedConfigTarget } from './guided-setup.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
   recoverySummaryErrors, userSkillProviderRepairs, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
@@ -37,7 +38,7 @@ export interface IntentPlan {
   changes: string[]; warnings: string[];
 }
 
-export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan }
+export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan; skippedConfigTargets?: GuidedConfigTarget[] }
   | { kind: 'retire'; scope: Scope; plan: RetirePlan } | TargetsPlan | IntentPlan;
 
 function nativePermissionCodes(target: RecoveryTarget): string[] {

@@ -3,6 +3,7 @@ import path from 'node:path'
 import fs from 'fs-extra'
 
 import { getPluginConfigSuggestions, normalizePluginConfigDefinition } from './plugin-config.js'
+import { getConfigSourceFacts } from './plugin-config-source-facts.js'
 import {
   computeAwCapabilitySetDigest,
   normalizeAwCapabilities,
@@ -57,9 +58,13 @@ export function deriveAwCapabilitiesFromManifest(
     if (manifest.config.schemaVersion === 4 || manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v4')
     if (manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v5')
     const definition = normalizePluginConfigDefinition(manifest.config)
-    if (getPluginConfigSuggestions(definition, manifest.config).length > 0) capabilities.push('aw.plugin-config-suggestions.v1')
+    if (getPluginConfigSuggestions(definition, manifest.config).length > 0) capabilities.push('aw.plugin-config-suggestions.v2')
     const profiles = definition.schemaVersion === 5 ? Object.values(definition.platforms ?? {}) : []
     const configFields: PluginConfigSchemaField[] = [definition, ...profiles].flatMap((profile) => Object.values(profile.fields))
+    if (configFields.some((field) => field.platformOnly === true)) capabilities.push('aw.plugin-config-platform-only.v1')
+    const sourceFacts = getConfigSourceFacts(definition)
+    if (sourceFacts?.hasRefOverride) capabilities.push('aw.plugin-config-ref-override.v1')
+    if (sourceFacts?.hasClearsOnChange) capabilities.push('aw.plugin-config-clears-on-change.v1')
     const hasArray = (field: PluginConfigSchemaField, uniqueBy = false): boolean => {
       if (field.type === 'array') {
         return !uniqueBy || field.validation?.uniqueBy !== undefined || hasArray(field.items, uniqueBy)
@@ -102,7 +107,7 @@ export function deriveAwCapabilitiesFromManifest(
     capabilities.push('aw.managed-commands.v2', 'aw.claude.sandbox-exclusions.v1')
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
-  if (manifest.scripts?.config?.suggestions) capabilities.push('aw.plugin-config-suggestions.v1')
+  if (manifest.scripts?.config?.suggestions) capabilities.push('aw.plugin-config-suggestions.v2')
   if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v2')
   if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
@@ -150,7 +155,7 @@ function commandCapabilities(group: string, command: string | undefined, tail: s
     && ['get', 'schema', 'set', 'unset', 'reset', 'apply'].includes(subcommand)) {
     capability = 'aw.plugin-config.v2'
   } else if (group === 'plugin' && command === 'config' && subcommand === 'suggestions') {
-    capability = 'aw.plugin-config-suggestions.v1'
+    capability = 'aw.plugin-config-suggestions.v2'
   } else if (group === 'command'
     && (['list', 'show', 'install', 'update', 'remove', 'run'].includes(command)
       || command === 'package' && ['sync', 'remove'].includes(subcommand))) {

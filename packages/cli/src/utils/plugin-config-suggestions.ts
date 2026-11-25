@@ -14,6 +14,8 @@ import {
   type PluginConfigSuggestionsDeclaration,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
+import { observePreferences } from '../intent/deployment-preferences.js';
+import { assertConfigLayerWritable } from './config-platforms.js';
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { PlatformTarget, PluginConfigValue, PluginMeta, Scope } from '../types.js';
 import { readPluginManifest } from './manifest.js';
@@ -28,10 +30,11 @@ import {
   resolveEffectivePluginConfigFromStores,
   type PluginConfigStore,
 } from './plugin-config.js';
-import { projectConfigSuggestionsResponse, runPluginConfigSuggestions, type ConfigSuggestionsRequestV1, type ConfigSuggestionsResponseV1 } from './plugin-config-suggestion-runner.js';
+import { projectConfigSuggestionsResponse, runPluginConfigSuggestions, type ConfigSuggestionsRequestV2, type ConfigSuggestionsResponseV2, type ObjectSuggestionPatch } from './plugin-config-suggestion-runner.js';
 import { collectSensitivePluginConfigValues } from './plugin-scripts.js';
 
-export type { ConfigSuggestionsResponseV1 } from './plugin-config-suggestion-runner.js';
+export type { ConfigSuggestionsResponseV2, ConfigSuggestionItemV2, ScalarSuggestionItemV2,
+  ObjectSuggestionItemV2, ObjectSuggestionChildItemV2, ObjectSuggestionPatch } from './plugin-config-suggestion-runner.js';
 
 type ConfigValues = Record<string, PluginConfigValue>;
 type FieldPath = Array<string | number>;
@@ -119,7 +122,10 @@ async function readConfig(plugin: PluginMeta, options: ConfigReadOptions & { pro
   if (!manifest.config) return { values: {}, providerValues: {}, sensitiveValues: [] };
   const { platform } = options;
   const schema: Record<string, PluginConfigSchemaField> = selectPluginConfigProfile(manifest.config, platform).fields;
-  const commonSchema: Record<string, PluginConfigSchemaField> = platform ? selectPluginConfigProfile(manifest.config).fields : schema;
+  const commonSchema: Record<string, PluginConfigSchemaField> = platform
+    ? Object.fromEntries(Object.entries(selectPluginConfigProfile(manifest.config).fields)
+      .filter(([key]) => schema[key] && !schema[key]!.platformOnly))
+    : schema;
   const identity = { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
     logicalIdentity: plugin.catalogLogicalIdentity, pluginName: manifest.name };
   const store = await readPluginConfigStore({ ...options, ...identity, scope: 'user' }).catch(() => undefined);
@@ -227,8 +233,14 @@ function resolveSuggestionField(
       field = undefined;
     }
   }
-  if (!field || field.type === 'array' || field.type === 'object' || field.sensitive || !field.suggestions) {
+  if (!field || field.type === 'array' || field.sensitive || !field.suggestions) {
     throw new ConfigSuggestionArgumentError('The selected field does not declare dynamic suggestions.');
+  }
+  if (field.type === 'object') {
+    siblings = liveSiblings ?? valueRecord(value);
+    const discriminator = field.variants?.discriminator;
+    if (discriminator && overrides.has(discriminator)) siblings = { ...siblings, [discriminator]: overrides.get(discriminator)! };
+    properties = resolvePluginConfigObjectProperties(field, siblings).properties;
   }
   const declaration: PluginConfigSuggestionsDeclaration = field.suggestions;
   const dependsOn = declaration.dependsOn ?? [];
@@ -248,19 +260,23 @@ function resolveSuggestionField(
       dependencyValues[key] = candidate;
     }
   }
-  return { field, declaration, dependencyValues, fieldPath: resolvedPath };
+  const targets = field.type === 'object' ? field.suggestions.targets.filter((key) => ownValue(properties, key)) : undefined;
+  return { field, declaration, dependencyValues, fieldPath: resolvedPath, properties, targets };
 }
 
 export interface PreparedConfigSuggestions {
-  cacheKey: string;
+  kind: ConfigSuggestionsRequestV2['kind'];
+  hint?: string;
+  sharedCacheKey: string;
+  hintCacheKey: string;
   pluginId: string;
   providerPluginId: string;
   provider: string;
-  profile: ConfigSuggestionsRequestV1['profile'];
+  profile: ConfigSuggestionsRequestV2['profile'];
   fieldPath: FieldPath;
-  /** Reapply current redaction and finalize candidates for the selected field. */
-  project(response: ConfigSuggestionsResponseV1, target?: 'field' | 'cache'): ConfigSuggestionsResponseV1;
-  run(signal?: AbortSignal): Promise<ConfigSuggestionsResponseV1>;
+  /** Cache mode keeps schema-independent candidates; field mode validates and selects the current recommendation. */
+  project(response: ConfigSuggestionsResponseV2, target?: 'field' | 'cache'): ConfigSuggestionsResponseV2;
+  run(signal?: AbortSignal): Promise<ConfigSuggestionsResponseV2>;
 }
 
 /** Prepare inside the Active Catalog lease that supplied the consumer bundle. */
@@ -274,6 +290,11 @@ export async function preparePluginConfigSuggestions(options: ConfigReadOptions 
 }): Promise<PreparedConfigSuggestions> {
   const { plugin, platform, signal } = options;
   signal?.throwIfAborted();
+  if (!plugin.sourceId || !plugin.sourceIdentity) throw new Error('The plugin Catalog source is unavailable.');
+  const pluginId = formatPluginId({ sourceId: plugin.sourceId, pluginName: plugin.manifest.name });
+  assertConfigLayerWritable(pluginId, plugin.manifest, await observePreferences({
+    scope: 'user', cwd: options.cwd, env: options.env,
+  }), platform);
   assertFieldPath(options.fieldPath);
   const fields: Record<string, PluginConfigSchemaField> = plugin.manifest.config
     ? selectPluginConfigProfile(plugin.manifest.config, platform).fields : {};
@@ -286,10 +307,8 @@ export async function preparePluginConfigSuggestions(options: ConfigReadOptions 
   const consumerConfig = await readConfig(plugin, readOptions, options);
   // A working object can select a valid branch before all of its required properties are filled.
   const fieldValues = layerValues(consumerConfig.values, options.draftValues ?? {}, options.draftRemoves);
-  const { field, declaration, dependencyValues, fieldPath } = resolveSuggestionField(fields, options.fieldPath,
+  const { field, declaration, dependencyValues, fieldPath, properties, targets } = resolveSuggestionField(fields, options.fieldPath,
     fieldValues, options.dependencyOverrides ?? new Map(), options.dependencyValues);
-  if (!plugin.sourceId || !plugin.sourceIdentity) throw new Error('The plugin Catalog source is unavailable.');
-  const pluginId = formatPluginId({ sourceId: plugin.sourceId, pluginName: plugin.manifest.name });
   let provider = plugin;
   if (declaration.plugin) {
     if (!plugin.manifest.dependencies?.includes(declaration.plugin)) throw new Error('The suggestion provider is unavailable.');
@@ -305,23 +324,35 @@ export async function preparePluginConfigSuggestions(options: ConfigReadOptions 
   if (!script) throw new Error('The suggestion provider script is unavailable.');
   const providerConfig = provider === plugin ? consumerConfig : await readConfig(provider, readOptions);
   signal?.throwIfAborted();
-  const request: ConfigSuggestionsRequestV1 = {
-    schemaVersion: 1, provider: declaration.provider,
+  const request: ConfigSuggestionsRequestV2 = {
+    schemaVersion: 2, provider: declaration.provider,
+    ...(targets === undefined ? { kind: 'scalar' as const } : { kind: 'object' as const, targets }),
+    ...(declaration.hint === undefined ? {} : { hint: declaration.hint }),
     ...(platform === undefined ? {} : { platform }), profile: platform ?? 'common',
     consumer: { pluginId, name: plugin.manifest.name, version: plugin.manifest.version },
     providerPlugin: { pluginId: providerPluginId, name: provider.manifest.name, version: provider.manifest.version, rootDir: provider.rootDir },
     fieldPath, dependencyValues, providerConfigValues: providerConfig.providerValues, cwd,
   };
   const providerConfigDigest = createHash('sha256').update(canonicalizeIdentityValue(request.providerConfigValues)).digest('hex');
-  const cacheKey = canonicalizeIdentityValue({
+  const cacheIdentity = {
     sourceIdentity: plugin.sourceIdentity, providerPluginId, providerVersion: provider.manifest.version,
-    provider: request.provider, platform: request.profile, dependencyValues, providerConfigDigest,
-  });
+    provider: request.provider, platform: request.profile, kind: request.kind, ...(targets === undefined ? {} : { targets }), dependencyValues, providerConfigDigest,
+  };
+  const sharedCacheKey = canonicalizeIdentityValue(cacheIdentity);
+  const hintCacheKey = canonicalizeIdentityValue({ ...cacheIdentity, hint: request.hint ?? null });
   const sensitiveValues = [...new Set([...consumerConfig.sensitiveValues, ...providerConfig.sensitiveValues])];
   return {
-    cacheKey, pluginId, providerPluginId, provider: request.provider, profile: request.profile, fieldPath,
-    project: (response, target = 'field') => projectConfigSuggestionsResponse(response, sensitiveValues,
-      target === 'field' ? (value) => validatePluginConfigValue(field, value).length === 0 : undefined),
+    kind: request.kind, hint: request.hint, sharedCacheKey, hintCacheKey,
+    pluginId, providerPluginId, provider: request.provider, profile: request.profile, fieldPath,
+    project: (response, target = 'field') => projectConfigSuggestionsResponse(response, sensitiveValues, {
+      kind: request.kind, targets, hint: request.hint, mode: target,
+      ...(target === 'field' ? {
+        isValidValue: (value) => validatePluginConfigValue(field, value).length === 0,
+        isValidPatch: (patch: ObjectSuggestionPatch) => Object.entries(patch.set ?? {}).every(([key, value]) =>
+          !!ownValue(properties, key) && validatePluginConfigValue(properties[key]!, value).length === 0)
+          && (patch.unset ?? []).every((key) => !!ownValue(properties, key) && properties[key]!.required !== true),
+      } : {}),
+    }),
     run: (runSignal = signal) => runPluginConfigSuggestions({
       request, entry: script.path, env: options.env ?? process.env, timeoutMs: options.timeoutMs ?? script.timeoutMs,
       signal: runSignal, sensitiveValues,

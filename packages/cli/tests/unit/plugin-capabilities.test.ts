@@ -98,6 +98,20 @@ describe('plugin capabilities command', () => {
     ]));
   });
 
+  it('exposes independently gated v5 field declarations on the config surface', async () => {
+    const output = capture();
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'config', '--json'], { io: output.io })).toBe(0);
+    const entries = JSON.parse(output.stdout()).data.capabilities.config;
+    for (const [field, capability] of [
+      ['platformOnly', 'aw.plugin-config-platform-only.v1'],
+      ['properties.<property>.clearsOnChange', 'aw.plugin-config-clears-on-change.v1'],
+      ['$ref', 'aw.plugin-config-ref-override.v1'],
+      ['suggestions', 'aw.plugin-config-suggestions.v2'],
+    ]) {
+      expect(entries).toContainEqual(expect.objectContaining({ field: `config.fields.<key>.${field}`, requires: expect.stringContaining(capability) }));
+    }
+  });
+
   it('renders a compact human view', async () => {
     const output = capture();
     expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'pre-apply'], {

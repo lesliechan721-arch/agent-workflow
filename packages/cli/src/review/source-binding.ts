@@ -31,6 +31,7 @@ import {
 } from '../eval/manifest-v1.js'
 import type { CatalogSourceResolution, PluginMeta, Scope } from '../types.js'
 import { resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js'
+import { configIssueDiagnostic, configStatusDiagnostics, configReadDiagnostic, PluginConfigDiagnosticError } from '../utils/plugin-config-diagnostics.js'
 import { getProfileRenderScopes } from '../platforms/layout.js'
 import { getQualifiedPlatformProfile, toPlatformCapabilitiesView } from '../platforms/capabilities.js'
 import { artifactValueDigest } from '../utils/artifact-plan.js'
@@ -626,6 +627,8 @@ export async function resolvePortablePluginProfileConfig(options: {
     }
     return { config, digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), values: config.values, sources: config.sources }) }
   }
+  const sourceId = options.sourceId ?? options.plugin.sourceId
+  const subject = { pluginId: options.plugin.pluginId ?? (sourceId ? `${sourceId}/${options.plugin.manifest.name}` : options.plugin.manifest.name), target: options.platform, scope: options.scope }
   const config = await resolveArtifactRenderConfig({
     referencePlugins: options.plugins,
     sourceId: options.sourceId ?? options.plugin.sourceId,
@@ -637,10 +640,10 @@ export async function resolvePortablePluginProfileConfig(options: {
     scope: options.scope,
     cwd: options.cwd,
     env: options.env,
-  })
-  if (config.issues.length > 0) {
-    throw new Error(`Portable materialization config is invalid: ${config.issues.map((issue) => issue.message).join('; ')}`)
-  }
+  }).catch((error: unknown) => { throw new PluginConfigDiagnosticError({ ...configReadDiagnostic(error), subject }) })
+  const blocker = configIssueDiagnostic(config.issues)
+  if (blocker) throw new PluginConfigDiagnosticError({ ...blocker, subject },
+    configStatusDiagnostics(config.issues).map((diagnostic) => ({ ...diagnostic, subject })))
   return {
     config,
     digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope, { portable: true }), values: config.values, sources: config.sources }),

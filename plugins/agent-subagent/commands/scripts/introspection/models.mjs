@@ -9,7 +9,8 @@ import { managedCommandInvocation, managedLaunch, validateCommandHost, validateC
 import { runBuiltinIntrospection } from './builtin.mjs';
 import { INTROSPECTION_TIMEOUT_MS, resolveProbeExecutable, runProbeProcess } from './process.mjs';
 import { boundedText, isIntrospectionResponse, validEfforts } from './protocol.mjs';
-import { presentIntrospectionFrame, presentModel, executorPresentation, supportedDefaultEffort } from './presentation.mjs';
+import { presentIntrospectionFrame, presentModel, executorPresentation, supportedDefaultEffort,
+  effectiveModelEfforts, effortSupport } from './presentation.mjs';
 
 const builtinAdapters = new Set(['codex', 'claude-code', 'antigravity']);
 const diagnostic = (code, message) => ({ code, message });
@@ -21,12 +22,14 @@ export function validateConfiguredModels(executor) {
     fail('executorInvalid', 'Update the executor to the current adapter configuration and sync.', ['config', 'sync']);
   }
   const { models = [], modelsPolicy = 'merge' } = executor;
-  if (!Array.isArray(models) || models.length > 64 || models.some((m) => !fields(m, ['id', 'description', 'efforts', 'default'])
+  if (!Array.isArray(models) || models.length > 64 || models.some((m) => !fields(m, ['id', 'description', 'efforts', 'default', 'defaultEffort'])
     || !identifier(m.id) || m.description !== undefined && !boundedText(m.description, 512)
-    || m.efforts !== undefined && !validEfforts(m.efforts) || m.default !== undefined && typeof m.default !== 'boolean')
+    || m.efforts !== undefined && !validEfforts(m.efforts) || m.default !== undefined && typeof m.default !== 'boolean'
+    || m.defaultEffort !== undefined && (!identifier(m.defaultEffort) || !boundedText(m.defaultEffort, 64)
+      || Array.isArray(m.efforts) && !m.efforts.includes(m.defaultEffort)))
     || new Set(models.map((m) => m.id)).size !== models.length || models.filter((m) => m.default).length > 1
     || !['override', 'merge'].includes(modelsPolicy)) {
-    fail('executorInvalid', 'Configure unique model IDs and at most one default model.');
+    fail('executorInvalid', 'Configure unique model IDs, at most one default model, and a defaultEffort compatible with any explicit efforts list.');
   }
 }
 
@@ -58,15 +61,18 @@ async function probeExecutor(executor, workspace, environment, hostEnvironment, 
   return JSON.parse(result.stdout);
 }
 
+export function hasModelOverride(executor) {
+  return executor.modelsPolicy === 'override' && executor.models?.length > 0;
+}
+
 export async function introspectExecutor(executor, {
   workspace = process.cwd(), env = process.env, probe = probeExecutor, containment, signal, commandHost,
   timeoutMs = INTROSPECTION_TIMEOUT_MS,
 } = {}) {
   validateConfiguredModels(executor);
   const configured = executor.models ?? [];
-  const locked = executor.modelsPolicy === 'override' && configured.length > 0;
   let frame, failure, environment = 'skipped';
-  if (!locked) {
+  if (!hasModelOverride(executor)) {
     try {
       const prepared = resolveAdapterEnvironment(env, executor);
       const childEnv = Object.fromEntries(Object.entries(prepared.environment).filter(([key]) => !/^AW_(NATIVE|COMMAND|PLUGIN|SUBAGENT)_/i.test(key)));
@@ -100,18 +106,27 @@ export async function introspectExecutor(executor, {
   const safeFrame = frame && presentIntrospectionFrame(frame, presentation);
   const dynamic = environment === 'available' ? safeFrame : undefined;
   const models = new Map((dynamic?.models ?? []).map((model) => [model.id, model]));
+  const supportedEfforts = dynamic?.supportedEfforts;
+  const configuredDiagnostics = [];
   let defaultModel = dynamic?.defaultModel;
   let merged = false;
   for (const configuredModel of configured) {
     const model = presentModel(configuredModel, presentation);
     if (!model) continue;
-    const { id, description, efforts } = model;
+    const { id, description, efforts, defaultEffort } = model;
     const existing = models.get(id);
+    const allowedEfforts = effectiveModelEfforts(Array.isArray(efforts) ? model : existing, supportedEfforts);
+    if (defaultEffort && !supportedDefaultEffort(defaultEffort, allowedEfforts)) {
+      delete model.defaultEffort;
+      configuredDiagnostics.push({ ...diagnostic('introspectionDefaultEffortUnsupported',
+        'A configured defaultEffort is not in the effective model efforts and was ignored.'), severity: 'warning' });
+    }
     if (!existing) {
       models.set(id, { ...model, origin: 'configured' });
       merged = true;
     } else {
-      const overlaid = { ...existing, ...(description && { description }), ...(efforts?.length && { efforts }) };
+      const overlaid = { ...existing, ...(description && { description }), ...(Array.isArray(efforts) && { efforts }),
+        ...(model.defaultEffort && { defaultEffort: model.defaultEffort }) };
       merged ||= !isDeepStrictEqual(existing, overlaid);
       models.set(id, overlaid);
     }
@@ -120,11 +135,12 @@ export async function introspectExecutor(executor, {
       defaultModel = id;
     }
   }
-  const supportedEfforts = dynamic?.supportedEfforts;
   for (const model of models.values()) {
     if (model.id === defaultModel) model.isDefault = true;
     else delete model.isDefault;
-    if (!supportedDefaultEffort(model.defaultEffort, model.efforts?.length ? model.efforts : supportedEfforts)) delete model.defaultEffort;
+    const effectiveEfforts = effectiveModelEfforts(model, supportedEfforts);
+    model.effortSupport = effortSupport(effectiveEfforts);
+    if (!supportedDefaultEffort(model.defaultEffort, effectiveEfforts)) delete model.defaultEffort;
   }
   let diagnostics = safeFrame?.diagnostics ?? [];
   if (failure) {
@@ -136,9 +152,10 @@ export async function introspectExecutor(executor, {
   if (!models.size && environment !== 'unavailable') {
     diagnostics.splice(failure ? 1 : 0, 0, diagnostic('introspectionNoModels', fallback));
   }
+  diagnostics.push(...configuredDiagnostics);
   const defaultEffort = models.get(defaultModel)?.defaultEffort ?? (defaultModel === undefined ? dynamic?.defaultEffort : undefined);
   return { executor: presentation.display(executor.key), adapter: executor.adapter,
-    source: !models.size ? 'unavailable' : !dynamic ? 'configured' : merged ? 'merged' : 'dynamic',
+    source: !models.size ? 'unavailable' : !dynamic?.models?.length ? 'configured' : merged ? 'merged' : 'dynamic',
     environment, ...(executor.description ? { description: presentation.display(executor.description) } : {}),
     ...(defaultModel && { defaultModel }), ...(defaultEffort && { defaultEffort }),
     ...(supportedEfforts && { supportedEfforts }), models: [...models.values()], diagnostics };

@@ -86,9 +86,9 @@ describe('TUI Active Catalog session', () => {
   });
 
   it('reads suggestions from the reloaded Catalog when the provider keeps its version', async () => {
-    const run = vi.fn(async () => ({ schemaVersion: 1 as const, status: 'ok' as const, items: [] }));
+    const run = vi.fn(async () => ({ schemaVersion: 2 as const, status: 'ok' as const, items: [] }));
     const controller = new TuiController(dependencies(async () => ({ payload, pluginSummaries: [] }), {
-      getConfigSuggestions: async (_lookup, use) => use({ cacheKey: 'same-provider', run, project: (response) => response }),
+      getConfigSuggestions: async (_lookup, use) => use({ kind: 'scalar', sharedCacheKey: 'same-provider', hintCacheKey: 'same-provider-hint', run, project: (response) => response }),
     }));
     const lookup = { pluginId: 'local/demo', options: {}, fieldPath: ['model'] };
     const read = () => controller.getConfigSuggestions(lookup, false, new AbortController().signal);

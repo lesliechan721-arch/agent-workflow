@@ -29,7 +29,7 @@
 | `--prompt-file PATH` 或 `--prompt TEXT` | 二选一必填 | 非空 UTF-8 普通文件（≤256 KiB）或文本；不支持 `-` 或 stdin。 |
 | `--workspace DIR` | 可选，默认当前目录 | 工作目录。 |
 | `--instructions-file FILE` | 可选（三态） | **省略**：自动注入中性默认角色（`assets/task-instructions.md`）；**空字符串 `""`**：不注入任何角色指令；**文件路径**：由父侧读取该 UTF-8 普通文件（≤256 KiB）一次并前置拼入外部 prompt，文件缺失或无效时明确报错。 |
-| `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 优先级：`明确要求 > 生效配置 > inspect 选型 > 省略沿用后端默认`；不传空字符串。后端报错拒绝时，若属**配置偏好**且允许回退，改按 `inspect --executor "<key>"` 可用项或省略该参数沿用后端默认重试并说明实际值（不切换执行器）；若属调用方**明确硬要求**被拒，停止并报告缺口。 |
+| `--model MODEL` / `--reasoning-effort EFFORT` | 可选 | 优先级：`明确要求 > 生效配置 > inspect 选型 > 省略沿用后端默认`；不传空字符串；`inspect` 标明 `[efforts=none]`（如已将强度编码于模型 ID 中的变体模型）时勿传 `--reasoning-effort`。后端报错拒绝时，若属**配置偏好**且允许回退，改按 `inspect --executor "<key>"` 可用项或省略该参数沿用后端默认重试并说明实际值（不切换执行器）；若属调用方**明确硬要求**被拒，停止并报告缺口。 |
 | `--name NAME` | 可选，默认自动生成 | 仅展示，可重名；`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。 |
 | `--deadline-ms N` | 可选，默认**无执行期限** | 仅明确要求时设置，单位毫秒。 |
 
@@ -100,4 +100,4 @@
 
 - 操作失败的 `diagnostic` 写 stderr，已读取的任务证据写 stdout；退出码 `0` 完成（含 `timeout` 或读到失败任务）、`1` 操作失败、`2` 参数无效。需要完整诊断时可传 `--diagnostics`。
 - `wait`/`result` 的 stdout+stderr 合计上限 32,768 UTF-8 字节。`wait` 先消费选入回执的消息再输出，`result` 在完整输出成功后消费；已消费的过程消息不保证重放，回执丢失后不能依赖重读恢复，部分消费失败时保留已收到的完整副本。
-- 最终结果在保留期内（默认 24 小时，由 `subagentRetentionHours` 控制）可用 `result` 重读；`runExpired`/`runUnavailable` 时说明缺口，不为取回旧结果重新生成。
+- 最终结果在保留期内（默认 24 小时，以已应用配置为准）可用 `result` 重读；`runExpired`/`runUnavailable` 时说明缺口，不为取回旧结果重新生成。

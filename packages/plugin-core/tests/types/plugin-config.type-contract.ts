@@ -263,3 +263,27 @@ export const compiledConfigRejectsProfiles: import('../../src/types.js').PluginC
   // @ts-expect-error A selected compiled profile has no platform branches.
   platforms: {},
 }
+
+// The normalized field contract distinguishes top-level, scalar property and object suggestion positions.
+export const normalizedCompositeConfig: PluginConfigArrayField = {
+  type: 'array', platformOnly: true,
+  items: { type: 'object', additionalProperties: false, properties: {
+    executor: { type: 'string', clearsOnChange: ['model'] },
+    model: { type: 'string', suggestions: { provider: 'models', hint: 'fast' } },
+  }, suggestions: { provider: 'profiles', hint: 'fast', targets: ['model'], dependsOn: ['executor'] } },
+}
+export const scalarRejectsClearsOnChange: PluginConfigScalarField = {
+  type: 'string',
+  // @ts-expect-error Only scalar properties within fixed objects can clear siblings.
+  clearsOnChange: ['other'],
+}
+export const propertyRejectsPlatformOnly: PluginConfigObjectPropertyField = {
+  type: 'string',
+  // @ts-expect-error Platform-only selection applies to top-level fields.
+  platformOnly: true,
+}
+export const arrayItemRejectsPlatformOnly: PluginConfigArrayField = {
+  type: 'array',
+  // @ts-expect-error Array items cannot select a layer independently of their array field.
+  items: { type: 'string', platformOnly: true },
+}

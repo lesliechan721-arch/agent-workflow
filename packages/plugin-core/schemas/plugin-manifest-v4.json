@@ -112,7 +112,7 @@
             }
           },
           "additionalProperties": {
-            "$ref": "#/$defs/configV5Field"
+            "$ref": "#/$defs/configV5TopLevelField"
           }
         },
         "presentation": {
@@ -5224,6 +5224,19 @@
         },
         "required": {
           "type": "boolean"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "suggestions": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configSuggestionsDeclaration"
+            },
+            {
+              "$ref": "#/$defs/configObjectSuggestionsDeclaration"
+            }
+          ]
         }
       }
     },
@@ -5341,6 +5354,35 @@
         },
         "variants": {
           "$ref": "#/$defs/configV5ObjectVariants"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/configObjectSuggestionsDeclaration"
+        }
+      },
+      "dependentRequired": {
+        "suggestions": [
+          "additionalProperties"
+        ]
+      },
+      "dependentSchemas": {
+        "suggestions": {
+          "properties": {
+            "properties": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "choices": {
+              "type": "object",
+              "properties": {
+                "allowCustom": {
+                  "const": true
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -5389,6 +5431,32 @@
         },
         "variants": {
           "$ref": "#/$defs/configV5ObjectVariants"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/configObjectSuggestionsDeclaration"
+        }
+      },
+      "dependentRequired": {
+        "suggestions": [
+          "additionalProperties"
+        ]
+      },
+      "dependentSchemas": {
+        "suggestions": {
+          "properties": {
+            "properties": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "choices": {
+              "type": "object",
+              "properties": {
+                "allowCustom": {
+                  "const": true
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -5404,7 +5472,7 @@
           "$ref": "#/$defs/configV4ArrayKeyValueObjectItem"
         },
         {
-          "$ref": "#/$defs/configArrayItemReference"
+          "$ref": "#/$defs/configV5ArrayItemReference"
         }
       ]
     },
@@ -5440,6 +5508,9 @@
         },
         "validation": {
           "$ref": "#/$defs/configArrayValidation"
+        },
+        "platformOnly": {
+          "type": "boolean"
         }
       }
     },
@@ -5452,7 +5523,7 @@
           "$ref": "#/$defs/configV5FixedObjectField"
         },
         {
-          "$ref": "#/$defs/configV4KeyValueObjectField"
+          "$ref": "#/$defs/configV5KeyValueObjectField"
         },
         {
           "$ref": "#/$defs/configV5ArrayField"
@@ -5485,6 +5556,10 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "hint": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
         }
       }
     },
@@ -5527,6 +5602,12 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5567,6 +5648,12 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5604,6 +5691,12 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5641,6 +5734,9 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5678,6 +5774,9 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5712,6 +5811,9 @@
         },
         "suggestions": {
           "$ref": "#/$defs/configSuggestionsDeclaration"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
         }
       }
     },
@@ -5721,7 +5823,7 @@
           "$ref": "#/$defs/configV5PlainStringField"
         },
         {
-          "$ref": "#/$defs/configSensitiveStringField"
+          "$ref": "#/$defs/configV5SensitiveStringField"
         },
         {
           "$ref": "#/$defs/configV5NumberField"
@@ -5756,7 +5858,7 @@
           "$ref": "#/$defs/configV4LeafObjectField"
         },
         {
-          "$ref": "#/$defs/configChildReference"
+          "$ref": "#/$defs/configV5ChildReference"
         }
       ]
     },
@@ -9149,6 +9251,212 @@
               "uniqueItems": true
             }
           }
+        }
+      ]
+    },
+    "configSiblingKeys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "configObjectSuggestionsDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "targets"
+      ],
+      "properties": {
+        "plugin": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "dependsOn": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hint": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+        },
+        "targets": {
+          "$ref": "#/$defs/configSiblingKeys"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "configV5KeyValueObjectField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "additionalProperties"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/configScalar"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": false,
+        "choices": {
+          "$ref": "#/$defs/configObjectChoices"
+        },
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/configV4ScalarDynamicField"
+            },
+            {
+              "$ref": "#/$defs/configDynamicReference"
+            }
+          ]
+        },
+        "validation": {
+          "$ref": "#/$defs/configObjectValidation"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configV5SensitiveStringField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sensitive"
+      ],
+      "properties": {
+        "type": {
+          "const": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": true
+        },
+        "validation": {
+          "$ref": "#/$defs/configStringValidation"
+        },
+        "platformOnly": {
+          "type": "boolean"
+        },
+        "clearsOnChange": {
+          "$ref": "#/$defs/configSiblingKeys"
+        }
+      }
+    },
+    "configV5ArrayItemReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$ref"
+      ],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/configObjectSuggestionsDeclaration"
+        }
+      }
+    },
+    "configV5ChildReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$ref"
+      ],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^#/config/definitions/[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "suggestions": {
+          "$ref": "#/$defs/configSuggestionsDeclaration"
+        }
+      }
+    },
+    "configV5TopLevelField": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/configV5Field"
+        },
+        {
+          "properties": {
+            "clearsOnChange": false
+          },
+          "type": "object"
         }
       ]
     }

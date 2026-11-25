@@ -23,7 +23,8 @@ import fs from 'fs-extra';
 import { fileURLToPath } from 'node:url';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } from './catalog-source-fixture.js';
 import { createSyntheticEmbeddedRoot } from './embedded-root.js';
-import { prepareSubagentForNativeFixture } from './codex-enhance-native-fixture.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { prepareSubagentForNativeFixture } from './subagent-native-fixture.js';
 import { createCommandTestTiming } from './command-timing.js';
 import type { CommandEvent } from '../../src/output/model.js';
 import {
@@ -352,20 +353,22 @@ export async function createCodexNativeTestRuntime(
   };
 }
 
-export async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnType<typeof createCommandTestTiming>) {
+export async function prepareSubagentCompositionPublicCommandFixture(timing?: ReturnType<typeof createCommandTestTiming>) {
   const measure = timing?.measure ?? (async <T>(
     _stage: string, _name: string, operation: (sequence: number) => Promise<T>,
   ): Promise<T> => operation(0));
   const isolation = getCurrentSourceTestIsolation();
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-  const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
-  const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
+  const authoringRoot = path.join(isolation.layout.fixtureCwd, 'subagent-composition-authoring');
   await measure('fixture-step', 'copy.marketplace-source', () => fs.copy(
     path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
     path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
   ));
-  const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
-  await measure('fixture-step', 'copy.codex-enhance', () => fs.copy(sourcePluginRoot, copiedPluginRoot));
+  for (const name of ['agent-explore', 'agent-advisor']) {
+    await measure('fixture-step', `copy.${name}`, () => fs.copy(
+      path.join(repositoryRoot, 'plugins', name), path.join(authoringRoot, 'plugins', name),
+    ));
+  }
   const sourceSubagentPluginRoot = path.join(repositoryRoot, 'plugins', 'agent-subagent');
   const copiedSubagentPluginRoot = path.join(authoringRoot, 'plugins', 'agent-subagent');
   await measure('fixture-step', 'copy.agent-subagent', () => fs.copy(sourceSubagentPluginRoot, copiedSubagentPluginRoot));
@@ -377,12 +380,6 @@ export async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnTyp
     workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
     sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
   });
-  const manifest = await fs.readJson(path.join(
-    sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
-  ));
-  const subagentManifest = await fs.readJson(path.join(
-    sourceRoot, 'plugins', 'agent-subagent', '.agents-plugin', 'plugin.json',
-  ));
   const before = await readCatalogSourcesConfigSnapshot(isolation.env);
   const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
   const sourceIdentity = await calculateCatalogSourceIdentity(source);
@@ -395,6 +392,11 @@ export async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnTyp
   await measure('fixture-step', 'catalog.source.sync', () => syncCatalogSourceGeneration({
     sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
   }));
+  for (const platform of ['codex', 'claude', 'pi'] as const) {
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'agent-subagent', scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, platform, values: { generalTaskProfile: { executor: 'native' } } });
+  }
   const runtime = await measure('fixture-step', 'fake-codex.prepare', () => createCodexNativeTestRuntime(isolation));
   const runPublic = (args: string[]) => measure('command', [
     args[0], args[1],
@@ -421,17 +423,9 @@ export async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnTyp
   });
   return {
     isolation,
-    sourcePluginRoot,
-    sourceSubagentPluginRoot,
     sourceRoot,
     sourceIdentity,
     logicalIdentity,
-    cacheRoot: path.join(
-      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
-    ),
-    subagentCacheRoot: path.join(
-      isolation.env.CODEX_HOME!, 'plugins', 'cache', 'aw', 'agent-subagent', subagentManifest.version,
-    ),
     runtime,
     runPublic,
   };

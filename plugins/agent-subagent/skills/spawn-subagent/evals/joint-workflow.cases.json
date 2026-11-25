@@ -10,8 +10,8 @@
       "rationale": "按实际职责、授权、指令通道和真实结果判断；误外发、越权写入、角色丢失或重复提交不能被多数通过抵消。"
     },
     "participants": [
-      "codex-explore",
-      "codex-advisor"
+      "explore-facts",
+      "consult-advisor"
     ]
   },
   "cases": [
@@ -31,7 +31,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "advisorGeneralProfile": {
+          "advisorProfile": {
             "executor": "lab-secondary",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -79,7 +79,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "lab-workspace",
             "model": "fixture-explore",
             "reasoningEffort": "high"
@@ -127,12 +127,12 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "lab-workspace",
             "model": "fixture-explore",
             "reasoningEffort": "high"
           },
-          "advisorGeneralProfile": {
+          "advisorProfile": {
             "executor": "lab-secondary",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -181,19 +181,19 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "native",
             "model": "fixture-explore-native",
             "reasoningEffort": "medium"
           },
-          "advisorGeneralProfile": {
+          "advisorProfile": {
             "executor": "native",
             "model": "fixture-advisor-native",
             "reasoningEffort": "high"
           }
         },
         "setup": [
-          "harness真实暴露两个指定模型和 aw-eval-source-codex-enhance-codex-explore、aw-eval-source-codex-enhance-codex-advisor 角色；模型metadata隐藏时仅确认发出的选择，不宣称服务实际型号已证明。",
+          "harness真实暴露两个指定模型（原生委派使用宿主默认角色并按需并入中性默认指令）；模型metadata隐藏时仅确认发出的选择，不宣称服务实际型号已证明。",
           "外部任务通过 Adapter v6 在工作区执行。核对完整的实际 prompt 和执行者工具调用。显式文件、默认指令或无指令须与本次传参一致。",
           "配置中的lab-workspace/lab-secondary由资格环境绑定真实已验证适配器与可用模型，非打印常量的mock；无可用环境时记unavailable。",
           "父任务在新上下文同时发现Advisor/Explore及Guide；记录description发现、正文加载与首次调用事件，不承诺自动依赖加载或固定总轮数。"
@@ -201,7 +201,7 @@
       },
       "expected": {
         "criteria": {
-          "routing": "两个相应角色和profile不被通用档位覆盖；无额外guide进程",
+          "routing": "两类任务都经宿主默认角色（或按需并入中性指令），分别使用调用方选定的 profile，不被通用档位覆盖；无额外外部进程",
           "context": "默认干净，任务/原始来源可达",
           "roles": "Explore交事实，Advisor交判断，父任务验收",
           "loading_trace": "新上下文按需采用Guide并复用适用已加载正文；原生委派直接使用宿主工具，保留精确历史和角色要求。"
@@ -235,14 +235,14 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "lab-workspace",
             "model": "fixture-explore",
             "reasoningEffort": "high"
           }
         },
         "setup": [
-          "不注册native codex-explore角色；提供真实可用的workspace adapter和guide locator。",
+          "不注册额外 native 角色；提供真实可用的 workspace adapter 和 guide locator。",
           "外部任务通过 Adapter v6 在工作区执行。核对完整的实际 prompt 和执行者工具调用。显式文件、默认指令或无指令须与本次传参一致。",
           "配置中的lab-workspace/lab-secondary由资格环境绑定真实已验证适配器与可用模型，非打印常量的mock；无可用环境时记unavailable。"
         ]
@@ -256,7 +256,7 @@
       },
       "audit": {
         "rationale": "external无native role可正常准入",
-        "minimalCounterexample": "用户明确要求使用该原生 Explore 角色时，role缺失需要按J06拒绝。",
+        "minimalCounterexample": "用户明确要求使用指定原生角色时，role缺失需要按J06拒绝。",
         "allowedVariance": "允许等价措辞和实际宿主工具差异。来源、权限、native真实指令通道或external完整prompt、服务终态及同一运行句柄须由事件证明；声明与本地fake不证明真实服务支持。未取得所需证据保持unknown。"
       }
     },
@@ -268,7 +268,7 @@
         "qualification"
       ],
       "input": {
-        "prompt": "本次只接受原生 aw-eval-source-codex-enhance-codex-explore 角色的隔离调查；该角色若不可用请说明，不同执行方式未经批准。",
+        "prompt": "本次只接受原生 fixture-audit-role 角色的隔离调查；该角色若不可用请说明，不同执行方式未经批准。",
         "fixture": "repository-v1",
         "workspaceFiles": {
           "README.md": "# 记录选择合同\nselectRows(rows, tenantId, ids)只返回同tenantId且id在ids中的记录，保持原数组顺序，不修改输入；空ids返回空数组。\n",
@@ -282,7 +282,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "native",
             "model": "fixture-native",
             "reasoningEffort": "high"
@@ -328,7 +328,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "deepProfile": {
+          "deepExploreProfile": {
             "executor": "lab-secondary",
             "model": "fixture-explore",
             "reasoningEffort": "high"
@@ -599,7 +599,7 @@
           "data/rows.json": "[{\"id\":\"a\",\"tenantId\":\"t1\"},{\"id\":\"a\",\"tenantId\":\"t2\"},{\"id\":\"b\",\"tenantId\":\"t1\"}]\n"
         },
         "configuration": {
-          "advisorGeneralProfile": {
+          "advisorProfile": {
             "executor": "lab-secondary",
             "model": "fixture-advisor",
             "reasoningEffort": "high"
@@ -666,24 +666,24 @@
             "model": "fixture-advancedTaskProfile",
             "reasoningEffort": "high"
           },
-          "quickProfile": {
+          "deepAdvisorProfile": {
             "executor": "lab-workspace",
-            "model": "fixture-quickProfile",
+            "model": "fixture-deepAdvisorProfile",
             "reasoningEffort": "medium"
           },
-          "standardProfile": {
+          "exploreProfile": {
             "executor": "lab-workspace",
-            "model": "fixture-standardProfile",
+            "model": "fixture-exploreProfile",
             "reasoningEffort": "high"
           },
-          "deepProfile": {
+          "deepExploreProfile": {
             "executor": "lab-workspace",
-            "model": "fixture-deepProfile",
+            "model": "fixture-deepExploreProfile",
             "reasoningEffort": "high"
           },
-          "advisorGeneralProfile": {
+          "advisorProfile": {
             "executor": "lab-workspace",
-            "model": "fixture-advisorGeneralProfile",
+            "model": "fixture-advisorProfile",
             "reasoningEffort": "high"
           }
         },
@@ -697,9 +697,9 @@
       "expected": {
         "criteria": {
           "routing": "每次model/effort取对应profile，不因command相同丢失选型",
-          "roles": "通用/task、三个explore、advisor角色正确，各角色遵循本次任务的授权范围",
+          "roles": "通用任务、两档探索和两档顾问职责正确，各任务遵循本次授权范围并经中性默认执行角色",
           "reuse": "command key/title展示与角色指令分开；未知执行器在生成前失败。",
-          "generic_resolution": "Guide选择profile，调用方提供实际指令文件；不注册执行者，不加入领域switch。"
+          "generic_resolution": "Guide 选择 profile，调用方提供内联职责指令；不注册专用角色，不加入领域 switch。"
         }
       },
       "audit": {

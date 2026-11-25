@@ -4,6 +4,7 @@ import path from 'node:path'
 import {
   computeAwCapabilitySetDigest,
   getAwCapabilityRegistry,
+  resolvePluginRequirements,
 } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -13,6 +14,8 @@ import {
   discoverAwPluginRequirements,
   IMPLEMENTED_AW_CAPABILITIES,
 } from '../../src/commands/aw-capabilities.js'
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js'
+import { readPluginManifest } from '../../src/utils/manifest.js'
 
 const tempDirs: string[] = []
 
@@ -38,6 +41,11 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toContain('aw.plugin-manifest.v4')
     expect(result.capabilities).toContain('aw.plugin-config-array.v1')
     expect(result.capabilities).toContain('aw.plugin-config.v5')
+    expect(result.capabilities).toEqual(expect.arrayContaining([
+      'aw.plugin-config-suggestions.v2', 'aw.plugin-config-platform-only.v1',
+      'aw.plugin-config-clears-on-change.v1', 'aw.plugin-config-ref-override.v1',
+    ]))
+    expect(result.capabilities.filter((id) => id.startsWith('aw.plugin-config-suggestions.'))).toEqual(['aw.plugin-config-suggestions.v2'])
     expect(result.capabilities).toContain('aw.catalog-snapshot.v7')
     expect(result.capabilities).toContain('aw.catalog-source.v3')
     expect(result.capabilities).toContain('aw.catalog-dev-source.v2')
@@ -53,6 +61,38 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toContain('aw.installed-runtime-config.v2')
     expect(result.capabilities).not.toContain('aw.installed-runtime-config.v1')
     expect(result.capabilitySetDigest).toBe(computeAwCapabilitySetDigest(result.capabilities))
+  })
+
+  it('binds source-only config requirements to the generated bundle before references and unused definitions disappear', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-v5-requirements-'))
+    tempDirs.push(root)
+    const pluginRoot = path.join(root, 'source')
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 4, name: 'config-v5-example', version: '1.0.0', description: 'Config v5 bundle example',
+      platforms: ['codex'], skills: './skills',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      config: { schemaVersion: 5,
+        definitions: { text: { type: 'string' }, unused: { type: 'string', clearsOnChange: ['other'] } },
+        fields: { model: { $ref: '#/config/definitions/text', platformOnly: true } },
+      },
+    })
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'example', 'SKILL.md'), '---\nname: example\ndescription: Example skill\n---\n')
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'example', 'agents', 'openai.yaml'), 'interface:\n  display_name: Example\n')
+    const source = await readPluginManifest(pluginRoot)
+    const sourceRequirements = await resolvePluginRequirements({ pluginRoot, manifest: source.manifest,
+      implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES })
+    const expected = ['aw.plugin-config-ref-override.v1', 'aw.plugin-config-clears-on-change.v1', 'aw.plugin-config-platform-only.v1']
+    expect(sourceRequirements.derived).toEqual(expect.arrayContaining(expected))
+    const bundleRoot = path.join(root, 'bundle')
+    await bundleLocalPlugin(source, bundleRoot)
+    const bundle = await readPluginManifest(bundleRoot)
+    expect(bundle.manifest.requires?.aw.capabilities).toEqual(expect.arrayContaining(expected))
+    expect(Object.keys(bundle.manifest.config!).sort()).toEqual(['fields', 'presentation', 'schemaVersion'])
+    const bundledRequirements = await resolvePluginRequirements({ pluginRoot: bundleRoot, manifest: bundle.manifest,
+      implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES })
+    expect(bundledRequirements.derived).not.toContain('aw.plugin-config-ref-override.v1')
+    expect(bundledRequirements.derived).not.toContain('aw.plugin-config-clears-on-change.v1')
+    expect(bundledRequirements.effective).toEqual(expect.arrayContaining(expected))
   })
 
   it('uses the nearest candidate and does not skip a damaged receipt', async () => {

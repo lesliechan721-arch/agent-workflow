@@ -1,10 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { commandResult, publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/public-lifecycle-result.js';
+import { configRecoveryActions, inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/public-lifecycle-result.js';
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('publishes the editable configuration schema with composite suggestions and sibling clears', () => {
+    const suggestions = { provider: 'profiles', hint: 'fast', title: 'Model', description: 'Select a model', targets: ['model'], dependsOn: ['executor'] };
+    const profile = { type: 'object', platformOnly: true, suggestions, properties: {
+      executor: { type: 'string', clearsOnChange: ['model'] }, model: { type: 'string' },
+    } };
+    const result = projectReceipt('plugin.config.schema', { ok: true, fields: {
+      profile: { ...profile, suggestions: { ...suggestions, internal: 'private' } },
+    } });
+    expect(result.data.fields).toEqual({ profile });
+  });
+
+  // Test Value Gate: field names survive the public JSON/text boundary but unsafe values never do.
+  it('carries only safe sorted configuration field keys and an exact target recovery action', () => {
+    const diagnostic = publicDiagnostic({ code: 'requiredConfigMissing', message: 'Required configuration is missing.',
+      subject: { pluginId: 'team/demo', target: 'antigravity', scope: 'user' },
+      detail: { reasonCode: 'missingRequired', fieldKeys: ['zeta', 'alpha', 'zeta', 'token=private-secret', 'line\nbreak'] } });
+    expect(diagnostic.detail).toEqual({ reasonCode: 'missingRequired', fieldKeys: ['alpha', 'zeta'] });
+    const result = commandResult('plugin.status', {}, { status: 'blocked', diagnostics: [diagnostic], nextActions: configRecoveryActions([diagnostic]) });
+    expect(publicExitCode(result)).toBe(3);
+    const output = renderPublicResult(result);
+    expect(output).toContain('Config fields: alpha, zeta');
+    expect(output).toContain('[team/demo / antigravity / user]');
+    expect(output).toContain("aw plugin config set team/demo alpha --platform antigravity --value-json '...'");
+    expect(JSON.stringify(result)).not.toContain('private-secret');
+    const targetReceipt = projectReceipt('target.set', { ok: false, scope: 'user', errors: [diagnostic] });
+    expect(targetReceipt.diagnostics).toContainEqual(diagnostic);
+    expect(targetReceipt.nextActions).toContainEqual(expect.objectContaining({ kind: 'manual', message: expect.stringContaining('--platform antigravity') }));
+  });
+
   it('shows the known request and reviewed effects when standalone config apply is interrupted', () => {
     const request = { ok: false, overallState: 'failed', configWrite: 'notStarted',
       plugin: 'consumer', context: { context: 'project', projectRoot: '/work/project' }, confirmation: null,

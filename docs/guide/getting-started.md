@@ -119,23 +119,26 @@ aw plugin install official/dev-workflow --scope project
 
 ```bash
 # 查看插件配置 Schema 声明
-aw plugin config schema agent-subagent
+aw plugin config schema agent-subagent --platform codex
 
 # 列出当前生效配置与来源层级
-aw plugin config get agent-subagent
+aw plugin config get agent-subagent --platform codex
 
 # 查看指定配置键的值
-aw plugin config get agent-subagent generalTaskProfile
+aw plugin config get agent-subagent generalTaskProfile --platform codex
 ```
 
 ### 修改配置设置
 
 ```bash
-# 修改通用公共配置（对所有启用的平台生效）
-aw plugin config set agent-subagent generalTaskProfile --value-json '{"executor":"native"}'
+# 为 Codex 设置必填常规档位，沿用宿主默认模型
+aw plugin config set agent-subagent generalTaskProfile --platform codex --value-json '{"executor":"native"}'
 
 # 修改特定平台的覆盖配置（例如仅针对 Codex 平台覆盖模型与推理级别）
-aw plugin config set codex-enhance standardProfile --platform codex --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
+aw plugin config set agent-explore exploreProfile --platform codex --value-json '{"executor":"native","model":"gpt-6-luna","reasoningEffort":"high"}'
+
+# 也可为独立第二意见设置可选覆盖
+aw plugin config set agent-advisor advisorProfile --platform codex --value-json '{"executor":"native"}'
 
 # 在 TUI 中交互编辑插件配置
 aw

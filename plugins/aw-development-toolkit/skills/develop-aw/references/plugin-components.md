@@ -32,7 +32,9 @@ MCP 的凭据值不进入 Skill、日志或分发包。生命周期由实际 run
 
 需要从另一插件的对象数组选择标量 key 时，使用 `valueRef.plugin`，并显式声明同 source 的直接安装依赖和 `aw.plugin-config-cross-plugin-value-ref.v1`。省略 plugin 仍是本地引用。provider 必须满足原有字段、uniqueBy、类型及非敏感约束；consumer/provider 采用同一平台，候选使用已保存配置，不读取另一插件的未保存草稿。字段与关联校验以当前 capability registry 和完整作者验证为准，不在 renderer 自建跨插件配置读取。
 
-需要给可自由填写的标量字段提供实时选项时，声明 `aw.plugin-config-suggestions.v1`、字段 `suggestions: { provider, dependsOn? }` 和 `scripts.config.suggestions` 的 Node 入口。跨插件可填写同源直接依赖的 `plugin` 裸名。读取 stdin 中的非敏感 `providerConfigValues` 与同级 `dependencyValues`，将候选值和标题放入响应 `items`。用 `aw plugin config suggestions <source/plugin> <field-path> --json` 验证成功和不可用路径，保留手工输入。建议脚本在 POSIX 启动的所有后代必须留在 AW 进程组内。使用默认的 `detached: false`，并让嵌套工具遵守同一约定。
+同一字段需要在每个平台单独设置时，在 v5 顶层字段声明 `platformOnly: true`。需要复用模型组合时，可在本地 `$ref` 上覆写 `suggestions.hint` 对应的整份 `suggestions` 声明。`clearsOnChange` 写在固定对象的标量属性上，列出修改它时需要确认清除的同级属性。用 `aw dev plugin requirements` 检查源码派生的 platform-only、ref-override 和 clears-on-change 能力。
+
+实时建议使用 `aw.plugin-config-suggestions.v2`。标量声明 `suggestions: { provider, dependsOn?, hint? }`；固定对象及顶层对象数组项再声明可同时修改的 `targets`。提供方在 `scripts.config.suggestions` 注册 Node 入口，跨插件时填写同源直接依赖的 `plugin` 裸名。按 stdin 的 `kind` 返回标量值或两级对象的 `set`、`unset` 候选，叶项可用 `recommendedHints` 标出适用档位。响应带 `schemaVersion: 2`，按实际情况返回 `ok`、`not-applicable`、`no-probe` 或 `unavailable`。在已启用平台用 `aw plugin config suggestions <source/plugin> <field-path> --platform <platform> --json` 验证对象和属性路径。POSIX 探针及其后代须留在 AW 进程组内。
 
 ## 读取本次安装生效的配置
 

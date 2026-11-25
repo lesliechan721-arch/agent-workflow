@@ -41,7 +41,7 @@ describe('codex-roles', () => {
       ].join('\n'),
       files: {
         'agents/foo.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Role layer"',
           'developer_instructions = "Explore code"',
           '',
@@ -50,14 +50,14 @@ describe('codex-roles', () => {
     });
 
     const namespace = await resolveCodexRoleNamespace(configPath, { strict: true });
-    const conflict = findCodexRoleNameConflict(namespace, 'codex-explorer');
+    const conflict = findCodexRoleNameConflict(namespace, 'fixture-researcher');
 
     expect(conflict).toMatchObject({
-      roleName: 'codex-explorer',
+      roleName: 'fixture-researcher',
       conflict: true,
       externalMatches: [
         {
-          finalName: 'codex-explorer',
+          finalName: 'fixture-researcher',
           tableKey: 'foo',
           source: 'registration',
         },
@@ -69,7 +69,7 @@ describe('codex-roles', () => {
     const { configPath } = await makeCodexLayer({
       files: {
         'agents/nested/explorer.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Nested file"',
           'developer_instructions = "Explore code"',
           '',
@@ -78,13 +78,13 @@ describe('codex-roles', () => {
     });
 
     const namespace = await resolveCodexRoleNamespace(configPath, { strict: true });
-    const conflict = findCodexRoleNameConflict(namespace, 'codex-explorer');
+    const conflict = findCodexRoleNameConflict(namespace, 'fixture-researcher');
 
     expect(conflict).toMatchObject({
       conflict: true,
       externalMatches: [
         {
-          finalName: 'codex-explorer',
+          finalName: 'fixture-researcher',
           source: 'discoveredRoleFile',
         },
       ],
@@ -101,7 +101,7 @@ describe('codex-roles', () => {
       ].join('\n'),
       files: {
         'agents/foo.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Role layer"',
           'developer_instructions = "Explore code"',
           '',
@@ -115,14 +115,14 @@ describe('codex-roles', () => {
       awManagedTableKeys: ['foo'],
       awManagedRoleLayerPaths: [roleLayerPath],
     });
-    const conflict = findCodexRoleNameConflict(namespace, 'codex-explorer');
+    const conflict = findCodexRoleNameConflict(namespace, 'fixture-researcher');
 
     expect(conflict).toMatchObject({
       conflict: false,
       externalMatches: [],
       awManagedMatches: [
         {
-          finalName: 'codex-explorer',
+          finalName: 'fixture-researcher',
           source: 'registration',
           awManaged: true,
         },
@@ -140,7 +140,7 @@ describe('codex-roles', () => {
       ].join('\n'),
       files: {
         'agents/project-role.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Project role"',
           'developer_instructions = "Project explorer"',
           '',
@@ -150,7 +150,7 @@ describe('codex-roles', () => {
     const { configPath: ancestorConfigPath } = await makeCodexLayer({
       files: {
         'agents/tree-layer-role.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Ancestor role"',
           'developer_instructions = "Ancestor explorer"',
           '',
@@ -160,20 +160,20 @@ describe('codex-roles', () => {
 
     const projectNamespace = await resolveCodexRoleNamespace(projectConfigPath, { strict: true });
     const ancestorNamespace = await resolveCodexRoleNamespace(ancestorConfigPath, { strict: true });
-    const visibility = diagnoseCodexRoleVisibility('codex-explorer', [
+    const visibility = diagnoseCodexRoleVisibility('fixture-researcher', [
       projectNamespace,
       ancestorNamespace,
     ]);
 
     expect(visibility).toMatchObject({
-      roleName: 'codex-explorer',
+      roleName: 'fixture-researcher',
       state: 'unknownByExternalLayer',
       higherPriorityLayerMatches: [
         {
           configPath: projectConfigPath,
           matches: [
             {
-              finalName: 'codex-explorer',
+              finalName: 'fixture-researcher',
               tableKey: 'project-alias',
               source: 'registration',
             },
@@ -183,7 +183,7 @@ describe('codex-roles', () => {
           configPath: ancestorConfigPath,
           matches: [
             {
-              finalName: 'codex-explorer',
+              finalName: 'fixture-researcher',
               source: 'discoveredRoleFile',
             },
           ],
@@ -202,13 +202,13 @@ describe('codex-roles', () => {
       ].join('\n'),
       files: {
         'agents/project-role.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Alias role"',
           'developer_instructions = "Alias explorer"',
           '',
         ].join('\n'),
         'agents/other-name.toml': [
-          'name = "codex-explorer"',
+          'name = "fixture-researcher"',
           'description = "Loose role"',
           'developer_instructions = "Loose explorer"',
           '',
@@ -217,19 +217,19 @@ describe('codex-roles', () => {
     });
 
     const namespace = await resolveCodexRoleNamespace(configPath, { strict: true });
-    const visibility = diagnoseCodexRoleVisibility('codex-explorer', [namespace]);
+    const visibility = diagnoseCodexRoleVisibility('fixture-researcher', [namespace]);
 
     expect(visibility.state).toBe('unknownByExternalLayer');
     expect(visibility.higherPriorityLayerMatches).toHaveLength(1);
     expect(visibility.higherPriorityLayerMatches[0]?.matches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          finalName: 'codex-explorer',
+          finalName: 'fixture-researcher',
           tableKey: 'project-alias',
           source: 'registration',
         }),
         expect.objectContaining({
-          finalName: 'codex-explorer',
+          finalName: 'fixture-researcher',
           source: 'discoveredRoleFile',
         }),
       ]),
@@ -255,8 +255,8 @@ describe('codex-roles', () => {
     });
 
     const namespace = await resolveCodexRoleNamespace(configPath, { strict: true });
-    expect(diagnoseCodexRoleVisibility('codex-explorer', [namespace])).toEqual({
-      roleName: 'codex-explorer',
+    expect(diagnoseCodexRoleVisibility('fixture-researcher', [namespace])).toEqual({
+      roleName: 'fixture-researcher',
       state: 'visible',
       higherPriorityLayerMatches: [],
     });
@@ -265,14 +265,14 @@ describe('codex-roles', () => {
   it('diagnoses description drift between the registration and the role layer', async () => {
     const { configPath } = await makeCodexLayer({
       configContent: [
-        '[agents.codex-explorer]',
+        '[agents.fixture-researcher]',
         'description = "Registration description"',
-        'config_file = "agents/codex-explorer.toml"',
+        'config_file = "agents/fixture-researcher.toml"',
         '',
       ].join('\n'),
       files: {
-        'agents/codex-explorer.toml': [
-          'name = "codex-explorer"',
+        'agents/fixture-researcher.toml': [
+          'name = "fixture-researcher"',
           'description = "Role file description"',
           'developer_instructions = "Explore code"',
           '',
@@ -290,7 +290,7 @@ describe('codex-roles', () => {
   it('plans managed role removal without deleting a drifted user-owned config_file target', async () => {
     const { root, configPath, layerRoot } = await makeCodexLayer({
       configContent: [
-        '[agents.codex-explorer]',
+        '[agents.fixture-researcher]',
         'description = "User role"',
         'config_file = "../user-owned.toml"',
         '',
@@ -299,18 +299,18 @@ describe('codex-roles', () => {
     const managedRoleLayerPath = path.join(
       layerRoot,
       'agents',
-      'aw-codex-explore-codex-explorer.toml',
+      'aw-fixture-research-fixture-researcher.toml',
     );
     const userOwnedPath = path.join(root, 'user-owned.toml');
 
     const removalPlan = planCodexManagedRoleRemoval({
       content: await fs.readFile(configPath, 'utf8'),
       configPath,
-      roleKey: 'codex-explorer',
+      roleKey: 'fixture-researcher',
       managedRoleLayerPath,
     });
 
-    expect(removalPlan.content).not.toContain('[agents.codex-explorer]');
+    expect(removalPlan.content).not.toContain('[agents.fixture-researcher]');
     expect(removalPlan.roleLayerPathToDelete).toBe(managedRoleLayerPath);
     expect(removalPlan.driftedConfigFilePath).toBe(userOwnedPath);
   });
@@ -318,7 +318,7 @@ describe('codex-roles', () => {
   it('degrades to warnings for broken role TOML in read-only mode and throws in strict mode', async () => {
     const { configPath } = await makeCodexLayer({
       configContent: [
-        '[agents.codex-explorer]',
+        '[agents.fixture-researcher]',
         'description = "Broken role"',
         'config_file = "agents/broken.toml"',
         '',
@@ -331,7 +331,7 @@ describe('codex-roles', () => {
     const degraded = await resolveCodexRoleNamespace(configPath, { strict: false });
     expect(degraded.warnings[0]).toContain('Unable to parse Codex role TOML');
     expect(degraded.roles[0]).toMatchObject({
-      finalName: 'codex-explorer',
+      finalName: 'fixture-researcher',
       roleLayerExists: true,
     });
 

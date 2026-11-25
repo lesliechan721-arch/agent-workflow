@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { resolveWorkContext } from '../intent/work-context.js';
+import { observePreferences } from '../intent/deployment-preferences.js';
 import * as nodeFs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -54,6 +55,7 @@ import {
   resolvePluginConfigReferenceContext,
   type PluginConfigReferenceEvidence,
 } from './plugin-config-references.js';
+import { assertConfigLayerWritable, resolveConfigurableLayers } from './config-platforms.js';
 
 export { resolvePluginConfigReferenceContext } from './plugin-config-references.js';
 
@@ -1492,8 +1494,18 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     });
   }
 
+  const commonFields = selectPluginConfigProfile(options.manifest.config!, undefined).fields;
   const layers: Array<{ entries: Record<string, PluginConfigValue>; source: 'common' | 'platform' }> = [
-    { entries: userStore.common ?? userStore.values, source: 'common' },
+    { entries: options.platform
+      ? Object.fromEntries(Object.entries(userStore.common ?? (userStore.platform ? {} : userStore.values))
+        .filter(([key]) => {
+          // Unknown keys remain available to the existing dangerous-key check and
+          // unknown-key reporting; only declared, platform-specific values are isolated.
+          if (!Object.hasOwn(schema, key)) return true;
+          const field = schema[key]!;
+          return Object.hasOwn(commonFields, key) && !('platformOnly' in field && field.platformOnly);
+        }))
+      : userStore.common ?? userStore.values, source: 'common' },
     ...(options.platform ? [{ entries: userStore.platforms?.[options.platform] ?? {}, source: 'platform' as const }] : []),
   ];
   for (const { entries, source } of layers) {
@@ -1654,13 +1666,23 @@ export async function assertPluginConfigMutationCandidate(options: {
   cwd: string; env?: NodeJS.ProcessEnv; updates: Record<string, PluginConfigValue>; removeKeys: readonly string[];
   referencePlugins?: readonly PluginMeta[];
 }): Promise<void> {
+  const pluginId = options.sourceId ? `${options.sourceId}/${options.pluginName}` : options.pluginName;
+  const preferences = await observePreferences(options);
+  if (Object.keys(options.updates).length) {
+    assertConfigLayerWritable(pluginId, options.manifest, preferences, options.platform);
+  }
   const user = await readPluginConfigStore({ ...options, scope: 'user' });
   assertReadyPluginConfigStore(user);
+  // Unsetting an unknown (stale) key has no effective profile to validate.
+  const selectedFields = options.manifest.config ? selectPluginConfigProfile(options.manifest.config, options.platform).fields : {};
+  if (!Object.keys(options.updates).length && options.removeKeys.every((key) => !Object.hasOwn(selectedFields, key))) return;
+  const layers = resolveConfigurableLayers(pluginId, options.manifest, preferences);
+  if (!layers.includes(options.platform ?? 'common')) return;
   const values = { ...user.values };
   for (const key of options.removeKeys) delete values[key];
   for (const [key, value] of Object.entries(options.updates)) values[key] = value;
   const candidate = replacePluginConfigStoreLayer(user, values, options.platform);
-  const profiles: Array<PlatformTarget | undefined> = options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS];
+  const profiles = options.platform ? [options.platform] : layers.map((layer) => layer === 'common' ? undefined : layer);
   for (const platform of profiles) {
     const references = pluginConfigHasExternalReferences(options.manifest)
       ? await resolvePluginConfigReferenceContext({ ...options, platform, plugins: options.referencePlugins }) : undefined;
@@ -1668,8 +1690,8 @@ export async function assertPluginConfigMutationCandidate(options: {
       targetScope: options.scope, projectRoot: options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : '', stores: { user: store }, referenceContext: references?.context });
     const [before, after] = await Promise.all([resolve(user), resolve(candidate)]);
     const existing = new Set(before.issues.map((issue) => `${issue.key}\0${issue.code}\0${issue.message}`));
-    const editedKeys = new Set([...Object.keys(options.updates), ...options.removeKeys]);
-    const issues = after.issues.filter((issue) => (editedKeys.has(issue.key) && Object.hasOwn(options.updates, issue.key))
+    const selectedSource = options.platform ? 'platform' : 'common';
+    const issues = after.issues.filter((issue) => (Object.hasOwn(options.updates, issue.key) && after.sources[issue.key] === selectedSource)
       || !existing.has(`${issue.key}\0${issue.code}\0${issue.message}`));
     if (issues.length) throw Object.assign(new Error(`configReferenceInvalid: ${platform ?? 'common'}: ${issues.map((issue) => issue.message).join(' ')}`), { code: 'configReferenceInvalid' });
   }
@@ -1896,6 +1918,7 @@ export async function resolvePluginConfigSchemaAccess(options: {
 }
 
 export async function resolveConfigRead(options: {
+  schemaOnly?: boolean;
   context?: Scope;
   platform?: PlatformTarget;
   sourceId?: string;
@@ -1921,7 +1944,7 @@ export async function resolveConfigRead(options: {
   });
 
 
-  const manifestFields = schemaAccess.plugin
+  const manifestFields = options.schemaOnly ? [] : schemaAccess.plugin?.manifest.config
     ? await buildManifestFieldEntries({
         plugin: schemaAccess.plugin,
         context: options.context,
@@ -1931,9 +1954,9 @@ export async function resolveConfigRead(options: {
         env: options.env,
       })
     : await buildLegacyStoreFieldEntries({
-        sourceId: options.sourceId,
-        sourceIdentity: options.sourceIdentity,
-        logicalIdentity: options.logicalIdentity,
+        sourceId: schemaAccess.plugin?.sourceId ?? options.sourceId,
+        sourceIdentity: schemaAccess.plugin?.sourceIdentity ?? options.sourceIdentity,
+        logicalIdentity: schemaAccess.plugin?.catalogLogicalIdentity ?? options.logicalIdentity,
         pluginName,
         scope: options.scope,
         platform: options.platform,

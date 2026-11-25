@@ -6,6 +6,7 @@ export { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import {
   matchPluginConfigPreset,
   NATIVE_PLATFORM_TARGETS,
+  PLATFORM_TARGETS,
   resolvePluginConfigObjectProperties,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -540,6 +541,8 @@ export interface ConfigReadOptions extends ConfigProfileOptions {
 }
 
 export interface ConfigPageViewModel {
+  configurableLayers?: ConfigProfileKey[];
+  residualLayers?: { profile: ConfigProfileKey; keys: string[] }[];
   editEvidence?: ConfigEditEvidence;
   pluginId: string;
   profile: ConfigProfileKey;
@@ -1684,7 +1687,7 @@ function targetIssues(
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '由平台共用的内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${agentLabel(target.platform)} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '由平台共用的内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1696,9 +1699,9 @@ function targetIssues(
           : dependencyCategory
           ? dependencyPluginId
             ? `依赖 ${dependencyPluginId}${dependencyPlatform && dependencyScope
-              ? `（${dependencyPlatform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyScope === 'user' ? '所有项目' : '当前项目'}）`
-              : ''}未就绪；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
-            : `依赖检查未通过；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
+              ? `（${agentLabel(dependencyPlatform)} · ${dependencyScope === 'user' ? '所有项目' : '当前项目'}）`
+              : ''}未就绪；影响 ${target.pluginId}（${agentLabel(target.platform)} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
+            : `依赖检查未通过；影响 ${target.pluginId}（${agentLabel(target.platform)} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
           : sharedNativeDamaged
           ? 'Codex 平台由多个项目共用的生成内容缺失或损坏。'
           : sharedNativeRenderDrift
@@ -1762,6 +1765,7 @@ function recoveryDiagnosticDetail(reason: RecoveryDiagnostic): { code: string; m
     ...(detail ? [`Reason: ${detail.reasonCode}`] : []),
     ...(detail?.path ? [`Location: ${detail.path}`] : []),
     ...(detail?.configKey ? [`Config key: ${detail.configKey}`] : []),
+    ...(detail?.fieldKeys?.length ? [`Config fields: ${detail.fieldKeys.join(', ')}`] : []),
     ...inventoryRecoveryActions([reason]).flatMap((action) => action.kind === 'manual' ? [action.message] : []),
   ].join('\n') };
 }
@@ -1770,7 +1774,9 @@ function statusIssues(payload: StatusV8Payload, recoveryDiagnostics: readonly Re
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.reasons.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
-  for (const error of [...payload.errors, ...recoveryDiagnostics.filter((entry) => entry.detail)]) {
+  for (const error of [...payload.errors, ...recoveryDiagnostics.filter((entry) => entry.detail
+    && !(entry.subject?.pluginId && entry.detail.fieldKeys?.length
+      && ['requiredConfigMissing', 'configInvalid', 'invalidConfig'].includes(entry.code)))]) {
     if (issues.has(error.code) || targetCodes.has(error.code)
       && !recoveryDiagnostics.some((entry) => entry.code === error.code && entry.detail)) continue;
     const projection = error.code === 'legacyStateUnsupported'
@@ -1814,8 +1820,41 @@ function statusIssues(payload: StatusV8Payload, recoveryDiagnostics: readonly Re
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[] {
-  return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
+function configIssues(
+  pluginSummaries: StatusV8PluginSummary[],
+  recoveryTargets: readonly RecoveryTarget[],
+  recoveryDiagnostics: readonly RecoveryDiagnostic[],
+): UserIssueDraft[] {
+  const summaries = new Map(pluginSummaries.map((summary) => [summary.pluginId, {
+    ...summary, configIssues: [...summary.configIssues ?? []],
+  }]));
+  const recovered = new Map<string, RecoveryDiagnostic[]>();
+  const collect = (entry: RecoveryDiagnostic, fallback?: RecoveryTarget): void => {
+    const diagnostic = publicDiagnostic(entry);
+    if (diagnostic.code !== 'requiredConfigMissing' && diagnostic.code !== 'configInvalid' && diagnostic.code !== 'invalidConfig') return;
+    const subject = diagnostic.subject;
+    const pluginId = subject?.pluginId ?? entry.pluginId ?? fallback?.pluginId;
+    const platform = subject?.target ?? fallback?.agent;
+    const scope = subject?.scope ?? fallback?.scope;
+    if (!pluginId || !scope || !PLATFORM_TARGETS.includes(platform as PlatformTarget)) return;
+    const summary = summaries.get(pluginId);
+    if (!summary) return;
+    const type = diagnostic.code === 'requiredConfigMissing' ? 'missing-required' : 'invalid-config';
+    const evidenceKey = [pluginId, platform, scope, type].join('\0');
+    const evidence = recovered.get(evidenceKey) ?? [];
+    if (!evidence.some((previous) => JSON.stringify(previous) === JSON.stringify(diagnostic))) {
+      evidence.push(diagnostic);
+      recovered.set(evidenceKey, evidence);
+    }
+    for (const key of diagnostic.detail?.fieldKeys ?? []) {
+      if (summary.configIssues.some((field) => field.key === key && field.platform === platform && field.scope === scope && field.type === type)) continue;
+      summary.configIssues.push({ type, key, title: key, scope, platform: platform as PlatformTarget,
+        source: type === 'missing-required' ? 'missing' : 'platform' });
+    }
+  };
+  for (const target of recoveryTargets) target.blockers.forEach((entry) => collect(entry, target));
+  recoveryDiagnostics.forEach((entry) => collect(entry));
+  return [...summaries.values()].flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     const issues: UserIssueDraft[] = [];
     if (summary.configDiagnostic) {
@@ -1861,41 +1900,64 @@ function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[
         })),
       });
     }
-    const blockingIssues = summary.configIssues.filter((issue) => issue.type !== 'configLayerUnsupported');
-    if (blockingIssues.length === 0) return issues;
-    const types = new Set(blockingIssues.map((issue) => issue.type));
-    const invalid = types.has('invalid-config') || types.has('sharedCompositeContainsLocalPath');
-    const sources = new Set(blockingIssues.map((issue) => issue.source));
-    const onlySource = sources.size === 1 ? [...sources][0] : undefined;
-    const context = blockingIssues.some((issue) => issue.scope === 'project') ? 'project' as const : 'user' as const;
-    const platforms = new Set(blockingIssues.flatMap((issue) => issue.platform ? [issue.platform] : []));
-    const onlyPlatform = platforms.size === 1 ? [...platforms][0] : undefined;
-    const configLayer = onlySource === 'common' ? { profile: 'common' as const, context }
-      : onlyPlatform ? { profile: onlyPlatform, context } : undefined;
-    issues.push({
-      issueId: `config:${summary.pluginId}:${invalid ? 'invalid' : 'required'}`,
-      category: 'requiredConfigMissing' as const,
-      title: `${summary.displayName ?? summary.pluginName} · ${invalid ? '设置值无效' : '缺少必填设置'}`,
-      explanation: invalid
-        ? '已有设置值不符合当前字段规则。'
-        : '插件缺少必填设置，写操作会在预检时被阻止。',
-      impact: [invalid ? '修正所列字段后才能稳定生成插件内容。' : '完成所列字段后才能稳定生成插件内容。'],
-      entity: { kind: 'plugin' as const, id: summary.pluginId },
-      pluginId: summary.pluginId,
-      sourceId,
-      requiredFields: blockingIssues.map(({ key, title, type, source, scope, platform }) => ({
-        key, title, type, source, scope, platform,
-      })),
-      ...(configLayer ? { configLayer } : {}),
-      actions: [
-        { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入相关用户配置' : '选择公共或平台配置' },
-        { id: 'viewTechnical' as const, label: '查看字段详情' },
-      ],
-      technicalDetails: blockingIssues.map((entry) => ({
-        code: entry.type,
-        message: `${entry.title} · ${entry.scope} · ${entry.source}`,
-      })),
-    });
+    const grouped = new Map<string, {
+      profile: ConfigProfileKey; context: Scope; invalid: boolean;
+      fields: NonNullable<StatusV8PluginSummary['configIssues']>;
+    }>();
+    for (const entry of summary.configIssues) {
+      if (entry.type === 'configLayerUnsupported') continue;
+      const invalid = entry.type !== 'missing-required';
+      // Missing platform settings must remain individually reachable, even if
+      // several platforms have the same missing field.
+      const profile = entry.platform ?? 'common';
+      const layer = entry.source === 'common' ? 'common' : profile;
+      const context = entry.scope ?? 'user';
+      const key = [layer, context, invalid ? 'invalid' : 'required'].join(':');
+      const group = grouped.get(key) ?? { profile: layer, context, invalid, fields: [] };
+      group.fields.push(entry);
+      grouped.set(key, group);
+    }
+    for (const [key, { profile, context, invalid, fields }] of grouped) {
+      const configLayer = { profile, context };
+      const positions = [...new Set(fields.flatMap((entry) => entry.platform ? [entry.platform] : []))];
+      const platform = positions.length === 1 ? positions[0] : undefined;
+      const affectedTargets = platform && platform !== 'generic' ? [...new Map(
+        recoveryTargets.filter((target) => target.agent === platform && target.scope === context && target.pluginId === summary.pluginId)
+          .flatMap((target) => [
+            { pluginId: target.pluginId, platform, scope: target.scope, relationship: 'direct' as const },
+            ...(target.contributions ?? []).filter((contribution) => contribution.root !== target.pluginId)
+              .map((contribution) => ({ pluginId: contribution.root, platform, scope: contribution.scope, relationship: 'consumer' as const })),
+          ]).map((target) => [[target.pluginId, target.platform, target.scope].join('\0'), target]),
+      ).values()] : [];
+      issues.push({
+        issueId: `config:${summary.pluginId}:${profile === 'common' && context === 'user' ? invalid ? 'invalid' : 'required' : key}`,
+        category: 'requiredConfigMissing',
+        title: `${summary.displayName ?? summary.pluginName} · ${profile === 'common' ? '' : `${agentLabel(profile)} · `}${invalid ? '设置值无效' : '缺少必填设置'}`,
+        explanation: invalid
+          ? '已有设置值不符合当前字段规则。'
+          : '插件缺少必填设置，写操作会在预检时被阻止。',
+        impact: [invalid ? '修正所列字段后才能稳定生成插件内容。' : '完成所列字段后才能稳定生成插件内容。'],
+        entity: { kind: 'plugin', id: summary.pluginId },
+        pluginId: summary.pluginId,
+        sourceId,
+        ...(platform && platform !== 'generic' ? { platform, scope: context } : {}),
+        ...(affectedTargets.length ? { affectedTargets } : {}),
+        requiredFields: fields.map(({ key, title, type, source, scope, platform }) => ({
+          key, title, type, source, scope, platform,
+        })),
+        configLayer,
+        actions: [
+          { id: 'openConfig', label: invalid ? '修正设置' : '完成设置', description: '进入相关用户配置' },
+          { id: 'viewTechnical', label: '查看字段详情' },
+        ],
+        technicalDetails: fields.map((entry) => ({
+          code: entry.type,
+          message: `${entry.title} · ${entry.scope} · ${entry.source}`,
+        })),
+        recoveryDiagnostics: [...new Set(fields.flatMap((entry) =>
+          recovered.get([summary.pluginId, entry.platform, entry.scope, entry.type].join('\0')) ?? []))],
+      });
+    }
     return issues;
   });
 }
@@ -1988,10 +2050,10 @@ function issueDiagnostic(
       : []),
     ...(issue.platform ? [{ key: 'platform' as const, value: issue.platform }] : []),
     ...(issue.scope ? [{ key: 'scope' as const, value: issue.scope }] : []),
-    ...(issue.requiredFields?.slice(0, 1).map((field) => ({
+    ...(issue.requiredFields?.length ? [{
       key: 'field' as const,
-      value: field.title,
-    })) ?? []),
+      value: [...new Set(issue.requiredFields.map((field) => field.title))].join('、'),
+    }] : []),
   ];
   const checks = issue.category === 'legacyState'
     ? [
@@ -2145,6 +2207,9 @@ function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraf
   return [...current.values()].flatMap((target): UserIssueDraft[] => {
     if (target.agent === 'generic' || (target.content === 'satisfied' || target.satisfaction === 'not-applicable')
       && target.blockers.length === 0) return [];
+    if (target.blockers.length > 0 && target.blockers.every((entry) =>
+      ['requiredConfigMissing', 'configInvalid', 'invalidConfig'].includes(entry.code))
+      && target.blockers.some((entry) => entry.detail?.fieldKeys?.length)) return [];
     const platform = target.agent;
     const entity = { pluginId: target.pluginId, platform, scope: target.scope };
     const consumers = [...new Map((target.contributions ?? []).flatMap((contribution) => {
@@ -2408,7 +2473,7 @@ export function buildTuiViewModel(options: {
     ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status, options.recoveryDiagnostics ?? []),
-    ...configIssues(options.pluginSummaries),
+    ...configIssues(options.pluginSummaries, currentTargets, options.recoveryDiagnostics ?? []),
     ...dependencyOverviewIssues(
       options.dependencyOverviews ?? [],
       options.pluginSummaries,
@@ -2796,6 +2861,20 @@ export function buildConfigGroups(options: {
         fields: advanced.map(fieldModel),
       });
     }
+  }
+  const obsolete = options.read.fields.filter((field) => !Object.hasOwn(options.schema.fields, field.key) && field.canUnset);
+  if (obsolete.length > 0 && !effectivePage) {
+    groups.push({
+      id: syntheticGroupId('obsolete'), title: '旧设置 · 仅可删除', advanced: false,
+      fields: obsolete.map((field) => ({
+        key: field.key, title: field.title, type: 'string', definition: { type: 'string', sensitive: true },
+        description: '此键不再属于当前设置定义，可单独删除。',
+        displayValue: '[redacted]', effectiveDisplayValue: '[redacted]',
+        sourceLabel: '本层已设置', effectiveSourceLabel: '不适用',
+        required: false, sensitive: true, writable: false, canSet: false, canUnset: true,
+        dirty: false, inherited: false, configured: true, advanced: false, allowCustom: false,
+      })),
+    });
   }
   return groups;
 }

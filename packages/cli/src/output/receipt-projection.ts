@@ -13,10 +13,11 @@ import type { CommandManagementResult } from '../commands/managed-commands.js';
 import type { PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import type { PortableMaterializeReceipt } from '../portable/commands.js';
 import { recoveryRootDisposition, type RecoveryReceipt } from '../recovery/receipt.js';
-import { inventoryRecoveryActions, projectDeploymentNotices, projectTarget, recoverySyncAction } from '../commands/public-lifecycle-result.js';
+import { configRecoveryActions, safeRecoveryDetail, inventoryRecoveryActions, projectDeploymentNotices, projectTarget, recoverySyncAction } from '../commands/public-lifecycle-result.js';
 import { isDeliveryNoticeCode, PREVIOUS_DEPLOYMENT_RETAINED, projectComponentDelivery } from './component-delivery.js';
 import { projectSkillInvocationDiagnostics } from './skill-invocation-notices.js';
 import { SKILL_INVOCATION_NOTICE } from '../utils/skill-invocation-warning.js';
+import { isConfigDiagnostic } from '../utils/plugin-config-diagnostics.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandPackageRecoveryActions, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
 
 type RecordValue = Record<string, unknown>;
@@ -44,8 +45,18 @@ function diagnostic(value: unknown, severity: Diagnostic['severity'] = 'error', 
   const code = typeof entry.code === 'string' ? entry.code : severity === 'warning' ? 'commandWarning' : 'commandFailed';
   const identity = { ...subject, ...pick(entry, ['pluginId', 'sourceId', 'scope', 'field']),
     ...(typeof entry.plugin === 'string' ? { pluginId: entry.plugin } : {}) } as Diagnostic['subject'];
+  const safeDetail = safeRecoveryDetail(entry.detail as Diagnostic['detail']);
+  const detail = safeDetail && (safeDetail.fieldKeys || isConfigDiagnostic({ code }))
+    ? { reasonCode: safeDetail.reasonCode, ...(safeDetail.fieldKeys ? { fieldKeys: safeDetail.fieldKeys } : {}) } : undefined;
+  if (detail) {
+    const source = record(entry.subject);
+    for (const key of ['pluginId', 'sourceId', 'target', 'field'] as const) {
+      if (typeof source[key] === 'string') identity![key] = source[key];
+    }
+    if (source.scope === 'user' || source.scope === 'project') identity!.scope = source.scope;
+  }
   return { code, severity: entry.blocking === false || entry.severity === 'warning' ? 'warning' : severity,
-    message: message(entry.message, code, publicRoots), ...(Object.keys(identity!).length ? { subject: identity } : {}) };
+    message: message(entry.message, code, publicRoots), ...(detail ? { detail } : {}), ...(Object.keys(identity!).length ? { subject: identity } : {}) };
 }
 function issue(value: RecordValue): RecordValue {
   return { ...pick(value, ['code', 'path', 'blocking', 'stage', 'severity']), ...(typeof value.subject === 'string' ? { subject: value.subject } : {}), message: message(value.message, String(value.code ?? 'commandFailed')) };
@@ -63,9 +74,9 @@ function configField(value: RecordValue): RecordValue {
   return data;
 }
 function configDefinition(value: RecordValue): RecordValue {
-  const data = pick(value, ['type', 'title', 'description', 'default', 'required', 'sensitive', 'const', 'valueRef', 'suggestions', 'choices', 'validation', 'properties', 'additionalProperties', 'variants', 'items']);
+  const data = pick(value, ['type', 'title', 'description', 'default', 'required', 'sensitive', 'platformOnly', 'clearsOnChange', 'const', 'valueRef', 'suggestions', 'choices', 'validation', 'properties', 'additionalProperties', 'variants', 'items']);
   mapField(data, 'valueRef', (entry) => pick(entry, ['plugin', 'field', 'key', 'label', 'include']));
-  mapField(data, 'suggestions', (entry) => pick(entry, ['plugin', 'provider', 'dependsOn']));
+  mapField(data, 'suggestions', (entry) => pick(entry, ['plugin', 'provider', 'dependsOn', 'hint', 'targets', 'title', 'description']));
   mapField(data, 'choices', (entry) => ({ allowCustom: entry.allowCustom, presets: list(entry.presets).map((preset) => pick(preset, ['id', 'title', 'description', 'value', 'recommended'])) }));
   mapField(data, 'validation', (entry) => {
     const validation = pick(entry, ['minLength', 'maxLength', 'pattern', 'format', 'integer', 'minimum', 'maximum', 'multipleOf', 'minProperties', 'maxProperties', 'key', 'minItems', 'maxItems', 'uniqueItems', 'uniqueBy']);
@@ -441,7 +452,7 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
 }
 
 const confirmationCodes = new Set(['confirmationRequired', 'catalogImpactConfirmationRequired', 'catalogSourceImpactConfirmationRequired', 'catalogSourceIdentityChangeConfirmationRequired', 'preApplyAuthorizationRequired', 'sharedNativeConfigApplyConfirmationRequired', 'nativeToolAuthorizationRequired', 'sourceRefreshConfirmationRequired']);
-const blockedCodes = new Set([...confirmationCodes, 'operationReviewStale', 'reviewStale', 'catalogSourceUnavailable', 'catalogGenerationUnavailable', 'catalogGenerationSourceMissing', 'catalogGenerationIdentityMismatch', 'catalogGenerationReviewStale', 'catalogReplaceDamagedRequired', 'catalogGenerationActiveComparisonUnavailable', 'catalogLogicalIdentityChanged', 'catalogVersionConflict', 'catalogRollbackDetected', 'sourceMissing', 'sourceChanged', 'configSchemaUnavailable', 'schemaUnavailable', 'configUnavailable', 'projectRootUnavailable', 'awCapabilityUnsupported', 'commandNotFound', 'commandOwnerMismatch', 'commandIdentityConflict', 'commandResourceInvalid', 'commandBindingInvalid', 'managedSourceProtected', 'dependencyStillRequired', 'identityMismatch', 'catalogWorkspaceMissing', 'portableOutputConflict', 'portableUnsupported', 'requiredConfigMissing', 'portableSkillNameConflict', 'portableRuntimeImportMissing']);
+const blockedCodes = new Set([...confirmationCodes, 'operationReviewStale', 'reviewStale', 'catalogSourceUnavailable', 'catalogGenerationUnavailable', 'catalogGenerationSourceMissing', 'catalogGenerationIdentityMismatch', 'catalogGenerationReviewStale', 'catalogReplaceDamagedRequired', 'catalogGenerationActiveComparisonUnavailable', 'catalogLogicalIdentityChanged', 'catalogVersionConflict', 'catalogRollbackDetected', 'sourceMissing', 'sourceChanged', 'configSchemaUnavailable', 'schemaUnavailable', 'configUnavailable', 'configPlatformNotEnabled', 'configCommonLayerUnavailable', 'deploymentPreferencesInvalid', 'deploymentPreferencesUnavailable', 'projectRootUnavailable', 'awCapabilityUnsupported', 'commandNotFound', 'commandOwnerMismatch', 'commandIdentityConflict', 'commandResourceInvalid', 'commandBindingInvalid', 'managedSourceProtected', 'dependencyStillRequired', 'identityMismatch', 'catalogWorkspaceMissing', 'portableOutputConflict', 'portableUnsupported', 'requiredConfigMissing', 'configInvalid', 'invalidConfig', 'portableSkillNameConflict', 'portableRuntimeImportMissing']);
 function resultStatus(command: string, r: RecordValue, diagnostics: Diagnostic[], exitCode: number): CommandResult['status'] {
   const unsuccessful = r.ok === false || r.valid === false || exitCode !== 0;
   if (command === 'source.status') {
@@ -549,6 +560,7 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
       if (action) result.nextActions.push(action);
       else result.nextActions.push({ kind: 'manual', message: `Use the original workspace and remote selection to reconcile publication plan ${r.planDigest}. Review its current state before confirming apply.` });
     }
+    result.nextActions.push(...configRecoveryActions(diagnostics));
     if (command.startsWith('plugin.config.')) {
       const apply = r.apply as ConfigApplyResult | undefined;
       result.nextActions.push(...inventoryRecoveryActions(diagnostics.filter(({ code }) =>

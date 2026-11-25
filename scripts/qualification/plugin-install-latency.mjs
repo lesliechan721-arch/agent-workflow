@@ -11,7 +11,7 @@ import { commandLabel, observePortableWrites, observeProcesses, readCodexRoleDig
 
 const run = promisify(execFile);
 const sourceId = 'official';
-const referenceFixtureRevision = '53e39d212bab59251a88eeb3372c00ed1d63da6a';
+const declarationsFixtureVersion = 2;
 const buildArtifactRoots = ['agent-skill-eval', 'cli', 'plugin-core'].flatMap((name) => [
   `packages/${name}/dist`,
   `packages/${name}/package.json`,
@@ -22,7 +22,8 @@ const userRootPool = [
   'official/agent-content-toolkit',
   'official/agent-subagent',
   'official/browser-use',
-  'official/codex-enhance',
+  'official/agent-explore',
+  'official/agent-advisor',
   'official/dev-workflow',
   'official/frontend-design',
   'official/git-toolkit',
@@ -188,7 +189,7 @@ async function sample(input, env, project) {
     schemaVersion: 1,
     host: { platform: process.platform, arch: process.arch, release: os.release(), cpu: os.cpus()[0]?.model, nodeVersion: process.version,
       availableParallelism: os.availableParallelism(), loadAverage: os.loadavg(), freeMemoryBytes: os.freemem() },
-    referenceFixtureRevision,
+    declarationsFixtureVersion,
     target: measuredTargets[0],
     plugin: selectors[0].split('/')[1],
     measuredTargets,
@@ -196,7 +197,7 @@ async function sample(input, env, project) {
     entry: input.entry,
     declarationsFixture: input.declarations,
     scope: 'user',
-    userRoots: populated ? userRootPool.filter((id) => !selectors.includes(id)).slice(0, 7) : [],
+    userRoots: [],
     projectRoots: populated ? projectRoots : [],
     stages,
     recoveryStages: [],
@@ -274,6 +275,8 @@ async function sample(input, env, project) {
       catalogs[id] = { path: catalogPath, entries: manifest.entries };
       report.sources[id] = { catalogVersion: manifest.catalogVersion, plugins: manifest.entries.length };
     }
+    const officialNames = new Set(catalogs[sourceId].entries.map(entry => `${sourceId}/${entry.name}`));
+    report.userRoots = populated ? userRootPool.filter(id => officialNames.has(id) && !selectors.includes(id)).slice(0, 7) : [];
     report.catalogVersion = report.sources[sourceId].catalogVersion;
     report.catalogPlugins = report.sources[sourceId].plugins;
 
@@ -331,6 +334,20 @@ async function sample(input, env, project) {
         schemaVersion: 2, kind: 'aw-deployment-preferences', targets: measuredTargets, exclusions: [],
       }),
     ]);
+
+    // The current Guide requires an explicit host-default baseline on native platforms.
+    const { writePluginConfigStore } = await fromBuild('utils/plugin-config.js');
+    for (const [id, catalog] of Object.entries(catalogs)) {
+      const entry = catalog.entries.find(item => item.name === 'agent-subagent');
+      if (!entry) continue;
+      const manifest = JSON.parse(await fs.readFile(path.join(catalog.path, entry.source, '.agents-plugin/plugin.json'), 'utf8'));
+      if (!manifest.config?.fields?.generalTaskProfile?.platformOnly) continue;
+      for (const platform of measuredTargets.filter(target => target !== 'generic')) {
+        await writePluginConfigStore({ sourceId: id, sourceIdentity: state.sources[id].active.sourceIdentity,
+          logicalIdentity: state.sources[id].active.logicalIdentity, pluginName: 'agent-subagent', scope: 'user',
+          cwd: project, env, platform, values: { generalTaskProfile: { executor: 'native' } } });
+      }
+    }
 
     // A completed Core transport digest is the hash of the whole snapshot.
     // Match the actual Active digest at the hashing boundary for all builds.

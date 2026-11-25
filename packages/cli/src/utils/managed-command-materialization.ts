@@ -223,7 +223,12 @@ function runtimeConfigEvidence(config: ResolvedEffectivePluginConfig, keys: read
 function commonRuntimeConfigDigest(plugin: PluginMeta, platform: PlatformName, store: PluginConfigStore, keys: readonly string[]): string {
   assertReadyPluginConfigStore(store);
   const definition = selectPluginConfigProfile(plugin.manifest.config!, platform);
-  const dependencies = getPluginConfigDependencyKeys(definition, keys);
+  const commonFields = selectPluginConfigProfile(plugin.manifest.config!, undefined).fields;
+  const dependencies = getPluginConfigDependencyKeys(definition, keys)
+    .filter((key) => {
+      const field = definition.fields[key];
+      return Object.hasOwn(commonFields, key) && field !== undefined && !('platformOnly' in field && field.platformOnly);
+    });
   return commandInputDigest(selectConfigValues(store.common ?? (store.platform ? {} : store.values), dependencies));
 }
 
@@ -354,6 +359,7 @@ async function verifyCommandConfigApplySource(
 /** Select only the snapshots and routes whose applied inputs differ. */
 export async function inspectManagedCommandConfigApply(options: PackageInputs & {
   platform?: PlatformName;
+  activePlatforms: readonly PlatformName[];
 }): Promise<Extract<ManagedCommandPackageOperation, { kind: 'config-apply' }> | undefined> {
   const { plugin, platform } = options;
   const { previous, view } = await previousPackage(managedCommandProducerIdentity(options), options.env, false);
@@ -363,7 +369,7 @@ export async function inspectManagedCommandConfigApply(options: PackageInputs & 
   const command = declaredCommand(plugin);
   const keys = command.runtimeConfig?.keys;
   const platforms: PlatformName[] = [];
-  if (platform && keys && command.platforms.includes(platform)) {
+  if (platform && keys && command.platforms.includes(platform) && options.activePlatforms.includes(platform)) {
     const config = await resolvePlatformRuntimeConfig(options, platform);
     const values = applyRuntimeConfig(config, keys);
     const snapshot = record.runtimeConfigPlatforms.includes(platform)
@@ -372,7 +378,7 @@ export async function inspectManagedCommandConfigApply(options: PackageInputs & 
   } else if (!platform && keys && record.runtimeConfigPlatforms.length) {
     const store = await readCommandCommonStore(options);
     for (const target of record.runtimeConfigPlatforms) {
-      if (command.platforms.includes(target)
+      if (command.platforms.includes(target) && options.activePlatforms.includes(target)
         && record.runtimeConfigCommonDigests?.[target] !== commonRuntimeConfigDigest(plugin, target, store, keys)) platforms.push(target);
     }
   }

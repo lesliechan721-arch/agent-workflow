@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 import type { RecoveryStatus } from '../../src/recovery/status.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
@@ -45,6 +46,7 @@ vi.mock('../../src/utils/plugin-config-write.js', async (importOriginal) => ({
 async function setupBackend() {
   const isolation = getCurrentSourceTestIsolation();
   await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+  await setTargets({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, ['codex', 'claude']);
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-batch-source');
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
     manifest.config = { schemaVersion: 5, fields: {

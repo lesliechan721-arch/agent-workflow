@@ -456,14 +456,27 @@ export type ConfigV4ArrayValue = (string[] | number[] | boolean[] | ConfigV4Obje
 export type ConfigV4ArrayItem = (ConfigV4ScalarDynamicField | ConfigV4ArrayFixedObjectItem | ConfigV4ArrayKeyValueObjectItem | ConfigArrayItemReference)
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configV5TopLevelField".
+ */
+export type ConfigV5TopLevelField = (ConfigV5Field & {
+clearsOnChange?: never
+[k: string]: unknown
+})
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5Field".
  */
-export type ConfigV5Field = (ConfigV5ScalarField | ConfigV5FixedObjectField | ConfigV4KeyValueObjectField | ConfigV5ArrayField | ConfigV5Reference)
+export type ConfigV5Field = (ConfigV5ScalarField | ConfigV5FixedObjectField | ConfigV5KeyValueObjectField | ConfigV5ArrayField | ConfigV5Reference)
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5ScalarField".
  */
-export type ConfigV5ScalarField = (ConfigV5PlainStringField | ConfigSensitiveStringField | ConfigV5NumberField | ConfigV5BooleanField)
+export type ConfigV5ScalarField = (ConfigV5PlainStringField | ConfigV5SensitiveStringField | ConfigV5NumberField | ConfigV5BooleanField)
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configSiblingKeys".
+ */
+export type ConfigSiblingKeys = string[]
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5PropertyField".
@@ -473,7 +486,7 @@ export type ConfigV5PropertyField = (ConfigV5LeafPropertyField | ConfigV5NestedO
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5LeafPropertyField".
  */
-export type ConfigV5LeafPropertyField = (ConfigV5ScalarChildField | ConfigV4LeafArrayField | ConfigV4LeafObjectField | ConfigChildReference)
+export type ConfigV5LeafPropertyField = (ConfigV5ScalarChildField | ConfigV4LeafArrayField | ConfigV4LeafObjectField | ConfigV5ChildReference)
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5ScalarChildField".
@@ -488,7 +501,7 @@ export type ConfigV5ArrayValue = (string[] | number[] | boolean[] | ConfigV5Obje
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5ArrayItem".
  */
-export type ConfigV5ArrayItem = (ConfigV4ScalarDynamicField | ConfigV5ArrayFixedObjectItem | ConfigV4ArrayKeyValueObjectItem | ConfigArrayItemReference)
+export type ConfigV5ArrayItem = (ConfigV4ScalarDynamicField | ConfigV5ArrayFixedObjectItem | ConfigV4ArrayKeyValueObjectItem | ConfigV5ArrayItemReference)
 
 export interface PluginManifestSourceV4 {
 schemaVersion: 4
@@ -2075,7 +2088,7 @@ grok?: ConfigPlatformProfile
 }
 }
 export interface Fields {
-[k: string]: ConfigV5Field
+[k: string]: ConfigV5TopLevelField
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2093,6 +2106,8 @@ choices?: ConfigStringChoices
 validation?: ConfigStringValidation
 const?: string
 suggestions?: ConfigSuggestionsDeclaration
+platformOnly?: boolean
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2102,6 +2117,21 @@ export interface ConfigSuggestionsDeclaration {
 plugin?: string
 provider: string
 dependsOn?: string[]
+hint?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configV5SensitiveStringField".
+ */
+export interface ConfigV5SensitiveStringField {
+type: "string"
+title?: string
+description?: string
+required?: boolean
+sensitive: true
+validation?: ConfigStringValidation
+platformOnly?: boolean
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2119,6 +2149,8 @@ choices?: ConfigNumberChoices
 validation?: ConfigNumberValidation
 const?: number
 suggestions?: ConfigSuggestionsDeclaration
+platformOnly?: boolean
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2135,6 +2167,8 @@ sensitive?: never
 choices?: ConfigBooleanChoices
 const?: boolean
 suggestions?: ConfigSuggestionsDeclaration
+platformOnly?: boolean
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2154,6 +2188,8 @@ properties: {
 additionalProperties?: false
 validation?: ConfigObjectValidation
 variants?: ConfigV5ObjectVariants
+platformOnly?: boolean
+suggestions?: ConfigObjectSuggestionsDeclaration
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2196,6 +2232,7 @@ choices?: ConfigStringChoices
 validation?: ConfigStringValidation
 const?: string
 suggestions?: ConfigSuggestionsDeclaration
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2212,6 +2249,7 @@ choices?: ConfigNumberChoices
 validation?: ConfigNumberValidation
 const?: number
 suggestions?: ConfigSuggestionsDeclaration
+clearsOnChange?: ConfigSiblingKeys
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2226,6 +2264,18 @@ required?: boolean
 sensitive?: never
 choices?: ConfigBooleanChoices
 const?: boolean
+suggestions?: ConfigSuggestionsDeclaration
+clearsOnChange?: ConfigSiblingKeys
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configV5ChildReference".
+ */
+export interface ConfigV5ChildReference {
+$ref: string
+title?: string
+description?: string
+required?: boolean
 suggestions?: ConfigSuggestionsDeclaration
 }
 /**
@@ -2279,6 +2329,37 @@ properties: {
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configObjectSuggestionsDeclaration".
+ */
+export interface ConfigObjectSuggestionsDeclaration {
+plugin?: string
+provider: string
+dependsOn?: string[]
+hint?: string
+targets: ConfigSiblingKeys
+title?: string
+description?: string
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configV5KeyValueObjectField".
+ */
+export interface ConfigV5KeyValueObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar
+}
+required?: boolean
+sensitive?: never
+choices?: ConfigObjectChoices
+additionalProperties: (ConfigV4ScalarDynamicField | ConfigDynamicReference)
+validation?: ConfigObjectValidation
+platformOnly?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
  * via the `definition` "configV5ArrayField".
  */
 export interface ConfigV5ArrayField {
@@ -2291,6 +2372,7 @@ sensitive?: never
 items: ConfigV5ArrayItem
 choices?: ConfigV5ArrayChoices
 validation?: ConfigArrayValidation
+platformOnly?: boolean
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2308,6 +2390,17 @@ properties: {
 additionalProperties?: false
 validation?: ConfigObjectValidation
 variants?: ConfigV5ObjectVariants
+suggestions?: ConfigObjectSuggestionsDeclaration
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
+ * via the `definition` "configV5ArrayItemReference".
+ */
+export interface ConfigV5ArrayItemReference {
+$ref: string
+title?: string
+description?: string
+suggestions?: ConfigObjectSuggestionsDeclaration
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema
@@ -2338,6 +2431,8 @@ title?: string
 description?: string
 default?: (ConfigScalar | ConfigV5ArrayValue | ConfigV5ObjectValue)
 required?: boolean
+platformOnly?: boolean
+suggestions?: (ConfigSuggestionsDeclaration | ConfigObjectSuggestionsDeclaration)
 }
 /**
  * This interface was referenced by `PluginManifestSourceV4`'s JSON-Schema

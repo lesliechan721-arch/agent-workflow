@@ -3,21 +3,15 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { assertCommand, execute, repoRoot } from './native-platform-runtime.mjs';
+import { assertCommand, execute } from './native-platform-runtime.mjs';
 import { officialSource } from './native-platform-shipped-git.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 
 const fixtureToken = 'aw-native-qualification-fixture-credential';
 const controlSkill = 'aw-qualification-implicit-control';
-const roles = [
-  { plugin: 'agent-subagent', skill: 'spawn-subagent', role: 'subagent' },
-  { plugin: 'codex-enhance', skill: 'codex-advisor', role: 'codex-advisor' },
-  { plugin: 'codex-enhance', skill: 'codex-explore', role: 'codex-explore' },
-];
 
 function responseInput(body, role) {
   return (body.input ?? []).filter(item => item.role === role)
@@ -318,42 +312,33 @@ export async function qualifyPublicCodexManualSkill(ctx) {
   }));
 }
 
-async function installedRole(ctx, listed, source, { plugin, skill, role }) {
-  const name = `aw-${source}-${plugin}-${role}`;
-  const skillFile = await nativeSkill(ctx, listed, `${plugin}:${skill}`);
-  const skillText = await fs.readFile(skillFile.path, 'utf8');
-  const references = [...skillText.matchAll(/`(aw-[a-z0-9-]+)`/gu)]
-    .map(match => match[1]).filter(reference => reference.endsWith(`-${plugin}-${role}`));
-  assert.deepEqual([...new Set(references)], [name], 'The materialized Skill must reference its source-qualified role.');
-  const require = createRequire(path.join(repoRoot, 'packages/cli/package.json'));
-  const { parseTOML } = require('toml-eslint-parser');
-  const file = await fs.readFile(path.join(ctx.env.CODEX_HOME, 'agents', `${name}.toml`), 'utf8');
-  const entries = parseTOML(file).body[0].body.filter(entry => entry.type === 'TOMLKeyValue' && entry.key.keys.length === 1);
-  const entriesByName = new Map(entries.map(entry => [entry.key.keys[0].name, entry.value.value]));
-  assert.equal(entriesByName.get('name'), name, 'The installed role TOML must declare the referenced name.');
-  const instructions = entriesByName.get('developer_instructions');
-  assert(typeof instructions === 'string' && instructions.trim(), 'The installed role must declare developer instructions.');
-  return { name: references[0], instructions: instructions.replaceAll('\r\n', '\n').trim() };
-}
-
 export async function qualifyPublicCodexBehavior(ctx) {
   const source = officialSource;
-  const installed = await ctx.check('public-codex-official-role-materialization', async () => {
-    // This public operation installs two renderers and verifies both native deployments.
-    await ctx.aw(['plugin', 'install', `${source}/codex-enhance`, '--scope', 'user', '--target', 'codex', '--yes'],
+  const installed = await ctx.check('public-codex-official-skill-materialization', async () => {
+    await ctx.aw(['plugin', 'config', 'set', `${source}/agent-subagent`, 'generalTaskProfile', '--platform', 'codex', '--value-json', '{"executor":"native"}']);
+    await ctx.aw(['plugin', 'install', `${source}/agent-explore`, `${source}/agent-advisor`, '--scope', 'user', '--target', 'codex', '--yes'],
       ctx.project, { timeoutMs: 180_000 });
-    return { source, plugins: ['agent-subagent', 'codex-enhance'] };
+    return { source, plugins: ['agent-subagent', 'agent-explore', 'agent-advisor'] };
   });
-  return ctx.check('public-codex-official-role-host-resolution', () => withoutCuratedMarketplaceSync(ctx, async () => {
+  return ctx.check('public-codex-official-skill-host-resolution', () => withoutCuratedMarketplaceSync(ctx, async () => {
     const listed = await ctx.rpc(ctx.neutral);
-    const projected = await Promise.all(roles.map(role => installedRole(ctx, listed, installed.source, role)));
-    const scenarios = projected.map((role, index) => createRoleScenario(role, index + 1));
-    await withLocalResponses((request, res, sequence) => {
-      const scenario = scenarios.find(item => item.matches(request));
-      assert(scenario, 'Unexpected turn reached the role fixture.');
-      return scenario.respond(request, res, sequence);
-    }, url => runAppServer(ctx, url, scenarios.map(({ prompt }) => ({ prompt }))));
-    return { roles: scenarios.map(scenario => scenario.evidence()), responsesEndpoint: 'loopback-fixture' };
+    const skills = [];
+    for (const [plugin, skill] of [
+      ['agent-subagent', 'spawn-subagent'],
+      ['agent-explore', 'explore-facts'],
+      ['agent-advisor', 'consult-advisor'],
+    ]) {
+      const entry = await nativeSkill(ctx, listed, `${plugin}:${skill}`);
+      const content = await fs.readFile(entry.path, 'utf8');
+      assert(!content.includes(`aw-${installed.source}-agent-subagent-subagent`),
+        `${plugin}:${skill} must not reference an AW-delivered subagent role.`);
+      skills.push({ plugin, skill, name: entry.name });
+    }
+    await assert.rejects(
+      fs.stat(path.join(ctx.env.CODEX_HOME, 'agents', `aw-${installed.source}-agent-subagent-subagent.toml`)),
+      { code: 'ENOENT' },
+    );
+    return { skills, awSubagentRoleDelivered: false };
   }));
 }
 

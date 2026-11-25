@@ -11,10 +11,12 @@ import { resolveEffectivePluginConfig, resolvePluginConfigStorePath, writePlugin
 import { analyzePluginConfigMutationImpact } from '../../src/utils/plugin-config-impact.js';
 import { createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
+  await setTargets({ scope: 'user', cwd, env: isolation.env }, ['codex']);
   execFileSync('git', ['init', '-q'], { cwd });
   const create = (name: string, fields: Record<string, unknown>, dependencies: string[] = []): PluginMeta => ({
     rootDir: path.join(cwd, name), manifestPath: path.join(cwd, name, '.agents-plugin/plugin.json'),

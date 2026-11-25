@@ -1,0 +1,6 @@
+interface:
+  display_name: "Consult Advisor"
+  short_description: "在判断卡点或高代价拍板前组织去锚定的独立只读第二意见并核验后裁决"
+  default_prompt: "使用 $consult-advisor 对当前重要判断卡点取得去锚定的独立只读第二意见，并核验会改变行动的关键建议。"
+policy:
+  allow_implicit_invocation: true

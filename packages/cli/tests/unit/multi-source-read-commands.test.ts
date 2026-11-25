@@ -277,6 +277,7 @@ describe('multi-source read commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
     await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
+      manifest.platforms = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
       manifest.config = { fields: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -286,15 +287,19 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
 
-    const missing = await statusCommandV8({
-      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
+    const options = { cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true, scope: 'user' };
+    const targets = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
+    await setTargets({ scope: 'user', cwd: options.cwd, env: options.env }, targets);
+    const undeclared = await statusCommandV8(options);
+    expect(undeclared.pluginSummaries[0]?.configIssues).toBeUndefined();
+    await writeIntentFixture({ scope: 'user', cwd: options.cwd, env: options.env }, {
+      roots: [{ pluginId: 'good/demo' }], agents: targets, exclusions: [{ plugin: 'good/demo', target: 'pi' }],
     });
-    expect(missing.pluginSummaries[0]?.configIssues).toEqual([
-      { platform: 'codex', scope: 'user', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
-      { platform: 'codex', scope: 'project', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
-      { platform: 'claude', scope: 'user', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
-      { platform: 'claude', scope: 'project', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
-    ]);
+    const missing = await statusCommandV8(options);
+    expect(missing.pluginSummaries[0]?.configIssues).toHaveLength(8);
+    expect(missing.pluginSummaries[0]?.configIssues).toEqual(expect.arrayContaining(targets.filter((platform) => platform !== 'pi').map((platform) => ({
+      platform, scope: 'user', type: 'missing-required', key: 'rules', title: '规则', source: 'missing',
+    }))));
     expect(JSON.parse(missing.output)).not.toHaveProperty('pluginSummaries');
 
     await fs.outputFile(path.join(
@@ -1180,7 +1185,7 @@ describe('multi-source read commands', () => {
     })).toBe(3);
     expect(JSON.parse(config.readStdout())).toMatchObject({
       command: 'plugin.config.set', status: 'blocked', data: { configWrite: 'notStarted' },
-      diagnostics: [expect.objectContaining({ code: 'configSchemaUnavailable' })],
+      diagnostics: [expect.objectContaining({ code: 'configCommonLayerUnavailable' })],
     });
   });
 

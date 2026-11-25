@@ -587,6 +587,13 @@ export function controller(overrides: Partial<TuiControllerDependencies> = {}): 
     reviewTtlMs: 10_000,
     ...overrides,
   };
+  if (dependencies.getConfigPage) {
+    const getPage = dependencies.getConfigPage;
+    dependencies.getConfigPage = async (...args) => {
+      const page = await getPage(...args);
+      return { ...page, configurableLayers: page.configurableLayers ?? ['common', ...PLATFORM_TARGETS] };
+    };
+  }
   return new TuiController(dependencies);
 }
 

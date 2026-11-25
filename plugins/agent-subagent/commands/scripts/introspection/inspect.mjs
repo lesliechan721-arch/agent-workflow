@@ -1,6 +1,6 @@
 import { fail, object } from '../runtime/contracts.mjs';
 import { introspectExecutor } from './models.mjs';
-import { executorPresentation } from './presentation.mjs';
+import { effectiveModelEfforts, executorPresentation } from './presentation.mjs';
 
 const byteLimit = 32 * 1024;
 const escape = (text) => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -14,10 +14,13 @@ function directoryText(result) {
   if (result.supportedEfforts?.length) lines.push('efforts: ' + result.supportedEfforts.map(escape).join(', '));
   lines.push('<models>');
   for (const m of result.models) lines.push(escape(m.id) + (m.isDefault ? ' [default]' : '')
-    + (m.origin ? ' [origin=' + m.origin + ']' : '') + (m.efforts?.length ? ' [efforts=' + m.efforts.map(escape).join(',') + ']' : '')
+    + (m.origin ? ' [origin=' + m.origin + ']' : '')
+    + (m.effortSupport === 'none' ? ' [efforts=none]' : m.effortSupport === 'separate'
+      ? ' [efforts=' + effectiveModelEfforts(m, result.supportedEfforts).map(escape).join(',') + ']' : '')
+    + (m.defaultEffort ? ' [default_effort=' + escape(m.defaultEffort) + ']' : '')
     + (m.displayName || m.description ? ' — ' + [m.displayName, m.description].filter(Boolean).map(escape).join(' — ') : ''));
   lines.push('</models>');
-  for (const d of result.diagnostics) lines.push(`<diagnostic code="${escape(d.code)}">${escape(d.message)}</diagnostic>`);
+  for (const d of result.diagnostics) lines.push(`<diagnostic code="${escape(d.code)}"${d.severity ? ` severity="${escape(d.severity)}"` : ''}>${escape(d.message)}</diagnostic>`);
   return lines.join('\n');
 }
 

@@ -125,8 +125,8 @@ describe('five namespaced write commands', () => {
     const entries = [
       ['rules', 'agent-subagent', 'subagent-commands', '.rules'],
       ['agents', 'agent-subagent', 'subagent', '.toml'],
-      ['agents', 'codex-enhance', 'codex-advisor', '.toml'],
-      ['agents', 'codex-enhance', 'codex-explore', '.toml'],
+      ['agents', 'retired-investigation', 'retired-advisor', '.toml'],
+      ['agents', 'retired-investigation', 'retired-explore', '.toml'],
     ] as const;
     const files = entries.map(([directory, plugin, key, extension]) => path.join(root, directory, `aw-${plugin}-${key}${extension}`));
     for (const [index, [, plugin, key]] of entries.entries()) await fs.outputFile(files[index]!, renderOwnedTextFile('legacy fixture\n', {
@@ -136,14 +136,14 @@ describe('five namespaced write commands', () => {
     await fs.outputFile(path.join(root, 'config.toml'), entries.flatMap(([directory, , key], index) => directory === 'agents'
       ? [`[agents.${JSON.stringify(key)}]`, `config_file = ${JSON.stringify(files[index])}`] : []).join('\n'));
     const inventory = await inventoryCatalogSourceReferences({ cwd: layout.fixtureCwd, env, scope: 'user',
-      knownPluginNames: ['agent-subagent', 'codex-enhance'] });
+      knownPluginNames: ['agent-subagent', 'retired-investigation'] });
     expect(inventory.errors.filter((error) => error.kind === 'ownerHeaderPathValidation')).toHaveLength(4);
     expect(inventory.references.some((reference) => files.includes(reference.location))).toBe(false);
     expect(inventory.errors.map((error) => error.configKey).filter(Boolean)).toEqual(expect.arrayContaining([
-      'agents.subagent.config_file', 'agents.codex-advisor.config_file', 'agents.codex-explore.config_file',
+      'agents.subagent.config_file', 'agents.retired-advisor.config_file', 'agents.retired-explore.config_file',
     ]));
     for (const force of [false, true]) {
-      const result = await runPublicLifecycle('remove', ['official/agent-subagent', 'official/codex-enhance'], {
+      const result = await runPublicLifecycle('remove', ['official/agent-subagent', 'official/retired-investigation'], {
         cwd: layout.fixtureCwd, env, cliVersion: '1.0.0', scope: 'user', context: 'user', target: ['codex'], only: 'outputs', yes: true, force,
       }, { env, nativeCliRunner: defaultNativeRuntime.nativeCliRunner });
       expect(result.status).not.toBe('success');

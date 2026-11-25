@@ -5,6 +5,8 @@ import { preparePublicConfigConfirmation } from './commands/public-config-confir
 import { createPublicCommandInterruption } from './commands/public-interruption.js';
 import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
 import { projectReceipt } from './output/receipt-projection.js';
+import { observePreferences } from './intent/deployment-preferences.js';
+import { assertConfigLayerWritable, ConfigLayerError, resolveActiveConfigPlatforms } from './utils/config-platforms.js';
 import { SKILL_INVOCATION_NOTICE } from './utils/skill-invocation-warning.js';
 import { runPublicLifecycle } from './commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from './commands/public-plugin-query.js';
@@ -81,6 +83,7 @@ import {
   ConfigApplyInterruptedError,
   applyPluginConfig,
   buildConfigMutationReceipt,
+  configApplyLayerFailure,
   configActiveAvailabilityError,
   configWriteStateForError,
   resetPluginConfigWithHelper,
@@ -536,6 +539,7 @@ async function resolveStoredOnlyConfigIdentity(options: {
 async function resolveMultiSourceConfigRead(options: {
   selector: string;
   key?: string;
+  schemaOnly?: boolean;
   rawOptions: RawConfigOptions;
   context: CliExecutionContext;
 }): Promise<{
@@ -545,18 +549,21 @@ async function resolveMultiSourceConfigRead(options: {
   sourceIdentity?: string;
   result: Awaited<ReturnType<typeof resolveConfigRead>>;
 }> {
-  const inventory = await inventoryLegacyConfigReferences({
-    cwd: options.context.cwd,
-    env: options.context.env,
-    scope: options.rawOptions.context === 'project' ? 'project' : 'user',
-  });
-  assertCatalogSourceReferencesSupported(inventory);
+  if (!options.schemaOnly) {
+    const inventory = await inventoryLegacyConfigReferences({
+      cwd: options.context.cwd,
+      env: options.context.env,
+      scope: options.rawOptions.context === 'project' ? 'project' : 'user',
+    });
+    assertCatalogSourceReferencesSupported(inventory);
+  }
   return withResolvedCatalogPlugin({
     selector: options.selector,
     cliVersion: resolveCliVersion(),
     env: options.context.env,
     consume: async ({ pluginId, source, plugin }) => {
       const result = await resolveConfigRead({
+        schemaOnly: options.schemaOnly,
         pluginName: plugin.manifest.name,
         plugin,
         scope: options.rawOptions.context === 'project' ? 'project' : 'user',
@@ -588,6 +595,7 @@ async function resolveMultiSourceConfigRead(options: {
       context: options.context,
     });
     const result = await resolveConfigRead({
+      schemaOnly: options.schemaOnly,
       sourceId: stored.sourceId,
       sourceIdentity: stored.sourceIdentity,
       logicalIdentity: stored.logicalIdentity,
@@ -1903,6 +1911,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     commandExitState.exitCode = 1;
   };
 
+  const configLayerRecoveryResult = (result: CommandResult<object>, error: ConfigLayerError, pluginId?: string): CommandResult<object> => {
+    result.nextActions = error.nextActions;
+    for (const diagnostic of result.diagnostics.filter(({ code }) => code === error.code)) {
+      diagnostic.subject = { ...diagnostic.subject, ...(pluginId ? { pluginId } : {}),
+        ...(error.target ? { target: error.target } : {}) };
+    }
+    return result;
+  };
+
   const writeConfigMutationFailure = (
     command: ConfigMutationCommand,
     plugin: string | undefined,
@@ -1910,13 +1927,24 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     error: unknown,
   ): void => {
     const failure = configMutationFailure(error, env, cwd);
+    if (error instanceof ConfigLayerError) {
+      const result = projectReceipt(`plugin.${command.replace(':', '.')}`, buildConfigMutationReceipt(command, {
+        ok: false, overallState: 'failed', configWrite: failure.configWrite,
+        ...(plugin ? { pluginId: plugin } : {}),
+        errors: [{ code: error.code, message: error.message }],
+      }));
+      result.status = 'blocked';
+      writeJsonReceipt(io.stdout, configLayerRecoveryResult(result, error, plugin));
+      commandExitState.exitCode = publicExitCode(result);
+      return;
+    }
     const confirmation = (error as { confirmation?: Confirmation })?.confirmation;
     if (confirmation) {
       writeJsonReceipt(io.stdout, { command, ok: false, pluginId: plugin, configWrite: 'notStarted', confirmation, errors: [failure] });
       commandExitState.exitCode = 3;
       return;
     }
-    if (json) {
+    if (json || io.result) {
       writeConfigMutationFailureReceipt(io.stdout, {
         command,
         ...(plugin ? { plugin } : {}),
@@ -1930,7 +1958,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           [cwd],
         ));
     writeLine(io.stderr, message);
-    commandExitState.exitCode = failure.code === 'invalidArguments' ? 2 : 1;
+    commandExitState.exitCode = failure.code === 'invalidArguments' ? 2
+      : ['configSchemaUnavailable', 'schemaUnavailable', 'configUnavailable', 'requiredConfigMissing'].includes(failure.code) ? 3 : 1;
   };
 
   const withResolvedConfigMutationPlugin = <T>(
@@ -2475,13 +2504,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               dependencyOverrides, timeoutMs, signal: context.signal,
             });
             const { status, items, message, diagnostics } = prepared.project(await prepared.run());
-            const severity = status === 'unavailable' ? 'error' as const : status === 'unsupported' ? 'warning' as const : 'info' as const;
-            const entries = status === 'unavailable' && !diagnostics?.length ? [{
-              code: 'configSuggestionsUnavailable',
-              message: message || 'Suggestions are unavailable.',
+            const severity = status === 'unavailable' ? 'error' as const : status === 'ok' ? 'info' as const : 'warning' as const;
+            const entries = status !== 'ok' && !diagnostics?.length ? [{
+              code: status === 'unavailable' ? 'configSuggestionsUnavailable'
+                : status === 'not-applicable' ? 'configSuggestionsNotApplicable' : 'configSuggestionsNoProbe',
+              message: message || (status === 'unavailable' ? 'Suggestions are unavailable.'
+                : status === 'not-applicable' ? 'Suggestions do not apply to this selection.' : 'No suggestion probe for this selection.'),
             }] : diagnostics ?? [];
             return commandResult(command, { pluginId: prepared.pluginId, fieldPath: prepared.fieldPath, profile: prepared.profile,
-              provider: prepared.provider, providerPluginId: prepared.providerPluginId, status, items,
+              provider: prepared.provider, providerPluginId: prepared.providerPluginId, kind: prepared.kind, status, items,
               ...(message === undefined ? {} : { message }), ...(diagnostics === undefined ? {} : { diagnostics }) }, {
               status: status === 'unavailable' ? 'failed' : 'success',
               diagnostics: entries.map((entry) => ({ ...entry, severity, subject: {
@@ -2494,6 +2525,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         commandExitState.exitCode = publicExitCode(result);
       } catch (error) {
         context.signal?.throwIfAborted();
+        if (error instanceof ConfigLayerError) {
+          const result = commandResult(command, {}, { status: 'blocked', diagnostics: [{
+            code: error.code, severity: 'error', message: error.message,
+            subject: { pluginId: selector, ...(platform === undefined ? {} : { target: platform }), field },
+          }], nextActions: error.nextActions });
+          writeJsonReceipt(io.stdout, result);
+          commandExitState.exitCode = publicExitCode(result);
+          return;
+        }
         const argumentError = error instanceof ConfigSuggestionArgumentError || error instanceof WriteCommandRequestError
           || error instanceof CatalogPluginNotFoundError;
         const result = commandResult(command, {}, { status: 'failed', diagnostics: [{
@@ -2519,9 +2559,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext(`config:${command}`, rawOptions);
       const work = await configContext(context, rawOptions);
       const resolved = await runActionWithContext(context, () => resolveMultiSourceConfigRead({
-        selector, key, rawOptions: { ...rawOptions, context: work.context }, context,
+        selector, key, schemaOnly: command === 'schema', rawOptions: { ...rawOptions, context: work.context }, context,
       }));
-      if (rawOptions.json) {
+      if (rawOptions.json || io.result) {
         const result = projectReceipt(`plugin.config.${command}`, {
           ok: true, configSchemaVersion: 5, command: `config:${command}`,
           plugin: resolved.pluginName, pluginName: resolved.pluginName, pluginId: resolved.pluginId,
@@ -2558,7 +2598,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const rawOptions = args[command === 'edit' ? 1 : 2] as RawConfigOptions;
       let key = command === 'edit' ? undefined : args[1] as string;
       const context = createActionContext(`config:${command}`, rawOptions);
+      let resolvedPluginId: string | undefined;
       try {
+        let cleanupApplyError: ConfigLayerError | undefined;
         const work = await configContext(context, rawOptions);
         const platform = configPlatform(rawOptions);
         const scriptTimeoutMs = normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions));
@@ -2573,10 +2615,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(
           context, selector, async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-            if (!plugin.manifest.config) throw Object.assign(new Error(
+            resolvedPluginId = pluginId;
+            const preferences = await observePreferences({ scope: 'user', cwd: context.cwd, env: context.env });
+            if (command !== 'unset' || rawOptions.apply) {
+              try { assertConfigLayerWritable(pluginId, plugin.manifest, preferences, platform); }
+              catch (error) {
+                if (command !== 'unset' || !(error instanceof ConfigLayerError)) throw error;
+                cleanupApplyError = error;
+              }
+            }
+            if (!plugin.manifest.config && command !== 'unset') throw Object.assign(new Error(
               `configSchemaUnavailable: Plugin "${plugin.manifest.name}" does not declare an AW config schema.`),
             { code: 'configSchemaUnavailable' });
-            const fields = selectPluginConfigProfile(plugin.manifest.config, platform).fields;
+            const fields = plugin.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, platform).fields : {};
             if (command === 'edit') {
               const selected = await context.prompt.select!({ message: `编辑用户${platform ?? 'common'}配置`,
                 choices: Object.entries(fields).map(([value, field]) => ({ value, label: field.title ?? value })) });
@@ -2640,7 +2691,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               throw error;
             }
             const mutation = command === 'unset' ? { kind: 'patch' as const, removeKeys: [key!] } : { kind: 'patch' as const, updates: { [key!]: inputValue } };
-            const reviewed = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
+            const apply = rawOptions.apply === true && !cleanupApplyError;
+            const reviewed = apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
               context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
               nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
               rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
@@ -2657,10 +2709,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
               expectedCommandPackageEvidence: reviewed?.commandPackageEvidence,
               expectedHostPermissionEffects: reviewed?.hostPermissionEffects,
-              apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
+              apply, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
-              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded' && !cleanupApplyError, plugin: plugin.manifest.name,
+              ...(cleanupApplyError ? {
+                overallState: 'partial' as const,
+                apply: configApplyLayerFailure(cleanupApplyError),
+              } : {}),
               pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
               context: work, platform: platform ?? 'common',
               ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
@@ -2670,14 +2726,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             });
           }));
         if (!receipt) return;
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        if (cleanupApplyError) {
+          const result = projectReceipt(`plugin.config.${command}`, receipt);
+          writeJsonReceipt(io.stdout, configLayerRecoveryResult(result, cleanupApplyError, receipt.pluginId));
+        } else if (rawOptions.json || io.result) writeJsonReceipt(io.stdout, receipt);
         else {
           writeLine(io.stdout, `已保存 ${receipt.plugin}.${key}（用户 ${platform ?? 'common'} 配置）。`);
           writeConfigApplyNotice(io.stderr, receipt);
         }
         commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
       } catch (error) {
-        writeConfigMutationFailure(`config:${command}`, selector, rawOptions.json === true, error);
+        writeConfigMutationFailure(`config:${command}`, resolvedPluginId ?? selector, rawOptions.json === true, error);
       }
     });
   }
@@ -2686,6 +2745,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (selector: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:reset', rawOptions);
       try {
+        let cleanupApplyError: ConfigLayerError | undefined;
         const work = await configContext(context, rawOptions);
         const platform = configPlatform(rawOptions);
         if (!rawOptions.yes) {
@@ -2696,18 +2756,33 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const located = await resolveStoredConfigResetIdentity({ selector, context, scope: 'user' });
         const resetStore = async (plugin: ResolvedCatalogPlugin['plugin'] | null, pluginError: Error | null,
           awHomeMutationToken: AwHomeMutationToken, catalogOperationContext?: CatalogOperationContext) => {
+          if (plugin && rawOptions.apply) {
+            try { assertConfigLayerWritable(located.pluginId, plugin.manifest, await observePreferences({
+              scope: 'user', cwd: context.cwd, env: context.env,
+            }), platform); }
+            catch (error) {
+              if (!(error instanceof ConfigLayerError)) throw error;
+              cleanupApplyError = error;
+            }
+          }
+          const apply = rawOptions.apply === true && !cleanupApplyError;
           const rebuildRuntime = { ...context, awHomeMutationToken, catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext?.generationSetDigest, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) };
-          const reviewed = plugin && rawOptions.apply ? await preparePublicConfigConfirmation({ plugin,
+          const reviewed = plugin && apply ? await preparePublicConfigConfirmation({ plugin,
             scope: work.context, context: work.context, platform, cwd: context.cwd, env: context.env,
             cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken,
             yes: rawOptions.yes, mutation: { kind: 'reset' }, rebuildRuntime }) : null;
           const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
             context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
-            nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
+            nativeCliRunner: context.nativeCliRunner, apply,
             expectedCommandPackageEvidence: reviewed?.commandPackageEvidence, expectedHostPermissionEffects: reviewed?.hostPermissionEffects, rebuildRuntime,
             sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
-          return { ...receipt, confirmation: reviewed?.confirmation ?? null };
+          return { ...receipt, confirmation: reviewed?.confirmation ?? null,
+            ...(cleanupApplyError ? {
+              overallState: 'partial' as const,
+              apply: configApplyLayerFailure(cleanupApplyError),
+            } : {}),
+          };
         };
         const resetReceipt = await runActionWithContext(context, () => withAwHomeMutationLock({
           env: context.env, signal: context.signal, action: async (token) => {
@@ -2729,7 +2804,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
           ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
           context: work, platform: platform ?? 'common' });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        if (cleanupApplyError) {
+          const result = projectReceipt('plugin.config.reset', { ...receipt, confirmation: undefined }, { yes: rawOptions.yes });
+          writeJsonReceipt(io.stdout, configLayerRecoveryResult(result, cleanupApplyError, receipt.pluginId));
+        } else if (rawOptions.json || io.result) writeJsonReceipt(io.stdout, receipt);
         else {
           writeLine(io.stdout, `已恢复 ${receipt.plugin} 的用户 ${platform ?? 'common'} 默认配置。`);
           writeConfigApplyNotice(io.stderr, receipt);
@@ -2754,6 +2832,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         async ({ plugin, pluginId, source }, awHomeMutationToken, catalogOperationContext) => {
           const identity = { plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId };
           resolved = identity;
+          const preferences = await observePreferences({ scope: 'user', cwd: context.cwd, env: context.env });
+          resolveActiveConfigPlatforms(pluginId, plugin.manifest, preferences);
+          for (const selected of [...(platform ? [platform] : []), ...(targets ?? [])]) {
+            assertConfigLayerWritable(pluginId, plugin.manifest, preferences, selected);
+          }
           const rebuildRuntime = { ...context, catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext.generationSetDigest, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) };
           const reviewed = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, platform, targets,
@@ -2774,6 +2857,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           });
           return { ...applied, ...identity, confirmation: reviewed.confirmation, context: work, platform: platform ?? 'common' };
         }, { retainCompletedResultOnAbort: true })).catch((error: unknown) => {
+          if (error instanceof ConfigLayerError) {
+            writeConfigMutationFailure('config:apply', resolved?.pluginId ?? selector, rawOptions.json === true, error);
+            return undefined;
+          }
           if (error instanceof CatalogLeaseEscapeError) throw error;
           const sourceError = configActiveAvailabilityError(error);
           if (!resolved && sourceError) {
@@ -2789,9 +2876,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             context: work, configWrite: 'notStarted' as const,
             overallState: 'failed' as const, errors: [{ code, message }] };
         });
+      if (!receipt) return;
       const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
-      if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+      if (rawOptions.json || io.result) writeJsonReceipt(io.stdout, result);
       else {
         const outcome = result.ok ? '完成' : result.overallState === 'partial' ? '部分失败' : '失败';
         writeLine(io.stdout, `配置应用：${outcome}。`);

@@ -21,6 +21,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 
 function fixture(config: unknown = { schemaVersion: 5, fields: {
@@ -66,6 +67,7 @@ describe('configuration saves and explicit apply', () => {
     const f = fixture();
     execFileSync('git', ['init', '-q'], { cwd: f.cwd });
     const platform = profile === 'common' ? undefined : profile;
+    if (platform) await setTargets(f.store, [platform]);
     await applyPluginConfigWrite({ ...f.options, context: 'project', platform, request: { updates: { mode: profile } } });
     const document = await fs.readJson(f.file);
     expect(platform ? document.platforms[platform] : document.common).toEqual({ mode: profile });
@@ -93,6 +95,7 @@ describe('configuration saves and explicit apply', () => {
       codex: { fields: { mode: { type: 'string', choices: { allowCustom: false,
         presets: [{ id: 'native', title: 'Native', value: 'native' }] } } } },
     } });
+    await setTargets(f.store, ['codex']);
     await expect(applyPluginConfigWrite({ ...f.options, platform: 'codex', request: { updates: { mode: 2 } } })).rejects.toThrow();
     expect(await fs.pathExists(f.file)).toBe(false);
     expect(await applyPluginConfigWrite({ ...f.options, platform: 'codex', request: { updates: { mode: 'native' } } }))
@@ -126,6 +129,7 @@ describe('configuration saves and explicit apply', () => {
   // Test Value Gate: renderer source identity is observable even when a newly stored value equals its default.
   it('counts a same-value default-to-common source change as effective impact', async () => {
     const f = fixture();
+    await setTargets(f.store, ['codex']);
     f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['user'] };
     const target = { pluginName: 'demo', pluginId: 'team/demo', platform: 'codex' as const, scope: 'user' as const };
     const impact = await analyzePluginConfigMutationImpact({ ...f.options, visibleTargets: [target],
@@ -136,6 +140,7 @@ describe('configuration saves and explicit apply', () => {
   // Test Value Gate: a common edit hidden by an explicit platform value must not refresh that platform.
   it('excludes a platform whose final value and source stay unchanged', async () => {
     const f = fixture();
+    await setTargets(f.store, ['codex']);
     f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['user'] };
     await writePluginConfigStore({ ...f.store, platform: 'codex', values: { mode: 'native' } });
     const impact = await analyzePluginConfigMutationImpact({ ...f.options,
@@ -147,6 +152,7 @@ describe('configuration saves and explicit apply', () => {
   // Test Value Gate: shared user renderers in project context must be reviewed for affected platform inputs.
   it.each(['codex', 'copilot'] as const)('tracks complete %s shared render units', async (platform) => {
     const f = fixture();
+    await setTargets(f.store, [platform]);
     f.plugin.manifest.platforms = [platform];
     f.plugin.manifest.artifacts = { configKeys: ['mode'] };
     const run = vi.spyOn(defaultPluginProcessRunner, 'run');
@@ -275,6 +281,7 @@ async function packageFixture(mode: 'static' | 'dynamic' = 'dynamic') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
+  await setTargets({ scope: 'user', cwd, env }, ['codex', 'claude']);
   const sourceRoot = path.join(cwd, 'catalog');
   const pluginRoot = path.join(sourceRoot, 'plugins/demo');
   const renders = path.join(cwd, 'renders');
@@ -365,6 +372,28 @@ describe('existing command package apply', () => {
     expect(await f.values('claude')).toEqual({ runtime: 'default' });
     expect((await f.installed()).record.routes.subcommands[0]?.entry).toBe('safe.mjs');
     expect(await f.countRenders()).toBe(1);
+  });
+
+  // Test Value Gate: applying a shared config change must not validate or publish a stopped platform's pending snapshot.
+  it('applies common runtime config to enabled platforms while retaining the inactive package snapshot', async () => {
+    const f = await packageFixture('static');
+    await f.sync();
+    await setTargets(f.store, ['codex']);
+    await writePluginConfigStore({ ...f.store, platform: 'claude', values: { runtime: 42 } });
+    const saved = await applyPluginConfigWrite({ ...f.options, apply: true,
+      request: { updates: { runtime: 'common-now' } } });
+    expect(saved.apply).toMatchObject({ state: 'succeeded', commandResults: [{ state: 'completed' }] });
+    expect(await f.values('codex')).toEqual({ runtime: 'common-now' });
+    expect(await f.values('claude')).toEqual({ runtime: 'default' });
+    // Explicit package sync still validates every snapshot it republishes, independently of deployment preferences.
+    await expect(f.sync()).rejects.toMatchObject({ code: 'commandRuntimeConfigInvalid' });
+    expect(await f.values('claude')).toEqual({ runtime: 'default' });
+    await setTargets(f.store, ['codex', 'claude']);
+    const applied = await applyPluginConfig(f.options);
+    expect(applied.apply).toMatchObject({ state: 'partial',
+      commandResults: [expect.objectContaining({ state: 'failed', errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'commandRuntimeConfigInvalid' }),
+      ]) })] });
   });
 
   // Test Value Gate: common snapshot Review must disclose saved platform overrides when applying them together.

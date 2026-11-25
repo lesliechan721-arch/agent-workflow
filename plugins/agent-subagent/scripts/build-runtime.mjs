@@ -11,11 +11,9 @@ const entries = [
 ];
 
 const instructions = await readFile(path.join(pluginRoot, 'shared/task-instructions.md'));
-for (const directory of ['skills/spawn-subagent/assets', 'commands/assets']) {
-  const output = path.join(pluginRoot, directory);
-  await mkdir(output, { recursive: true });
-  await writeFile(path.join(output, 'task-instructions.md'), instructions);
-}
+const commandAssets = path.join(pluginRoot, 'commands/assets');
+await mkdir(commandAssets, { recursive: true });
+await writeFile(path.join(commandAssets, 'task-instructions.md'), instructions);
 
 const readerPath = process.env.AW_PLUGIN_NATIVE_READER;
 if (!readerPath || !path.isAbsolute(readerPath)) throw new Error('AW must supply the generated native tool reader.');

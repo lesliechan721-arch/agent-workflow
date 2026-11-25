@@ -52,6 +52,37 @@ async function multiPlatformStatusFixture() {
 describe('recovery status satisfaction', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  // Test Value Gate: native absence and unreadable config cannot mask platform-specific actionable blockers.
+  it('reports required field names on every active Native target even before the client is installed', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const platforms: AgentId[] = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'copilot', 'grok'];
+    const snapshot = demand(['local/demo'], platforms);
+    const plugin = snapshot.roots![0]!.plugin!;
+    Object.assign(plugin, { rootDir: path.join(layout.fixtureCwd, 'demo'), sourceId: 'local', pluginId: 'local/demo',
+      sourceIdentity: `sha256:${'a'.repeat(64)}` });
+    Object.assign(plugin.manifest, { version: '1.0.0', platforms, config: { schemaVersion: 5, fields: { profile: { type: 'string', required: true } } } });
+    snapshot.plugins = [plugin];
+    const adapter = registry.getAgentPluginAdapter('cursor');
+    vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => ({ ...adapter,
+      discover: async () => ({ platform, availability: 'missing', installations: [], diagnostics: [] }),
+      resolve: async () => ({ bindings: [], renderUnits: [], exclusions: [], diagnostics: [] }),
+    }));
+    const options = { cwd: layout.fixtureCwd, env, scope: 'user' as const, demandOverride: snapshot };
+    const missing = await readScopedRecoveryStatus(options);
+    for (const target of missing.inventory![0]!.targetResults) {
+      expect(target.blockers).toContainEqual(expect.objectContaining({ code: 'requiredConfigMissing',
+        subject: { pluginId: 'local/demo', target: target.agent, scope: 'user' }, detail: { reasonCode: 'missingRequired', fieldKeys: ['profile'] } }));
+    }
+    expect(missing.inventory![0]!.targetResults).toHaveLength(platforms.length);
+    await fs.outputFile(path.join(env.AW_HOME!, 'plugin-config/local/demo/config.json'), '{private invalid store');
+    const invalid = await readScopedRecoveryStatus(options);
+    for (const target of invalid.inventory![0]!.targetResults) {
+      expect(target.blockers).toContainEqual(expect.objectContaining({ code: 'configInvalid', detail: { reasonCode: 'configReadFailed' } }));
+      expect(target.blockers).not.toContainEqual(expect.objectContaining({ code: 'nativeObservationFailed' }));
+    }
+    expect(JSON.stringify(invalid)).not.toContain('private invalid store');
+  });
+
   it('does not report an undeclared plugin complete when its source is missing', async () => {
     const { env, layout } = getCurrentSourceTestIsolation();
     const options = { cwd: layout.fixtureCwd, env, context: 'user' as const, targets: ['cursor'] };

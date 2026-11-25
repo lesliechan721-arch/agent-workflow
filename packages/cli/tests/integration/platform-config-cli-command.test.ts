@@ -19,14 +19,16 @@ import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, g
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { setTargets, writePreferences, createEmptyPreferences, resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
 
 const discoverPlatforms = platformDiscovery.discoverPlatforms;
 
-async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' = 'config') {
+async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' | 'platform-only' = 'config') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   await git(cwd, ['init', '--quiet']);
+  if (kind !== 'skill') await setTargets({ scope: 'user', cwd, env }, ['cursor', 'generic']);
   let nativeCliRunner: NativeCliRunner | undefined;
   if (kind === 'skill') {
     const discovery = vi.spyOn(platformDiscovery, 'discoverPlatforms').mockImplementation((ctx) => discoverPlatforms({
@@ -75,7 +77,9 @@ async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' = 'config
     if (kind === 'command') {
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     }
-    manifest.config = { schemaVersion: 5, fields: {
+    manifest.config = kind === 'platform-only' ? { schemaVersion: 5, fields: {
+      profile: { type: 'string', platformOnly: true, required: true },
+    } } : { schemaVersion: 5, fields: {
       mode: { type: 'string', default: 'common-default', choices: { allowCustom: true,
         presets: [{ id: 'fast', title: 'Common fast', value: 'common-fast' }] } },
       enabled: { type: 'boolean', default: true },
@@ -123,6 +127,76 @@ async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' = 'config
 
 describe('platform configuration CLI', () => {
   beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true }); });
+  // Test Value Gate: rejected writes/apply leave stopped-target data intact, including when its target is excluded.
+  it('blocks inactive platforms before writes and apply, but still permits inspecting and clearing historical overrides', async () => {
+    const f = await fixture();
+    const selector = 'team/demo';
+    const prefix = ['plugin', 'config'];
+    const location = { scope: 'user' as const, cwd: f.cwd, env: f.env };
+    const set = [...prefix, 'set', selector, 'cursorOnly', '--platform', 'cursor', '--value-json', '2'];
+    expect(await f.run(set)).toMatchObject({ exitCode: 0 });
+    const before = await fs.readFile(f.file);
+    await writePreferences(location, { ...createEmptyPreferences(), targets: ['cursor', 'generic'],
+      exclusions: [{ plugin: selector, target: 'cursor' }] });
+    for (const args of [set, [...prefix, 'suggestions', selector, 'mode', '--platform', 'cursor'],
+      [...prefix, 'apply', selector, '--platform', 'cursor', '--yes'],
+      [...prefix, 'apply', selector, '--target', 'cursor', '--yes']]) {
+      const blocked = await f.run(args);
+      expect(blocked, blocked.stdout).toMatchObject({ exitCode: 3, value: { status: 'blocked',
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'configPlatformNotEnabled',
+          subject: expect.objectContaining({ pluginId: selector, target: 'cursor' }) })]),
+        nextActions: expect.arrayContaining([expect.objectContaining({ kind: 'command',
+          argv: ['aw', 'plugin', 'config', 'reset', selector, '--platform', 'cursor'] })]) } });
+      expect(await fs.readFile(f.file)).toEqual(before);
+    }
+    expect(await f.run([...prefix, 'schema', selector, '--platform', 'cursor'])).toMatchObject({ exitCode: 0 });
+    expect(await f.run([...prefix, 'get', selector, 'cursorOnly', '--platform', 'cursor']))
+      .toMatchObject({ exitCode: 0, value: { data: { fields: [{ effectiveValue: 2 }] } } });
+    const blockedText = createCapturedCliIo();
+    expect(await runCli(set, { cwd: f.cwd, env: f.env, io: blockedText.io, interactive: false })).toBe(3);
+    expect(blockedText.readStdout()).toContain('BLOCKED');
+    expect(blockedText.readStderr()).toContain('configPlatformNotEnabled');
+    const getText = createCapturedCliIo();
+    expect(await runCli([...prefix, 'get', selector, 'cursorOnly', '--platform', 'cursor'],
+      { cwd: f.cwd, env: f.env, io: getText.io, interactive: false })).toBe(0);
+    expect(getText.readStdout()).toContain('SUCCESS');
+    expect(await f.run([...prefix, 'unset', selector, 'cursorOnly', '--platform', 'cursor', '--apply', '--yes']))
+      .toMatchObject({ exitCode: 4, value: { status: 'partial', data: { configWrite: 'succeeded',
+        apply: { state: 'unavailable', error: { code: 'configPlatformNotEnabled' } } } } });
+    expect(await fs.pathExists(f.file)).toBe(false);
+    await writePreferences(location, { ...createEmptyPreferences(), targets: ['cursor'] });
+    expect(await f.run(set)).toMatchObject({ exitCode: 0 });
+    await fs.outputFile(await resolvePreferencesPath(location), '{broken');
+    expect(await f.run(set)).toMatchObject({ exitCode: 3, value: { status: 'blocked',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'deploymentPreferencesInvalid' })]) } });
+    await fs.outputFile(f.file, '{broken');
+    expect(await f.run([...prefix, 'schema', selector, '--platform', 'cursor']))
+      .toMatchObject({ exitCode: 0, value: { data: { fields: { cursorOnly: expect.objectContaining({ type: 'number' }) } } } });
+    expect(await f.run([...prefix, 'reset', selector, '--platform', 'cursor', '--apply', '--yes']))
+      .toMatchObject({ exitCode: 4, value: { status: 'partial', data: { configWrite: 'succeeded',
+        confirmation: { required: true, provided: true }, apply: { error: { code: 'deploymentPreferencesInvalid' } } } } });
+    expect(await fs.pathExists(f.file)).toBe(false);
+  });
+
+  // Test Value Gate: an entirely platform-only declaration has no common write target, even when stale values exist.
+  it('rejects common writes and suggestions for a platform-only plugin without preventing cleanup', async () => {
+    const f = await fixture('platform-only');
+    const selector = 'team/demo';
+    const prefix = ['plugin', 'config'];
+    const set = [...prefix, 'set', selector, 'profile', '--value-json', '"configured"'];
+    expect(await f.run([...set, '--platform', 'cursor'])).toMatchObject({ exitCode: 0 });
+    const document = await fs.readJson(f.file);
+    await fs.outputJson(f.file, { ...document, common: { profile: 'stale-history' } });
+    for (const args of [set, [...prefix, 'suggestions', selector, 'profile']]) {
+      expect(await f.run(args)).toMatchObject({ exitCode: 3, value: { status: 'blocked',
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'configCommonLayerUnavailable' })]),
+        nextActions: expect.any(Array) } });
+    }
+    expect(await f.run([...prefix, 'get', selector, 'profile'])).toMatchObject({ exitCode: 0,
+      value: { data: { fields: [expect.objectContaining({ effectiveValue: '[redacted]', canUnset: true })] } } });
+    expect(await f.run([...prefix, 'unset', selector, 'profile'])).toMatchObject({ exitCode: 0 });
+    expect(await fs.readJson(f.file)).toMatchObject({ common: {}, platforms: { cursor: { profile: 'configured' } } });
+  });
   it.each([
     ['team/missing', 'pluginUnavailable'],
     ['team/demo', 'sourceActiveUnavailable'],
