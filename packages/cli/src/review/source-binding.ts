@@ -174,6 +174,7 @@ export interface EvalProfileBindingInput {
 
 export interface PortablePluginProfileConfig {
   config: ResolvedArtifactRenderConfig
+  userConfig?: ResolvedArtifactRenderConfig
   digest: string
 }
 
@@ -337,7 +338,9 @@ function normalizePreparation(value: unknown): ComponentPreparationBinding[] {
     if (row.components.some((entry) => !strictRecord(entry, ['id', 'kind', 'name', 'source']) || !nonEmptyString((entry as Record<string, unknown>).name) || !['static', 'dynamic'].includes((entry as Record<string, unknown>).source as string))) throw new Error('Source binding component summary is invalid.')
     for (const entry of row.omitted) {
       const item = entry as Record<string, unknown>
-      if (!strictRecord(item, ['id', 'kind', 'reason']) || !['not-offered', 'config-disabled'].includes(item.reason as string)) throw new Error('Source binding omission is invalid.')
+      if (!strictRecord(item, ['id', 'kind', 'reason', ...(item.name === undefined ? [] : ['name'])])
+        || !['not-offered', 'config-disabled'].includes(item.reason as string)
+        || (item.name !== undefined && (typeof item.name !== 'string' || item.name.length === 0))) throw new Error('Source binding omission is invalid.')
     }
     if (declaredGapIds !== undefined && (!Array.isArray(declaredGapIds)
       || declaredGapIds.some((id) => !(row.unmet as Array<{ id: string }>).some((entry) => entry.id === id)))) throw new Error('Source binding gap identities are invalid.')
@@ -599,7 +602,7 @@ export function resolveEvalProfileBindingInput(
   }
 }
 
-export async function resolvePortablePluginProfileConfig(options: {
+interface PortablePluginConfigOptions {
   platform: PlatformTarget
   plugin: PluginMeta
   plugins?: readonly PluginMeta[]
@@ -610,7 +613,16 @@ export async function resolvePortablePluginProfileConfig(options: {
   sourceId?: string
   catalogSourceIdentity?: string
   logicalIdentity?: string
-}): Promise<PortablePluginProfileConfig> {
+}
+
+export async function resolvePortablePluginProfileConfig(options: PortablePluginConfigOptions): Promise<PortablePluginProfileConfig> {
+  const selected = await resolvePortableScopeConfig(options)
+  if (options.platform !== 'codex' || options.scope !== 'project') return selected
+  const user = await resolvePortableScopeConfig({ ...options, scope: 'user' })
+  return { config: selected.config, userConfig: user.config, digest: digestCanonical({ project: selected.digest, user: user.digest }) }
+}
+
+async function resolvePortableScopeConfig(options: PortablePluginConfigOptions): Promise<PortablePluginProfileConfig> {
   if (!isPlatformTarget(options.platform)) throw new Error('Portable profile requires an explicit canonical platform.')
   if (!resolveSupportedPlatforms(options.plugin.manifest).has(options.platform)) {
     throw new Error(`Plugin "${options.plugin.manifest.name}" does not support platform "${options.platform}".`)
@@ -703,7 +715,7 @@ async function currentWorkspaceProfile(options: {
 }): Promise<AwSourceBindingProfile> {
   for (const unit of options.binding.preparation) {
     const current = toPlatformCapabilitiesView(getAuthoringPlatformCapabilities(unit.platform, unit.renderScope, {
-      activationScope: options.binding.profile.scope, portable: options.binding.profile.kind === 'portable',
+      portable: options.binding.profile.kind === 'portable',
     }))
     if (unit.profileId !== getQualifiedPlatformProfile(unit.platform).id || unit.capabilitiesDigest !== artifactValueDigest(current)) {
       throw new Error('The bound platform capability profile changed; prepare again.')

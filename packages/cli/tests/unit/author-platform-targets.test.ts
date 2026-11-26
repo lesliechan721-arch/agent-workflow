@@ -14,7 +14,6 @@ import { prepareSkillEval } from '../../src/commands/skill-eval.js';
 import { readAwSkillEvalManifest } from '../../src/eval/manifest-v1.js';
 import { materializePortableSkills } from '../../src/portable/materializer.js';
 import { readAwSourceBinding, resolvePortableProfileBindingInput } from '../../src/review/source-binding.js';
-import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { materializeAwSkillEvalSubject, resolveMaterializedSubjectRoot } from '../../scripts/aw-skill-eval-materializer.js';
 
@@ -62,7 +61,7 @@ const platform = context.platform;
 if (!context.allowedOutputKinds.includes('skill')) {
   console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));
 } else if (context.platformCapabilities.kinds.skill.status !== 'supported') {
-  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'dynamic',kind:'skill',name:'dynamic',requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'capability-unverified'}]}));
+  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'dynamic',kind:'skill',name:'dynamic',requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'interface-unsupported'}]}));
 } else {
   console.log(JSON.stringify({version:3,components:[{id:'dynamic',kind:'skill',name:'dynamic',content:{files:{
     'SKILL.md':{text:'---\\nname: dynamic\\ndescription: Dynamic platform fixture.\\n---\\n'+platform+' '+context.config.values.mode+' '+context.config.values.flavor+'\\n'},
@@ -80,7 +79,7 @@ if (!context.allowedOutputKinds.includes('skill')) {
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
 
 describe('author canonical platforms', () => {
-  it('binds each explicit target to its own templates, resources, config and qualified capability evidence', async () => {
+  it('binds each explicit target to its own templates, resources, config and platform capability evidence', async () => {
     const { root, pluginRoot, env } = await fixture();
     const plugin = await readPluginManifest(pluginRoot);
     const digests: string[] = [];
@@ -89,18 +88,13 @@ describe('author canonical platforms', () => {
         platform, scope: 'user', cwd: root, env });
       try {
         const skillRoot = path.join(materialized.rootDir, 'skills');
-        if (getAuthoringPlatformCapabilities(platform, 'user').kinds.skill.status === 'supported') {
-          expect(materialized.candidates.map((skill) => skill.name)).toEqual(['dynamic', 'static']);
-          expect(await fs.readFile(path.join(skillRoot, 'static', 'SKILL.md'), 'utf8')).toContain(platform);
-          expect(await fs.readFile(path.join(skillRoot, 'static', 'references', 'runtime.txt'), 'utf8')).toBe(`${platform} runtime\n`);
-          expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'SKILL.md'), 'utf8')).toContain(`${platform} ${platform}-default ${platform}-flavor`);
-          expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'references', 'runtime.txt'), 'utf8')).toBe(`${platform} runtime\n`);
-          expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'references', 'generated.md'), 'utf8')).toBe(`${platform} generated\n`);
-          expect(materialized.preparation.flatMap((unit) => unit.components)).toContainEqual({ id: 'dynamic', kind: 'skill', name: 'dynamic', source: 'dynamic' });
-        } else {
-          expect(materialized.candidates).toEqual([]);
-          expect(materialized.preparation.flatMap((unit) => unit.unmet)).toContainEqual(expect.objectContaining({ id: 'dynamic', reasonCode: 'capability-unverified' }));
-        }
+        expect(materialized.candidates.map((skill) => skill.name)).toEqual(['dynamic', 'static']);
+        expect(await fs.readFile(path.join(skillRoot, 'static', 'SKILL.md'), 'utf8')).toContain(platform);
+        expect(await fs.readFile(path.join(skillRoot, 'static', 'references', 'runtime.txt'), 'utf8')).toBe(`${platform} runtime\n`);
+        expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'SKILL.md'), 'utf8')).toContain(`${platform} ${platform}-default ${platform}-flavor`);
+        expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'references', 'runtime.txt'), 'utf8')).toBe(`${platform} runtime\n`);
+        expect(await fs.readFile(path.join(skillRoot, 'dynamic', 'references', 'generated.md'), 'utf8')).toBe(`${platform} generated\n`);
+        expect(materialized.preparation.flatMap((unit) => unit.components)).toContainEqual({ id: 'dynamic', kind: 'skill', name: 'dynamic', source: 'dynamic' });
         expect(materialized.preparation.every((unit) => unit.platform === platform && unit.profileId.startsWith(`${platform}:`))).toBe(true);
         const binding = await resolvePortableProfileBindingInput({ plugins: [plugin], pluginName: plugin.manifest.name,
           platform, scope: 'user', cwd: root, env });

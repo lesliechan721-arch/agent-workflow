@@ -244,14 +244,16 @@ describe('bundle layout validation', () => {
     });
   });
 
-  it('scans unchanged source Skill requirements once in build-free mode', async () => {
-    // Test Value Gate: build-free bundling must not repeat source Skill I/O without a build that can change it.
+  it('validates source Skill Agent references and scans unchanged requirements once in build-free mode', async () => {
+    // Test Value Gate: source validation checks Agent references and the build
+    // scans current requirement inputs once. A build-free copy must not scan
+    // unchanged source requirements again or reread the main document in the same scan.
     const repoRoot = await makeTempRepo();
     const skillPath = path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md');
     const read = vi.spyOn(fs, 'readFile');
     try {
       await bundlePlugins({ repoRoot, outputRoot: path.join(repoRoot, 'embedded') });
-      expect(read.mock.calls.filter(([file]) => file === skillPath)).toHaveLength(1);
+      expect(read.mock.calls.filter(([file]) => file === skillPath)).toHaveLength(2);
     } finally {
       read.mockRestore();
     }

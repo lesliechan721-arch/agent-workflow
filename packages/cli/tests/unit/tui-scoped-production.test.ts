@@ -2,7 +2,7 @@ import { Hash } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
@@ -24,7 +24,6 @@ import { applyCodexConfigTransactionFile, readCodexConfigFile, removeCodexMarket
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture, git, rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
-import { getPlatformCapabilities } from '../../src/platforms/capabilities.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(portable = false, dependency = false) {
@@ -128,13 +127,6 @@ function pauseFirstCatalogStateRead(env: NodeJS.ProcessEnv) {
 
 describe('scoped TUI production reads', () => {
   afterEach(() => vi.restoreAllMocks());
-  beforeEach(() => {
-    vi.spyOn(getAgentPluginAdapter('codex'), 'capabilities').mockImplementation((input) => {
-      const capabilities = getPlatformCapabilities(input);
-      capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
-      return capabilities;
-    });
-  });
 
   it('scans the Active snapshot once when opening home without declarations', async () => {
     const value = await fixture(true);

@@ -28,16 +28,19 @@ const customConfig = {
 // Profiles in this test exercise renderer inputs independently of native host qualification.
 function context(platform = 'codex', overrides = {}, basis = 'local') {
   const unsupportedAgent = ['opencode', 'generic'].includes(platform);
+  const agentNamingMode = unsupportedAgent ? 'unsupported' : platform === 'claude' ? 'host-plugin' : 'aw-prefix';
+  const filePrefix = agentNamingMode === 'aw-prefix' ? 'aw-fixture-agent-subagent-' : '';
   const agentDelivery = { codex: 'managed-host-resource', pi: 'native-extension' }[platform] ?? 'native-package';
   return {
-    schemaVersion: 2, surface: 'agent-plugin', platform, scope: 'user',
+    schemaVersion: 3, surface: 'agent-plugin', platform, scope: 'user',
     plugin: { pluginId: 'fixture/agent-subagent' },
+    agentNaming: { mode: agentNamingMode, filePrefix, invocationPrefix: agentNamingMode === 'host-plugin' ? 'agent-subagent:' : filePrefix },
     allowedOutputKinds: ['skill', 'agent'],
     changedConfigKeys: [], previousComponents: [],
     resources: ['./shared', './skills/spawn-subagent'].map((name) =>
       ({ kind: 'bundle', name, root: path.join(root, name), digest: 'test-resource' })),
     platformCapabilities: {
-      schemaVersion: 2, platform, scope: 'user', basis, deliveryFeatures: [],
+      schemaVersion: 3, platform, scope: 'user', basis, agentNamingMode,
       kinds: {
         skill: { status: 'supported', reasonCodes: [], delivery: [platform === 'generic' ? 'generic-files' : 'native-package'] },
         agent: unsupportedAgent

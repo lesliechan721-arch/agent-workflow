@@ -10,11 +10,11 @@ import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import * as platformRegistry from '../../src/platforms/registry.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime, createNativeDependencyCatalog, replaceCatalogSourcesConfig } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed', 'hard gap'] as const)(
+it.each(['supported', 'hidden Skill', 'mixed Codex readers', 'write failed', 'hard gap'] as const)(
   'reports invocation limitations only for delivered Skills with a %s native target', async (native) => {
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
@@ -67,7 +67,7 @@ it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed',
     expect(code, capture.readStdout()).toBe(partial ? 4 : 0);
     expect(receipt.status).toBe(partial ? 'partial' : 'success');
     if (native === 'hard gap') {
-      for (const [target, reasonCode] of [['codex', 'delivery-unavailable'], ['generic', 'interface-unsupported']] as const) {
+      for (const [target, reasonCode] of [['codex', 'interface-unsupported'], ['generic', 'interface-unsupported']] as const) {
         expect(receipt.data.targetResults).toContainEqual(expect.objectContaining({
           target, scope: 'user', satisfaction: 'installed', installedComponentCount: 3,
           installedComponentIds: expect.arrayContaining(names.map((name) => `skill:${name}`)),
@@ -87,7 +87,7 @@ it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed',
     expect(warnings).toHaveLength(native === 'supported' || native === 'write failed' ? 1 : 2);
     expect(warnings).toContainEqual(expect.objectContaining({ severity: 'warning', detail: expect.objectContaining({ reasonCode: 'noBoundExecutor' }),
       subject: { pluginId: 'team/git-tools', scope: 'user', target: 'generic', field: 'skill.commit' } }));
-    if (native === 'partly qualified' || native === 'hard gap') {
+    if (native === 'hidden Skill' || native === 'hard gap') {
       const warning = warnings.find((item: { subject: { target: string } }) => item.subject.target === 'codex');
       expect(warning).toMatchObject({ severity: 'warning', subject: { field: 'skill.commit' }, detail: {
         skillInvocationControls: expect.arrayContaining([expect.objectContaining({ feature: 'skill.visibility', values: ['hidden'] })]),
@@ -97,11 +97,11 @@ it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed',
     }
     if (native === 'mixed Codex readers') {
       const notice = warnings.find((item: { subject: { target: string } }) => item.subject.target === 'codex');
-      expect(notice.message).toContain('skill.invocation.model=false for the Codex desktop app');
+      expect(notice.message).not.toContain('desktop');
+      expect(notice.detail.skillInvocationControls).toHaveLength(2);
       expect(notice.detail.skillInvocationControls).toEqual(expect.arrayContaining([
-        { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnverified' },
-        { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnverified' },
-        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+        { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported' },
+        { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnsupported' },
       ]));
     }
     const skillRoots = [path.join(env.HOME!, '.agents', 'skills')];
@@ -122,7 +122,7 @@ it.each(['supported', 'partly qualified', 'mixed Codex readers', 'write failed',
 
 it.each(['wrong version', 'missing registration'] as const)(
   'blocks consumer writes when the installed Codex provider reports %s', async (fault) => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
     const root = path.join(cwd, 'catalog');

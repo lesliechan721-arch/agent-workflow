@@ -4,15 +4,16 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import YAML from 'yaml';
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { afterEach, describe, expect, it } from 'vitest';
-import { partitionStaticPluginComponents, getComponentFeatureRequirements, getPlatformFeatureRegistry, type PlatformId, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { partitionStaticPluginComponents, type PlatformId, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
-import { projectPlatform } from '../../src/platforms/projection.js';
+import { projectPlatform, projectSupplementFile } from '../../src/platforms/projection.js';
 import { projectPlatformMarketplace } from '../../src/platforms/projection-marketplace.js';
 import { prepareProjectionRoot, ProjectionFiles } from '../../src/platforms/projection-files.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
-import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
+import { gapSupplementFiles, staticSupplementFiles } from '../../src/platforms/supplement-layout.js';
 import { commandResourceReferences } from '../../src/utils/component-resources.js';
 
 const temporaryRoots: string[] = [];
@@ -35,19 +36,9 @@ async function fixture(platform: PlatformId, components: PluginComponent[], outp
       physicalKey: 'physical', activationKey: 'activation', renderUnitIds: ['unit'],
     },
     renderUnit: { id: 'unit', physicalKey: 'physical', renderScope: { kind: 'user' }, output, kinds, consumers: [] },
-    capabilities: {
-      schemaVersion: 2, platform, scope: 'user', basis: 'profile',
-      kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as unknown as ProjectionInput['capabilities']['kinds'],
-      features: {},
-    },
+    capabilities: getAuthoringPlatformCapabilities(platform, 'user'),
     components, policy: { platform, permissions: [] }, resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'closure' },
   };
-  for (const component of components) for (const requirement of getComponentFeatureRequirements(component)) {
-    if (getPlatformFeatureRegistry()[requirement.feature]?.derivedFromKind) continue;
-    const previous = input.capabilities.features[requirement.feature];
-    input.capabilities.features[requirement.feature] = { status: 'supported', reasonCodes: [],
-      ...(requirement.values ? { values: [...new Set([...(previous?.values ?? []), ...requirement.values])] } : {}) };
-  }
   const ctx: StageContext = { cwd: root, stagingRoot: path.join(root, 'stage'), env: { HOME: path.join(root, 'home'), CODEX_HOME: path.join(root, 'codex'), AW_HOME: path.join(root, 'aw') } };
   return { root, input, ctx };
 }
@@ -62,7 +53,7 @@ const instruction: PluginComponent = { id: 'instruction:policy', kind: 'instruct
 
 describe('platform projection', () => {
   it.each(['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'] as const)(
-    'separates %s role and Hook delivery from runtime qualification in both scopes', (platform) => {
+    'delivers the supported %s roles and Hooks in both scopes', (platform) => {
       const hook: PluginComponent = { id: 'notify', kind: 'hook', name: 'notify',
         content: { dialect: 'common', event: 'before_tool', feedback: 'notify', command: 'echo ready' } };
       for (const scope of ['user', 'project'] as const) {
@@ -72,9 +63,9 @@ describe('platform projection', () => {
         expect(installed).toContain('skill');
         expect(installed.includes('agent')).toBe(platform !== 'opencode' && platform !== 'generic');
         expect(installed.includes('hook')).toBe(platform !== 'cursor' && platform !== 'generic');
-        expect(capabilities.features['hook.common.before_tool']?.status).not.toBe('supported');
-        if (platform === 'pi') expect(capabilities.deliveryFeatures).toContainEqual(
-          { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] });
+        expect(capabilities.features['hook.common.before_tool']?.status).toBe(installed.includes('hook') ? 'supported' : 'unsupported');
+        if (platform === 'pi') expect(capabilities.features['agent.declaration-protocol']).toMatchObject(
+          { status: 'supported', values: ['aw.pi.agents.v1'] });
       }
     });
   it('keeps an unmapped command policy out of the host while publishing the Skill', async () => {
@@ -139,6 +130,62 @@ describe('platform projection', () => {
     }
   });
 
+  // The native payload and the projection receipt must use the same host-visible
+  // name. Distinct sources and plugins may declare the same public role.
+  it.each(['claude', 'codex', 'pi', 'antigravity', 'cursor', 'copilot', 'grok'] as const)(
+    'projects %s Agent file, metadata and receipt names consistently', async (platform) => {
+      const role = { ...agent, name: 'reviewer' };
+      const { input, ctx } = await fixture(platform, [role], platform === 'codex' ? 'supplement' : 'package');
+      const identities: Array<[string, string]> = platform === 'claude' ? [['official', 'demo']] : [['official', 'demo'], ['official', 'other'], ['partner', 'demo']];
+      const observedNames = new Set<string>();
+      for (const [sourceId, pluginName] of identities) {
+        input.binding.plugin = { ...input.binding.plugin, sourceId, pluginId: `${sourceId}/${pluginName}` };
+        const nativeName = platform === 'claude' ? 'reviewer' : `aw-${sourceId}-${pluginName}-reviewer`;
+        const relative = platform === 'codex' ? `${nativeName}.toml` : platform === 'copilot'
+          ? `com.github.copilot/agents/${nativeName}.agent.md` : `agents/${nativeName}.md`;
+        const result = await projectPlatform(ctx, input);
+        expect(result.components).toEqual([{ id: role.id, nativeName, relativeOutputs: [relative] }]);
+        observedNames.add(result.components[0]!.nativeName);
+        if (platform === 'codex') {
+          const layout = await getDeploymentLayout(ctx, input.binding);
+          const destination = path.join(layout.supplementRoot!, relative);
+          expect(result.supplements).toMatchObject([{ id: role.id, destination }]);
+          const text = await fs.readFile(result.supplements[0]!.stagingPath, 'utf8');
+          expect(getStaticTOMLValue(parseTOML(text)).name).toBe(nativeName);
+          expect(gapSupplementFiles(input.binding, layout, [{ id: role.id, kind: 'agent', name: role.name,
+            requiredFeatures: [{ feature: 'agent.model' }], reasonCode: 'interface-unsupported' }]).map(({ path }) => path)).toEqual([destination]);
+          expect(staticSupplementFiles(input.binding, layout, { extensions: { agents: [{ name: role.name,
+            description: role.content.description, prompt: role.content.prompt }] } }).map(({ path }) => path)).toEqual([destination]);
+        } else {
+          const text = await fs.readFile(path.join(result.bundle!.stagingRoot, relative), 'utf8');
+          expect(YAML.parse(text.split('---')[1]!).name).toBe(nativeName);
+        }
+      }
+      expect(observedNames.size).toBe(identities.length);
+    });
+
+  it.each(['codex', 'pi', 'antigravity', 'cursor', 'copilot', 'grok'] as const)(
+    'checks the full prefixed %s Agent name before staging', async (platform) => {
+      const roleName = 'a'.repeat(128 - 'aw-source-example-'.length);
+      const { input, ctx } = await fixture(platform, [{ ...agent, name: roleName }], platform === 'codex' ? 'supplement' : 'package');
+      expect((await projectPlatform(ctx, input)).components[0]!.nativeName).toHaveLength(128);
+      const invalidRoot = path.join(ctx.stagingRoot, 'invalid');
+      const invalidRole = { ...agent, name: `${roleName}a` };
+      input.components = [invalidRole];
+      await expect(projectPlatform({ ...ctx, stagingRoot: invalidRoot }, input)).rejects.toThrow('platformProjectionNameInvalid');
+      expect(await fs.pathExists(invalidRoot)).toBe(false);
+      if (platform === 'codex') {
+        // Read-only static inspection and recovery cannot address a file that
+        // could never have been a valid projected role.
+        expect(() => projectSupplementFile(input.binding, invalidRole)).toThrow('platformProjectionNameInvalid');
+        const layout = await getDeploymentLayout(ctx, input.binding);
+        expect(gapSupplementFiles(input.binding, layout, [{ id: invalidRole.id, kind: 'agent', name: invalidRole.name,
+          requiredFeatures: [{ feature: 'agent.model' }], reasonCode: 'interface-unsupported' }])).toEqual([]);
+        expect(() => staticSupplementFiles(input.binding, layout, { extensions: { agents: [{ name: invalidRole.name,
+          description: invalidRole.content.description, prompt: invalidRole.content.prompt }] } })).toThrow('platformProjectionNameInvalid');
+      }
+    });
+
   it('writes Claude roles in the default discovery directory without overriding the scan', async () => {
     const restricted: PluginComponent = { ...agent, content: { ...agent.content, tools: ['Read'] } };
     const { input, ctx } = await fixture('claude', [skill, restricted]);
@@ -189,7 +236,7 @@ describe('platform projection', () => {
     input.capabilities = capabilities;
     if (platform === 'grok') input.renderUnit.kinds = ['agent'];
     const result = await projectPlatform(ctx, input);
-    const rolePath = platform === 'grok' ? 'agents/review.md' : 'com.github.copilot/agents/review.agent.md';
+    const rolePath = platform === 'grok' ? 'agents/aw-source-example-review.md' : 'com.github.copilot/agents/aw-source-example-review.agent.md';
     expect(result.components.find(({ id }) => id === roleOnly.id)?.relativeOutputs).toEqual([rolePath]);
     expect(await fs.readFile(path.join(result.bundle!.stagingRoot, rolePath), 'utf8')).toContain('Preserve the source files.');
     expect(await fs.pathExists(path.join(result.bundle!.stagingRoot, 'com.github.copilot/rules'))).toBe(false);
@@ -233,8 +280,6 @@ describe('platform projection', () => {
       { feature: 'skill.invocation.model', values: ['true', 'false'] }, { feature: 'skill.visibility' },
     ] };
     const { input, ctx } = await fixture('generic', [controlled], 'generic');
-    const profile = getQualifiedPlatformProfile('generic');
-    input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
     const result = await projectPlatform(ctx, input);
     const text = await fs.readFile(path.join(result.supplements[0]!.stagingPath, 'SKILL.md'), 'utf8');
     expect(YAML.parse(text.split('---')[1]!).metadata).toEqual({ 'skill.invocation.model': 'false,true', 'skill.visibility': '' });
@@ -253,8 +298,6 @@ describe('platform projection', () => {
         'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: ${manual}\ndisable-model-invocation: ${disableModel}\n---\nRun explicitly.\n` },
       } } };
       const { input, ctx } = await fixture('codex', [controlled]);
-      const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
-      input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
       const result = await projectPlatform(ctx, input);
       const skillRoot = path.join(result.bundle!.stagingRoot, 'skills/check');
       const definition = YAML.parse(await fs.readFile(path.join(skillRoot, 'agents/openai.yaml'), 'utf8'));
@@ -310,7 +353,7 @@ describe('platform projection', () => {
 
   it('registers Pi MCP and directly appends Instructions through the generated extension', async () => {
     const mcp: PluginComponent = { id: 'mcp:docs', name: 'docs', kind: 'mcp', content: { type: 'stdio', command: 'node', args: ['server.mjs'] } };
-    const { input, ctx } = await fixture('pi', [mcp, instruction]);
+    const { input, ctx } = await fixture('pi', [mcp, { ...instruction, content: { ...instruction.content, coverage: ['main'] } }]);
     input.resources.bundleFiles.push({ path: 'server.mjs', bytes: Buffer.from('export {};') });
     input.resources.commandResources.push({ componentId: mcp.id, field: 'args', index: 0,
       original: 'server.mjs', start: 0, end: 'server.mjs'.length, path: 'server.mjs' });

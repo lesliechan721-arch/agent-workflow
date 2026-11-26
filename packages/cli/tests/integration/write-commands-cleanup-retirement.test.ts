@@ -1,5 +1,5 @@
 import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { createNativeTestExecution, getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { realpath } from 'node:fs/promises';
@@ -114,7 +114,7 @@ async function writeEmptyAgentProbeRenderer(options: { pluginRoot: string; count
 describe('five namespaced write commands', () => {
   let defaultNativeRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });

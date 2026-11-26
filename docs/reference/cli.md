@@ -72,8 +72,8 @@ type Diagnostic = {
     skillInvocationControls?: Array<{
       feature: 'skill.invocation.manual' | 'skill.invocation.model' | 'skill.visibility';
       values?: Array<'true' | 'false' | 'visible' | 'hidden'>;
-      reasonCode: 'noBoundExecutor' | 'invocationControlUnsupported' | 'invocationControlUnverified';
-      product?: 'app';
+      reasonCode: 'noBoundExecutor' | 'invocationControlUnsupported' | 'invocationControlDegraded';
+      product?: 'cli' | 'app';
     }>;
   };
   subject?: {
@@ -206,9 +206,7 @@ type LifecycleData = {
 };
 ```
 
-安装、同步、重建或配置应用交付 Skill 后，`diagnostics` 按实际插件、Skill、平台和范围最多给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 列出受影响的显式调用、模型自动调用或可见性控制及声明值、原因和适用产品。通常可报告未绑定执行客户端、客户端不支持或能力未验证。Codex CLI 与桌面 App 共用一个包时，已验证 CLI 且仅桌面 App 尚未验证的控制带有 `product: 'app'`。
-
-Antigravity 的诊断只在已确认实际读者不支持该控制（`invocationControlUnsupported`），或有可靠回读表明策略实际降级（`invocationControlDegraded`）时生成。每项控制以 `product: 'cli' | 'app'` 标识相关读者。缺少会话实测、未登录或查询失败时仍保留未知资格，回执省略该提示。CLI 文本、JSON、TUI、历史和导出表达同一结果。警告不影响成功退出码或重试范围。
+安装、同步、重建或配置应用交付 Skill 后，`diagnostics` 按实际插件、Skill、平台和范围最多给出一次 `skillInvocationPolicyNotGuaranteed`。`subject.field` 形如 `skill.<name>`。`detail.skillInvocationControls` 列出受影响的显式调用、模型自动调用或可见性控制及声明值、原因和适用产品。只有三类明确情况生成提示：generic 目录无绑定执行器（`noBoundExecutor`）、平台能力不支持所请求的特性或取值（`invocationControlUnsupported`）、现场观测策略实际降级（`invocationControlDegraded`）。Antigravity User/Project、Codex、Cursor、OpenCode 和 Pi 没有原生隐藏 Skill 开关，对 `user-invocable: false` 统一报告不支持。仅 Antigravity 按实际读者在相关控制项携带 `product: 'cli' | 'app'`；同一控制项既不支持又被观测降级时优先报告降级。未登录、未取证或查询失败本身不产生提示。CLI 文本、JSON、TUI、历史和导出表达同一结果。警告不影响成功退出码或重试范围。
 
 命令规则部分或全部未施加时，`invocationPolicyNotApplied` 通过 `detail.skippedPermissionActions` 列出具体动作。`sandbox` 指沙箱排除。`subject.field` 形如 `permissions.<name>`，`detail.reasonCode` 标明跳过原因。不可达的命令路由使用 `command-route-unreachable`。CLI 文本、JSON、TUI、历史和导出均报告这些动作。`plugin.status` 在有适用证据时也保留提示。诊断使用安全标识和固定动作，省略作者命令及参数。OpenCode 已知 Project 的手工规则与本次 User 限制冲突时，`detail.path` 标明该 Project 权限配置。其他适用动作照常交付，提示不影响成功退出码或重试范围。
 
@@ -253,7 +251,7 @@ Antigravity 的诊断只在已确认实际读者不支持该控制（`invocation
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
-生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。`renderScope` 对应组件实际准备的范围。例如 Codex 的 Project 目标中，共享包里的 Hook 缺口标为 `user`，独立角色的缺口标为 `project`。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
+生命周期、配置应用和 `plugin.status` 在有相应证据时保留实际安装项数、组件身份及 `componentGaps`。`componentGaps` 带有提供插件 `providerPluginId`、平台 `agent`、`renderScope`、组件 kind、ID、原因及具体 feature/value。`renderScope` 对应组件实际准备的范围。例如 Codex 的 Project 目标中，共享包里的 Hook 缺口标为 `user`，独立角色的缺口标为 `project`。部分交付的组件仍可通过 `componentId` 关联已交付身份。Pi 已交付的角色可另有 `piAgentConsumerUnavailable` 提示，说明已证实的执行扩展缺口或实际配置读取失败（`detail.reasonCode: piConfigurationUnconfirmed`，执行可用性仍为未知）。仍可能生效的旧输出可见于 `previousDeploymentRetained` 诊断。状态与恢复依据见[生命周期](../maintainers/architecture/lifecycle.md#平台执行入口与结果)。
 
 `plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。 OpenCode、Grok 和 Antigravity CLI Global 也核对当前插件的 AW 权限归属和上次交付的原生规则。规则缺失会提示同步，归属受损或无法可信地读取已交付规则时显示未确认。宿主当前会话的批准仍由宿主决定。
 

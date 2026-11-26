@@ -363,9 +363,13 @@ export async function renderPackage(ctx, revision) {
         configRoot: resolvePlatformConfigRoot(platform, { cwd: ctx.project, env: ctx.env }) } });
   }
   // Explicit test candidate only. No production profile is changed or qualified by rendering.
-  const capabilities = { schemaVersion: 2, platform, scope: renderScope, basis: 'profile', features: {},
+  const { resolvePlatformAgentNamingMode } = await import('../../packages/cli/dist/src/utils/manifest.js');
+  const capabilities = { schemaVersion: 3, platform, scope: renderScope, basis: 'profile',
+    agentNamingMode: resolvePlatformAgentNamingMode(platform), features: {},
     kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
-      { status: kind === 'skill' ? 'supported' : 'unverified', reasonCodes: kind === 'skill' ? [] : ['capability-unverified'], delivery: [platform === 'opencode' ? 'native-extension' : 'native-package'] }])) };
+      { status: kind === 'skill' ? 'supported' : 'unsupported',
+        reasonCodes: kind === 'skill' ? [] : ['interface-unsupported'],
+        delivery: kind === 'skill' ? [['opencode', 'pi'].includes(platform) ? 'native-extension' : 'native-package'] : [] }])) };
   const components = [{ id: 'skill:qualification', kind: 'skill', name: ctx.skillName, content: { files: {
       'SKILL.md': { text: `---\nname: ${ctx.skillName}\ndescription: AW qualification revision ${revision}\n---\n${['opencode', 'antigravity'].includes(platform) ? `Qualification fixture revision ${revision}.` : 'Qualification fixture.'} No model request is required.\n` },
     } } }];

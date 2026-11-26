@@ -148,7 +148,7 @@ it('publishes complete v3 dynamic source through the built public CLI and Git pr
     'console.log(JSON.stringify({ version: 3, components: offered && supported ? [{',
     'id: "dynamic", kind: "skill", name: "dynamic", content: { files: Object.fromEntries(Object.entries(files).map(([name,text])=>[name,{text}])) },',
     '}]:[], omitted:[], unmet:offered && !supported ? [{id:"dynamic",kind:"skill",name:"dynamic",',
-    'requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"capability-unverified"}]:[] }));',
+    'requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"interface-unsupported"}]:[] }));',
   ].join('\n'));
   await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
   await execFileAsync('git', [

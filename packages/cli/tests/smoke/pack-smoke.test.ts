@@ -986,8 +986,6 @@ describe('pack smoke', () => {
     await execAw(['target', 'set', 'codex', '--json'], {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
-    // The fixed Codex fixture has plain Skill qualification on the six supported hosts.
-    const codexSkillQualified = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch);
     const privateCacheFile = path.join(externalAuthoringEnv.CODEX_HOME, 'plugins', 'cache', 'foreign', 'keep.txt');
     await fs.outputFile(privateCacheFile, 'Keep private client content.\n');
     const installNative = async () => {
@@ -1033,48 +1031,33 @@ describe('pack smoke', () => {
     const codexBeforeTrust = projectInstallBeforeTrust.receipt.data.targetResults.find((target: { target: string }) => target.target === 'codex');
     const nativeBeforeTrust = await readNativeState();
     const installedNativeEntry = Object.entries(nativeBeforeTrust.plugins);
-    let nativePluginId: string | undefined;
-    let nativePackageRoot: string | undefined;
-    let nativePackageFiles: string[] | undefined;
-    if (codexSkillQualified) {
-      expect(installedNativeEntry, projectInstallBeforeTrust.diagnostic).toHaveLength(1);
-      const [id, nativePlugin] = installedNativeEntry[0]!;
-      nativePluginId = id;
-      nativePackageRoot = nativePlugin.path;
-      expect(id).toBe(`packed-build@${nativePlugin.marketplaceName}`);
-      expect(nativePlugin.marketplaceName).toBe(`aw-${developmentSourceId}`);
-      expect(nativePackageRoot).toBe(path.join(nativeBeforeTrust.marketplaces[nativePlugin.marketplaceName]!, 'plugins', 'packed-build'));
-      expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
-        expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',
-          configuration: expect.objectContaining({ scope: 'project', activation: 'enabled' }),
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'disabled' })]) }) }),
-      ]) });
-      expect(await fs.readJson(path.join(nativePackageRoot, '.agent-workflows-owner.json'))).toMatchObject({
-        schemaVersion: 3, owner: 'agent-workflows', sourceId: developmentSourceId,
-        pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'user',
-        sourceIdentity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
-        physicalKey: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
-        nativeProjection: { components: expect.arrayContaining([expect.objectContaining({
-          id: 'skill:packed-native', nativeName: 'packed-native',
-          relativeOutputs: expect.arrayContaining(['skills/packed-native/SKILL.md']),
-        })]) },
-      });
-      expect(await fs.readJson(path.join(nativePackageRoot, '.codex-plugin', 'plugin.json'))).toMatchObject({ name: 'packed-build', version: '0.1.0' });
-      const projectConfigBeforeTrust = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
-      expect(projectConfigBeforeTrust).toContain(`[plugins.${JSON.stringify(id)}]`);
-      expect(projectConfigBeforeTrust).toContain('enabled = true');
-      nativePackageFiles = await listFilesRecursively(nativePackageRoot);
-    } else {
-      expect(installedNativeEntry).toEqual([]);
-      expect(codexBeforeTrust).toMatchObject({ execution: 'not-run', blockerCodes: ['noSupportedComponents'] });
-      expect(codexBeforeTrust).not.toHaveProperty('deploymentReceipts');
-      expect(codexBeforeTrust.deploymentPlans).toEqual(expect.arrayContaining([
-        expect.objectContaining({ effects: [], expected: expect.objectContaining({ components: [], unmet: expect.arrayContaining([
-          expect.objectContaining({ id: 'skill:packed-native', kind: 'skill', reasonCode: 'capability-unverified' }),
-        ]) }) }),
-      ]));
-      expect(await fs.pathExists(path.join(standaloneWorkspace, '.codex', 'config.toml'))).toBe(false);
-    }
+    expect(installedNativeEntry, projectInstallBeforeTrust.diagnostic).toHaveLength(1);
+    const [id, nativePlugin] = installedNativeEntry[0]!;
+    const nativePluginId = id;
+    const nativePackageRoot = nativePlugin.path;
+    expect(id).toBe(`packed-build@${nativePlugin.marketplaceName}`);
+    expect(nativePlugin.marketplaceName).toBe(`aw-${developmentSourceId}`);
+    expect(nativePackageRoot).toBe(path.join(nativeBeforeTrust.marketplaces[nativePlugin.marketplaceName]!, 'plugins', 'packed-build'));
+    expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
+      expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',
+        configuration: expect.objectContaining({ scope: 'project', activation: 'enabled' }),
+        consumers: expect.arrayContaining([expect.objectContaining({ activation: 'disabled' })]) }) }),
+    ]) });
+    expect(await fs.readJson(path.join(nativePackageRoot, '.agent-workflows-owner.json'))).toMatchObject({
+      schemaVersion: 3, owner: 'agent-workflows', sourceId: developmentSourceId,
+      pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'user',
+      sourceIdentity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+      physicalKey: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+      nativeProjection: { components: expect.arrayContaining([expect.objectContaining({
+        id: 'skill:packed-native', nativeName: 'packed-native',
+        relativeOutputs: expect.arrayContaining(['skills/packed-native/SKILL.md']),
+      })]) },
+    });
+    expect(await fs.readJson(path.join(nativePackageRoot, '.codex-plugin', 'plugin.json'))).toMatchObject({ name: 'packed-build', version: '0.1.0' });
+    const projectConfigBeforeTrust = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
+    expect(projectConfigBeforeTrust).toContain(`[plugins.${JSON.stringify(id)}]`);
+    expect(projectConfigBeforeTrust).toContain('enabled = true');
+    const nativePackageFiles = await listFilesRecursively(nativePackageRoot);
     await fs.appendFile(path.join(externalAuthoringEnv.CODEX_HOME, 'config.toml'), [
       '',
       `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
@@ -1085,9 +1068,9 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
     const externalInstall = await installNative();
-    expect(externalInstall.exitCode, externalInstall.diagnostic).toBe(codexSkillQualified ? 4 : 3);
+    expect(externalInstall.exitCode, externalInstall.diagnostic).toBe(4);
     expect(externalInstall.receipt, externalInstall.diagnostic).toMatchObject({
-      status: codexSkillQualified ? 'partial' : 'blocked',
+      status: 'partial',
       data: {
         request: { scope: 'project', targets: expect.arrayContaining(['codex', 'claude']), targetOrigin: 'preference' },
         requirements: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
@@ -1095,18 +1078,16 @@ describe('pack smoke', () => {
         targetResults: expect.arrayContaining([
           expect.objectContaining({
             pluginId: `${developmentSourceId}/packed-build`, target: 'codex',
-            delivery: { kind: 'native', platform: 'codex' }, observation: codexSkillQualified ? 'verified' : 'unknown',
+            delivery: { kind: 'native', platform: 'codex' }, observation: 'verified',
           }),
           expect.objectContaining({
             pluginId: `${developmentSourceId}/packed-build`, target: 'claude',
             delivery: { kind: 'native', platform: 'claude' }, observation: 'unknown',
             // The fixture meets the interface minimum, but cannot supply the marketplace inventory protocol.
-            execution: 'not-run', blockerCodes: [codexSkillQualified ? 'deploymentOwnershipUnconfirmed' : 'noSupportedComponents'],
+            execution: 'not-run', blockerCodes: ['deploymentOwnershipUnconfirmed'],
             deploymentPlans: expect.arrayContaining([expect.objectContaining({ effects: [],
-              expected: expect.objectContaining(codexSkillQualified ? {
+              expected: expect.objectContaining({
                 components: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill' })]), unmet: [],
-              } : { components: [], unmet: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill',
-                reasonCode: 'capability-unverified', requiredFeatures: [{ feature: 'component.kind.skill' }] })]),
               }),
             })]),
           }),
@@ -1115,16 +1096,11 @@ describe('pack smoke', () => {
     });
     expect(externalInstall.receipt.data.targetResults.find((target: { target: string }) => target.target === 'claude'))
       .not.toHaveProperty('deploymentReceipts');
-    if (codexSkillQualified) {
-      const projectCodexConfig = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
-      expect(projectCodexConfig).toContain(`[plugins.${JSON.stringify(nativePluginId)}]`);
-      expect(projectCodexConfig).not.toContain('mcp_servers');
-      expect(await listFilesRecursively(nativePackageRoot!)).toEqual(nativePackageFiles);
-      expect((await readNativeState()).plugins[nativePluginId!]?.path).toBe(nativePackageRoot);
-    } else {
-      expect((await readNativeState()).plugins).toEqual({});
-      expect(await fs.pathExists(path.join(standaloneWorkspace, '.codex', 'config.toml'))).toBe(false);
-    }
+    const projectCodexConfig = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
+    expect(projectCodexConfig).toContain(`[plugins.${JSON.stringify(nativePluginId)}]`);
+    expect(projectCodexConfig).not.toContain('mcp_servers');
+    expect(await listFilesRecursively(nativePackageRoot)).toEqual(nativePackageFiles);
+    expect((await readNativeState()).plugins[nativePluginId]?.path).toBe(nativePackageRoot);
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.codex', 'hooks.json')))
       .resolves.toBe(false);
     expect(await fs.readFile(privateCacheFile, 'utf8')).toBe('Keep private client content.\n');
@@ -1140,12 +1116,7 @@ describe('pack smoke', () => {
       && call.args[1] !== 'list'
       && !(call.args.length === 4 && call.args[1] === 'marketplace' && call.args[2] === 'list' && call.args[3] === '--json'));
     expect(claudeWrites).toEqual([]);
-    if (codexSkillQualified) {
-      expect(nativeCalls).toContainEqual(expect.objectContaining({ platform: 'codex', args: ['plugin', 'add', nativePluginId] }));
-    } else {
-      expect(nativeCalls.filter((call) => call.platform === 'codex' && call.args[0] === 'plugin'
-        && !['list', '--help'].includes(call.args[1]!))).toEqual([]);
-    }
+    expect(nativeCalls).toContainEqual(expect.objectContaining({ platform: 'codex', args: ['plugin', 'add', nativePluginId] }));
     await expect(fs.readJson(path.join(externalAuthoringEnv.AW_HOME, 'catalog-sources.json')))
       .resolves.toMatchObject({
         schemaVersion: 2,
@@ -1303,30 +1274,25 @@ describe('pack smoke', () => {
         return { exitCode: failure.code, stdout: consumedStatusStdout, stderr: consumedStatusStderr };
       },
     );
-    expect(consumedStatus.exitCode).toBe(codexSkillQualified ? 0 : 3);
+    expect(consumedStatus.exitCode).toBe(0);
     const consumedStatusReceipt = readCommandResult(consumedStatus.stdout, 'plugin.status');
     expect(consumedStatusReceipt).toMatchObject({
-      status: codexSkillQualified ? 'success' : 'blocked',
+      status: 'success',
       data: {
         context: 'user', requirements: { state: 'valid' },
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
       },
     });
-    if (codexSkillQualified) {
-      expect(consumedStatusReceipt.data).toMatchObject({ counts: { blocked: 0, pending: 1, unconfirmed: 0, ready: 0 } });
-      expect(consumedStatusReceipt.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: 'platformPackageMissing', severity: 'warning' }),
-        expect.objectContaining({ code: 'nativeRegistrationMissing', severity: 'warning' }),
-      ]));
-    } else {
-      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
-    }
-    expect(consumedStatus.stderr).toBe(codexSkillQualified ? [
+    expect(consumedStatusReceipt.data).toMatchObject({ counts: { blocked: 0, pending: 1, unconfirmed: 0, ready: 0 } });
+    expect(consumedStatusReceipt.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'platformPackageMissing', severity: 'warning' }),
+      expect.objectContaining({ code: 'nativeRegistrationMissing', severity: 'warning' }),
+    ]));
+    expect(consumedStatus.stderr).toBe([
       'platformPackageMissing: The required AW source package is missing.',
       'nativeRegistrationMissing: The native client reports no required registration.',
       '',
-    ].join('\n')
-      : 'capability-unverified: The operation could not complete (capability-unverified).\n');
+    ].join('\n'));
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',

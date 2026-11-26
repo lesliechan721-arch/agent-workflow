@@ -106,14 +106,19 @@ const adapterFacts: Readonly<Partial<Record<
       requires: 'The physical resource render scope; an excluded scope intentionally offers no dynamic components.',
     },
     'rendererContext.platformCapabilities': {
-      requires: 'The qualified capability input for the exact render unit; offline preparation uses basis=profile.',
+      requires: 'Platform delivery and feature support for this render unit. Offline preparation uses basis=profile.',
+    },
+    'rendererContext.agentNaming': {
+      requires: 'Use filePrefix for projected Agent names and invocationPrefix for calls within this plugin.',
     },
   },
   'platform-components': {
     components: { requires: 'The complete v3 component set for the allowed output kinds; omitted and unmet are explicit arrays.' },
-    'components[].runtimeConfig.keys': { requires: 'aw.installed-runtime-config.v2 and a qualified native profile; a non-sensitive artifacts.configKeys subset.' },
+    'components[].runtimeConfig.keys': { requires: 'aw.installed-runtime-config.v2 and support for skill.runtime-config; a non-sensitive artifacts.configKeys subset.' },
   },
   'platform-capabilities': {
+    agentNamingMode: { requires: 'Identifies the platform naming strategy. The renderer receives plugin-specific prefixes in agentNaming.' },
+    'features.agent.model': { requires: 'On Antigravity, values lists the accepted model identifiers: inherit, flash_lite, flash, pro.' },
     basis: { requires: 'Author preparation uses profile; local is reserved for actual consumer observations.' },
   },
   'native-tools': {

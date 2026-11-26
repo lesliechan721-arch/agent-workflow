@@ -8,35 +8,18 @@ import {
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
-import { getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { runCli } from '../../src/index.js'
 import { setSkillEvalCommandTestHooksForTests } from '../../src/commands/skill-eval.js'
-import * as authorProfile from '../../src/review/platform-profile.js'
 import {
   createAwSourceBindingWorkspaceValidationContext,
   validateAwSourceBindingForWorkspace,
 } from '../../src/review/source-binding.js'
 
 const roots: string[] = []
-
-// Qualify only the Skills under test; Agent gaps remain observable in preparation evidence.
-function installCodexSkillTestQualification(): void {
-  const getCapabilities = authorProfile.getAuthoringPlatformCapabilities
-  const profile = vi.spyOn(authorProfile, 'getAuthoringPlatformCapabilities').mockImplementation((platform, scope) => {
-    const capabilities = getCapabilities(platform, scope)
-    if (platform !== 'codex') return capabilities
-    capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] }
-    capabilities.kinds.agent = { ...capabilities.kinds.agent, status: 'unverified', reasonCodes: ['capability-unverified'] }
-    for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
-      capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) }
-    }
-    return capabilities
-  })
-  onTestFinished(() => profile.mockRestore())
-}
 
 async function treeDigests(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {}
@@ -201,7 +184,6 @@ afterEach(async () => {
 })
 describe('aw dev eval commands', () => {
   it('binds explicit non-sensitive config overrides and rejects changes before commit', async () => {
-    installCodexSkillTestQualification()
     // Protect the public prepare boundary: actual paths can be supplied without editing
     // a profile or signing a runtime receipt, and the same values can be revalidated.
     const fixture = await createWorkspace()
@@ -276,7 +258,6 @@ describe('aw dev eval commands', () => {
   }, 30_000)
 
   it('prepares static and dynamic Codex Skills with shared config and preserves unavailable agent evidence', async () => {
-    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     const providerInit = capture()
     expect(await runCli([
@@ -322,6 +303,7 @@ describe('aw dev eval commands', () => {
     pluginManifest.scripts = {
       artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
     }
+    pluginManifest.extensions = { agents: [{ name: 'reviewer', description: 'Reviews changes.', prompt: 'Review the input.' }] }
     pluginManifest.config.fields.roleMode = { type: 'string', required: true }
     pluginManifest.config.fields.nativeMode = { type: 'string', required: true }
     pluginManifest.config.fields.dynamicEnabled = { type: 'boolean', required: true }
@@ -336,7 +318,7 @@ describe('aw dev eval commands', () => {
       "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
       `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify({kinds:context.allowedOutputKinds,platform:context.platform,scope:context.scope,targetScope:context.scope}) + '\\n');`,
       'const components = [], omitted = [], unmet = [];',
-      "if (context.allowedOutputKinds.includes('agent')) unmet.push({id:'fixture-role',kind:'agent',name:'fixture-role',requiredFeatures:[{feature:'component.kind.agent'}],reasonCode:'capability-unverified'});",
+      "if (context.allowedOutputKinds.includes('agent')) unmet.push({id:'fixture-role',kind:'agent',name:'fixture-role',requiredFeatures:[{feature:'agent.tools',values:['allowlist']}],reasonCode:'interface-unsupported'});",
       "if (context.allowedOutputKinds.includes('skill')) for (const id of ['dynamic-skill','native-skill']) {",
       "  const selected = id === 'native-skill' ? context.config.values.nativeMode : context.config.values.roleMode;",
       "  const enabled = id === 'native-skill' ? context.config.values.nativeEnabled : context.config.values.dynamicEnabled;",
@@ -464,11 +446,14 @@ describe('aw dev eval commands', () => {
       await expect(fs.pathExists(path.join(
         subject, '.agents', 'skills', 'participant-skill', 'SKILL.md',
       ))).resolves.toBe(true)
-      await expect(fs.pathExists(path.join(subject, '.codex', 'agents', 'aw-eval-owner-fixture-role.toml')))
+      const roleName = 'aw-eval-source-eval-owner-reviewer'
+      const roleText = await fs.readFile(path.join(subject, '.codex', 'agents', `${roleName}.toml`), 'utf8')
+      expect(getStaticTOMLValue(parseTOML(roleText))).toMatchObject({ name: roleName, developer_instructions: 'Review the input.' })
+      await expect(fs.pathExists(path.join(subject, '.codex', 'agents', 'aw-eval-source-eval-owner-fixture-role.toml')))
         .resolves.toBe(false)
       const binding = await fs.readJson(path.join(output, 'aw-source-binding.json'))
       expect(binding.preparation.flatMap((unit: {unmet: unknown[]}) => unit.unmet)).toContainEqual(
-        expect.objectContaining({id:'fixture-role',kind:'agent',reasonCode:'capability-unverified'}),
+        expect.objectContaining({id:'fixture-role',kind:'agent',reasonCode:'interface-unsupported'}),
       )
       await expect(validateEvalSpecFile(path.join(output, 'spec.json')))
         .resolves.toMatchObject({ valid: true })
@@ -574,7 +559,6 @@ describe('aw dev eval commands', () => {
   }, 30_000)
 
   it('prepares the new manifest v1 as a fixed EvalSpec workspace and runs doctor read-only', async () => {
-    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     await fs.outputFile(
       path.join(fixture.skillRoot, 'references', 'generated-reference.md'),
@@ -660,13 +644,7 @@ describe('aw dev eval commands', () => {
     expect(JSON.parse(validation.stdout())).toMatchObject({
       schemaVersion: 2,
       status: 'success',
-      // Validation runs in a child process with the production profile; the
-      // parent-only Eval fixture qualification does not apply to this command.
-      diagnostics: ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch) ? [] : [{
-        code: 'commandWarning',
-        severity: 'warning',
-        message: 'component unmet (codex/user): skill:owner-skill [capability-unverified] [{"feature":"component.kind.skill"}]',
-      }],
+      diagnostics: [],
       data: {}
     })
     const blockedOutput = path.join(fixture.root, 'prepared-v1')

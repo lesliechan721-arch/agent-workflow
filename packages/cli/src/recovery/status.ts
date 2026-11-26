@@ -294,7 +294,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               if (artifacts && unit.kinds.length && (!artifacts.scopes || artifacts.scopes.includes(unit.renderScope.kind))) {
                 dynamicUnits.add(unit.output);
               }
-              const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
+              const capabilities = adapter.capabilities({ binding, renderUnit: unit,
                 profile });
               const config = unit.renderScope.kind === demand.scope ? scopedConfig
                 : await configForScope(unit.renderScope.kind, unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : context.executionCwd);
@@ -332,6 +332,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             let expectedCount = 0;
             let grokAgentRecipientScope: string | undefined;
             for (const { renderUnit: unit, capabilities } of inputUnits) {
+              // Static Agent references are resolved by Core; dynamic references stay deferred to current delivery evidence.
               const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot,
                 manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds,
                 hasInstructionAgentRecipients: platform === 'grok' && unit.output === 'supplement'

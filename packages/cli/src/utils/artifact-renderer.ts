@@ -3,13 +3,15 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   normalizeStaticPluginComponents,
+  hasDeliverableInstructionAgent,
   partitionPluginComponents,
   assertPlatformRenderContext,
+  resolvePlatformAgentNaming,
   selectPluginConfigProfile,
   type ComponentKind,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV2,
-  type PlatformRenderContextV2,
+  type PlatformCapabilitiesV3,
+  type PlatformRenderContextV3,
   assertNoDuplicateHookHandlers,
   type PlatformTarget,
   type PluginConfigCompiledDefinition,
@@ -29,7 +31,7 @@ import {
 } from './plugin-scripts.js';
 import { resolvePlatformComponentBatches, selectPlatformRenderConfigKeys } from './artifact-request.js';
 import { artifactValueDigest, mergeExpectedComponentSets, validatePlatformComponentPlan } from './artifact-plan.js';
-import { resolvePlatformComponentResources, verifyPlatformComponentResources, type VerifiedResourceClosure } from './component-resources.js';
+import { resolvePlatformComponentResources, retainComponentResources, verifyPlatformComponentResources, type VerifiedResourceClosure } from './component-resources.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
 import { prepareWindowsJobHelper } from './process-tree.js';
 import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
@@ -241,8 +243,8 @@ export interface PreparedPlatformComponents {
 
 export async function preparePlatformComponents(options: {
   plugin: PluginMeta; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
-  capabilities: PlatformCapabilitiesV2; config: ResolvedArtifactRenderConfig; cwd: string;
-  staticResourceRoot?: string; previousComponents?: PlatformRenderContextV2['previousComponents'];
+  capabilities: PlatformCapabilitiesV3; config: ResolvedArtifactRenderConfig; cwd: string;
+  staticResourceRoot?: string; previousComponents?: PlatformRenderContextV3['previousComponents'];
   hasInstructionAgentRecipients?: boolean;
   changedConfigKeys?: string[]; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
   signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
@@ -255,18 +257,22 @@ export async function preparePlatformComponents(options: {
   try {
     const capabilities = toPlatformCapabilitiesView(options.capabilities);
     const resources = await resolvePlatformComponentResources(options.plugin);
-    const sets: ExpectedComponentSet[] = [await normalizeStaticPluginComponents({
+    const staticSet = await normalizeStaticPluginComponents({
       pluginRoot: options.plugin.rootDir, staticResourceRoot: options.staticResourceRoot, manifest: options.plugin.manifest, platform: options.platform,
       capabilities, allowedOutputKinds: options.kinds, deferPartition: true,
-    })];
-    const contexts: PlatformRenderContextV2[] = [];
+    });
+    const sets: ExpectedComponentSet[] = [staticSet];
+    // Dynamic and static roles share a render scope. Grok supplements can also target a prepared role package.
+    const hasStaticRecipients = hasDeliverableInstructionAgent(staticSet.components, capabilities);
+    const contexts: PlatformRenderContextV3[] = [];
     for (const { allowedOutputKinds, config } of resolvePlatformComponentBatches({ ...options, manifest: options.plugin.manifest })) {
       const keys = options.plugin.manifest.artifacts!.configKeys;
       if (config.issues.length) throw new Error(`Invalid AW config for ${options.plugin.manifest.name}: ${config.issues.map((issue) => issue.path.field).join(', ')}.`);
-      const context: PlatformRenderContextV2 = {
-        schemaVersion: 2, surface: 'agent-plugin', platform: options.platform, scope: options.renderScope,
-        plugin: { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId ?? 'authoring'}/${options.plugin.manifest.name}`,
-          name: options.plugin.manifest.name, version: options.plugin.manifest.version },
+      const plugin = { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId ?? 'authoring'}/${options.plugin.manifest.name}`,
+        name: options.plugin.manifest.name, version: options.plugin.manifest.version };
+      const context: PlatformRenderContextV3 = {
+        schemaVersion: 3, surface: 'agent-plugin', platform: options.platform, scope: options.renderScope,
+        plugin, agentNaming: resolvePlatformAgentNaming(options.platform, plugin),
         config, changedConfigKeys: (options.changedConfigKeys ?? []).filter((key) => Object.hasOwn(config.sources, key)),
         allowedOutputKinds, platformCapabilities: capabilities, resources,
         previousComponents: (options.previousComponents ?? []).filter((entry) => allowedOutputKinds.includes(entry.kind))
@@ -277,6 +283,7 @@ export async function preparePlatformComponents(options: {
       const rendered = await runPreparedArtifactRenderer({ ...options, context, sensitiveValues });
       const plan = validatePlatformComponentPlan({ plan: rendered.value, platform: options.platform, scope: options.renderScope,
         allowedOutputKinds, platformCapabilities: capabilities, configKeys: keys,
+        hasInstructionAgentRecipients: options.hasInstructionAgentRecipients ?? (hasStaticRecipients || undefined),
         nonSensitiveConfigKeys: selectPlatformRenderConfigKeys({ resolved: options.config, keys, nonSensitive: true }),
         resources, sourceDirs: options.plugin.manifest.artifacts?.sourceDirs,
         requiredAwCapabilities: options.plugin.manifest.requires?.aw.capabilities });
@@ -305,13 +312,7 @@ export async function preparePlatformComponents(options: {
     });
     const expected = mergeExpectedComponentSets([{ ...declared, components: [], unmet: rendererGaps }, partition]);
     // Verify every declared file first. Publish command resources only for their remaining owners.
-    closure.files = closure.files.filter(({ componentId }) => delivered.has(componentId));
-    closure.commandResources = closure.commandResources.filter(({ componentId }) => delivered.has(componentId));
-    closure.bundleFiles = closure.bundleFiles.flatMap((file) => {
-      if (!file.componentIds) return [file];
-      const componentIds = file.componentIds.filter((id) => delivered.has(id));
-      return componentIds.length ? [{ ...file, componentIds }] : [];
-    });
+    const retained = retainComponentResources(closure, delivered);
     const runtimeConfigSnapshots = createArtifactRuntimeConfigSnapshots({
       sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
       logicalIdentity: options.plugin.catalogLogicalIdentity, manifest: options.plugin.manifest,
@@ -324,7 +325,7 @@ export async function preparePlatformComponents(options: {
       renderInputDigest: artifactValueDigest({ contexts, static: sets[0], manifestDigest: target.manifestDigest,
         rendererDigest: target.rendererDigest, resources: closure.digest }),
     };
-    return { expected, resources: closure, evidence, runtimeConfigSnapshots,
+    return { expected, resources: retained, evidence, runtimeConfigSnapshots,
       empty: expected.components.length ? null : expected.unmet.length ? 'unmet' : 'intentional' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

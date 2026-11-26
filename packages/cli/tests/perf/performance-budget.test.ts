@@ -42,7 +42,7 @@ import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js
 import {
   createNativeTestExecution,
   getNativeTestLayout,
-  installNativeTestQualification,
+  installNativeTestDiscovery,
 } from '../helpers/native-execution-fixture.js';
 import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
@@ -183,7 +183,7 @@ describe('multi-source performance budgets', () => {
   });
 
   beforeEach(() => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const gitResolve = catalogGitProviderInternal.resolve;
     const pathResolve = catalogPathProviderInternal.resolve;
     fanoutProviderInvocations = 0;

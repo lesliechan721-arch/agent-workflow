@@ -4,11 +4,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   getComponentFeatureRequirements,
+  isSkillAgentReferenceMarkdown,
+  scanSkillAgentReferences,
+  SKILL_AGENT_PLACEHOLDER_CAPABILITY,
   parseAwPluginRequirementsReceipt,
   createAwPluginRequirementsReceipt,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV2,
-  type PlatformRenderContextV2,
+  type PlatformCapabilitiesV3,
+  type PlatformRenderContextV3,
   type PluginComponent,
   type SourceRef,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -26,11 +29,25 @@ export interface VerifiedComponentFile {
   mode?: number;
 }
 export interface VerifiedResourceClosure {
-  resources: PlatformRenderContextV2['resources'];
+  resources: PlatformRenderContextV3['resources'];
   files: VerifiedComponentFile[];
   bundleFiles: Array<{ path: string; bytes: Buffer; mode?: number; componentIds?: string[] }>;
   commandResources: VerifiedCommandResource[];
   digest: string;
+}
+
+/** Drop each skipped component's private files and keep shared files for their remaining owners. */
+export function retainComponentResources(closure: VerifiedResourceClosure, delivered: ReadonlySet<string>): VerifiedResourceClosure {
+  return {
+    ...closure,
+    files: closure.files.filter(({ componentId }) => delivered.has(componentId)),
+    commandResources: closure.commandResources.filter(({ componentId }) => delivered.has(componentId)),
+    bundleFiles: closure.bundleFiles.flatMap((file) => {
+      if (!file.componentIds) return [file];
+      const componentIds = file.componentIds.filter((id) => delivered.has(id));
+      return componentIds.length ? [{ ...file, componentIds }] : [];
+    }),
+  };
 }
 
 export interface CommandResourceReference { start: number; end: number; path: string }
@@ -42,7 +59,7 @@ export interface VerifiedCommandResource extends CommandResourceReference {
 }
 
 /** Only literal package paths are portable. Shell expansion is not a resource declaration. */
-export function commandResourceReferences(value: string, shell: boolean, platform: PlatformCapabilitiesV2['platform'], executable?: string): CommandResourceReference[] {
+export function commandResourceReferences(value: string, shell: boolean, platform: PlatformCapabilitiesV3['platform'], executable?: string): CommandResourceReference[] {
   const rootVariable = platform === 'codex' ? '${CODEX_PLUGIN_ROOT}/' : platform === 'claude' ? '${CLAUDE_PLUGIN_ROOT}/' : undefined;
   const tokens = shell ? [...value.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'`;&|<>]+/gu)].map((match) => ({ text: match[0], start: match.index }))
     : [{ text: value, start: 0 }];
@@ -120,9 +137,9 @@ async function directoryDigest(root: string): Promise<string> {
   return artifactValueDigest(entries);
 }
 
-export async function resolvePlatformComponentResources(plugin: PluginMeta): Promise<PlatformRenderContextV2['resources']> {
+export async function resolvePlatformComponentResources(plugin: PluginMeta): Promise<PlatformRenderContextV3['resources']> {
   const root = await fs.realpath(plugin.rootDir);
-  const resources: PlatformRenderContextV2['resources'] = [];
+  const resources: PlatformRenderContextV3['resources'] = [];
   for (const sourceDir of plugin.manifest.artifacts?.sourceDirs ?? []) {
     const directory = await regularPath(root, sourceDir, true);
     resources.push({ kind: 'bundle', name: sourceDir, root: directory, digest: await directoryDigest(directory) });
@@ -143,7 +160,7 @@ export async function resolveStaticPlatformResourceRoot(pluginRoot: string, plat
 
 /** Read only the bundle bytes used by the admitted static components. */
 export async function readStaticComponentResourceInputs(options: {
-  plugin: PluginMeta; expected: ExpectedComponentSet; staticResourceRoot: string; capabilities: PlatformCapabilitiesV2;
+  plugin: PluginMeta; expected: ExpectedComponentSet; staticResourceRoot: string; capabilities: PlatformCapabilitiesV3;
 }): Promise<unknown> {
   const root = await fs.realpath(options.plugin.rootDir);
   const skillSources = await Promise.all(options.expected.components.flatMap((component) =>
@@ -167,8 +184,8 @@ const RESERVED_FILES = new Set([
 ]);
 
 export async function verifyPlatformComponentResources(options: {
-  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV2['resources'];
-  capabilities: PlatformCapabilitiesV2; sensitiveValues: readonly string[]; staticResourceRoot?: string;
+  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV3['resources'];
+  capabilities: PlatformCapabilitiesV3; sensitiveValues: readonly string[]; staticResourceRoot?: string;
 }): Promise<VerifiedResourceClosure> {
   const bundleRoot = await fs.realpath(options.plugin.rootDir);
   const files: VerifiedComponentFile[] = [];
@@ -221,6 +238,13 @@ export async function verifyPlatformComponentResources(options: {
           if (artifactValueDigest(actual) !== artifactValueDigest(expected)) throw new Error('componentResourceInvalid: Static requirements receipt does not match the verified plugin.');
         } else assertNoSensitiveConfigValues(bytes.toString('utf8'), options.sensitiveValues,
           'componentSensitiveConfigExposed: Component resources contain sensitive config.');
+        // A capability gap can hide a Skill later. Its verified Markdown must still satisfy the renderer contract.
+        if (isSkillAgentReferenceMarkdown(outputPath) && scanSkillAgentReferences(outputPath, bytes.toString('utf8')).length) {
+          if (options.expected.sources[component.id] === 'dynamic'
+            && !options.plugin.manifest.requires?.aw.capabilities?.includes(SKILL_AGENT_PLACEHOLDER_CAPABILITY)) {
+            throw new Error('agentReferenceInvalid: dynamic Skill references require ' + SKILL_AGENT_PLACEHOLDER_CAPABILITY + '.');
+          }
+        }
         componentFiles[outputPath] = bytes;
         modes[outputPath] = mode;
         files.push({ componentId: component.id, path: outputPath, bytes, ...(source ? { source } : {}), ...(mode === 0o755 ? { mode } : {}) });
@@ -265,8 +289,8 @@ async function validateSkillClosure(component: PluginComponent, files: Record<st
 }
 
 async function collectBundleResources(options: {
-  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV2['resources'];
-  sensitiveValues: readonly string[]; staticResourceRoot?: string; capabilities: PlatformCapabilitiesV2;
+  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV3['resources'];
+  sensitiveValues: readonly string[]; staticResourceRoot?: string; capabilities: PlatformCapabilitiesV3;
 }): Promise<Pick<VerifiedResourceClosure, 'bundleFiles' | 'commandResources'>> {
   const root = await fs.realpath(options.plugin.rootDir);
   const output = new Map<string, { path: string; bytes: Buffer; mode?: number; componentIds: string[] }>();

@@ -19,7 +19,7 @@ import type { PluginManifestSource } from '../../src/types.js';
 import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
 import { type NativeCliInvocation, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 
 import {
   syncWriteCommand,
@@ -71,7 +71,7 @@ async function readCommandSnapshot(cwd: string, selector: string, platform: 'cod
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex', 'claude'] });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

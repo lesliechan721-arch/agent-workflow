@@ -177,8 +177,8 @@ async function collectFiles(rootDir, bundlePrefix, relative) {
 }
 
 function validateContext(context) {
-  if (context?.schemaVersion !== 2 || context.surface !== 'agent-plugin') {
-    throw new Error('A PlatformRenderContext v2 with surface=agent-plugin is required.');
+  if (context?.schemaVersion !== 3 || context.surface !== 'agent-plugin') {
+    throw new Error('A PlatformRenderContext v3 with surface=agent-plugin is required.');
   }
   if (!PLATFORMS.includes(context.platform)) {
     throw new Error(`Unsupported platform: ${context.platform}`);
@@ -194,11 +194,11 @@ function validateContext(context) {
   }
   const capabilities = context.platformCapabilities;
   if (
-    capabilities?.schemaVersion !== 2
+    capabilities?.schemaVersion !== 3
     || capabilities.platform !== context.platform
     || capabilities.scope !== context.scope
   ) {
-    throw new Error('Matching platformCapabilities v2 are required.');
+    throw new Error('Matching platformCapabilities v3 are required.');
   }
 }
 

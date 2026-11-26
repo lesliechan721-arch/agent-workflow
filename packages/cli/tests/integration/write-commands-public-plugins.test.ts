@@ -18,7 +18,7 @@ import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { SKILL_OWNER_MARKER, type SkillOwnerMarker } from '../../src/utils/ownership.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { prepareSubagentForNativeFixture } from '../helpers/subagent-native-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
@@ -58,7 +58,7 @@ async function guidePackagePointer(env: NodeJS.ProcessEnv): Promise<string> {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude', 'pi'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex', 'claude', 'pi'] });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

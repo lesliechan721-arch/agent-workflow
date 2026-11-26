@@ -74,7 +74,11 @@ describe('plugin authoring capability structure registry', () => {
     expect(getPluginAuthoringCapabilitySurface('artifacts').entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: 'artifacts.configKeys', required: true }),
       expect.objectContaining({ field: 'rendererContext.platformCapabilities', required: true }),
+      expect.objectContaining({ field: 'rendererContext.agentNaming', required: true }),
     ]))
+    expect(getPluginAuthoringAcceptedValues('platform-capabilities', 'schemaVersion')).toEqual([3])
+    expect(getPluginAuthoringAcceptedValues('platform-capabilities', 'agentNamingMode')).toEqual(['host-plugin', 'aw-prefix', 'unsupported'])
+    expect(getPluginAuthoringAcceptedValues('platform-capabilities', 'status')).toEqual(['supported', 'unsupported'])
     expect(getPluginAuthoringAcceptedValues('platform-components', 'components[].kind')).toEqual(['skill', 'mcp', 'agent', 'hook', 'instruction'])
     expect(() => getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target')).toThrow()
   })

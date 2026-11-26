@@ -10,10 +10,6 @@ export function isDeliveryCapabilityGapReason(reasonCode: string): boolean {
     case 'delivery-unavailable':
     case 'interface-unsupported':
     case 'scope-unsupported':
-    case 'capability-unverified':
-    case 'consumer-missing':
-    case 'consumer-disabled':
-    case 'policy-blocked':
     case 'version-unsupported':
       return true;
     default:

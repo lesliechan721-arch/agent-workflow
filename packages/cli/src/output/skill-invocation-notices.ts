@@ -18,11 +18,11 @@ interface SkillInvocationNotice {
 
 function isNoticeReason(reason: string | undefined): reason is SkillInvocationNoticeReason {
   return reason === 'noBoundExecutor' || reason === 'invocationControlUnsupported'
-    || reason === 'invocationControlUnverified' || reason === 'invocationControlDegraded';
+    || reason === 'invocationControlDegraded';
 }
 
-export function skillInvocationProductLabel(platform: PlatformTarget, product: NonNullable<SkillInvocationControl['product']>): string {
-  return `${platform === 'antigravity' ? 'Antigravity' : 'Codex'} ${product === 'cli' ? 'CLI' : 'App'}`;
+export function skillInvocationProductLabel(product: NonNullable<SkillInvocationControl['product']>): string {
+  return `Antigravity ${product === 'cli' ? 'CLI' : 'App'}`;
 }
 
 function safeControls(controls: readonly SkillInvocationControl[] | undefined, platform: PlatformTarget): SkillInvocationControl[] {
@@ -35,7 +35,7 @@ function safeControls(controls: readonly SkillInvocationControl[] | undefined, p
     const allowed = getPlatformFeatureRegistry()[feature]?.values;
     if (values !== undefined && (!Array.isArray(values) || !values.every((value) => allowed?.includes(value)))) return [];
     return [{ feature, ...(values ? { values: [...values] } : {}), reasonCode,
-      ...(antigravity || platform === 'codex' && reasonCode === 'invocationControlUnverified' && product === 'app' ? { product } : {}) }];
+      ...(antigravity ? { product } : {}) }];
   });
 }
 
@@ -57,7 +57,7 @@ export function skillInvocationNotices(diagnostics: readonly RecoveryDiagnostic[
       const combined = [...new Map([...(previous?.controls ?? []), ...controls].map((control) => [JSON.stringify(control), control])).values()];
       const degraded = combined.some((control) => control.reasonCode === 'invocationControlDegraded');
       const explanations = combined.map((control) => {
-        const reader = skillInvocationProductLabel(platform, control.product!);
+        const reader = skillInvocationProductLabel(control.product!);
         const requirement = describeSkillInvocationControl(control);
         return control.reasonCode === 'invocationControlDegraded'
           ? `${reader} did not enforce ${requirement}.` : `${reader} does not support ${requirement}.`;

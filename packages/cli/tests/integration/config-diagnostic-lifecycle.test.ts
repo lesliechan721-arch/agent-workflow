@@ -12,7 +12,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -22,7 +22,7 @@ describe('platform configuration diagnostic lifecycle', () => {
   it('isolates missing and invalid native configuration from a ready Portable target, and observes residual configuration', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout: { fixtureCwd: cwd } } = isolation;
-    installNativeTestQualification({ platforms: ['claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['claude'] });
     const source = path.join(cwd, 'config-diagnostics');
     await fs.outputFile(path.join(source, 'plugins/demo/skills/diagnostic/SKILL.md'), '---\nname: diagnostic\ndescription: Test diagnostic fixture.\n---\nFixture skill.\n');
     await fs.outputFile(path.join(source, 'plugins/demo/skills/diagnostic/README.md'), 'Fixture skill.\n');

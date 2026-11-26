@@ -402,8 +402,11 @@ export function nativePath(ctx, spec, kind, packageRoot, name) {
   assert(packageRoot, 'Missing native package path for ' + spec.id + '/' + kind);
   let file;
   if (kind === 'skill') file = 'skills/' + name + '/SKILL.md';
-  else if (kind === 'agent') file = platform === 'copilot' ? 'com.github.copilot/agents/' + name + '.agent.md'
-    : 'agents/' + (platform === 'pi' ? resource + '-' : '') + name + '.md';
+  else if (kind === 'agent') {
+    const projectedName = platform === 'claude' ? name : resource + '-' + name;
+    file = platform === 'copilot' ? 'com.github.copilot/agents/' + projectedName + '.agent.md'
+      : 'agents/' + projectedName + '.md';
+  }
   else if (['opencode', 'pi'].includes(platform)) file = 'index.mjs';
   else if (kind === 'hook') file = platform === 'antigravity' ? 'hooks.json' : platform === 'copilot' ? 'com.github.copilot/hooks/hooks.json' : 'hooks/hooks.json';
   else if (kind === 'mcp') file = platform === 'antigravity' ? 'mcp_config.json' : ['copilot', 'cursor'].includes(platform) ? 'mcp.json' : '.mcp.json';

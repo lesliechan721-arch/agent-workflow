@@ -37,7 +37,7 @@ describe('Manifest v4 source validator', { timeout: 30_000 }, () => {
     await fs.outputFile(path.join(plugin, 'render.mjs'), `
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-if (context.schemaVersion !== 2 || context.surface !== 'agent-plugin' || context.platformCapabilities.basis !== 'profile'
+if (context.schemaVersion !== 3 || context.surface !== 'agent-plugin' || context.platformCapabilities.basis !== 'profile'
  || context.requestedArtifactIds !== undefined || !Array.isArray(context.allowedOutputKinds)) throw new Error('Invalid author context.');
 console.log(JSON.stringify({version:3,components:context.allowedOutputKinds.includes('skill')?[{id:'computed',kind:'skill',name:'computed-name',content:{files:{
  'SKILL.md':{text:'---\\nname: computed-name\\ndescription: A computed validation Skill.\\n---\\nBody.\\n'},'README.md':{text:'# Computed\\n'}
@@ -56,7 +56,7 @@ console.log(JSON.stringify({version:3,components:context.allowedOutputKinds.incl
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.allowedOutputKinds.includes('skill')?[{
- id:'expected',kind:'skill',name:'expected',requiredFeatures:[{feature:'skill.execution',values:['isolated-context']}],reasonCode:'capability-unverified'
+ id:'expected',kind:'skill',name:'expected',requiredFeatures:[{feature:'skill.execution',values:['isolated-context']}],reasonCode:'interface-unsupported'
 }]:[]}));
 `);
     const result = await validate(plugin);

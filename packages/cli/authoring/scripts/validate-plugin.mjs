@@ -1635,8 +1635,11 @@ async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtim
           sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
           issues: [], stores: {}, referenceContext: references };
         try {
+          // Author fixtures use defaults in both scopes. Preserve their Workspace
+          // reference context when Codex renders the shared User package.
           const prepared = await tools.materializeProfilePluginComponents({ plugin, plugins, platform, scope,
             cwd: pluginDir, env, outputRoot: path.join(tempRoot, `${platform}-${scope}`), config,
+            userConfig: { ...config, targetScope: 'user' },
             commandRecord: manifest.command?.platforms.includes(platform) ? commandPackage?.record : null });
           if (prepared.skills.length && !skillValidationTools) throw new Error('Prepared Skills require the shared CLI Skill validator.');
           for (const skill of prepared.skills) {

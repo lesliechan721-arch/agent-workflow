@@ -6,10 +6,11 @@ import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  COMPONENT_KINDS, getHookHandlerContract, createAwPluginRequirementsReceipt,
-  type ExpectedComponentSet, type PlatformCapabilitiesV2, type PlatformComponentPlanV3,
-  type PlatformRenderContextV2, type PluginComponent,
+  COMPONENT_KINDS, createAwPluginRequirementsReceipt,
+  type ExpectedComponentSet, type PlatformCapabilitiesV3, type PlatformComponentPlanV3,
+  type PlatformRenderContextV3, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
   ARTIFACT_RENDERER_MAX_STDOUT_BYTES, preparePlatformComponents, runPreparedArtifactRenderer,
@@ -24,20 +25,8 @@ import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/lay
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.remove(root); });
 const empty: PlatformComponentPlanV3 = { version: 3, components: [], omitted: [], unmet: [] };
-function capabilities(): PlatformCapabilitiesV2 {
-  return { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
-    kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
-    features: {
-      'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
-      'agent.prompt-mode': { status: 'supported', reasonCodes: [], values: ['host-default'] },
-      'agent.tools': { status: 'supported', reasonCodes: [], values: ['allowlist', 'none'] },
-      'mcp.transport': { status: 'supported', reasonCodes: [], values: ['stdio', 'http', 'sse'] },
-      'instruction.coverage': { status: 'supported', reasonCodes: [], values: ['main', 'plugin-agents', 'other-agents'] },
-      'instruction.paths': { status: 'supported', reasonCodes: [] },
-      'skill.runtime-config': { status: 'supported', reasonCodes: [], values: ['aw.installed-runtime-config.v2'] },
-      'hook.common.before_tool': { status: 'supported', reasonCodes: [],
-        values: Object.keys(getHookHandlerContract('codex', 'common', 'before_tool').protocol!.responses) },
-    } };
+function capabilities(): PlatformCapabilitiesV3 {
+  return getAuthoringPlatformCapabilities('codex', 'user');
 }
 function config(): ResolvedArtifactRenderConfig {
   return { mode: 'artifact-render', targetScope: 'user', schema: {
@@ -63,9 +52,9 @@ function skill(name = 'task', files: Extract<PluginComponent, { kind: 'skill' }>
     'SKILL.md': { text: `---\nname: ${name}\ndescription: Run the task.\n---\nRun the task.\n` }, ...files,
   } } };
 }
-function renderer(makePlan: (context: PlatformRenderContextV2) => unknown, contexts: PlatformRenderContextV2[] = []): PluginProcessRunner {
+function renderer(makePlan: (context: PlatformRenderContextV3) => unknown, contexts: PlatformRenderContextV3[] = []): PluginProcessRunner {
   return { run: async (invocation) => {
-    const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!) as PlatformRenderContextV2;
+    const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!) as PlatformRenderContextV3;
     contexts.push(context);
     return { exitCode: 0, signal: null, stdout: JSON.stringify(makePlan(context)), stderr: '', timedOut: false };
   } };
@@ -78,7 +67,7 @@ function prepare(item: PluginMeta, overrides: Partial<Parameters<typeof prepareP
 describe('complete platform component preparation', () => {
   it('regenerates complete collections from zero and allows changing categories, names and counts', async () => {
     const item = await plugin();
-    const contexts: PlatformRenderContextV2[] = [];
+    const contexts: PlatformRenderContextV3[] = [];
     const runner = renderer((context) => context.allowedOutputKinds.includes('skill') ? empty : {
       ...empty, components: Array.from({ length: Number(context.config.values.count) }, (_, index) => ({
         id: `role-${index}`, name: `review-${index}`, kind: index ? 'mcp' : 'agent',
@@ -99,11 +88,11 @@ describe('complete platform component preparation', () => {
 
   it('clips every config and history field by batch authority and keeps missing facts', async () => {
     const item = await plugin();
-    const contexts: PlatformRenderContextV2[] = [];
+    const contexts: PlatformRenderContextV3[] = [];
     await prepare(item, { runner: renderer(() => empty, contexts), changedConfigKeys: ['count', 'token', 'hidden'], previousComponents: [
       { id: 'task', kind: 'skill', name: 'task', content: 'not forwarded' },
       { id: 'role', kind: 'agent', name: 'role', path: '/host/private' },
-    ] as PlatformRenderContextV2['previousComponents'] });
+    ] as PlatformRenderContextV3['previousComponents'] });
     const [skills, other] = contexts;
     expect(Object.keys(skills!.config.schema.fields)).toEqual(['count', 'absent']);
     expect(skills!.config.values).toEqual({ count: 0 });
@@ -119,21 +108,22 @@ describe('complete platform component preparation', () => {
   });
 
   // Test Value Gate: the script observes deterministic capability facts and no discovery metadata.
-  it('passes a stable v2 capability view to both renderer batches', async () => {
+  it('passes a stable v3 capability view to both renderer batches', async () => {
     const item = await plugin();
-    const contexts: PlatformRenderContextV2[] = [];
+    const contexts: PlatformRenderContextV3[] = [];
     const unsorted = { ...capabilities(), profileId: 'private-baseline', consumers: [{ executable: '/host/wrapper' }] };
     unsorted.kinds.skill.delivery.push('managed-host-resource', 'native-package');
-    unsorted.kinds.agent.reasonCodes = ['policy-blocked', 'client-missing', 'policy-blocked'];
+    unsorted.kinds.agent.reasonCodes = ['version-unsupported', 'client-missing', 'version-unsupported'];
     unsorted.features['mcp.transport']!.values!.push('stdio');
     await prepare(item, { capabilities: unsorted, runner: renderer(() => empty, contexts) });
     expect(contexts).toHaveLength(2);
     const view = contexts[0]!.platformCapabilities;
-    expect(contexts.every((context) => context.schemaVersion === 2 && JSON.stringify(context.platformCapabilities) === JSON.stringify(view))).toBe(true);
-    expect(Object.keys(view).sort()).toEqual(['basis', 'features', 'kinds', 'platform', 'schemaVersion', 'scope']);
+    expect(contexts.every((context) => context.schemaVersion === 3 && JSON.stringify(context.platformCapabilities) === JSON.stringify(view))).toBe(true);
+    expect(contexts.map(({ agentNaming }) => agentNaming)).toEqual(Array(2).fill({ mode: 'aw-prefix', filePrefix: 'aw-test-dynamic-test-', invocationPrefix: 'aw-test-dynamic-test-' }));
+    expect(Object.keys(view).sort()).toEqual(['agentNamingMode', 'basis', 'features', 'kinds', 'platform', 'schemaVersion', 'scope']);
     expect(view.kinds.skill.delivery).toEqual(['managed-host-resource', 'native-package']);
-    expect(view.kinds.agent.reasonCodes).toEqual(['client-missing', 'policy-blocked']);
-    expect(view.features['mcp.transport']!.values).toEqual(['http', 'sse', 'stdio']);
+    expect(view.kinds.agent.reasonCodes).toEqual(['client-missing', 'version-unsupported']);
+    expect(view.features['mcp.transport']!.values).toEqual(['http', 'stdio']);
   });
 
   it('does not call empty batches or scopes intentionally excluded by the author', async () => {
@@ -164,6 +154,40 @@ describe('complete platform component preparation', () => {
       expect.objectContaining({ id: 'blocking-hook', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['block'] }] }),
     ]));
     expect(result.empty).toBeNull();
+  });
+
+  it.each(['codex', 'copilot', 'grok'] as const)('checks split Instruction audiences against actual %s delivery', async (platform) => {
+    const item = await plugin();
+    const options = { platform, capabilities: getAuthoringPlatformCapabilities(platform, 'user') };
+    const body: PluginComponent = { id: 'guide', kind: 'instruction', name: 'guide',
+      content: { title: 'Guide', content: 'Review carefully.', coverage: ['main'] } };
+    const gap = { id: 'gap', kind: 'instruction' as const, componentId: body.id, reasonCode: 'interface-unsupported',
+      requiredFeatures: [{ feature: 'instruction.coverage', values: ['plugin-agents'] }] };
+    const role: PluginComponent = { id: 'reviewer', name: 'reviewer', kind: 'agent', content: { description: 'Review', prompt: 'Read.' } };
+    const run = (components: PluginComponent[], unmet: PlatformComponentPlanV3['unmet'], overrides: Partial<Parameters<typeof preparePlatformComponents>[0]> = {}) =>
+      prepare(item, { ...options, kinds: ['instruction', 'agent'], ...overrides, runner: renderer(() => ({ ...empty, components, unmet })) });
+    expect((await run([body], [gap])).expected).toMatchObject({ components: [body], unmet: [gap] });
+    const { componentId: _, ...unlinked } = gap;
+    expect((await run([], [unlinked])).expected.unmet).toEqual([unlinked]);
+    await expect(run([body], [gap, { ...gap, id: 'duplicate-gap' }])).rejects.toThrow(/coverage/u);
+    await expect(run([body], [{ ...gap, requiredFeatures: [{ feature: 'instruction.coverage', values: ['main'] }] }])).rejects.toThrow(/coverage/u);
+    if (platform === 'codex') {
+      await expect(run([], [{ ...unlinked, requiredFeatures: [...gap.requiredFeatures,
+        { feature: 'instruction.coverage', values: ['other-agents'] }] }])).rejects.toThrow(/coverage/u);
+      await expect(run([body], [gap, { ...gap, id: 'other-gap', requiredFeatures: [{ feature: 'instruction.coverage', values: ['other-agents'] }] }]))
+        .rejects.toThrow(/coverage/u);
+      await expect(run([{ ...body, content: { ...body.content, coverage: ['plugin-agents'] } }],
+        [{ ...gap, requiredFeatures: [{ feature: 'instruction.coverage', values: ['main'] }] }])).rejects.toThrow(/coverage/u);
+      return;
+    }
+    await expect(run([body, role], [gap])).rejects.toThrow(/coverage/u);
+    const restrictedRole = { ...role, requires: [{ feature: 'instruction.paths' }] };
+    expect((await run([body, restrictedRole], [gap])).expected.components).toEqual([body]);
+    if (platform === 'grok') {
+      await expect(run([body], [gap], { kinds: ['instruction'], hasInstructionAgentRecipients: true })).rejects.toThrow(/coverage/u);
+    }
+    item.manifest.extensions = { agents: [{ name: 'reader', description: 'Read', prompt: 'Read.' }] };
+    await expect(run([body], [gap])).rejects.toThrow(/coverage/u);
   });
 
   it('rejects dynamic identity and name conflicts with static declarations', async () => {
@@ -207,7 +231,8 @@ describe('complete platform component preparation', () => {
     item.manifest.artifacts!.sourceDirs = ['./scripts'];
     await fs.ensureDir(path.join(item.rootDir, 'scripts'));
     const facts = capabilities();
-    facts.deliveryFeatures = [];
+    facts.features['hook.matcher']!.values = facts.features['hook.matcher']!.values!.filter((event) => event !== 'common.session_start');
+    facts.features['hook.common.session_start'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'], values: [] };
     const hook = { id: 'notice', name: 'notice', kind: 'hook',
       content: { dialect: 'common', event: 'session_start', feedback: 'notify', command: 'node ./scripts/notice.mjs' } };
     const render = () => prepare(item, { kinds: ['hook'], capabilities: facts, runner: renderer(() => ({ ...empty, components: [hook] })) });
@@ -280,17 +305,15 @@ describe('complete platform component preparation', () => {
       await fs.outputFile(path.join(item.rootDir, 'scripts/helper.mjs'), 'export const value = "verified-package";\n');
       await fs.outputFile(path.join(item.rootDir, 'scripts/server.mjs'), 'import {value} from "./helper.mjs"; console.log(value);\n');
       await fs.outputFile(path.join(item.rootDir, 'scripts/guard.mjs'), `import fs from 'node:fs'; import {value} from './helper.mjs'; fs.appendFileSync(${JSON.stringify(trace)},value+'\\n');\n`);
-      const facts = { ...capabilities(), platform };
-      const protocol = getHookHandlerContract(platform, 'common', 'before_tool').protocol;
-      if (protocol) facts.features['hook.common.before_tool'] = { status: 'supported', reasonCodes: [], values: ['notify'] };
-      else delete facts.features['hook.common.before_tool'];
+      const facts = getAuthoringPlatformCapabilities(platform, 'user');
+      const mapped = platform !== 'cursor';
       const argument = platform === 'pi' ? 'scripts/server.mjs' : './scripts/server.mjs';
       const prepared = await prepare(item, { platform, kinds: ['hook', 'mcp'], capabilities: facts,
         runner: renderer(() => ({ ...empty, components: [{ id: 'server', name: 'server', kind: 'mcp',
           content: { type: 'stdio', command: process.execPath, args: [argument] } }] })) });
-      expect(prepared.resources.bundleFiles.map((file) => file.path)).toEqual(protocol
+      expect(prepared.resources.bundleFiles.map((file) => file.path)).toEqual(mapped
         ? ['scripts/guard.mjs', 'scripts/helper.mjs', 'scripts/server.mjs'] : ['scripts/helper.mjs', 'scripts/server.mjs']);
-      if (!protocol) expect(prepared.expected.unmet).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'hook' })]));
+      if (!mapped) expect(prepared.expected.unmet).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'hook' })]));
       await fs.remove(path.join(item.rootDir, 'scripts'));
       const env = { HOME: path.join(item.rootDir, 'home with spaces'), AW_HOME: path.join(item.rootDir, 'aw'),
         CODEX_HOME: path.join(item.rootDir, 'codex'), CLAUDE_CONFIG_DIR: path.join(item.rootDir, 'claude') };
@@ -339,7 +362,7 @@ describe('complete platform component preparation', () => {
       expect(path.isAbsolute(args[0]!)).toBe(true);
       expect((await promisify(execFile)(command, args, { cwd: unrelated })).stdout.trim()).toBe('verified-package');
       expect((await promisify(execFile)(command, args, { cwd: item.rootDir })).stdout.trim()).toBe('verified-package');
-      if (protocol) {
+      if (platform === 'antigravity' || platform === 'opencode' || platform === 'pi') {
         expect(hook).toBeDefined();
         await hook!();
         expect(await fs.readFile(trace, 'utf8')).toBe('verified-package\n');
@@ -384,11 +407,7 @@ describe('complete platform component preparation', () => {
       content: { dialect: 'common', event: 'session_start', feedback: 'notify', command } };
     const native: PluginComponent = { id: 'native-start', name: 'native-start', kind: 'hook',
       content: { dialect: 'native', event: 'SessionStart', feedback: 'notify', matcher: '*', command } };
-    const facts = { ...capabilities(), platform, features: {
-      'hook.common.session_start': { status: 'supported' as const, reasonCodes: [], values: ['notify'] },
-      'hook.native.SessionStart': { status: 'supported' as const, reasonCodes: [], values: ['notify'] },
-      'hook.matcher': { status: 'supported' as const, reasonCodes: [], values: ['common.session_start', 'native.SessionStart'] },
-    } };
+    const facts = getAuthoringPlatformCapabilities(platform, 'user');
     if (source === 'mixed') item.manifest.extensions = { hooks: [{ id: 'public-start', event: 'session_start',
       feedback: 'notify', matcher: 'resume|startup|clear', command }] };
     const dynamic = source === 'mixed' ? [native] : source === 'single' ? [common] : [common, native];
@@ -427,11 +446,7 @@ describe('complete platform component preparation', () => {
       content: { dialect: 'common', event: 'session_start', feedback: 'notify', command } };
     const native: PluginComponent = { id: 'native-start', name: 'native-start', kind: 'hook',
       content: { dialect: 'native', event: 'SessionStart', feedback: 'notify', matcher: 'startup|resume|clear', command } };
-    const facts = { ...capabilities(), platform, features: {
-      'hook.common.session_start': { status: 'supported' as const, reasonCodes: [], values: ['notify'] },
-      'hook.native.SessionStart': { status: 'supported' as const, reasonCodes: [], values: ['notify'] },
-      'hook.matcher': { status: 'supported' as const, reasonCodes: [], values: ['native.SessionStart'] },
-    } };
+    const facts = getAuthoringPlatformCapabilities(platform, 'user');
     if (source === 'mixed') item.manifest.extensions = { hooks: [{ id: 'public-start', event: 'session_start', feedback: 'notify', command }] };
     await expect(prepare(item, { platform, kinds: ['hook'], capabilities: facts,
       runner: renderer(() => ({ ...empty, components: source === 'mixed' ? [native] : [common, native] })) }))
@@ -562,10 +577,10 @@ describe('shared renderer process boundary', () => {
     const item = await plugin(`import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 console.log(JSON.stringify({surface: process.env.AW_PLUGIN_SURFACE, home: process.env.HOME, awHome: process.env.AW_HOME, contextPath: process.env.AW_PLUGIN_CONTEXT, schemaVersion: context.schemaVersion}));`);
-    const result = await runPreparedArtifactRenderer({ plugin: item, context: { schemaVersion: 2, surface: 'agent-plugin', platform: 'codex', scope: 'user' },
+    const result = await runPreparedArtifactRenderer({ plugin: item, context: { schemaVersion: 3, surface: 'agent-plugin', platform: 'codex', scope: 'user' },
       sensitiveValues: [], cwd: item.rootDir, commandEnv: { PATH: process.env.PATH, HOME: '/host-home', AW_HOME: '/host-aw-home' } });
     const output = result.value as { surface: string; home: string; awHome: string; contextPath: string; schemaVersion: number };
-    expect(output).toMatchObject({ surface: 'agent-plugin', schemaVersion: 2 });
+    expect(output).toMatchObject({ surface: 'agent-plugin', schemaVersion: 3 });
     expect(output.home).not.toBe('/host-home'); expect(output.awHome).not.toBe('/host-aw-home');
     expect(await fs.pathExists(output.contextPath)).toBe(false);
   });

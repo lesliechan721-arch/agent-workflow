@@ -1,7 +1,6 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
-import { getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest';
 import { runInstallTasks } from '../../src/recovery/install-concurrency.js';
 import { PlatformRebuildSession, nativeInstallResources } from '../../src/commands/rebuild-platform-integration.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -19,7 +18,6 @@ import { NativeCliError } from '../../src/utils/native-cli.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { resolveAbsoluteAwHome } from '../../src/utils/state-paths.js';
 
@@ -104,7 +102,6 @@ function evidenceReadGate() {
 }
 
 async function nativeEvidenceFixture(platform: 'copilot' | 'antigravity' | 'pi', options: { state?: 'foreign' | 'unknown'; multiple?: boolean; scope?: 'user' | 'project' } = {}) {
-  if (platform === 'antigravity') installNativeTestQualification({ platforms: ['antigravity'] });
   const isolated = getCurrentSourceTestIsolation();
   const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
   const executable = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-client`);
@@ -247,14 +244,14 @@ describe('native evidence checks', () => {
     } finally { await item.context.platformRebuildSession?.dispose(); }
   });
 
-  it.each([false, true])('refreshes static and rendered Pi Skills when invocation is unverified=%s', async (unverified) => {
+  it.each([false, true])('refreshes static and rendered Pi Skills after a client version change=%s', async (changeClient) => {
     const item = await nativeEvidenceFixture('pi');
     try {
       const installed = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
       expect(installed.status, JSON.stringify(installed)).toBe('succeeded');
       const skills = path.join(item.layout.packageRoot, 'skills');
       expect(await fs.readdir(skills)).toEqual(['check']);
-      if (unverified) item.changeClient();
+      if (changeClient) item.changeClient();
 
       const frontmatter = (name: string) => `---\nname: ${name}\ndescription: Manual only.\nuser-invocable: true\ndisable-model-invocation: true\n---\nExplicit use.\n`;
       await fs.outputFile(path.join(item.root, 'skills/manual/SKILL.md'), frontmatter('manual'));
@@ -929,19 +926,7 @@ async function marketplaceFixture(extras = false, names: readonly string[] = ['f
 
   const context: RebuildExecutionContext = { env, nativeCliRunner: nativeRunner, reporter: createNoopReporter(),
     debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
-  const adapterFor = (platform: Parameters<typeof getAgentPluginAdapter>[0]) => {
-    const adapter = getAgentPluginAdapter(platform);
-    return { ...adapter, capabilities(input) {
-      const capabilities = adapter.capabilities(input);
-      capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
-      if (extras && platform === 'claude') for (const kind of ['mcp', 'hook'] as const) capabilities.kinds[kind] = { ...capabilities.kinds[kind], status: 'supported', reasonCodes: [] };
-      for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (!feature.derivedFromKind && (id.startsWith('skill.') || extras && platform === 'claude' && (id.startsWith('mcp.') || id === 'hook.common.before_tool'))) {
-        capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: id === 'hook.common.before_tool' ? ['notify'] : [...feature.values] } : {}) };
-      }
-      return capabilities;
-    } };
-  };
-  context.platformRebuildSession = new PlatformRebuildSession(context, adapterFor);
+  context.platformRebuildSession = new PlatformRebuildSession(context);
   const integration = createRebuildIntegration({ context });
   const targets = [];
   for (const name of names) {
@@ -964,7 +949,7 @@ async function marketplaceFixture(extras = false, names: readonly string[] = ['f
       catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0', channel: 'latest' } }));
   }
   await integration.sealMarketplaceGenerations(targets);
-  return { context, integration, targets, adapterFor, claude };
+  return { context, integration, targets, claude };
 }
 
 describe('shared marketplace generation', () => {
@@ -982,7 +967,7 @@ describe('shared marketplace generation', () => {
     const freshIntegration = async () => {
       await item.context.platformRebuildSession!.dispose();
       item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, item.adapterFor);
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context);
       return createRebuildIntegration({ context: item.context });
     };
     try {
@@ -1047,7 +1032,7 @@ describe('shared marketplace generation', () => {
     const freshIntegration = async () => {
       await item.context.platformRebuildSession!.dispose();
       item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, item.adapterFor);
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context);
       return createRebuildIntegration({ context: item.context });
     };
     try {
@@ -1105,7 +1090,7 @@ describe('shared marketplace generation', () => {
       const renderer = `import fs from 'node:fs';const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:'skill:check',kind:'skill',name:'check',content:{files:{'SKILL.md':{text:'---\\nname: check\\ndescription: Check.\\n---\\nNew skill.'}}}}]:[],omitted:[],unmet:['mcp','hook'].filter(kind=>c.allowedOutputKinds.includes(kind)).map(kind=>({id:kind==='mcp'?'mcp:docs':'hook:guard',kind,reasonCode:'dependency-unmet',requiredFeatures:[]}))}));`;
       await fs.writeFile(path.join(previous.plugin.rootDir, 'render.mjs'), renderer);
       item.context.preparedArtifactRenderResults = new Map();
-      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, item.adapterFor);
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context);
       const integration = createRebuildIntegration({ context: item.context });
       const targets = [];
       for (const [old, platform] of [[previous, 'claude'], [item.targets[1]!, 'opencode']] as const) targets.push(await integration.buildTarget({
@@ -1229,7 +1214,6 @@ async function registrationFixture(options: { platform?: 'codex' | 'claude'; fai
   const original = getAgentPluginAdapter(platform);
   const adapter: typeof original = { ...original,
     discover: async () => ({ platform, availability: 'available', installations: [product, ...options.excludedProduct ? [options.excludedProduct] : []], diagnostics: [] }),
-    capabilities(input) { const value = original.capabilities(input); value.kinds.skill = { ...value.kinds.skill, status: 'supported', reasonCodes: [] }; return value; },
     async inspect(ctx, binding) {
       // This orchestration fixture reports explicit scope receipts. Native
       // shared inheritance is checked through inspectDeployment in its own suite.

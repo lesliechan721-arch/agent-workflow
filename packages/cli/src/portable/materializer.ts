@@ -225,7 +225,7 @@ async function materializePluginCandidates(options: {
   const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-profile-skills-'));
   try {
     const materialized = await materializeProfilePluginComponents({
-      ...options, outputRoot: stagingRoot, kinds: options.includeComponentGaps ? COMPONENT_KINDS : ['skill'], portable: true, config: profileConfig.config,
+      ...options, outputRoot: stagingRoot, kinds: options.includeComponentGaps ? COMPONENT_KINDS : ['skill'], portable: true, config: profileConfig.config, userConfig: profileConfig.userConfig,
       selectedSkills: options.selectedSkills ? [...options.selectedSkills] : undefined,
     });
     options.recordPreparation(materialized.preparation.map((unit) => ({ ...unit, outputs: [] })));

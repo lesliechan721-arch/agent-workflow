@@ -12,7 +12,7 @@ import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { inspectDeployment, deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime, replaceCatalogSourcesConfig, installFixturePlugin } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -94,7 +94,7 @@ describe('current recovery dependency contributions', () => {
 
   // Test Value Gate: the real installed Native observer must feed actual dependency placement and must withdraw a verified edge after local output disappears.
   it('refreshes genuine installed dependency positions and removes stale verified relations', async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const source = path.join(isolation.layout.fixtureCwd, 'native-dependency-source');

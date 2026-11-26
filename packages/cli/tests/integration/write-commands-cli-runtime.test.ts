@@ -1,4 +1,4 @@
-import { installNativeTestQualification, getNativeTestLayout, createNativeTestExecution, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery, getNativeTestLayout, createNativeTestExecution, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { describe, beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -78,7 +78,7 @@ async function createDiscoveredCodexApp(isolation: ReturnType<typeof getCurrentS
 }
 
 describe('five namespaced write commands', () => {
-  let qualification: ReturnType<typeof installNativeTestQualification>;
+  let clientDiscovery: ReturnType<typeof installNativeTestDiscovery>;
   let codexLayout: Awaited<ReturnType<typeof getNativeTestLayout>>;
   let nativeId: string;
   let marketplaceName: string;
@@ -88,7 +88,7 @@ describe('five namespaced write commands', () => {
     controlledAppRoot = undefined;
     setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [],
       queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }) });
-    qualification = installNativeTestQualification({ discovery: true });
+    clientDiscovery = installNativeTestDiscovery();
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     codexLayout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/demo',
@@ -976,8 +976,7 @@ describe('five namespaced write commands', () => {
     });
     const runtime = await createCodexNativeTestRuntime(isolation, managerKind === 'app' ? '0.151.0' : '0.200.0');
     isolation.env.PATH = isolation.env.PATH!.split(path.delimiter)[0]!;
-    qualification.restore();
-    installNativeTestQualification();
+    clientDiscovery.restore();
     const selectedCommand = managerKind === 'app' ? await createDiscoveredCodexApp(isolation) : process.execPath;
     const selectedLauncher = managerKind === 'app' ? selectedCommand : process.platform === 'win32'
       ? path.join(isolation.env.PATH!.split(path.delimiter)[0]!, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
@@ -1084,8 +1083,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    qualification.restore();
-    installNativeTestQualification();
+    clientDiscovery.restore();
     const oldRuntimeRoot = path.join(isolation.env.AW_HOME!, 'runtimes', 'codex',
       '0.151.0', `${process.platform}-${process.arch}`);
     if (oldRuntimePresent) {
@@ -1151,8 +1149,7 @@ describe('five namespaced write commands', () => {
 
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
     'selects a healthy newer App before an older PATH CLI can block native planning', async () => {
-      qualification.restore();
-      installNativeTestQualification();
+      clientDiscovery.restore();
       // Test Value Gate: the first native observation must use the highest usable local CLI selected by production discovery.
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-selected-before-observation-source');
@@ -1219,8 +1216,7 @@ describe('five namespaced write commands', () => {
 
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
     'requires a new Review when a discovered App changes the execution products and preserves offline cleanup', async () => {
-    qualification.restore();
-    installNativeTestQualification();
+    clientDiscovery.restore();
     // The reviewed product set is frozen. A newly discovered App requires another Review.
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-codex-source');
@@ -1312,8 +1308,7 @@ describe('five namespaced write commands', () => {
   }, 30_000);
 
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')('replans with App CLI registration before shared replacement writes', async () => {
-    qualification.restore();
-    installNativeTestQualification();
+    clientDiscovery.restore();
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-replan-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);

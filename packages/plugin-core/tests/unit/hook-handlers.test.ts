@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   assertNativeComponentHookEvent, assertNativeHookEvent, assertPlatformCapabilities, assertPluginManifestStructure,
   assertPluginComponent, assertPlatformComponentPlan, partitionStaticPluginComponents,
-  createHookHandlerResponse, getHookHandlerContract, getPluginAuthoringCapabilitySurface, getPlatformHookHandlerRegistry,
+  createHookHandlerResponse, getHookHandlerContract, resolvePlatformAgentNamingMode, getPluginAuthoringCapabilitySurface, getPlatformHookHandlerRegistry,
   renderPublicHookEvent, normalizeRenderedHookGroupIdentity, validatePlatformManifestProjection, validatePluginManifest, COMPONENT_KINDS,
-  type PlatformCapabilitiesV2, type PluginComponent,
+  type PlatformCapabilitiesV3, type PluginComponent,
 } from '../../src/manifest.js';
 const raw = { schemaVersion: 4, name: 'example', version: '1.0.0', description: 'Example', platforms: ['codex'], marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, extensions: { nativeHooks: { codex: [{ id: 'child', event: 'SubagentStart', feedback: 'context', command: 'node child.mjs' }] } } };
 describe('public Hook handler registry', () => {
@@ -33,14 +33,14 @@ describe('public Hook handler registry', () => {
     }
     expect(createHookHandlerResponse({ platform: 'antigravity', dialect: 'common', event: 'before_tool', feedback: 'block', message: 'Denied.' })).toEqual({ exitCode: 0, stdout: '{"decision":"deny","reason":"Denied."}', stderr: '' });
     expect(JSON.parse(createHookHandlerResponse({ platform: 'antigravity', dialect: 'common', event: 'session_start', feedback: 'context', message: 'Policy.' }).stdout)).toEqual({ injectSteps: [{ userMessage: 'Policy.' }] });
-    expect(() => createHookHandlerResponse({ platform: 'codex', dialect: 'native', event: 'SubagentStart', feedback: 'block', message: 'Denied.' })).toThrow(/unverified or unsupported/u);
+    expect(() => createHookHandlerResponse({ platform: 'codex', dialect: 'native', event: 'SubagentStart', feedback: 'block', message: 'Denied.' })).toThrow(/no registered wire protocol/u);
   });
   it('uses the Claude PermissionRequest deny object while preserving the Codex exit-code protocol', () => {
     const claude = createHookHandlerResponse({ platform: 'claude', dialect: 'native', event: 'PermissionRequest', feedback: 'block', message: 'Denied.' });
     expect({ ...claude, stdout: JSON.parse(claude.stdout) }).toEqual({ exitCode: 0, stderr: '', stdout: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denied.' } } } });
     expect(createHookHandlerResponse({ platform: 'codex', dialect: 'native', event: 'PermissionRequest', feedback: 'block', message: 'Denied.' })).toEqual({ exitCode: 2, stdout: '', stderr: 'Denied.' });
     expect(getHookHandlerContract('claude', 'native', 'PermissionRequest').protocol?.blockEffect).toBe('deny-permission');
-    expect(() => createHookHandlerResponse({ platform: 'claude', dialect: 'native', event: 'PostToolUse', feedback: 'block', message: 'Denied.' })).toThrow(/unverified or unsupported/u);
+    expect(() => createHookHandlerResponse({ platform: 'claude', dialect: 'native', event: 'PostToolUse', feedback: 'block', message: 'Denied.' })).toThrow(/no registered wire protocol/u);
     expect(getHookHandlerContract('codex', 'native', 'PostToolUse').protocol?.blockEffect).toBe('reject-tool-result');
   });
 
@@ -52,8 +52,8 @@ describe('public Hook handler registry', () => {
     { platform: 'codex' as const, dialect: 'common' as const, event: 'before_tool' as const, matcher: '[' },
   ])('checks $platform $dialect $event matcher through all component and Manifest entry points', ({ platform, dialect, event, matcher }) => {
     const component: PluginComponent = { id: 'guard', kind: 'hook', name: 'guard', content: { dialect, event, feedback: 'notify', matcher, command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform, scope: 'user', basis: 'profile',
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform, scope: 'user', basis: 'profile', agentNamingMode: resolvePlatformAgentNamingMode(platform),
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
       features: { [`hook.${dialect}.${event}`]: { status: 'supported', reasonCodes: [], values: ['notify'] } },
     };
     expect(() => assertPluginComponent(component, { platform })).toThrow();
@@ -79,8 +79,8 @@ describe('public Hook handler registry', () => {
     const { platforms: _, ...allPlatforms } = raw;
     const { dialect: __, ...sourceHook } = hook.content;
     expect(() => validatePluginManifest('/tmp', { ...allPlatforms, extensions: { hooks: [{ id: 'guard', ...sourceHook }] } })).not.toThrow();
-    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform, scope: 'user', basis: 'profile',
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform, scope: 'user', basis: 'profile', agentNamingMode: resolvePlatformAgentNamingMode(platform),
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] } },
     };
     const skill: PluginComponent = { id: 'independent', name: 'independent', kind: 'skill', content: { files: { 'SKILL.md': { text: '---\nname: independent\ndescription: Check.\n---\nCheck.\n' } } } };
@@ -88,19 +88,19 @@ describe('public Hook handler registry', () => {
     expect(expected.components.map((component) => component.id)).toEqual(['independent']);
     expect(expected.unmet).toEqual([{ id: 'guard', kind: 'hook', name: 'guard', requiredFeatures: [{ feature: 'hook.matcher', values: ['common.before_tool'] }], reasonCode: 'interface-unsupported' }]);
     expect(() => assertPlatformComponentPlan({ version: 3, components: [hook], omitted: [], unmet: [] }, { platform, platformCapabilities: capabilities, allowedOutputKinds: ['hook'] })).not.toThrow();
-    expect(() => assertPlatformCapabilities({ ...capabilities, features: { ...capabilities.features, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['common.before_tool'] } } })).toThrow(/matcher is unverified or unsupported/u);
+    expect(() => assertPlatformCapabilities({ ...capabilities, features: { ...capabilities.features, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['common.before_tool'] } } })).toThrow(/matcher is unsupported/u);
   });
 
-  it('delivers a matched Hook only with the corresponding qualified matcher value', () => {
+  it('delivers a matched Hook only with the corresponding supported matcher value', () => {
     const component: PluginComponent = { id: 'guard', name: 'guard', kind: 'hook', content: { dialect: 'common', event: 'before_tool', feedback: 'notify', matcher: 'Bash', command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform: 'codex', scope: 'user', basis: 'profile', agentNamingMode: 'aw-prefix',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['common.before_tool'] } },
     };
     expect(partitionStaticPluginComponents([component], capabilities).components).toEqual([component]);
     expect(() => assertPlatformComponentPlan({ version: 3, components: [component], omitted: [], unmet: [] }, { platform: 'codex', allowedOutputKinds: ['hook'], platformCapabilities: capabilities })).not.toThrow();
-    capabilities.features['hook.matcher'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
-    expect(partitionStaticPluginComponents([component], capabilities).unmet).toEqual([{ id: 'guard', kind: 'hook', name: 'guard', requiredFeatures: [{ feature: 'hook.matcher', values: ['common.before_tool'] }], reasonCode: 'capability-unverified' }]);
+    capabilities.features['hook.matcher'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'], values: [] };
+    expect(partitionStaticPluginComponents([component], capabilities).unmet).toEqual([{ id: 'guard', kind: 'hook', name: 'guard', requiredFeatures: [{ feature: 'hook.matcher', values: ['common.before_tool'] }], reasonCode: 'interface-unsupported' }]);
   });
 
   it('rejects duplicate mapped public/native handlers even when their stable IDs differ', () => {
@@ -113,8 +113,8 @@ describe('public Hook handler registry', () => {
   it('rejects equivalent host handlers in dynamic, static and mixed component collections', () => {
     const common: PluginComponent = { id: 'public', name: 'public', kind: 'hook', content: { dialect: 'common', event: 'before_tool', feedback: 'notify', command: 'echo guard' } };
     const native: PluginComponent = { id: 'native', name: 'native', kind: 'hook', content: { dialect: 'native', event: 'PreToolUse', feedback: 'notify', matcher: '*', command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform: 'codex', scope: 'user', basis: 'profile', agentNamingMode: 'aw-prefix',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.native.PreToolUse': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['native.PreToolUse'] } },
     };
     const plan = (components: PluginComponent[]) => ({ version: 3, components, omitted: [], unmet: [] });
@@ -126,11 +126,35 @@ describe('public Hook handler registry', () => {
     expect(() => assertPlatformComponentPlan(plan([common, { ...native, content: { ...native.content, matcher: 'Bash' } }]), options)).not.toThrow();
   });
 
-  it('keeps missing wire definitions unverified and does not infer client qualification from a protocol', () => {
-    expect(getHookHandlerContract('cursor', 'common', 'session_start')).toMatchObject({ qualification: 'required', protocol: null });
+  it.each(['cursor', 'copilot', 'grok'] as const)('accepts a mapped %s notify-only event without a registered response protocol', (platform) => {
+    expect(getHookHandlerContract(platform, 'common', 'session_start')).toMatchObject({ qualification: 'required', protocol: null });
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform, scope: 'user', basis: 'profile', agentNamingMode: 'aw-prefix',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
+      features: { 'hook.common.session_start': { status: 'supported', reasonCodes: [], values: ['notify'] } },
+    };
+    assertPlatformCapabilities(capabilities);
+    const notify: PluginComponent = { id: 'start', kind: 'hook', name: 'start', content: { dialect: 'common', event: 'session_start', feedback: 'notify', command: 'echo started' } };
+    expect(partitionStaticPluginComponents([notify], capabilities).components).toEqual([notify]);
+    capabilities.features['hook.common.session_start']!.values = ['notify', 'context'];
+    expect(() => assertPlatformCapabilities(capabilities)).toThrow(/no registered wire protocol/u);
+    if (platform === 'cursor') {
+      capabilities.features = { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] } };
+      expect(() => assertPlatformCapabilities(capabilities)).toThrow(/no native event mapping/u);
+    }
+  });
+
+  it('allows supported matcher values for mapped notify-only handlers and rejects unregistered block feedback', () => {
+    expect(getHookHandlerContract('claude', 'native', 'Notification')).toMatchObject({ matcherAllowed: true, protocol: null });
+    const capabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform: 'claude', scope: 'user', basis: 'profile', agentNamingMode: 'host-plugin',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
+      features: { 'hook.native.Notification': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['native.Notification'] } },
+    };
+    assertPlatformCapabilities(capabilities);
+    capabilities.features['hook.native.Notification'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
+    expect(() => assertPlatformCapabilities(capabilities)).toThrow(/matcher is unsupported/u);
+    capabilities.features = { 'hook.native.Notification': { status: 'supported', reasonCodes: [], values: ['block'] } };
+    expect(() => assertPlatformCapabilities(capabilities)).toThrow();
     expect(getHookHandlerContract('pi', 'native', 'tool_call')).toMatchObject({ api: 'pi.on', protocol: { id: 'aw.serialized-event-notify.v1', responses: { notify: { stdout: null } } } });
-    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'cursor', scope: 'user', basis: 'profile', kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] }])) as PlatformCapabilitiesV2['kinds'], features: { 'hook.common.session_start': { status: 'supported', reasonCodes: [], values: ['context'] } } };
-    expect(() => assertPlatformCapabilities(capabilities)).toThrow(/protocol is unverified/u);
     expect(Object.values(getPlatformHookHandlerRegistry()).every((platform) => Object.values(platform.native).every((handler) => handler.qualification === 'required'))).toBe(true);
   });
 });

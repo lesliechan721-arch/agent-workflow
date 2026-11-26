@@ -11,7 +11,6 @@ import * as safeFiles from '../../src/utils/safe-fs.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const user = ['--scope', 'user', '--context', 'user', '--target', 'antigravity'];
@@ -35,7 +34,6 @@ async function fixture(extraPermission?: { name: string; ask: string[] }) {
   const ownership = path.join(layout.awHomeDir, 'platforms/antigravity/permission-ownership');
   const nativeCopies = path.join(host, 'plugins');
 
-  installNativeTestQualification({ platforms: ['antigravity'] });
   const getAdapter = registry.getAgentPluginAdapter;
   let product: 'cli' | 'app' | 'missing' = 'cli';
   const discovered = vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {

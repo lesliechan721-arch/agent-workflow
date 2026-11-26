@@ -16,7 +16,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
-import { getQualifiedPlatformProfile, getPlatformCapabilities } from '../../src/platforms/capabilities.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
 import { writePlatformSupplementState } from '../../src/platforms/supplement-state.js';
@@ -130,14 +130,6 @@ function target(status: Awaited<ReturnType<typeof readRecoveryStatus>>) {
   expect(result, JSON.stringify(status)).toBeDefined();
   return result!;
 }
-function qualifySkill(platform: PlatformTarget) {
-  vi.spyOn(getAgentPluginAdapter(platform), 'capabilities').mockImplementation((input) => {
-    const capabilities = getPlatformCapabilities(input);
-    capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
-    return capabilities;
-  });
-}
-
 async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>) {
   const { binding, layout, renderUnits, component } = await placement(value, 'codex');
   if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
@@ -163,13 +155,11 @@ async function materializeStatusSkill(value: Awaited<ReturnType<typeof fixture>>
   const skill = path.join(layout.packageRoot, 'skills/example/SKILL.md');
   await fs.outputFile(skill, '---\nname: example\ndescription: Example.\n---\nExample.\n');
   const adapter = getAgentPluginAdapter(platform);
-  const ctx = { cwd: value.cwd, env: value.env, runner: value.runner };
   const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
   const plugin = demand.roots![0]!.plugin!;
-  const observation = await adapter.inspect(ctx, binding);
   const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
     renderUnit,
-    capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile(platform) }),
+    capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile(platform) }),
     config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
       sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform,
       scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
@@ -187,7 +177,6 @@ describe('public status through platform adapters', () => {
   // byte drift through public status without asserting unknown model adoption.
   it.each(['current', 'old'] as const)('checks Antigravity actual copy freshness with %s bytes', async (state) => {
     const value = await fixture('antigravity', { available: true });
-    qualifySkill('antigravity');
     const { binding, layout, renderUnits, component } = await placement(value, 'antigravity');
     if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
     const nativeRoot = path.join(layout.physicalIdentity.namespaceRoot, 'plugins', layout.nativeIdentity.packageId);
@@ -205,12 +194,11 @@ describe('public status through platform adapters', () => {
       ? { exitCode: 0, stderr: '', stdout: JSON.stringify([{ name: layout.nativeIdentity.packageId, version: '1.0.0',
         source: 'antigravity', path: nativeRoot, enabled: true }]) } : probe(invocation));
     const adapter = getAgentPluginAdapter('antigravity');
-    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
     const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
     const plugin = demand.roots![0]!.plugin!;
     const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
       renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('antigravity') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('antigravity') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'antigravity',
         scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
@@ -232,7 +220,6 @@ describe('public status through platform adapters', () => {
   // an old or unreadable installation; only matching native bytes are current.
   it.each(['current', 'old', 'missing', 'inspect failed'] as const)('checks Grok native copy bytes with a %s installation', async (state) => {
     const value = await fixture('grok', { available: true });
-    qualifySkill('grok');
     const { binding, layout, renderUnits, component } = await placement(value, 'grok');
     if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
     const entry = binding.consumers[0]!.entry;
@@ -262,12 +249,11 @@ describe('public status through platform adapters', () => {
     await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
       nativeProjection: projection });
     const adapter = getAgentPluginAdapter('grok');
-    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
     const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
     const plugin = demand.roots![0]!.plugin!;
     const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
       renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('grok') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('grok') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'grok',
         scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
@@ -302,7 +288,6 @@ describe('public status through platform adapters', () => {
     { mode: 'not applied', neutral: false, exact: false, activation: 'disabled', content: 'drifted', exit: 0 },
     { mode: 'no scoped evidence', neutral: true, exact: undefined, activation: 'unknown', content: 'unknown', exit: 3 },
   ])('projects Codex $mode activation through CLI status without starting app-server', async ({ mode, neutral, exact, activation, content, exit }) => {
-    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true, scope: 'project' });
     const { layout } = await materializeCodexSkill(value);
@@ -358,7 +343,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('uses inherited Codex activation for a User-provided Project dependency without blocking its consumer', async () => {
-    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true });
     await createDependencyCatalogSnapshotFixture(value.source, [
@@ -380,7 +364,6 @@ describe('public status through platform adapters', () => {
   });
 
   it.each(['codex-cli 0.167.0', 'codex-cli 0.168.0'])('confirms a current Codex User package through %s without host load', async (version) => {
-    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true, version });
     await materializeCodexSkill(value);
@@ -392,7 +375,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('reports a changed Codex package as pending while retaining registration and activation', async () => {
-    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true });
     const { skill } = await materializeCodexSkill(value);
@@ -406,7 +388,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('reports known Codex package drift when a new renderer also needs initial supplement evidence', async () => {
-    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true });
     await materializeCodexSkill(value);
@@ -447,17 +428,16 @@ describe('public status through platform adapters', () => {
     const adapter = getAgentPluginAdapter('codex');
     const demand = await readDemand({ ...ctx, scope: 'project' });
     const plugin = demand.roots![0]!.plugin!;
-    const observation = await adapter.inspect(ctx, binding);
     const inputs = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
       renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
         scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
     }))) });
     const unit = inputs.units.find((entry) => entry.output === 'supplement')!;
     const fileName = supplementRelativePath(binding, { kind: 'agent', name: 'reviewer' });
-    const content = 'name = "reviewer"\ndescription = "Reviews changes"\ndeveloper_instructions = "Check the diff"\n';
+    const content = 'name = "aw-local-demo-reviewer"\ndescription = "Reviews changes"\ndeveloper_instructions = "Check the diff"\n';
     const file = ownedSupplementFile(binding, unit.physicalKey, path.join(layout.supplementRoot!, fileName));
     await writeOwnedTextFile({ ...file, content });
     const inputDigest = mode === 'old role inputs' ? `sha256:${'a'.repeat(64)}` : unit.inputDigest;
@@ -521,7 +501,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('keeps native Skill absence distinct from an intentional static empty collection', async () => {
-    qualifySkill('opencode');
     const value = await fixture('opencode', { available: true });
     const status = await value.read();
     expect(target(status), JSON.stringify(status)).toMatchObject({ content: 'absent', observation: 'missing' });
@@ -550,10 +529,9 @@ describe('public status through platform adapters', () => {
     const adapter = getAgentPluginAdapter('opencode');
     const demand = await readDemand({ scope: 'user', cwd: value.cwd, env: value.env });
     const plugin = demand.roots![0]!.plugin!;
-    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
     const state = await createPlatformEmptyState({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
       renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('opencode') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('opencode') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'opencode',
         scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
@@ -591,7 +569,7 @@ describe('public status through platform adapters', () => {
     expect(observation.consumers).toEqual([expect.objectContaining({ activation: 'enabled' })]);
     const state = await createPlatformEmptyState({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
       renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
         scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
@@ -610,7 +588,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('does not interpret a foreign Native package as installed or remove its files', async () => {
-    qualifySkill('opencode');
     const value = await fixture('opencode', { available: true });
     const { layout } = await placement(value);
     await fs.outputFile(path.join(layout.packageRoot, 'foreign.txt'), 'foreign bytes');
@@ -622,7 +599,6 @@ describe('public status through platform adapters', () => {
   });
 
   it.each(['static', 'dynamic'] as const)('reports an installed OpenCode %s Skill from before the registration format update as drifted', async (kind) => {
-    qualifySkill('opencode');
     const value = await fixture('opencode', { available: true, dynamic: kind === 'dynamic' });
     const { input, layout } = await materializeStatusSkill(value, 'opencode', await placement(value));
     const markerPath = path.join(layout.packageRoot, SKILL_OWNER_MARKER);
@@ -638,6 +614,108 @@ describe('public status through platform adapters', () => {
     ]) });
     expect(await snapshot(layout.packageRoot)).toEqual(before);
     expect(await fs.pathExists(value.sentinel)).toBe(false);
+  });
+
+  // An absent weak receipt must not turn a statically unavailable Agent or its referring Skill into missing native output.
+  it('reports a static Agent gap and its referring Skill through public status without requiring a renderer or receipt', async () => {
+    const value = await fixture('opencode', { available: true });
+    await fs.outputFile(path.join(value.source, 'plugins/demo/skills/example/references/usage.md'),
+      'Use {{aw.agent:reviewer}}.\n', { mode: 0o755 });
+    await createCatalogSnapshotFixture(value.source, 'demo', ['aw.skill-agent-placeholder.v1'], 'References', (manifest) => {
+      manifest.platforms = ['opencode'];
+      manifest.skills = './skills';
+      manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Review the changes.',
+        agentOverrides: { opencode: { name: 'renamed-reviewer' } } }] };
+    });
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0' });
+    expect(await fs.pathExists(path.join(value.env.AW_HOME!, 'platforms/opencode/empty-state'))).toBe(false);
+    const before = await snapshot(value.isolation.layout.rootDir);
+    const output = createCapturedCliIo();
+    const exit = await runCli(['plugin', 'status', 'local/demo', '--context', 'user', '--json'], {
+      cwd: value.cwd, env: value.env, io: output.io, nativeCliRunner: value.runner,
+    });
+    const result = JSON.parse(output.readStdout());
+    expect(result).toMatchObject({ schemaVersion: 2, command: 'plugin.status' });
+    expect(output.readStderr()).toContain('platformExpectationUnconfirmed:');
+    expect(exit, JSON.stringify(result)).toBe(3);
+    const observed = result.data.inventory[0].targetResults[0];
+    expect(observed.content).toBe('unknown');
+    expect(observed.blockerCodes).toEqual([]);
+    expect(observed.componentGaps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'agent:reviewer', kind: 'agent', name: 'renamed-reviewer', reasonCode: 'interface-unsupported',
+        requiredFeatures: expect.arrayContaining([{ feature: 'component.kind.agent' }]) }),
+      expect.objectContaining({ id: 'skill:example', kind: 'skill', reasonCode: 'interface-unsupported',
+        requiredFeatures: expect.arrayContaining([{ feature: 'component.kind.agent' }]) }),
+    ]));
+    expect(observed.componentGaps).toHaveLength(2);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'platformExpectationUnconfirmed' })]));
+    expect(result.diagnostics).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: 'platformPackageMissing' })]));
+    expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+  });
+
+  // Only current delivery evidence can resolve an otherwise unknown dynamic Agent; status must never execute the renderer.
+  it('defers a mixed static Skill Agent reference until current recorded delivery is available', async () => {
+    const value = await fixture('opencode', { available: true, dynamic: true });
+    await fs.outputFile(path.join(value.source, 'plugins/demo/skills/example/SKILL.md'),
+      '---\nname: example\ndescription: Example.\n---\nUse {{aw.agent:reviewer}}.\n');
+    await fs.outputFile(path.join(value.source, 'plugins/demo/render.mjs'), [
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(value.sentinel)}, "ran");`,
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const unmet = context.allowedOutputKinds.includes("agent") ? [{ id: "agent:reviewer", name: "reviewer", kind: "agent",',
+      'reasonCode: "interface-unsupported", requiredFeatures: [{ feature: "component.kind.agent" }] }] : [];',
+      'console.log(JSON.stringify({ version: 3, components: [], omitted: [], unmet }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(value.source, 'demo', ['aw.skill-agent-placeholder.v1'], 'Mixed', (manifest) => {
+      manifest.platforms = ['opencode'];
+      manifest.skills = './skills';
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    });
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0' });
+    const read = async () => {
+      const before = await snapshot(value.isolation.layout.rootDir);
+      const output = createCapturedCliIo();
+      const exit = await runCli(['plugin', 'status', 'local/demo', '--context', 'user', '--json'], {
+        cwd: value.cwd, env: value.env, io: output.io, nativeCliRunner: value.runner,
+      });
+      expect(await fs.pathExists(value.sentinel)).toBe(false);
+      expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+      const result = JSON.parse(output.readStdout());
+      expect(result).toMatchObject({ schemaVersion: 2, command: 'plugin.status' });
+      return { exit, stderr: output.readStderr(), observed: result.data.inventory[0].targetResults[0], diagnostics: result.diagnostics };
+    };
+    const unknown = await read();
+    expect(unknown.exit, JSON.stringify(unknown.observed)).toBe(0);
+    expect(unknown.observed).toMatchObject({ content: 'absent', blockerCodes: [] });
+    expect(unknown.stderr).toContain('platformPackageMissing:');
+    expect(unknown.diagnostics).toContainEqual(expect.objectContaining({ code: 'platformPackageMissing' }));
+    expect(unknown.observed.componentGaps ?? []).toEqual([]);
+
+    const { binding, renderUnits } = await placement(value);
+    const adapter = getAgentPluginAdapter('opencode');
+    const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
+    const plugin = demand.roots![0]!.plugin!;
+    const input = await createPlatformInputEvidence({ plugin, binding,
+      units: await Promise.all(renderUnits.map(async (renderUnit) => ({
+        renderUnit,
+        capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('opencode') }),
+        config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
+          sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'opencode',
+          scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
+      }))) });
+    const gap = { id: 'skill:example', name: 'example', kind: 'skill' as const,
+      reasonCode: 'interface-unsupported', requiredFeatures: [{ feature: 'component.kind.agent' }] };
+    const agentGap = { ...gap, id: 'agent:reviewer', name: 'reviewer', kind: 'agent' as const };
+    await writePlatformEmptyState({ env: value.env, state: { ...input, kind: 'aw-platform-empty-state', result: 'capability-gaps',
+      gaps: [gap, agentGap], installedComponentIds: [] } });
+    const confirmed = await read();
+    expect(confirmed.exit, JSON.stringify(confirmed.observed)).toBe(0);
+    expect(confirmed.observed).toMatchObject({ content: 'satisfied', blockerCodes: [],
+      componentGaps: expect.arrayContaining([expect.objectContaining(gap), expect.objectContaining(agentGap)]) });
+    expect(confirmed.observed.componentGaps).toHaveLength(2);
+    expect(confirmed.stderr).not.toContain('platformPackageMissing:');
+    expect(confirmed.diagnostics).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: 'platformPackageMissing' })]));
   });
 
   it('retains a static Skill expectation when gap evidence omits its component ID', async () => {
@@ -679,7 +757,6 @@ describe('public status through platform adapters', () => {
 
   // Hook output belongs to an exact scope and is required for Cursor discovery.
   it.each(['present', 'absent', 'wrong-scope', 'unreadable'] as const)('checks Cursor workspaceOpen %s against a current Project package', async (entry) => {
-    qualifySkill('cursor');
     const value = await fixture('cursor', { available: true, scope: 'project' });
     const placed = await placement(value, 'cursor');
     const { binding, layout } = await materializeStatusSkill(value, 'cursor', placed);
@@ -695,7 +772,6 @@ describe('public status through platform adapters', () => {
   });
 
   it.each([true, false])('keeps ordinary Pi Project readiness tied to native list visibility (%s)', async (listed) => {
-    qualifySkill('pi');
     const value = await fixture('pi', { available: true, scope: 'project' });
     const placed = await placement(value, 'pi');
     const probe = value.runner.getMockImplementation()!;
@@ -713,7 +789,6 @@ describe('public status through platform adapters', () => {
 
   // Runtime service failure remains visible without changing directory delivery or coverage.
   it.each([false, true])('keeps OpenCode ready with an optional failed load (observeNative=%s)', async (observeNative) => {
-    qualifySkill('opencode');
     const value = await fixture('opencode', { available: true });
     const placed = await placement(value, 'opencode');
     const { layout } = await materializeStatusSkill(value, 'opencode', placed);
@@ -752,7 +827,6 @@ describe('public status through platform adapters', () => {
   });
 
   it('keeps owned Native materialization separate from unknown host activation and load', async () => {
-    qualifySkill('opencode');
     const value = await fixture('opencode', { available: true });
     const { layout, component } = await placement(value);
     if (component.kind !== 'owned-directory') throw new Error('Expected native package.');

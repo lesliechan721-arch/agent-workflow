@@ -18,7 +18,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import type { PluginMeta } from '../../src/types.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 
 async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
@@ -83,7 +83,7 @@ async function createNativeRuntime(isolation: ReturnType<typeof getCurrentSource
 }
 
 describe('Codex source-qualified native identity', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['codex'] }); });
   // Test Value Gate: a selected User root cannot replace a sibling shared package or read caller project state.
   it('keeps a sibling package and ignores poisoned caller project state during User recovery', async () => {
     const isolation = getCurrentSourceTestIsolation();

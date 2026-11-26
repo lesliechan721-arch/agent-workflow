@@ -52,6 +52,7 @@ import { loadPluginNativeToolClosure, normalizeNativeTools, validateNativeToolCl
 import { parsePermissionCommand } from './permission-command.js';
 import { normalizePluginCommand, normalizeManagedCommandPermission, validateManagedCommandManifest, validateManagedCommandSources, type PermissionCommand } from './managed-commands.js';
 import { applyFileRules } from './file-rules.js';
+import { scanSkillCollectionAgentReferences, validateStaticSkillAgentReferences } from './skill-agent-source.js';
 import { isAuthorOnlySkillCollection, isAuthorOnlySkillDirectory } from './skill-authoring.js';
 import { applyPlatformOverride } from './platform-entries.js';
 import type { HookFeedback, PluginComponent } from './plugin-components.js';
@@ -1531,6 +1532,10 @@ async function validateDeclaredAssetPathsExist(pluginRoot: string, manifest: Plu
 async function validateSourceSkillInventory(pluginRoot: string, manifest: NormalizedPluginManifest): Promise<void> {
   const skillsRoot = manifest.skills && path.join(pluginRoot, stripDotSlash(manifest.skills));
   const entries = skillsRoot ? await fs.readdir(skillsRoot, { withFileTypes: true }) : [];
+  if (skillsRoot) {
+    const references = await scanSkillCollectionAgentReferences(pluginRoot);
+    validateStaticSkillAgentReferences(references, manifest, resolveSupportedPlatforms(manifest));
+  }
   const keys = new Set<string>();
   for (const entry of entries) {
     if (entry.isDirectory() && !await isAuthorOnlySkillDirectory(path.join(skillsRoot!, entry.name))) keys.add(entry.name);

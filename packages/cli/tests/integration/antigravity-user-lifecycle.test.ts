@@ -4,7 +4,6 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { buildCatalogWorkspace, initializeCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -59,7 +58,6 @@ describe('public Antigravity User lifecycle', () => {
       config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: source }] } });
     await publish(1, '1.0.0');
     await setTargets({ cwd, env, scope: 'user' }, ['antigravity']);
-    installNativeTestQualification({ platforms: ['antigravity'] });
     const getAdapter = registry.getAgentPluginAdapter;
     const adapter = getAdapter('antigravity');
     const executable = path.join(cwd, 'controlled-agy');
