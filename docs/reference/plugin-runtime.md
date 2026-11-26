@@ -282,7 +282,7 @@ stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64
 
 AW 校验同一部署的静态和动态组件身份、宿主名与路径，核对运行资源，生成保留文件后投影并冻结。Skill 引用和宿主权限按这次部署采用的同一份共享路由表校验。动态命令使用无平台的独立 surface `managed-commands`，以 ArtifactPlan v2 返回完整路由表。精确合同见[动态路由渲染](managed-commands.md#动态路由渲染)。
 
-Hook/MCP 命令引用的本地文件须来自已允许的来源。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
+Hook/MCP 命令引用的本地文件须来自已允许的来源。优先使用字面量 `./` 包内路径；平台专用声明也可使用 Codex 的 `${PLUGIN_ROOT}/` 或 Claude 的 `${CLAUDE_PLUGIN_ROOT}/` 前缀。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
 
 Copilot 和 Grok 将无路径条件、覆盖 `plugin-agents` 的 Instructions 写入同一目标和 render scope 中实际可交付的同包角色正文。没有适用角色时，AW 提示 `plugin-agents` 的交付缺口。如果同一条指令还覆盖 `main`，AW 继续将正文写入主会话的规则文件。
 
