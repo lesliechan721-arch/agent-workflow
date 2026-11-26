@@ -20,6 +20,7 @@ import {
   getSkillFrontmatterCapabilityRegistry,
   normalizePluginConfigDefinition,
   compilePluginConfigDefinition,
+  validatePluginConfigCandidate,
   renderTemplate,
   resolveSupportedPlatforms,
   PLATFORM_TARGETS,
@@ -1329,6 +1330,26 @@ function defaultConfigValues(manifest, platform) {
   return values;
 }
 
+function componentFixtureConfig(manifest, platform, definition, referenceContext) {
+  const values = defaultConfigValues(manifest, platform);
+  const sources = Object.fromEntries(Object.keys(values).map((key) => [key, 'default']));
+  // A required container can be configured without inventing a user choice if
+  // its empty value is valid. This is fixture input, never a manifest default.
+  const emptyContainers = {};
+  for (const [key, field] of Object.entries(definition.fields)) {
+    if (!field.required || Object.hasOwn(values, key)) continue;
+    if (field.type === 'object') emptyContainers[key] = {};
+    else if (field.type === 'array') emptyContainers[key] = [];
+  }
+  const candidate = { ...values, ...emptyContainers };
+  for (const [key, value] of Object.entries(emptyContainers)) {
+    if (validatePluginConfigCandidate(definition, candidate, [key], referenceContext).length !== 0) continue;
+    values[key] = value;
+    sources[key] = definition.fields[key].platformOnly ? 'platform' : 'common';
+  }
+  return { values, sources };
+}
+
 function hasCrossPluginValueRef(value) {
   if (!isRecord(value)) return false;
   if (isRecord(value.valueRef) && value.valueRef.plugin !== undefined) return true;
@@ -1626,14 +1647,13 @@ async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtim
     for (const platform of resolveSupportedPlatforms(manifest)) {
       for (const scope of ['user', 'project']) {
         const definition = compilePluginConfigDefinition(manifest.config ?? { fields: {} }, platform);
-        const values = defaultConfigValues(manifest, platform);
         const references = referenceContext ? { ...referenceContext, platform, plugins: Object.fromEntries(
           Object.entries(referenceContext.plugins).map(([name, entry]) => [name, { ...entry,
             definition: compilePluginConfigDefinition(entry.definition, platform),
             values: defaultConfigValues({ config: entry.definition }, platform) }])) } : undefined;
+        const { values, sources } = componentFixtureConfig(manifest, platform, definition, references);
         const config = { mode: 'artifact-render', targetScope: scope, definition, schema: definition.fields, values,
-          sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
-          issues: [], stores: {}, referenceContext: references };
+          sources, issues: [], stores: {}, referenceContext: references };
         try {
           const prepared = await tools.materializeProfilePluginComponents({ plugin, plugins, platform, scope,
             cwd: pluginDir, env, outputRoot: path.join(tempRoot, `${platform}-${scope}`), config,

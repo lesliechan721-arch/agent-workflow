@@ -35,6 +35,8 @@
 
 `aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口。显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。同时声明 Node 构建和动态 renderer 时，源码校验提示组件仍需构建验证，`aw dev catalog publish plan` 按发布合同校验构建后的组件。 [Catalog 发布计划](catalog.md#41-发布命令接口与两阶段授权)
 
+组件校验使用各平台的有效配置 Schema 构造隔离测试输入：保留声明的默认值；没有默认值的必填对象或数组，仅在空对象或空数组通过完整配置值及引用校验时作为已配置的测试值。可选字段及其他无法确定合法值的字段保持未配置。测试值不成为 manifest 默认值，也不读写用户配置；renderer 与组件闭包的校验失败仍阻止发布。
+
 ### 1.1 本机 target 选择
 
 `aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
