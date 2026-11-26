@@ -1,0 +1,6 @@
+interface:
+  display_name: "Explore Facts"
+  short_description: "为大范围或陌生多源资料组织隔离只读事实调查，核验出处、冲突与覆盖边界"
+  default_prompt: "使用 $explore-facts 对当前大范围或陌生材料做隔离只读事实调查，返回带出处、证据层级与覆盖边界的事实底稿。"
+policy:
+  allow_implicit_invocation: true

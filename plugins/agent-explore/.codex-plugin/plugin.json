@@ -1,0 +1,13 @@
+{
+  "name": "agent-explore",
+  "version": "0.1.0-beta.1",
+  "description": "面向任意工作的大范围只读事实调查：在首轮与任务中途自发将高噪声查证卸载给隔离探索子代理，交付带出处、分证据层级与覆盖边界的事实底稿。",
+  "interface": {
+    "displayName": "Agent Explore",
+    "shortDescription": "跨平台、全领域的大范围只读事实调查与上下文隔离卸载",
+    "capabilities": [
+      "Skills",
+      "Instructions"
+    ]
+  }
+}

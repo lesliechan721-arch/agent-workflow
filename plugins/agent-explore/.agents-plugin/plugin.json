@@ -1,0 +1,451 @@
+{
+  "schemaVersion": 4,
+  "name": "agent-explore",
+  "version": "0.1.0-beta.1",
+  "description": "面向任意工作的大范围只读事实调查：在首轮与任务中途自发将高噪声查证卸载给隔离探索子代理，交付带出处、分证据层级与覆盖边界的事实底稿。",
+  "marketplace": {
+    "category": "workflow",
+    "tags": [
+      "explore",
+      "research",
+      "fact-finding",
+      "subagent",
+      "readonly",
+      "context-isolation"
+    ],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.platform-components.v3",
+        "aw.platform-render-context.v2",
+        "aw.plugin-config-array.v1",
+        "aw.plugin-config-clears-on-change.v1",
+        "aw.plugin-config-cross-plugin-value-ref.v1",
+        "aw.plugin-config-platform-only.v1",
+        "aw.plugin-config-ref-override.v1",
+        "aw.plugin-config-suggestions.v2",
+        "aw.plugin-config-summary.v1",
+        "aw.plugin-config-value-ref.v1",
+        "aw.plugin-config.v2",
+        "aw.plugin-config.v3",
+        "aw.plugin-config.v4",
+        "aw.plugin-config.v5",
+        "aw.plugin-manifest.v4",
+        "aw.portable-skills.v1"
+      ]
+    }
+  },
+  "dependencies": [
+    "agent-subagent"
+  ],
+  "platforms": [
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "copilot",
+    "grok",
+    "generic"
+  ],
+  "interface": {
+    "displayName": "Agent Explore",
+    "shortDescription": "跨平台、全领域的大范围只读事实调查与上下文隔离卸载",
+    "capabilities": [
+      "Skills",
+      "Instructions"
+    ]
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  },
+  "config": {
+    "schemaVersion": 5,
+    "fields": {
+      "exploreProfile": {
+        "type": "object",
+        "title": "常规探索配置",
+        "description": "可选。用于大范围常规/快速事实调查；省略时按复杂度沿用 agent-subagent 的 simple 或 general 档位。",
+        "properties": {
+          "executor": {
+            "type": "string",
+            "title": "执行器",
+            "description": "native 或 agent-subagent 已注册的 subagentCommands key；省略时按 native 解释。",
+            "valueRef": {
+              "plugin": "agent-subagent",
+              "field": "subagentCommands",
+              "key": "key",
+              "include": [
+                "native"
+              ]
+            },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "model": {
+            "type": "string",
+            "title": "模型",
+            "description": "留空沿用宿主/后端默认。",
+            "suggestions": {
+              "provider": "executor-models",
+              "plugin": "agent-subagent",
+              "dependsOn": [
+                "executor"
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "title": "推理强度",
+            "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+            "suggestions": {
+              "provider": "executor-efforts",
+              "plugin": "agent-subagent",
+              "dependsOn": [
+                "executor",
+                "model"
+              ]
+            },
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          }
+        },
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "plugin": "agent-subagent",
+          "hint": "fast",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择推荐探索模型组合",
+          "description": "优先推荐低成本、低延迟的探索模型组合。"
+        },
+        "platformOnly": true
+      },
+      "deepExploreProfile": {
+        "type": "object",
+        "title": "深度探索配置",
+        "description": "可选。用于高歧义、多源强冲突或复杂因果的深度事实调查；省略时沿用 agent-subagent 的 complex 档位。",
+        "properties": {
+          "executor": {
+            "type": "string",
+            "title": "执行器",
+            "description": "native 或 agent-subagent 已注册的 subagentCommands key；省略时按 native 解释。",
+            "valueRef": {
+              "plugin": "agent-subagent",
+              "field": "subagentCommands",
+              "key": "key",
+              "include": [
+                "native"
+              ]
+            },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "model": {
+            "type": "string",
+            "title": "模型",
+            "description": "留空沿用宿主/后端默认。",
+            "suggestions": {
+              "provider": "executor-models",
+              "plugin": "agent-subagent",
+              "dependsOn": [
+                "executor"
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "title": "推理强度",
+            "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+            "suggestions": {
+              "provider": "executor-efforts",
+              "plugin": "agent-subagent",
+              "dependsOn": [
+                "executor",
+                "model"
+              ]
+            },
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          }
+        },
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "plugin": "agent-subagent",
+          "hint": "strong",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择推荐深查模型组合",
+          "description": "优先推荐长链交叉核验能力更强的模型组合。"
+        },
+        "platformOnly": true
+      },
+      "exploreCustomProfiles": {
+        "type": "array",
+        "title": "探索自定义路由",
+        "description": "可选。按数组顺序采用首个适用范围匹配项（如“长文档/PDF/网页核验”“外部仓库扫描”）；未匹配时再按常规/深度探索规则执行。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "type": "string",
+              "title": "执行器",
+              "description": "native 或 agent-subagent 已注册的 subagentCommands key；省略时按 native 解释。",
+              "valueRef": {
+                "plugin": "agent-subagent",
+                "field": "subagentCommands",
+                "key": "key",
+                "include": [
+                  "native"
+                ]
+              },
+              "clearsOnChange": [
+                "model",
+                "reasoningEffort"
+              ],
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "model": {
+              "type": "string",
+              "title": "模型",
+              "description": "留空沿用宿主/后端默认。",
+              "suggestions": {
+                "provider": "executor-models",
+                "plugin": "agent-subagent",
+                "dependsOn": [
+                  "executor"
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "title": "推理强度",
+              "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+              "suggestions": {
+                "provider": "executor-efforts",
+                "plugin": "agent-subagent",
+                "dependsOn": [
+                  "executor",
+                  "model"
+                ]
+              },
+              "choices": {
+                "allowCustom": true,
+                "presets": [
+                  {
+                    "id": "low",
+                    "title": "low",
+                    "value": "low"
+                  },
+                  {
+                    "id": "medium",
+                    "title": "medium",
+                    "value": "medium"
+                  },
+                  {
+                    "id": "high",
+                    "title": "high",
+                    "value": "high"
+                  },
+                  {
+                    "id": "xhigh",
+                    "title": "xhigh",
+                    "value": "xhigh"
+                  },
+                  {
+                    "id": "max",
+                    "title": "max",
+                    "value": "max"
+                  }
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false,
+          "suggestions": {
+            "provider": "executor-model-profile",
+            "plugin": "agent-subagent",
+            "hint": "balanced",
+            "dependsOn": [
+              "executor"
+            ],
+            "targets": [
+              "model",
+              "reasoningEffort"
+            ],
+            "title": "选择推荐模型组合"
+          }
+        },
+        "platformOnly": true
+      }
+    },
+    "presentation": {
+      "summaries": {
+        "modelAndEffort": {
+          "kind": "join",
+          "separator": "/",
+          "missing": "继承默认",
+          "parts": [
+            {
+              "path": "/executor"
+            },
+            {
+              "path": "/model"
+            },
+            {
+              "path": "/reasoningEffort"
+            }
+          ]
+        }
+      },
+      "fieldViews": {
+        "exploreProfile": {
+          "summary": "modelAndEffort"
+        },
+        "deepExploreProfile": {
+          "summary": "modelAndEffort"
+        }
+      },
+      "groups": [
+        {
+          "id": "explore-facts",
+          "title": "explore-facts",
+          "fields": [
+            "exploreProfile",
+            "deepExploreProfile",
+            "exploreCustomProfiles"
+          ]
+        }
+      ]
+    }
+  },
+  "artifacts": {
+    "configKeys": [
+      "exploreProfile",
+      "deepExploreProfile",
+      "exploreCustomProfiles"
+    ],
+    "sourceDirs": [
+      "./shared",
+      "./skills/explore-facts"
+    ]
+  }
+}

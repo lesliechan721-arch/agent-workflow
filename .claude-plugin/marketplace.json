@@ -9,6 +9,37 @@
   },
   "plugins": [
     {
+      "name": "agent-advisor",
+      "source": "./plugins/agent-advisor",
+      "description": "面向任意工作的独立只读第二意见：在任务中途陷入判断卡点或高代价拍板前自发求助独立顾问（未配置覆盖且允许外发时优先异构外部模型），主会话逐条核验后再裁决。",
+      "interface": {
+        "displayName": "Agent Advisor",
+        "shortDescription": "跨平台、全领域的独立第二意见顾问与异构视角咨询",
+        "capabilities": [
+          "Skills",
+          "Instructions"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "advisor",
+        "second-opinion",
+        "reasoning",
+        "subagent",
+        "readonly",
+        "cross-model"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
+      }
+    },
+    {
       "name": "agent-content-toolkit",
       "source": "./plugins/agent-content-toolkit",
       "description": "编写、重构或只读评价给 Agent 读取的内容；强化具象机制、反抽象压缩、去免责剪枝、读取指针、信息层级与多跳控制。",
@@ -20,6 +51,37 @@
         ]
       },
       "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
+      }
+    },
+    {
+      "name": "agent-explore",
+      "source": "./plugins/agent-explore",
+      "description": "面向任意工作的大范围只读事实调查：在首轮与任务中途自发将高噪声查证卸载给隔离探索子代理，交付带出处、分证据层级与覆盖边界的事实底稿。",
+      "interface": {
+        "displayName": "Agent Explore",
+        "shortDescription": "跨平台、全领域的大范围只读事实调查与上下文隔离卸载",
+        "capabilities": [
+          "Skills",
+          "Instructions"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "explore",
+        "research",
+        "fact-finding",
+        "subagent",
+        "readonly",
+        "context-isolation"
+      ],
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
@@ -60,8 +122,7 @@
         "displayName": "Agent Subagent",
         "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
         "capabilities": [
-          "Skills",
-          "Agents"
+          "Skills"
         ]
       },
       "category": "workflow",
@@ -137,38 +198,6 @@
         ]
       },
       "category": "workflow",
-      "strict": true,
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL",
-        "products": [
-          "CLAUDE",
-          "CODEX"
-        ]
-      }
-    },
-    {
-      "name": "codex-enhance",
-      "source": "./plugins/codex-enhance",
-      "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
-      "interface": {
-        "displayName": "Codex Enhance",
-        "shortDescription": "Codex 技术第二意见与只读事实调查",
-        "capabilities": [
-          "Skills",
-          "Agents"
-        ]
-      },
-      "category": "workflow",
-      "tags": [
-        "codex",
-        "subagent",
-        "explorer",
-        "research",
-        "reasoning",
-        "wait",
-        "advisor"
-      ],
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",

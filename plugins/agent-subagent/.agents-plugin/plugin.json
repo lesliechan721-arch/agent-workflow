@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-subagent",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "description": "组织已授权的通用子代理委派、原生与外部执行器自省、执行配置与跨平台调度。",
   "marketplace": {
     "category": "workflow",
@@ -27,7 +27,10 @@
         "aw.platform-render-context.v2",
         "aw.plugin-build-config.v1",
         "aw.plugin-config-array.v1",
-        "aw.plugin-config-suggestions.v1",
+        "aw.plugin-config-clears-on-change.v1",
+        "aw.plugin-config-platform-only.v1",
+        "aw.plugin-config-ref-override.v1",
+        "aw.plugin-config-suggestions.v2",
         "aw.plugin-config-summary.v1",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
@@ -55,8 +58,7 @@
     "displayName": "Agent Subagent",
     "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
     "capabilities": [
-      "Skills",
-      "Agents"
+      "Skills"
     ]
   },
   "extensions": {
@@ -129,14 +131,111 @@
   "config": {
     "schemaVersion": 5,
     "fields": {
+      "generalTaskProfile": {
+        "type": "object",
+        "title": "常规任务基线配置",
+        "description": "当前平台的必填基线（general 档位），也是其他省略档位的默认继承目标。",
+        "required": true,
+        "properties": {
+          "executor": {
+            "type": "string",
+            "title": "执行器",
+            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+            "valueRef": {
+              "field": "subagentCommands",
+              "key": "key",
+              "include": [
+                "native"
+              ]
+            },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "model": {
+            "type": "string",
+            "title": "模型",
+            "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+            "suggestions": {
+              "provider": "executor-models",
+              "dependsOn": [
+                "executor"
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "title": "推理强度",
+            "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+            "suggestions": {
+              "provider": "executor-efforts",
+              "dependsOn": [
+                "executor",
+                "model"
+              ]
+            },
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          }
+        },
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "balanced",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择常规任务推荐组合",
+          "description": "优先推荐均衡主力模型组合，也可显式选择沿用宿主默认。"
+        },
+        "platformOnly": true
+      },
       "simpleTaskProfile": {
         "type": "object",
         "title": "简单任务配置",
-        "description": "simple 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true,
+        "description": "可选。simple 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
         "properties": {
           "executor": {
             "type": "string",
@@ -149,6 +248,10 @@
                 "native"
               ]
             },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
             "validation": {
               "minLength": 1
             }
@@ -213,102 +316,26 @@
             }
           }
         },
-        "additionalProperties": false
-      },
-      "generalTaskProfile": {
-        "type": "object",
-        "title": "常规任务配置",
-        "description": "general 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "fast",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择轻量快速推荐组合",
+          "description": "优先推荐低延迟、低成本的模型组合。"
         },
-        "required": true,
-        "properties": {
-          "executor": {
-            "type": "string",
-            "title": "执行器",
-            "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
-            "valueRef": {
-              "field": "subagentCommands",
-              "key": "key",
-              "include": [
-                "native"
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "model": {
-            "type": "string",
-            "title": "模型",
-            "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
-            "suggestions": {
-              "provider": "executor-models",
-              "dependsOn": [
-                "executor"
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          },
-          "reasoningEffort": {
-            "type": "string",
-            "title": "推理强度",
-            "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
-            "suggestions": {
-              "provider": "executor-efforts",
-              "dependsOn": [
-                "executor",
-                "model"
-              ]
-            },
-            "choices": {
-              "allowCustom": true,
-              "presets": [
-                {
-                  "id": "low",
-                  "title": "low",
-                  "value": "low"
-                },
-                {
-                  "id": "medium",
-                  "title": "medium",
-                  "value": "medium"
-                },
-                {
-                  "id": "high",
-                  "title": "high",
-                  "value": "high"
-                },
-                {
-                  "id": "xhigh",
-                  "title": "xhigh",
-                  "value": "xhigh"
-                },
-                {
-                  "id": "max",
-                  "title": "max",
-                  "value": "max"
-                }
-              ]
-            },
-            "validation": {
-              "minLength": 1
-            }
-          }
-        },
-        "additionalProperties": false
+        "platformOnly": true
       },
       "complexTaskProfile": {
         "type": "object",
         "title": "复杂任务配置",
-        "description": "complex 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true,
+        "description": "可选。complex 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
         "properties": {
           "executor": {
             "type": "string",
@@ -321,6 +348,10 @@
                 "native"
               ]
             },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
             "validation": {
               "minLength": 1
             }
@@ -385,16 +416,26 @@
             }
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "strong",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择复杂主力推荐组合",
+          "description": "优先推荐强推理与多步验证能力更强的主力组合。"
+        },
+        "platformOnly": true
       },
       "advancedTaskProfile": {
         "type": "object",
         "title": "高难任务配置",
-        "description": "advanced 档位的执行器、模型与推理强度偏好；默认沿用宿主原生默认。",
-        "default": {
-          "executor": "native"
-        },
-        "required": true,
+        "description": "可选。advanced 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
         "properties": {
           "executor": {
             "type": "string",
@@ -407,6 +448,10 @@
                 "native"
               ]
             },
+            "clearsOnChange": [
+              "model",
+              "reasoningEffort"
+            ],
             "validation": {
               "minLength": 1
             }
@@ -471,12 +516,137 @@
             }
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "suggestions": {
+          "provider": "executor-model-profile",
+          "hint": "deep",
+          "dependsOn": [
+            "executor"
+          ],
+          "targets": [
+            "model",
+            "reasoningEffort"
+          ],
+          "title": "选择高难深度推荐组合",
+          "description": "优先推荐最高深度推理模型组合。"
+        },
+        "platformOnly": true
+      },
+      "taskCustomProfiles": {
+        "type": "array",
+        "title": "通用委派自定义配置",
+        "description": "可选。按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "applicability": {
+              "type": "string",
+              "title": "适用范围",
+              "required": true,
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "executor": {
+              "type": "string",
+              "title": "执行器",
+              "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+              "valueRef": {
+                "field": "subagentCommands",
+                "key": "key",
+                "include": [
+                  "native"
+                ]
+              },
+              "clearsOnChange": [
+                "model",
+                "reasoningEffort"
+              ],
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "model": {
+              "type": "string",
+              "title": "模型",
+              "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+              "suggestions": {
+                "provider": "executor-models",
+                "dependsOn": [
+                  "executor"
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "title": "推理强度",
+              "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+              "suggestions": {
+                "provider": "executor-efforts",
+                "dependsOn": [
+                  "executor",
+                  "model"
+                ]
+              },
+              "choices": {
+                "allowCustom": true,
+                "presets": [
+                  {
+                    "id": "low",
+                    "title": "low",
+                    "value": "low"
+                  },
+                  {
+                    "id": "medium",
+                    "title": "medium",
+                    "value": "medium"
+                  },
+                  {
+                    "id": "high",
+                    "title": "high",
+                    "value": "high"
+                  },
+                  {
+                    "id": "xhigh",
+                    "title": "xhigh",
+                    "value": "xhigh"
+                  },
+                  {
+                    "id": "max",
+                    "title": "max",
+                    "value": "max"
+                  }
+                ]
+              },
+              "validation": {
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false,
+          "suggestions": {
+            "provider": "executor-model-profile",
+            "hint": "balanced",
+            "dependsOn": [
+              "executor"
+            ],
+            "targets": [
+              "model",
+              "reasoningEffort"
+            ],
+            "title": "选择推荐模型组合",
+            "description": "按当前执行器实时目录原子选择模型与推理强度。"
+          }
+        },
+        "platformOnly": true
       },
       "subagentCommands": {
         "type": "array",
         "title": "外部执行器",
-        "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。配置不替代任务授权。",
+        "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。支持 common 共享与平台覆盖；配置不替代任务授权。",
         "default": [],
         "required": true,
         "items": {
@@ -580,6 +750,7 @@
                   "efforts": {
                     "type": "array",
                     "title": "支持的推理强度",
+                    "description": "省略时继承动态探针结果或标记为未知；显式设为空数组 [] 表示该模型不支持独立推理强度（effortSupport: none）。",
                     "items": {
                       "type": "string",
                       "validation": {
@@ -590,6 +761,15 @@
                     "validation": {
                       "maxItems": 16,
                       "uniqueItems": true
+                    }
+                  },
+                  "defaultEffort": {
+                    "type": "string",
+                    "title": "默认推理强度",
+                    "description": "可选；须包含在有效 efforts 列表中。",
+                    "validation": {
+                      "minLength": 1,
+                      "maxLength": 64
                     }
                   },
                   "default": {
@@ -857,101 +1037,6 @@
           "minimum": 0,
           "maximum": 2501999792
         }
-      },
-      "taskCustomProfiles": {
-        "type": "array",
-        "title": "通用委派自定义配置",
-        "description": "按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
-        "default": [],
-        "required": true,
-        "items": {
-          "type": "object",
-          "properties": {
-            "applicability": {
-              "type": "string",
-              "title": "适用范围",
-              "required": true,
-              "validation": {
-                "minLength": 1
-              }
-            },
-            "executor": {
-              "type": "string",
-              "title": "执行器",
-              "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
-              "valueRef": {
-                "field": "subagentCommands",
-                "key": "key",
-                "include": [
-                  "native"
-                ]
-              },
-              "validation": {
-                "minLength": 1
-              }
-            },
-            "model": {
-              "type": "string",
-              "title": "模型",
-              "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
-              "suggestions": {
-                "provider": "executor-models",
-                "dependsOn": [
-                  "executor"
-                ]
-              },
-              "validation": {
-                "minLength": 1
-              }
-            },
-            "reasoningEffort": {
-              "type": "string",
-              "title": "推理强度",
-              "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
-              "suggestions": {
-                "provider": "executor-efforts",
-                "dependsOn": [
-                  "executor",
-                  "model"
-                ]
-              },
-              "choices": {
-                "allowCustom": true,
-                "presets": [
-                  {
-                    "id": "low",
-                    "title": "low",
-                    "value": "low"
-                  },
-                  {
-                    "id": "medium",
-                    "title": "medium",
-                    "value": "medium"
-                  },
-                  {
-                    "id": "high",
-                    "title": "high",
-                    "value": "high"
-                  },
-                  {
-                    "id": "xhigh",
-                    "title": "xhigh",
-                    "value": "xhigh"
-                  },
-                  {
-                    "id": "max",
-                    "title": "max",
-                    "value": "max"
-                  }
-                ]
-              },
-              "validation": {
-                "minLength": 1
-              }
-            }
-          },
-          "additionalProperties": false
-        }
       }
     },
     "presentation": {
@@ -987,10 +1072,10 @@
         }
       },
       "fieldViews": {
-        "simpleTaskProfile": {
+        "generalTaskProfile": {
           "summary": "modelAndEffort"
         },
-        "generalTaskProfile": {
+        "simpleTaskProfile": {
           "summary": "modelAndEffort"
         },
         "complexTaskProfile": {
@@ -1008,8 +1093,8 @@
           "id": "spawn-subagent",
           "title": "spawn-subagent",
           "fields": [
-            "simpleTaskProfile",
             "generalTaskProfile",
+            "simpleTaskProfile",
             "complexTaskProfile",
             "advancedTaskProfile",
             "taskCustomProfiles"
@@ -1025,12 +1110,999 @@
           "advanced": true
         }
       ]
+    },
+    "platforms": {
+      "generic": {
+        "fields": {
+          "generalTaskProfile": {
+            "type": "object",
+            "title": "常规任务基线配置",
+            "description": "generic 通用平台豁免必填初始化，默认沿用当前宿主原生子代理。",
+            "default": {
+              "executor": "native"
+            },
+            "required": true,
+            "properties": {
+              "executor": {
+                "type": "string",
+                "title": "执行器",
+                "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+                "valueRef": {
+                  "field": "subagentCommands",
+                  "key": "key",
+                  "include": [
+                    "native"
+                  ]
+                },
+                "clearsOnChange": [
+                  "model",
+                  "reasoningEffort"
+                ],
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "model": {
+                "type": "string",
+                "title": "模型",
+                "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+                "suggestions": {
+                  "provider": "executor-models",
+                  "dependsOn": [
+                    "executor"
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "title": "推理强度",
+                "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+                "suggestions": {
+                  "provider": "executor-efforts",
+                  "dependsOn": [
+                    "executor",
+                    "model"
+                  ]
+                },
+                "choices": {
+                  "allowCustom": true,
+                  "presets": [
+                    {
+                      "id": "low",
+                      "title": "low",
+                      "value": "low"
+                    },
+                    {
+                      "id": "medium",
+                      "title": "medium",
+                      "value": "medium"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high",
+                      "value": "high"
+                    },
+                    {
+                      "id": "xhigh",
+                      "title": "xhigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "id": "max",
+                      "title": "max",
+                      "value": "max"
+                    }
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false,
+            "suggestions": {
+              "provider": "executor-model-profile",
+              "hint": "balanced",
+              "dependsOn": [
+                "executor"
+              ],
+              "targets": [
+                "model",
+                "reasoningEffort"
+              ],
+              "title": "选择常规任务推荐组合"
+            },
+            "platformOnly": true
+          },
+          "simpleTaskProfile": {
+            "type": "object",
+            "title": "简单任务配置",
+            "description": "可选。simple 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+            "properties": {
+              "executor": {
+                "type": "string",
+                "title": "执行器",
+                "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+                "valueRef": {
+                  "field": "subagentCommands",
+                  "key": "key",
+                  "include": [
+                    "native"
+                  ]
+                },
+                "clearsOnChange": [
+                  "model",
+                  "reasoningEffort"
+                ],
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "model": {
+                "type": "string",
+                "title": "模型",
+                "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+                "suggestions": {
+                  "provider": "executor-models",
+                  "dependsOn": [
+                    "executor"
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "title": "推理强度",
+                "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+                "suggestions": {
+                  "provider": "executor-efforts",
+                  "dependsOn": [
+                    "executor",
+                    "model"
+                  ]
+                },
+                "choices": {
+                  "allowCustom": true,
+                  "presets": [
+                    {
+                      "id": "low",
+                      "title": "low",
+                      "value": "low"
+                    },
+                    {
+                      "id": "medium",
+                      "title": "medium",
+                      "value": "medium"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high",
+                      "value": "high"
+                    },
+                    {
+                      "id": "xhigh",
+                      "title": "xhigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "id": "max",
+                      "title": "max",
+                      "value": "max"
+                    }
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false,
+            "suggestions": {
+              "provider": "executor-model-profile",
+              "hint": "fast",
+              "dependsOn": [
+                "executor"
+              ],
+              "targets": [
+                "model",
+                "reasoningEffort"
+              ],
+              "title": "选择轻量快速推荐组合",
+              "description": "优先推荐低延迟、低成本的模型组合。"
+            },
+            "platformOnly": true
+          },
+          "complexTaskProfile": {
+            "type": "object",
+            "title": "复杂任务配置",
+            "description": "可选。complex 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+            "properties": {
+              "executor": {
+                "type": "string",
+                "title": "执行器",
+                "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+                "valueRef": {
+                  "field": "subagentCommands",
+                  "key": "key",
+                  "include": [
+                    "native"
+                  ]
+                },
+                "clearsOnChange": [
+                  "model",
+                  "reasoningEffort"
+                ],
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "model": {
+                "type": "string",
+                "title": "模型",
+                "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+                "suggestions": {
+                  "provider": "executor-models",
+                  "dependsOn": [
+                    "executor"
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "title": "推理强度",
+                "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+                "suggestions": {
+                  "provider": "executor-efforts",
+                  "dependsOn": [
+                    "executor",
+                    "model"
+                  ]
+                },
+                "choices": {
+                  "allowCustom": true,
+                  "presets": [
+                    {
+                      "id": "low",
+                      "title": "low",
+                      "value": "low"
+                    },
+                    {
+                      "id": "medium",
+                      "title": "medium",
+                      "value": "medium"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high",
+                      "value": "high"
+                    },
+                    {
+                      "id": "xhigh",
+                      "title": "xhigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "id": "max",
+                      "title": "max",
+                      "value": "max"
+                    }
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false,
+            "suggestions": {
+              "provider": "executor-model-profile",
+              "hint": "strong",
+              "dependsOn": [
+                "executor"
+              ],
+              "targets": [
+                "model",
+                "reasoningEffort"
+              ],
+              "title": "选择复杂主力推荐组合",
+              "description": "优先推荐强推理与多步验证能力更强的主力组合。"
+            },
+            "platformOnly": true
+          },
+          "advancedTaskProfile": {
+            "type": "object",
+            "title": "高难任务配置",
+            "description": "可选。advanced 档位的执行器、模型与推理强度覆盖；省略时继承常规任务基线。",
+            "properties": {
+              "executor": {
+                "type": "string",
+                "title": "执行器",
+                "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+                "valueRef": {
+                  "field": "subagentCommands",
+                  "key": "key",
+                  "include": [
+                    "native"
+                  ]
+                },
+                "clearsOnChange": [
+                  "model",
+                  "reasoningEffort"
+                ],
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "model": {
+                "type": "string",
+                "title": "模型",
+                "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+                "suggestions": {
+                  "provider": "executor-models",
+                  "dependsOn": [
+                    "executor"
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "title": "推理强度",
+                "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+                "suggestions": {
+                  "provider": "executor-efforts",
+                  "dependsOn": [
+                    "executor",
+                    "model"
+                  ]
+                },
+                "choices": {
+                  "allowCustom": true,
+                  "presets": [
+                    {
+                      "id": "low",
+                      "title": "low",
+                      "value": "low"
+                    },
+                    {
+                      "id": "medium",
+                      "title": "medium",
+                      "value": "medium"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high",
+                      "value": "high"
+                    },
+                    {
+                      "id": "xhigh",
+                      "title": "xhigh",
+                      "value": "xhigh"
+                    },
+                    {
+                      "id": "max",
+                      "title": "max",
+                      "value": "max"
+                    }
+                  ]
+                },
+                "validation": {
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false,
+            "suggestions": {
+              "provider": "executor-model-profile",
+              "hint": "deep",
+              "dependsOn": [
+                "executor"
+              ],
+              "targets": [
+                "model",
+                "reasoningEffort"
+              ],
+              "title": "选择高难深度推荐组合",
+              "description": "优先推荐最高深度推理模型组合。"
+            },
+            "platformOnly": true
+          },
+          "taskCustomProfiles": {
+            "type": "array",
+            "title": "通用委派自定义配置",
+            "description": "可选。按数组顺序采用首个适用范围匹配项；未匹配时使用内建档位。",
+            "items": {
+              "type": "object",
+              "properties": {
+                "applicability": {
+                  "type": "string",
+                  "title": "适用范围",
+                  "required": true,
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "executor": {
+                  "type": "string",
+                  "title": "执行器",
+                  "description": "native 或 subagentCommands 中的稳定 key；省略时按 native 解释。",
+                  "valueRef": {
+                    "field": "subagentCommands",
+                    "key": "key",
+                    "include": [
+                      "native"
+                    ]
+                  },
+                  "clearsOnChange": [
+                    "model",
+                    "reasoningEffort"
+                  ],
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "model": {
+                  "type": "string",
+                  "title": "模型",
+                  "description": "留空沿用宿主/后端默认；外部执行器留空时可在调度期通过 inspect 按任务难度自省选型。",
+                  "suggestions": {
+                    "provider": "executor-models",
+                    "dependsOn": [
+                      "executor"
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "title": "推理强度",
+                  "description": "推理强度偏好；留空沿用宿主/后端默认，实际支持范围由所选执行器与模型决定。",
+                  "suggestions": {
+                    "provider": "executor-efforts",
+                    "dependsOn": [
+                      "executor",
+                      "model"
+                    ]
+                  },
+                  "choices": {
+                    "allowCustom": true,
+                    "presets": [
+                      {
+                        "id": "low",
+                        "title": "low",
+                        "value": "low"
+                      },
+                      {
+                        "id": "medium",
+                        "title": "medium",
+                        "value": "medium"
+                      },
+                      {
+                        "id": "high",
+                        "title": "high",
+                        "value": "high"
+                      },
+                      {
+                        "id": "xhigh",
+                        "title": "xhigh",
+                        "value": "xhigh"
+                      },
+                      {
+                        "id": "max",
+                        "title": "max",
+                        "value": "max"
+                      }
+                    ]
+                  },
+                  "validation": {
+                    "minLength": 1
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "suggestions": {
+                "provider": "executor-model-profile",
+                "hint": "balanced",
+                "dependsOn": [
+                  "executor"
+                ],
+                "targets": [
+                  "model",
+                  "reasoningEffort"
+                ],
+                "title": "选择推荐模型组合",
+                "description": "按当前执行器实时目录原子选择模型与推理强度。"
+              }
+            },
+            "platformOnly": true
+          },
+          "subagentCommands": {
+            "type": "array",
+            "title": "外部执行器",
+            "description": "注册可信内建或自定义工作区适配器；key 大小写敏感，native 为保留值。支持 common 共享与平台覆盖；配置不替代任务授权。",
+            "default": [],
+            "required": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "required": true,
+                  "validation": {
+                    "minLength": 1
+                  }
+                },
+                "adapter": {
+                  "type": "string",
+                  "required": true,
+                  "choices": {
+                    "allowCustom": false,
+                    "presets": [
+                      {
+                        "id": "codex",
+                        "title": "codex",
+                        "value": "codex"
+                      },
+                      {
+                        "id": "claude-code",
+                        "title": "claude-code",
+                        "value": "claude-code"
+                      },
+                      {
+                        "id": "antigravity",
+                        "title": "antigravity",
+                        "value": "antigravity"
+                      },
+                      {
+                        "id": "custom",
+                        "title": "custom",
+                        "value": "custom"
+                      },
+                      {
+                        "id": "custom-managed",
+                        "title": "自定义（托管命令）",
+                        "value": "custom-managed"
+                      }
+                    ]
+                  }
+                },
+                "description": {
+                  "type": "string",
+                  "title": "执行器说明",
+                  "description": "给主代理参考的定位或选型提示，会渲染在选型与自省的可用执行器表中。",
+                  "validation": {
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "modelsPolicy": {
+                  "type": "string",
+                  "title": "模型目录策略",
+                  "description": "省略时为 merge（动态自省与静态 models 合并补充）；设为 override 且 models 非空时，直接以静态 models 为生效目录并跳过动态探测。",
+                  "choices": {
+                    "allowCustom": false,
+                    "presets": [
+                      {
+                        "id": "merge",
+                        "title": "合并补充（默认）",
+                        "value": "merge",
+                        "recommended": true
+                      },
+                      {
+                        "id": "override",
+                        "title": "静态白名单覆盖",
+                        "value": "override"
+                      }
+                    ]
+                  }
+                },
+                "models": {
+                  "type": "array",
+                  "title": "静态模型声明",
+                  "description": "可选。内建执行器可留空由动态自省获取；填写后在 merge 模式下补充/覆盖说明并作为离线兜底，在 override 模式下作为生效白名单。",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "title": "模型 ID",
+                        "required": true,
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "description": {
+                        "type": "string",
+                        "title": "适用说明",
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 512
+                        }
+                      },
+                      "efforts": {
+                        "type": "array",
+                        "title": "支持的推理强度",
+                        "description": "省略时继承动态探针结果或标记为未知；显式设为空数组 [] 表示该模型不支持独立推理强度（effortSupport: none）。",
+                        "items": {
+                          "type": "string",
+                          "validation": {
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        },
+                        "validation": {
+                          "maxItems": 16,
+                          "uniqueItems": true
+                        }
+                      },
+                      "defaultEffort": {
+                        "type": "string",
+                        "title": "默认推理强度",
+                        "description": "可选；须包含在有效 efforts 列表中。",
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 64
+                        }
+                      },
+                      "default": {
+                        "type": "boolean",
+                        "title": "默认模型"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "validation": {
+                    "maxItems": 64,
+                    "uniqueBy": "id"
+                  }
+                },
+                "communication": {
+                  "type": "boolean",
+                  "title": "父子通讯",
+                  "description": "省略时开启；设为 false 时不建立 AW 通讯桥，也不注入通讯工具和指令。开启仍须通过本次适配器能力检查。"
+                },
+                "resume": {
+                  "type": "boolean",
+                  "title": "恢复执行",
+                  "description": "省略时开启；允许向已结束的代理发送新消息来恢复原会话。与父子通讯独立，开启仍须通过适配器能力检查。"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "validation": {
+                      "maxLength": 4096,
+                      "pattern": "^[^\\x00]*$"
+                    }
+                  },
+                  "validation": {
+                    "maxItems": 128
+                  }
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string",
+                    "validation": {
+                      "maxLength": 4096,
+                      "pattern": "^[^\\x00]*$"
+                    }
+                  },
+                  "validation": {
+                    "key": {
+                      "maxLength": 4096,
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                  }
+                },
+                "envFrom": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string",
+                    "validation": {
+                      "maxLength": 4096,
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                  },
+                  "validation": {
+                    "key": {
+                      "maxLength": 4096,
+                      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "variants": {
+                "discriminator": "adapter",
+                "cases": {
+                  "codex": {
+                    "properties": {
+                      "codexProfile": {
+                        "type": "string",
+                        "title": "Codex 配置 Profile",
+                        "description": "从本次有效 CODEX_HOME 读取同名 .config.toml，完整传递配置；AW 显式 model/effort 仍优先。",
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 4096,
+                          "pattern": "^[^\\x00]*[^\\s\\x00][^\\x00]*$"
+                        }
+                      },
+                      "codexCliSource": {
+                        "type": "string",
+                        "title": "Codex CLI 来源",
+                        "description": "省略时使用 auto：先查 PATH，仅没有可执行入口时查 App 内嵌 CLI。cli 只查 PATH；app 只查 App。",
+                        "choices": {
+                          "allowCustom": false,
+                          "presets": [
+                            {
+                              "id": "auto",
+                              "title": "auto",
+                              "value": "auto",
+                              "recommended": true
+                            },
+                            {
+                              "id": "cli",
+                              "title": "cli",
+                              "value": "cli"
+                            },
+                            {
+                              "id": "app",
+                              "title": "app",
+                              "value": "app"
+                            }
+                          ]
+                        }
+                      },
+                      "codexBypassHookTrust": {
+                        "type": "boolean",
+                        "title": "跳过 Codex Hook 信任检查",
+                        "description": "省略时关闭。设为 true 会执行本次线程已启用但未受信任或内容已修改的普通 hook；不授予工具审批或沙箱绕过权限。"
+                      },
+                      "permissionMode": {
+                        "type": "string",
+                        "title": "权限模式",
+                        "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                        "choices": {
+                          "allowCustom": false,
+                          "presets": [
+                            {
+                              "id": "default",
+                              "title": "默认",
+                              "value": "default",
+                              "recommended": true
+                            },
+                            {
+                              "id": "auto",
+                              "title": "自动",
+                              "value": "auto"
+                            },
+                            {
+                              "id": "full-access",
+                              "title": "完整权限",
+                              "value": "full-access"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "claude-code": {
+                    "properties": {
+                      "permissionMode": {
+                        "type": "string",
+                        "title": "权限模式",
+                        "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                        "choices": {
+                          "allowCustom": false,
+                          "presets": [
+                            {
+                              "id": "default",
+                              "title": "默认",
+                              "value": "default",
+                              "recommended": true
+                            },
+                            {
+                              "id": "auto",
+                              "title": "自动",
+                              "value": "auto"
+                            },
+                            {
+                              "id": "full-access",
+                              "title": "完整权限",
+                              "value": "full-access"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "antigravity": {
+                    "properties": {
+                      "permissionMode": {
+                        "type": "string",
+                        "title": "权限模式",
+                        "description": "省略时为默认，保留用户和项目权限。自动使用后端自动审批；完整权限使用官方 bypass，Codex 同时取消自身沙箱。与父子通讯及 Hook 信任独立。",
+                        "choices": {
+                          "allowCustom": false,
+                          "presets": [
+                            {
+                              "id": "default",
+                              "title": "默认",
+                              "value": "default",
+                              "recommended": true
+                            },
+                            {
+                              "id": "auto",
+                              "title": "自动",
+                              "value": "auto"
+                            },
+                            {
+                              "id": "full-access",
+                              "title": "完整权限",
+                              "value": "full-access"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "custom": {
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "required": true,
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 4096,
+                          "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+                        }
+                      },
+                      "entrypoint": {
+                        "type": "string",
+                        "validation": {
+                          "minLength": 1,
+                          "maxLength": 4096,
+                          "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+                        }
+                      }
+                    }
+                  },
+                  "custom-managed": {
+                    "properties": {
+                      "commandId": {
+                        "type": "string",
+                        "title": "托管命令名称或 ID",
+                        "description": "支持 <来源>/<插件>、<来源>/<插件>/<平台>（目标包需配置时）或用户命令 cmdu_… ID。",
+                        "required": true,
+                        "validation": {
+                          "maxLength": 256,
+                          "pattern": "^(?:[a-z][a-z0-9-]{0,31}/[a-z0-9]+(?:-[a-z0-9]+)*(?:/(?:codex|claude|antigravity|cursor|opencode|pi|copilot|grok))?|cmdu_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+                        }
+                      },
+                      "subcommand": {
+                        "type": "string",
+                        "title": "子命令",
+                        "description": "插件命令的精确子命令。留空时使用插件的 fallback 或用户托管命令。",
+                        "validation": {
+                          "maxLength": 64,
+                          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "validation": {
+              "uniqueBy": "key"
+            }
+          },
+          "subagentRetentionHours": {
+            "type": "number",
+            "title": "执行记录保留小时数",
+            "description": "从执行结束计算，默认保留 24 小时；0 表示永不过期且不进行过期扫描。配置 apply 后从下次命令生效。",
+            "required": true,
+            "default": 24,
+            "validation": {
+              "integer": true,
+              "minimum": 0,
+              "maximum": 2501999792
+            }
+          }
+        },
+        "presentation": {
+          "summaries": {
+            "modelAndEffort": {
+              "kind": "join",
+              "separator": "/",
+              "missing": "默认",
+              "parts": [
+                {
+                  "path": "/executor"
+                },
+                {
+                  "path": "/model"
+                },
+                {
+                  "path": "/reasoningEffort"
+                }
+              ]
+            },
+            "executorSummary": {
+              "kind": "join",
+              "separator": " · ",
+              "missing": "未设置",
+              "parts": [
+                {
+                  "path": "/key"
+                },
+                {
+                  "path": "/adapter"
+                }
+              ]
+            }
+          },
+          "fieldViews": {
+            "generalTaskProfile": {
+              "summary": "modelAndEffort"
+            },
+            "simpleTaskProfile": {
+              "summary": "modelAndEffort"
+            },
+            "complexTaskProfile": {
+              "summary": "modelAndEffort"
+            },
+            "advancedTaskProfile": {
+              "summary": "modelAndEffort"
+            },
+            "subagentCommands": {
+              "itemSummary": "executorSummary"
+            }
+          },
+          "groups": [
+            {
+              "id": "spawn-subagent",
+              "title": "spawn-subagent",
+              "fields": [
+                "generalTaskProfile",
+                "simpleTaskProfile",
+                "complexTaskProfile",
+                "advancedTaskProfile",
+                "taskCustomProfiles"
+              ]
+            },
+            {
+              "id": "executors",
+              "title": "外部执行器",
+              "fields": [
+                "subagentCommands",
+                "subagentRetentionHours"
+              ],
+              "advanced": true
+            }
+          ]
+        }
+      }
     }
   },
   "artifacts": {
     "configKeys": [
-      "simpleTaskProfile",
       "generalTaskProfile",
+      "simpleTaskProfile",
       "complexTaskProfile",
       "advancedTaskProfile",
       "taskCustomProfiles",

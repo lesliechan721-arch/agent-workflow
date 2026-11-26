@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.83",
+  "catalogVersion": "0.1.0-beta.85",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,9 +20,69 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "cd51fe646772d26a9464d4cf19e415bb268c259b"
+    "sourceHead": "97807c4f51d3a7f364cfdb27d0a739004271b1db"
   },
   "entries": [
+    {
+      "name": "agent-advisor",
+      "source": "./plugins/agent-advisor",
+      "description": "面向任意工作的独立只读第二意见：在任务中途陷入判断卡点或高代价拍板前自发求助独立顾问（未配置覆盖且允许外发时优先异构外部模型），主会话逐条核验后再裁决。",
+      "interface": {
+        "displayName": "Agent Advisor",
+        "shortDescription": "跨平台、全领域的独立第二意见顾问与异构视角咨询",
+        "capabilities": [
+          "Skills",
+          "Instructions"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "advisor",
+        "second-opinion",
+        "reasoning",
+        "subagent",
+        "readonly",
+        "cross-model"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [
+        "agent-subagent"
+      ],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.platform-components.v3",
+            "aw.platform-render-context.v2",
+            "aw.plugin-config-array.v1",
+            "aw.plugin-config-clears-on-change.v1",
+            "aw.plugin-config-cross-plugin-value-ref.v1",
+            "aw.plugin-config-platform-only.v1",
+            "aw.plugin-config-ref-override.v1",
+            "aw.plugin-config-suggestions.v2",
+            "aw.plugin-config-summary.v1",
+            "aw.plugin-config-value-ref.v1",
+            "aw.plugin-config.v2",
+            "aw.plugin-config.v3",
+            "aw.plugin-config.v4",
+            "aw.plugin-config.v5",
+            "aw.plugin-manifest.v4",
+            "aw.portable-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:41fce0040591af85b3be3f90d82e2794f5570b9fa8e9f1494ef018152ca5c967",
+      "manifestDigest": "sha256:82abd07666443fdaa9329f163b53a8d7dad8ab348d87b0184f033f1301fe031d",
+      "contentDigest": "sha256:d2f1a13949f722b5bc11710bd59d2919f194ae89bdf0269793865dbeb0a80359"
+    },
     {
       "name": "agent-content-toolkit",
       "source": "./plugins/agent-content-toolkit",
@@ -44,7 +104,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.13",
+      "version": "0.1.0-beta.14",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -55,9 +115,69 @@
           ]
         }
       },
-      "artifactDigest": "sha256:14eb74c770d22dfccce6e02f56a362fe0947d7b3d4f5723b455225904e7ae3d8",
-      "manifestDigest": "sha256:53b2b415dc21dac6e60857391dc4308af6aa780c56768f725c8de20672c8f515",
-      "contentDigest": "sha256:9e966e3e69fc1a2b061a8b73d616050893f61eec62290ef3de582c2c9cb9a824"
+      "artifactDigest": "sha256:75a32cec6312e41f078413320fbc44c8aaf4684ffc6e295a621c419a3346efb5",
+      "manifestDigest": "sha256:5fa2300c117a65db7bc3beeeeabf25d9642505d11f4545e0a91011e42880d8a5",
+      "contentDigest": "sha256:567694d8a00f4420ce73c0f8b9f2ef845efa5fffd9e8511cdbed3c3124ca3785"
+    },
+    {
+      "name": "agent-explore",
+      "source": "./plugins/agent-explore",
+      "description": "面向任意工作的大范围只读事实调查：在首轮与任务中途自发将高噪声查证卸载给隔离探索子代理，交付带出处、分证据层级与覆盖边界的事实底稿。",
+      "interface": {
+        "displayName": "Agent Explore",
+        "shortDescription": "跨平台、全领域的大范围只读事实调查与上下文隔离卸载",
+        "capabilities": [
+          "Skills",
+          "Instructions"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "explore",
+        "research",
+        "fact-finding",
+        "subagent",
+        "readonly",
+        "context-isolation"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
+      },
+      "version": "0.1.0-beta.1",
+      "dependencies": [
+        "agent-subagent"
+      ],
+      "requires": {
+        "aw": {
+          "capabilities": [
+            "aw.platform-components.v3",
+            "aw.platform-render-context.v2",
+            "aw.plugin-config-array.v1",
+            "aw.plugin-config-clears-on-change.v1",
+            "aw.plugin-config-cross-plugin-value-ref.v1",
+            "aw.plugin-config-platform-only.v1",
+            "aw.plugin-config-ref-override.v1",
+            "aw.plugin-config-suggestions.v2",
+            "aw.plugin-config-summary.v1",
+            "aw.plugin-config-value-ref.v1",
+            "aw.plugin-config.v2",
+            "aw.plugin-config.v3",
+            "aw.plugin-config.v4",
+            "aw.plugin-config.v5",
+            "aw.plugin-manifest.v4",
+            "aw.portable-skills.v1"
+          ]
+        }
+      },
+      "artifactDigest": "sha256:4d5ecadfd3aea8ca2d2073f35ad76cddf10e681c4cad12451d46de287aa31d85",
+      "manifestDigest": "sha256:5adc6833ff0dee87b18d2fc2e3829e284b1ec6f4b21e57dd66fee178bea1f46a",
+      "contentDigest": "sha256:506f8a91597c2cc30c9d28338ef8476645d1fc59ca3f9301db7611e5cd651b29"
     },
     {
       "name": "agent-skill-toolkit",
@@ -106,8 +226,7 @@
         "displayName": "Agent Subagent",
         "shortDescription": "通用子代理委派、执行器自省与跨平台调度",
         "capabilities": [
-          "Skills",
-          "Agents"
+          "Skills"
         ]
       },
       "category": "workflow",
@@ -126,7 +245,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.1",
+      "version": "0.2.0-beta.2",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -138,7 +257,10 @@
             "aw.platform-render-context.v2",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
-            "aw.plugin-config-suggestions.v1",
+            "aw.plugin-config-clears-on-change.v1",
+            "aw.plugin-config-platform-only.v1",
+            "aw.plugin-config-ref-override.v1",
+            "aw.plugin-config-suggestions.v2",
             "aw.plugin-config-summary.v1",
             "aw.plugin-config-unique-by.v1",
             "aw.plugin-config-value-ref.v1",
@@ -151,9 +273,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4c03582040486b5825e1364ae926adc421dba86de01af70966a198418d82db16",
-      "manifestDigest": "sha256:8e3ef9a9bc06f805968a200331b8d70ed3368484e5a438501adbcf8a1bc673a6",
-      "contentDigest": "sha256:e7cbd4fd05fd9ca799c60f86af746edbea0f0d72f19c51e82a38a46406e96b67"
+      "artifactDigest": "sha256:d1c6dec838547b872b3cc55b9cc97165b4068c1b4510118e5ec573fe1b14bdda",
+      "manifestDigest": "sha256:61bc3815b53da059902ddda568d69ad26ec639b77c3b6bf70e7cc2933a8f1b3b",
+      "contentDigest": "sha256:821ae44634cc81aab1603db4b97fa522aff799ee0a302723963115d35b194bad"
     },
     {
       "name": "aw-development-toolkit",
@@ -176,7 +298,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.22",
+      "version": "0.1.0-beta.23",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -202,9 +324,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:785c4703c4d2b000e8478706582bc405ee72a6fa3c01ac012500a9e15ac14898",
-      "manifestDigest": "sha256:86ad0586d918ddb915a929c5aed7957802a5a198783e3e37abae5ab603d17026",
-      "contentDigest": "sha256:4c2bd074bdfc90629e2ed60106a82013112eb4e0fc8ac37a8b5b78e24a998458"
+      "artifactDigest": "sha256:2d5bce30be50d4c29888f11f817b00996cc7acebd522539270d136dbe5a88582",
+      "manifestDigest": "sha256:ca1b36a913c2fc9c2419a9a4f4878edaa2240b3da1582f0ceebd403ff0856508",
+      "contentDigest": "sha256:e5091b76bd546194278e2aaeefade422692bf38d73a44eba2bbb1d63262a4609"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -282,63 +404,6 @@
       "artifactDigest": "sha256:682e5b6f46537263b099124709d5be55686301cf9c8474ec13564e1884e1444c",
       "manifestDigest": "sha256:2c69aba3ddb5724de7c6dbb32c554ef64b3d874766bb7246a0df76bb8ffb11ed",
       "contentDigest": "sha256:982bd5f948e25332bd327293ebd0215e6c146dc054a743b547f00ad6f3ec8269"
-    },
-    {
-      "name": "codex-enhance",
-      "source": "./plugins/codex-enhance",
-      "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
-      "interface": {
-        "displayName": "Codex Enhance",
-        "shortDescription": "Codex 技术第二意见与只读事实调查",
-        "capabilities": [
-          "Skills",
-          "Agents"
-        ]
-      },
-      "category": "workflow",
-      "tags": [
-        "codex",
-        "subagent",
-        "explorer",
-        "research",
-        "reasoning",
-        "wait",
-        "advisor"
-      ],
-      "strict": true,
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL",
-        "products": [
-          "CLAUDE",
-          "CODEX"
-        ]
-      },
-      "version": "0.2.0-beta.33",
-      "dependencies": [
-        "agent-subagent"
-      ],
-      "requires": {
-        "aw": {
-          "capabilities": [
-            "aw.platform-components.v3",
-            "aw.platform-render-context.v2",
-            "aw.plugin-config-array.v1",
-            "aw.plugin-config-cross-plugin-value-ref.v1",
-            "aw.plugin-config-summary.v1",
-            "aw.plugin-config-value-ref.v1",
-            "aw.plugin-config.v2",
-            "aw.plugin-config.v3",
-            "aw.plugin-config.v4",
-            "aw.plugin-config.v5",
-            "aw.plugin-manifest.v4",
-            "aw.portable-skills.v1"
-          ]
-        }
-      },
-      "artifactDigest": "sha256:5b651d81a817e9d09f6d021420c5d011295bd2dd75b47330cd0cb926cd1761cc",
-      "manifestDigest": "sha256:206cb10e58400a24aa30a5346e5b658019d1b3150d1f08572b5267246419e9c3",
-      "contentDigest": "sha256:e7217169be9199d74729cdcd64f7b64b85b194f44b4edd56b459f3b7e13704f0"
     },
     {
       "name": "decision-kit",
