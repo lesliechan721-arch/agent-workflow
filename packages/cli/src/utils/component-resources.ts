@@ -43,7 +43,7 @@ export interface VerifiedCommandResource extends CommandResourceReference {
 
 /** Only literal package paths are portable. Shell expansion is not a resource declaration. */
 export function commandResourceReferences(value: string, shell: boolean, platform: PlatformCapabilitiesV2['platform'], executable?: string): CommandResourceReference[] {
-  const rootVariable = platform === 'codex' ? '${CODEX_PLUGIN_ROOT}/' : platform === 'claude' ? '${CLAUDE_PLUGIN_ROOT}/' : undefined;
+  const rootVariable = platform === 'codex' ? '${PLUGIN_ROOT}/' : platform === 'claude' ? '${CLAUDE_PLUGIN_ROOT}/' : undefined;
   const tokens = shell ? [...value.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'`;&|<>]+/gu)].map((match) => ({ text: match[0], start: match.index }))
     : [{ text: value, start: 0 }];
   const references: CommandResourceReference[] = [];

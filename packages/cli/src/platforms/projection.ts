@@ -218,7 +218,7 @@ function projectHooks(input: ProjectionInput, files: ProjectionFiles, hooks: Hoo
   const ids = hooks.map((hook) => hook.id);
   if (['codex', 'claude'].includes(platform) && instructions.length) {
     for (const instruction of instructions) if (instruction.content.paths?.length) throw new Error('platformProjectionInstructionPathsUnsupported');
-    const rootVariable = platform === 'codex' ? '${CODEX_PLUGIN_ROOT}' : '${CLAUDE_PLUGIN_ROOT}';
+    const rootVariable = platform === 'codex' ? '${PLUGIN_ROOT}' : '${CLAUDE_PLUGIN_ROOT}';
     const contexts: Record<string, string> = {};
     for (const [audience, key] of [['main', 'SessionStart'], ['plugin-agents', 'plugin'], ['other-agents', 'other']] as const) {
       const selected = instructions.filter((instruction) => instruction.content.coverage.includes(audience));
