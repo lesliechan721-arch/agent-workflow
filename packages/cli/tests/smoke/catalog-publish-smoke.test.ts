@@ -60,12 +60,40 @@ it('validates the built dynamic Skill and Grok permissions before preparing a pu
       node: { build: { runner: 'node', path: './build.mjs' } },
       artifacts: { render: { runner: 'node', path: './render.mjs' } },
     },
-    artifacts: { configKeys: [], sourceDirs: ['./runtime'] },
+    config: {
+      schemaVersion: 5,
+      fields: {
+        profile: { type: 'object', platformOnly: true, required: true,
+          properties: { executor: { type: 'string' } }, additionalProperties: false },
+        optionalProfile: { type: 'object', platformOnly: true,
+          properties: { executor: { type: 'string' } }, additionalProperties: false },
+        nonemptyProfile: { type: 'object', required: true,
+          properties: { executor: { type: 'string', required: true } }, additionalProperties: false },
+        requiredList: { type: 'array', required: true, items: { type: 'string' } },
+      },
+      platforms: { generic: { fields: {
+        profile: { type: 'object', platformOnly: true, required: true,
+          properties: { executor: { type: 'string' } }, additionalProperties: false,
+          default: { executor: 'native' } },
+      } } },
+    },
+    artifacts: { configKeys: ['profile', 'optionalProfile', 'nonemptyProfile', 'requiredList'], sourceDirs: ['./runtime'] },
   });
   await fs.outputFile(path.join(pluginRoot, 'runtime', 'entry.mjs'), 'import "unbundled-fixture-dependency";\n');
   await fs.writeFile(path.join(pluginRoot, 'render.mjs'), `
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+if (context.allowedOutputKinds.includes('skill')) {
+  const expected = context.platform === 'generic' ? { executor: 'native' } : {};
+  if (JSON.stringify(context.config.values.profile) !== JSON.stringify(expected)
+    || context.config.sources.profile !== (context.platform === 'generic' ? 'default' : 'platform')
+    || JSON.stringify(context.config.values.requiredList) !== '[]'
+    || context.config.sources.requiredList !== 'common'
+    || Object.hasOwn(context.config.values, 'optionalProfile')
+    || Object.hasOwn(context.config.values, 'nonemptyProfile')) {
+    throw new Error('Expected only valid configured fixture values');
+  }
+}
 const components = context.allowedOutputKinds.includes('skill') ? [{
   id: 'built-skill', kind: 'skill', name: 'built-skill', content: { files: {
     'SKILL.md': { text: '---\\nname: built-skill\\ndescription: A built dynamic Skill.\\n---\\nRun \\x60node scripts/entry.mjs\\x60.\\n' },

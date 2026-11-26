@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -116,17 +116,26 @@ describe('platform projection', () => {
   it.each(['codex', 'claude'] as const)('injects %s instruction text for the exact main and subagent events', async (platform) => {
     const policy: PluginComponent = platform === 'codex' ? { ...instruction, content: { ...instruction.content, coverage: ['main', 'plugin-agents', 'other-agents'] } } : instruction;
     const { input, ctx } = await fixture(platform, [policy]);
+    ctx.stagingRoot = path.join(ctx.cwd, 'stage with spaces');
     const result = await projectPlatform(ctx, input);
     const bundle = result.bundle!.stagingRoot;
     const hooks = await fs.readJson(path.join(bundle, 'hooks/hooks.json'));
-    const script = path.join(bundle, 'scripts/aw-instructions.mjs');
+    const rootVariable = platform === 'codex' ? 'PLUGIN_ROOT' : 'CLAUDE_PLUGIN_ROOT';
+    const env = { ...process.env, CODEX_PLUGIN_ROOT: undefined, PLUGIN_ROOT: undefined, CLAUDE_PLUGIN_ROOT: undefined, [rootVariable]: bundle };
+    const runHook = (event: string, agentType: string): string => {
+      const command: string = hooks.hooks[event][0].hooks[0].command;
+      // Native placeholder expansion precedes shell execution, including on Windows.
+      return execSync(command.replaceAll('${' + rootVariable + '}', bundle), {
+        cwd: ctx.cwd, env, input: JSON.stringify({ agent_type: agentType }), encoding: 'utf8',
+      });
+    };
     for (const event of ['SessionStart', 'SubagentStart']) {
       expect(hooks.hooks[event]).toHaveLength(1);
-      const stdout = execFileSync(process.execPath, [script, event], { input: JSON.stringify({ agent_type: 'example:review' }), encoding: 'utf8' });
+      const stdout = runHook(event, 'example:review');
       expect(JSON.parse(stdout)).toEqual({ hookSpecificOutput: { hookEventName: event, additionalContext: 'Preserve the source files.' } });
     }
     if (platform === 'claude') {
-      expect(execFileSync(process.execPath, [script, 'SubagentStart'], { input: '{"agent_type":"other:review"}', encoding: 'utf8' })).toBe('');
+      expect(runHook('SubagentStart', 'other:review')).toBe('');
     }
   });
 

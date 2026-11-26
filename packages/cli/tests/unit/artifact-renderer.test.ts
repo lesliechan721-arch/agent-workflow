@@ -284,7 +284,7 @@ describe('complete platform component preparation', () => {
     await fs.outputFile(path.join(item.rootDir, 'resources/template.md'), 'Source template.\n');
     const result = await prepare(item, { kinds: ['hook'], runner: renderer(() => ({ ...empty, components: [{
       id: 'notice', name: 'notice', kind: 'hook', content: { dialect: 'common', event: 'before_tool', feedback: 'notify',
-        command: 'node "${CODEX_PLUGIN_ROOT}/resources/hook.mjs"' },
+        command: 'node "${PLUGIN_ROOT}/resources/hook.mjs"' },
     }] })) });
     expect(result.resources.bundleFiles.map((file) => file.path)).toEqual(['resources/helper.mjs', 'resources/hook.mjs']);
     const runner: PluginProcessRunner = { run: async () => {
@@ -375,7 +375,7 @@ describe('complete platform component preparation', () => {
     item.manifest.artifacts!.sourceDirs = ['./scripts'];
     await fs.outputFile(path.join(item.rootDir, 'scripts/server.mjs'), 'export {};\n');
     await fs.outputFile(path.join(item.rootDir, 'outside.mjs'), 'export {};\n');
-    for (const argument of ['./outside.mjs', './scripts/../outside.mjs', '${UNKNOWN_PLUGIN_ROOT}/scripts/server.mjs']) {
+    for (const argument of ['./outside.mjs', './scripts/../outside.mjs', '${UNKNOWN_PLUGIN_ROOT}/scripts/server.mjs', '${CODEX_PLUGIN_ROOT}/scripts/server.mjs']) {
       await expect(prepare(item, { kinds: ['mcp'], runner: renderer(() => ({ ...empty, components: [{ id: 'server', name: 'server', kind: 'mcp',
         content: { type: 'stdio', command: process.execPath, args: [argument] } }] })) })).rejects.toThrow(/componentResource/u);
     }

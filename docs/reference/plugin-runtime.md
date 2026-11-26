@@ -318,7 +318,7 @@ AW 先准备相关单元的完整静态和动态组件集合，校验身份、�
 
 替换按目标单元的实际范围和能力，不受 allowedOutputKinds 裁剪；同包独立 Skill 仍可正常交付。Codex 固定 user 共享包引用 user 视图，Project-only 时必要的动态 Agent 批次只在内存评估，不写 User supplement；仅 Project 提供的角色不能被共享包引用。仅导出 Skill 时也可在支持 Agent 的 profile 下补评同 render scope 的动态 Agent，而不输出 Agent 文件。纯静态校验提前拒绝无效引用，混合插件的静态 Skill 可引用同包动态 Agent；只读状态不运行 renderer，未知动态引用留待准备及已记录的交付证据核对。不会发布未替换的占位符。
 
-Hook/MCP 命令引用的本地文件须来自已允许的来源。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
+Hook/MCP 命令引用的本地文件须来自已允许的来源。优先使用字面量 `./` 包内路径；平台专用声明也可使用 Codex 的 `${PLUGIN_ROOT}/` 或 Claude 的 `${CLAUDE_PLUGIN_ROOT}/` 前缀。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
 
 Copilot 和 Grok 将无路径条件、覆盖 `plugin-agents` 的 Instructions 写入同一目标和 render scope 中实际可交付的同包角色正文。没有适用角色时，AW 提示 `plugin-agents` 的交付缺口。如果同一条指令还覆盖 `main`，AW 继续将正文写入主会话的规则文件。
 
