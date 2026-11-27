@@ -132,6 +132,8 @@ export interface CodexConfigSnapshot {
 export interface CodexConfigTransaction {
   upsertPluginActivations?: Record<string, boolean>;
   removePluginActivations?: string[];
+  /** Confirmed retirement removes the entire exact plugin table. */
+  removePluginEntries?: string[];
   upsertManagedInstructionBlock?: CodexManagedInstructionBlock;
   removeManagedInstructionPluginName?: string;
   upsertAgentRegistrations?: Record<string, CodexAgentRegistrationConfig>;
@@ -669,6 +671,11 @@ function upsertSectionEntries(
   }
 
   return patches.length > 0 ? applyPatches(document.content, patches) : ensureTerminalNewline(content);
+}
+
+export function readCodexPluginTable(content: string, name: string): string | null {
+  const table = findTopLevelTable(parseTomlDocument(content), 'plugins', name);
+  return table ? content.slice(table.range[0], table.range[1]) : null;
 }
 
 function removeSection(
@@ -1475,6 +1482,10 @@ export function applyCodexConfigTransaction(
   transaction: CodexConfigTransaction,
 ): string {
   let next = content;
+
+  for (const pluginId of [...new Set(transaction.removePluginEntries ?? [])]) {
+    next = removeSection(next, 'plugins', pluginId);
+  }
 
   for (const pluginId of [...new Set(transaction.removePluginActivations ?? [])]) {
     next = removeCodexPluginEnabled(next, pluginId);

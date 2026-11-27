@@ -523,6 +523,19 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
       result.nextActions.push({ kind: 'manual',
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
+    } else if (receipt.command === 'intent:retire') {
+      const activeUnavailable = receipt.blockers.some(({ code }) => code === 'removedPluginActiveUnavailable');
+      if (activeUnavailable) {
+        result.nextActions.push({ kind: 'manual',
+          message: 'Restore a healthy Active Catalog before retrying retirement. Offline output cleanup can remove only proven selected-scope outputs, not shared native packages.' });
+      } else {
+        result.nextActions.push({ kind: 'command',
+          argv: ['aw', 'plugin', 'remove', ...receipt.requestedRoots, '--scope', receipt.scope],
+          reason: 'Resolve the retirement diagnostics, then review the removal again to finish retiring the plugin.',
+          requiresConfirmation: true });
+      }
+      if (receipt.retirementConfigDeletionPending) result.nextActions.push({ kind: 'manual',
+        message: 'Review the remaining user-wide plugin configuration before requesting a new removal with --delete-config.' });
     } else if (command === 'plugin.remove') {
       result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
       for (const target of receipt.targetResults) {

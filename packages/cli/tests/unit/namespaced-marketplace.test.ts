@@ -13,7 +13,12 @@ import {
   cleanupOrphanNamespacedMarketplaceRoot,
   commitMarketplaceGenerationBackup,
 } from '../../src/utils/orphan-marketplace-cleanup.js';
-import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { inventoryCatalogSourceReferences, resolveCleanupMarketplaceIdentity } from '../../src/utils/catalog-source-references.js';
+import { offlineCleanupEvidenceFromInventory } from '../../src/commands/offline-cleanup-evidence.js';
+import { getNativeTestLayout } from '../helpers/native-execution-fixture.js';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
+import { writeOwnedTextFile, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 const sourceIdentity = `sha256:${'a'.repeat(64)}`;
 
@@ -838,4 +843,238 @@ describe('namespaced marketplace root', () => {
       await expect(fs.pathExists(root)).resolves.toBe(true);
     },
   );
+});
+
+// Test Value Gate: verify offline evidence, fail-closed identity, and observable
+// residue from real isolated platform paths rather than scanner internals.
+describe('current platform marketplace identity', () => {
+  const sourceId = 'official';
+  const pluginId = 'official/demo';
+  const marketplaceName = 'aw-official';
+  const manifestPaths = { codex: '.agents/plugins/marketplace.json', claude: '.claude-plugin/marketplace.json',
+    copilot: '.github/plugin/marketplace.json' } as const;
+  type Platform = keyof typeof manifestPaths;
+  const fixture = async (platform: Platform) => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    const native = await getNativeTestLayout({ cwd, env, platform, pluginId, sourceIdentity, scope: 'user' });
+    return { env, cwd, native, root: native.marketplaceRoot!, host: resolvePlatformConfigRoot(platform, { cwd, env }) };
+  };
+  const writeRoot = async (root: string, platform: Platform, plugins: unknown[] = []) => {
+    await fs.outputJson(path.join(root, 'config.json'), { schemaVersion: 2, sourceId, sourceIdentity, marketplaceName });
+    await fs.outputJson(path.join(root, manifestPaths[platform]), { name: marketplaceName, plugins });
+  };
+  const evidence = (inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>, platform: Platform, scope: 'user' | 'project') =>
+    offlineCleanupEvidenceFromInventory({ inventory, reason: 'sourceMissing', sourceId, sourceIdentity, pluginId, pluginName: 'demo', platform, scope });
+  const identity = (inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>, platform: Platform, scope: 'user' | 'project') =>
+    resolveCleanupMarketplaceIdentity({ references: inventory.references, sourceId, sourceIdentity, pluginName: 'demo', platform, scope });
+
+  it.each(['codex', 'claude', 'copilot'] as const)('binds %s current root and both scopes despite the old marketplace name', async (platform) => {
+    const { env, cwd, root, host } = await fixture(platform);
+    await writeRoot(root, platform);
+    await createMarketplaceRoot(path.join(env.AW_HOME!, 'marketplaces', sourceId));
+    if (platform === 'codex') {
+      await fs.outputFile(path.join(host, 'config.toml'), `[marketplaces.${marketplaceName}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n[plugins."demo@${marketplaceName}"]\nenabled = true\n`);
+      await fs.outputFile(path.join(cwd, '.codex/config.toml'), `[plugins."demo@${marketplaceName}"]\nenabled = false\n`);
+    } else if (platform === 'claude') {
+      await fs.outputJson(path.join(host, 'plugins/known_marketplaces.json'), { [marketplaceName]: {
+        source: { source: 'directory', path: root }, installLocation: root,
+      } });
+      await fs.outputJson(path.join(host, 'settings.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: true } });
+      await fs.outputJson(path.join(cwd, '.claude/settings.local.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: false } });
+      await fs.outputJson(path.join(host, 'plugins/installed_plugins.json'), { plugins: {
+        [`demo@${marketplaceName}`]: [{ scope: 'managed' }, { scope: 'local', projectPath: cwd }],
+      } });
+    } else {
+      await fs.outputJson(path.join(host, 'settings.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: true } });
+      await fs.outputJson(path.join(cwd, '.github/copilot/settings.local.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: false } });
+    }
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env });
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.references).toContainEqual(expect.objectContaining({ sourceId, sourceIdentity, platform,
+      marketplaceName, marketplaceRoot: root, location: path.join(root, 'config.json') }));
+    for (const scope of ['user', 'project'] as const) {
+      expect(inventory.references).toContainEqual(expect.objectContaining({ sourceId, sourceIdentity, pluginName: 'demo', platform, scope, marketplaceName }));
+      expect(identity(inventory, platform, scope)).toEqual({ marketplaceName, nativeRegistration: true });
+      const plan = evidence(inventory, platform, scope)!.plan;
+      expect(plan.actions.every((action) => action.recoveryCandidate === undefined)).toBe(true);
+      if (platform === 'codex') expect(plan.actions).toContainEqual(expect.objectContaining({
+        action: 'removeNativeRegistration', activationScope: scope, target: `demo@${marketplaceName}`, marketplaceName,
+      }));
+    }
+  });
+
+  it('uses a verified candidate without a market config only until a same-name foreign registration is observed', async () => {
+    const { env, cwd, root, host, native } = await fixture('codex');
+    const component = deploymentPackageComponent(native.binding, native);
+    if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
+    await fs.ensureDir(component.path);
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity });
+    const configPath = path.join(host, 'config.toml');
+    await fs.outputFile(configPath, `[plugins."demo@${marketplaceName}"]\nenabled = true\n`);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.references).toContainEqual(expect.objectContaining({ marketplaceRoot: root, recoveryCandidate: expect.objectContaining({ evidence: 'verified' }) }));
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceName, nativeRegistration: true });
+    expect(evidence(inventory, 'codex', 'user')!.plan.actions).toContainEqual(expect.objectContaining({ recoveryCandidate: expect.objectContaining({ evidence: 'verified' }) }));
+    await fs.appendFile(configPath, `[marketplaces.${marketplaceName}]\nsource = ${JSON.stringify(path.join(cwd, 'foreign'))}\nsource_type = "local"\n`);
+    const foreign = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(identity(foreign, 'codex', 'user')).toEqual({ marketplaceIdentityUnresolved: true });
+    expect(evidence(foreign, 'codex', 'user')!.plan.actions).toEqual([]);
+    await expect(fs.pathExists(component.path)).resolves.toBe(true);
+  });
+
+  it('rejects another namespace and symlinked current roots', async () => {
+    const { env, cwd, root, host } = await fixture('codex');
+    const wrong = path.join(path.dirname(path.dirname(path.dirname(root))), 'different', 'marketplaces', sourceId);
+    await writeRoot(wrong, 'codex');
+    const writeRegistration = (location: string) => fs.outputFile(path.join(host, 'config.toml'),
+      `[marketplaces.${marketplaceName}]\nsource = ${JSON.stringify(location)}\nsource_type = "local"\n[plugins."demo@${marketplaceName}"]\nenabled = true\n`);
+    await writeRegistration(wrong);
+    let inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({ sourceId, sourceIdentity, marketplaceName }));
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceIdentityUnresolved: true });
+    await fs.ensureDir(path.dirname(root));
+    await fs.symlink(wrong, root, process.platform === 'win32' ? 'junction' : 'dir');
+    await writeRegistration(root);
+    inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toContainEqual(expect.objectContaining({ kind: 'marketplaceRootValidation', relevance: {
+      global: false, platform: 'codex', sourceId,
+    } }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({ sourceId, sourceIdentity, marketplaceName }));
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceIdentityUnresolved: true });
+  });
+
+  it('keeps the activation unresolved when two distinct canonical names have the same scoped plugin', async () => {
+    const { env, cwd, root, host } = await fixture('codex');
+    await writeRoot(root, 'codex');
+    const legacyRoot = path.join(env.AW_HOME!, 'marketplaces', sourceId);
+    await createMarketplaceRoot(legacyRoot);
+    await fs.outputFile(path.join(host, 'config.toml'), [
+      `[marketplaces.${marketplaceName}]`, `source = ${JSON.stringify(root)}`, 'source_type = "local"',
+      '[marketplaces.aw]', `source = ${JSON.stringify(legacyRoot)}`, 'source_type = "local"',
+      `[plugins."demo@${marketplaceName}"]`, 'enabled = true', '[plugins."demo@aw"]', 'enabled = true', '',
+    ].join('\n'));
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceIdentityUnresolved: true });
+    expect(evidence(inventory, 'codex', 'user')!.plan.actions).toEqual([]);
+  });
+
+  it('does not assign a canonically bound same-name registration to another source', async () => {
+    const { env, cwd, root, host } = await fixture('codex');
+    await writeRoot(root, 'codex', [{ name: 'demo', source: './plugins/demo' }]);
+    const config = path.join(host, 'config.toml');
+    const otherIdentity = `sha256:${'b'.repeat(64)}`;
+    const otherSource = (inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>) =>
+      resolveCleanupMarketplaceIdentity({ references: inventory.references, sourceId: 'other', sourceIdentity: otherIdentity,
+        pluginName: 'demo', platform: 'codex', scope: 'user' });
+    // A manifest entry without a native consumer is also not an ambiguous activation.
+    expect(otherSource(await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' }))).toEqual({});
+    const canonical = `[marketplaces.${marketplaceName}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n[plugins."demo@${marketplaceName}"]\nenabled = true\n`;
+    await fs.outputFile(config, canonical);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceName, nativeRegistration: true });
+    expect(otherSource(inventory)).toEqual({});
+    // A conflicting identity of the requested source is not an unrelated binding.
+    expect(resolveCleanupMarketplaceIdentity({ references: inventory.references, sourceId, sourceIdentity: otherIdentity,
+      pluginName: 'demo', platform: 'codex', scope: 'user' })).toEqual({ marketplaceIdentityUnresolved: true });
+    await fs.outputFile(config, canonical.replace(JSON.stringify(root), JSON.stringify(path.join(cwd, 'foreign'))));
+    expect(otherSource(await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' })))
+      .toEqual({ marketplaceIdentityUnresolved: true });
+    await fs.outputFile(config, canonical + '[plugins."demo@outside"]\nenabled = true\n');
+    expect(otherSource(await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' })))
+      .toEqual({ marketplaceIdentityUnresolved: true });
+  });
+
+  it('ignores a lone Claude false preference but not an actual unbound registration', async () => {
+    const { env, cwd, host } = await fixture('claude');
+    const id = `demo@${marketplaceName}`;
+    await fs.outputJson(path.join(host, 'settings.json'), { enabledPlugins: { [id]: false } });
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toEqual([]);
+    expect(identity(inventory, 'claude', 'user')).toEqual({});
+    await fs.outputJson(path.join(host, 'plugins', 'installed_plugins.json'), { plugins: { [id]: [{ scope: 'user' }] } });
+    expect(identity(await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' }), 'claude', 'user'))
+      .toEqual({ marketplaceIdentityUnresolved: true });
+  });
+
+  it('accepts equivalent configured AW_HOME and physical paths in a Claude marketplace declaration', async () => {
+    const { env, cwd, root, host } = await fixture('claude');
+    await writeRoot(root, 'claude');
+    const awHome = await fs.realpath(env.AW_HOME!);
+    const alias = path.join(cwd, 'aw-home-alias');
+    await fs.symlink(awHome, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const aliasedEnv = { ...env, AW_HOME: alias };
+    const knownPath = path.join(host, 'plugins', 'known_marketplaces.json');
+    const writeDeclaration = (sourcePath: string) => fs.outputJson(knownPath, { [marketplaceName]: {
+      source: { source: 'directory', path: sourcePath }, installLocation: root,
+    } });
+    await fs.outputJson(path.join(host, 'settings.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: true } });
+    await writeDeclaration(path.join(alias, path.relative(awHome, root)));
+    expect(identity(await inventoryCatalogSourceReferences({ cwd, env: aliasedEnv, scope: 'user' }), 'claude', 'user'))
+      .toEqual({ marketplaceName, nativeRegistration: true });
+    // Agreement after normalization must never launder an invalid declaration.
+    await writeDeclaration(`${root}${path.sep}..${path.sep}${sourceId}`);
+    expect(identity(await inventoryCatalogSourceReferences({ cwd, env: aliasedEnv, scope: 'user' }), 'claude', 'user'))
+      .toEqual({ marketplaceIdentityUnresolved: true });
+  });
+
+  // Test Value Gate: retaining an empty canonical marketplace must not disguise an
+  // unbound external activation; exact scoped supplements remain independently cleanable.
+  it('reports an unbound outside activation despite an empty canonical root and preserves exclusive cleanup', async () => {
+    const { env, cwd, root } = await fixture('codex');
+    await writeRoot(root, 'codex');
+    const config = path.join(cwd, '.codex/config.toml');
+    const foreign = '[plugins."demo@outside"]\nenabled = true\n';
+    await fs.outputFile(config, foreign);
+    const agents = path.join(cwd, '.codex/agents');
+    const supplement = path.join(agents, `aw-${sourceId}-demo-role.toml`);
+    await writeOwnedTextFile({ path: supplement, allowedRoot: agents, content: 'description = "Fixture role"\n',
+      identity: { owner: 'agent-workflows', sourceId, sourceIdentity, pluginId, plugin: 'demo', platform: 'codex', scope: 'project',
+        physicalKey: `sha256:${'b'.repeat(64)}`, artifactKey: path.basename(supplement) } });
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env });
+    expect(inventory.errors).toEqual([]);
+    expect(identity(inventory, 'codex', 'project')).toEqual({ marketplaceIdentityUnresolved: true });
+    expect(evidence(inventory, 'codex', 'project')!.plan.actions).toEqual([expect.objectContaining({
+      action: 'removeOwnedOutput', target: supplement,
+    })]);
+    await expect(fs.readFile(config, 'utf8')).resolves.toBe(foreign);
+  });
+
+  it('retains an otherwise unreferenced Claude managed registration as a policy clue, never an AW user action', async () => {
+    const { env, cwd, root, host } = await fixture('claude');
+    await writeRoot(root, 'claude');
+    await fs.outputJson(path.join(host, 'plugins/known_marketplaces.json'), { [marketplaceName]: {
+      source: { source: 'directory', path: root }, installLocation: root,
+    } });
+    await fs.outputJson(path.join(host, 'plugins/installed_plugins.json'), { plugins: { [`demo@${marketplaceName}`]: [{ scope: 'managed' }] } });
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.references).toContainEqual(expect.objectContaining({ sourceId, pluginName: 'demo', platform: 'claude', managedNativeRegistration: true }));
+    expect(identity(inventory, 'claude', 'user')).toEqual({ marketplaceName });
+    expect(evidence(inventory, 'claude', 'user')!.plan.actions).toEqual([]);
+  });
+
+  it('does not authorize Codex activation cleanup through a symlinked plugins container', async () => {
+    const { env, cwd, root, host } = await fixture('codex');
+    await writeRoot(root, 'codex');
+    const foreign = path.join(cwd, 'foreign-plugins');
+    await fs.ensureDir(foreign);
+    await fs.symlink(foreign, path.join(root, 'plugins'), process.platform === 'win32' ? 'junction' : 'dir');
+    await fs.outputFile(path.join(host, 'config.toml'), `[marketplaces.${marketplaceName}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n[plugins."demo@${marketplaceName}"]\nenabled = true\n`);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toContainEqual(expect.objectContaining({ kind: 'nativeNamespaceUnsafe' }));
+    expect(identity(inventory, 'codex', 'user')).toEqual({ marketplaceIdentityUnresolved: true });
+    expect(evidence(inventory, 'codex', 'user')?.plan.actions ?? []).toEqual([]);
+  });
+
+  it('reports malformed Copilot settings and represents exact local manifest residue without granting cleanup authority', async () => {
+    const { env, cwd, root, host } = await fixture('copilot');
+    await writeRoot(root, 'copilot', [{ name: 'demo', source: './plugins/demo' }, { name: 'outside', source: '../outside' }]);
+    await fs.outputJson(path.join(host, 'settings.json'), { enabledPlugins: { [`demo@${marketplaceName}`]: 'true' } });
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toContainEqual(expect.objectContaining({ kind: 'nativeStateRead', relevance: { global: false, platform: 'copilot', scope: 'user' } }));
+    expect(inventory.references).toContainEqual(expect.objectContaining({ sourceId, sourceIdentity, pluginName: 'demo', platform: 'copilot', marketplaceManifestEntry: true }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({ sourceId, pluginName: 'outside' }));
+    expect(evidence(inventory, 'copilot', 'user')!.plan.actions).toEqual([]);
+  });
 });

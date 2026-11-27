@@ -58,7 +58,7 @@ flowchart TD
   - `observation`：为现场观测事实枚举（`'verified' | 'missing' | 'unknown'`）；
   - `content`：为现场内容匹配事实枚举（`'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown'`）。两者均为**机器状态事实，绝非内容签名或哈希摘要**。
   - `satisfaction: 'not-applicable'` 表示只有能力缺口且实际安装数为 0 的目标已收敛。可以同时有 `content: 'satisfied'`，因此按目前可执行的工作计为 ready。实际安装和继承关系仍由独立的 `installed`、`inherited-user` 表达。
-- **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
+- **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。已下架或来源不可用的共享包、市场本地投影、原生消费记录与专属输出按实际可见范围保留。Claude 单独的 `enabledPlugins[id] = false` 只是停用偏好，不作为原生安装记录；仍有登记、包、市场投影、其他输出或取证失败时继续保留实际残留和诊断。
 - **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。清单错误保留稳定细分原因、安全位置和相关 scope；坏 header 只提供诊断线索，不授予 owner 权限。已证明独立的错误不传播到无关目标，不能证明无关时保留对应覆盖缺口；共享位置和真实依赖的影响仍传播。重复用户文件错误合并，不能丢失作用范围。
 - **精确选择**：先解析完整必要依赖、provider、共享位置和碰撞关系，再对所选插件/target 观察。显式选择依赖时 inventory 包含该依赖及 requiredBy、需求和提供者 scope，不把它提升为 Intent root。无过滤查询仍按直接根聚合。
 - **已有现场**：没有 Intent 的短名称与来源限定查询都保留匹配的 Native 残留。显式 Native-only target 不读取独立 generic 目录；按插件选择时，无关 Portable 输出仅检查安全路径和身份，内容保持 unknown。选中输出仍完整检查，无法确认范围的损坏保留覆盖缺口，浅观察不提供删除授权。
@@ -138,7 +138,7 @@ User neutral 查询已排除调用项目覆盖，其原生 enabled 必须保留�
 
 Codex 显式 project false 覆盖 user true。撤销项目需求时移除 AW 自身项目 activation entry，让有效用户激活继续继承；不能写 false 代替删除。用户操作不读取或修改未授权项目，也不能把共享 payload 当作项目已启用。
 
-共享引用在本次内存中按 JointDemandSnapshot、实际 owner 和路由可证明的原生注册/activation 记录确定：明确仍有引用为 present，完整覆盖且无引用才为 none，其余为 unknown。两份 Intent 可读不证明全部历史项目无引用。unknown 时可撤本次精确 activation，但保留共享包与恢复说明。无 Intent 不自动新增依赖需求。
+共享引用在本次内存中按 JointDemandSnapshot、实际 owner 和路由可证明的原生注册/activation 记录确定：明确仍有引用为 present，完整覆盖且无引用才为 none，其余为 unknown。两份 Intent 可读不证明全部历史项目无引用。普通卸载和离线清理中，unknown 时可撤本次精确 activation，但保留共享包与恢复说明。只有[确认下架退役](lifecycle.md#停用已从-catalog-移除的插件)可以在严格归属证明下撤销共享包；共享引用未知不等于 ownership 或原生登记观测未知。已下架的同源包、失效激活或市场投影残留继续按可见 scope 保留状态与清理入口。无 Intent 不自动新增依赖需求。
 
 依赖按完整身份和实际布局选择；提供者失败只阻断其真实消费者，独立平台和无依赖命令包继续。共享包损坏不改用另一条安装路由。foreign、不可读现场、配置损坏与能力缺口保持可见，不能由无需求豁免吞掉。
 

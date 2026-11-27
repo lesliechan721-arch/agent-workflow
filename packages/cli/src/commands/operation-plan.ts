@@ -20,6 +20,8 @@ export interface OperationArtifactFile {
 }
 
 export interface OperationPlanEvidence {
+  /** Bound only to a healthy Active snapshot that proves this plugin is no longer published. */
+  confirmedCatalogRetirement?: { pluginId: string; snapshotDigest: string };
   catalogDigests: Array<{ sourceId: string; digest: string }>;
   intentDigests: Array<{ scope: Scope; digest: string }>;
   configDigests: Array<{ pluginId: string; scope: Scope; platform?: PlatformName; digest: string }>;
@@ -226,6 +228,8 @@ function canonicalizeOperationPlanInput(input: OperationPlanInput): OperationPla
     changes: [...input.changes].sort(compareText),
     warnings: [...input.warnings].sort(compareText),
     evidence: {
+      ...(input.evidence.confirmedCatalogRetirement
+        ? { confirmedCatalogRetirement: input.evidence.confirmedCatalogRetirement } : {}),
       catalogDigests: canonical(input.evidence.catalogDigests, (entry) => entry.sourceId),
       intentDigests: canonical(input.evidence.intentDigests, (entry) => entry.scope),
       configDigests: canonical(

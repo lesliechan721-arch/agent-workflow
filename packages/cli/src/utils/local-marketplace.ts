@@ -6,6 +6,7 @@ import type { MarketplaceManifest, PlatformName } from '../types.js';
 import { readJsonFile } from './json.js';
 import { assertStrictSemVer } from './manifest.js';
 import { resolveCliPackageRoot } from './paths.js';
+import { codexMarketplacePathKey } from './codex-shared-native.js';
 import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
 import { normalizeMarketplaceProductToken } from './platform-support.js';
 
@@ -13,6 +14,16 @@ const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 export function getNamespacedMarketplaceName(sourceId: string): string {
   return `aw-${sourceId}`;
+}
+
+/** Map the configured AW_HOME prefix to its physical root without adopting host-supplied aliases. */
+export function canonicalMarketplaceRegistrationPath(source: unknown, awHome: string, canonicalAwHome: string): string | null {
+  if (typeof source !== 'string' || source.split(/[\\/]/u).includes('..')) return null;
+  const candidate = codexMarketplacePathKey(source);
+  if (!candidate) return null;
+  const relative = path.relative(awHome, candidate);
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? candidate : path.join(canonicalAwHome, relative);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -58,7 +58,7 @@ import {
   type DiagnosticSummaryViewModel,
 } from './diagnostics.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
-import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
+import type { CatalogSourceGenerationViewModel, RetirementSourceChecks } from './catalog-generation.js';
 import { projectCatalogSourceState } from './catalog-sources/projection.js';
 import { projectLifecycleActionView } from './lifecycle-action-view.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
@@ -166,6 +166,7 @@ export interface PluginListItemViewModel {
   savedConfigScopes: Scope[];
   configOnly?: true;
   catalogEntryMissing?: true;
+  retirementCandidate?: true;
   removedPluginCleanupRequired?: true;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
@@ -2260,6 +2261,15 @@ function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraf
   });
 }
 
+/** A missing entry is meaningful only in a resolved, healthy Active catalog. */
+export function isHealthyActiveSource(source: StatusV8Payload['catalog']['sources'][number] | undefined,
+  health?: SourceHealthViewModel, generation?: CatalogSourceGenerationViewModel, checkedStoreKey?: string | null): boolean {
+  return source?.freshness === 'active' && source.error === undefined && source.errorCode === undefined
+    && health?.state !== 'unavailable'
+    && generation?.state === 'ready' && !generation.errorCode && !generation.configMismatch
+    && !!checkedStoreKey && generation.active?.storeKey === checkedStoreKey;
+}
+
 export function buildTuiViewModel(options: {
   status: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
@@ -2267,10 +2277,12 @@ export function buildTuiViewModel(options: {
   recoveryTargets?: readonly RecoveryTarget[];
   recoveryDiagnostics?: readonly RecoveryDiagnostic[];
   retainedNativePluginIds?: readonly string[];
+  residualPluginIds?: readonly string[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
   catalogFreshness?: ReadonlyMap<string, CatalogSourceFreshnessViewModel>;
   catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
+  retirementSourceChecks?: RetirementSourceChecks;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   contentOverviews?: Record<string, PluginContentOverview>;
   portablePluginIds?: string[];
@@ -2296,6 +2308,7 @@ export function buildTuiViewModel(options: {
     configScopesByPlugin.set(store.pluginId, scopes);
   }
   const retainedNativeIds = new Set(options.retainedNativePluginIds ?? []);
+  const residualIds = new Set(options.residualPluginIds ?? []);
   const retainedStatusIds = new Set([...targetsByPlugin].flatMap(([pluginId, targets]) =>
     targets.some((target) => target.state !== 'absent'
       || statusTargetIntent(target).enabled
@@ -2305,6 +2318,7 @@ export function buildTuiViewModel(options: {
     ...summaryById.keys(),
     ...retainedStatusIds,
     ...retainedNativeIds,
+    ...residualIds,
     ...configScopesByPlugin.keys(),
   ]);
   const plugins = [...pluginIds].map((pluginId): PluginListItemViewModel => {
@@ -2314,7 +2328,10 @@ export function buildTuiViewModel(options: {
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
     const savedConfigScopes = [...(configScopesByPlugin.get(pluginId) ?? [])]
       .sort((left, right) => (left === 'user' ? 0 : 1) - (right === 'user' ? 0 : 1));
-    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0 && !retainedNativeIds.has(pluginId);
+    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0
+      && !retainedNativeIds.has(pluginId) && !residualIds.has(pluginId);
+    const retirementCandidate = summary === undefined && isHealthyActiveSource(sourceById.get(sourceId),
+      options.sourceHealth?.get(sourceId), options.catalogGenerations?.get(sourceId), options.retirementSourceChecks?.[sourceId]);
     const removedPluginCleanupRequired = summary === undefined && retainedNativeIds.has(pluginId) || targets.some((target) =>
       target.reasons.some((reason) => reason.code === 'removedPluginCleanupRequired'));
     const placements = NATIVE_PLATFORM_TARGETS.flatMap((platform) => {
@@ -2344,17 +2361,18 @@ export function buildTuiViewModel(options: {
         && (placement.health !== 'ready' || placement.blockingReason !== undefined)));
     const installed = placements.some((placement) =>
       placement.state === 'installed' || placement.state === 'scopeConflict');
-    const sourceUnavailable = summary === undefined && retainedNativeIds.has(pluginId)
+    const sourceUnavailable = summary === undefined && !retirementCandidate
       || summary?.definitionUnavailable === true
       || options.sourceHealth?.get(sourceId)?.state === 'unavailable'
-      || sourceById.get(sourceId)?.error !== undefined;
+      || sourceById.get(sourceId)?.error !== undefined
+      || sourceById.get(sourceId)?.errorCode !== undefined;
     const capabilityTargets = targets.filter((target) => target.reasons.some((reason) =>
       reason.code === 'awCapabilityUnsupported'));
     const capabilityUnsupported = (summary?.missingCapabilities?.length ?? 0) > 0
       || capabilityTargets.length > 0;
     const capabilityRecovery = capabilityTargets.flatMap((target) => target.recoveryActions)
       .find((action) => action.command === 'manual')?.description;
-    const unavailable = sourceUnavailable || capabilityUnsupported || configOnly;
+    const unavailable = sourceUnavailable || capabilityUnsupported || configOnly && !retirementCandidate;
     const update = buildPluginUpdateSummary({
       pluginId,
       sourceId,
@@ -2383,7 +2401,7 @@ export function buildTuiViewModel(options: {
         NATIVE_PLATFORM_TARGETS.map((platform) => [platform, [...(summary.supportedTargets![platform] ?? [])]]),
       ) } : {}),
       installedPlacements: placements,
-      aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
+      aggregateStatus: unavailable ? 'unavailable' : attention || retirementCandidate ? 'needsAttention' : installed ? 'installed' : 'available',
       portableSkills: options.portablePluginIds?.includes(pluginId) ?? false,
       ...(summary?.missingCapabilities
         ? { missingCapabilities: summary.missingCapabilities }
@@ -2394,6 +2412,7 @@ export function buildTuiViewModel(options: {
       savedConfigScopes,
       ...(configOnly ? { configOnly: true } : {}),
       ...(summary === undefined ? { catalogEntryMissing: true } : {}),
+      ...(retirementCandidate ? { retirementCandidate: true } : {}),
       ...(removedPluginCleanupRequired ? { removedPluginCleanupRequired: true } : {}),
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }

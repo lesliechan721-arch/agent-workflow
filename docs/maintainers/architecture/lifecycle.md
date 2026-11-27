@@ -27,7 +27,7 @@ generic writer 的可重建 owner marker 绑定 source/plugin、target、scope�
 
 cleanup 从本次精确部署的 owner/native observation 与恢复候选取得位置，不扫描旧 Agent Portable 残留或其他项目。客户端缺失不能阻止证据充分的独占补足清理；原生卸载确需客户端时保留来源与重试证据，不能猜注册已不存在。
 
-管理记录、路径存在和共享引用不自动授予删除权限。有效共享 native、禁用 activation 和 user 继承本身也不构成 project 的待清理输出；其状态证据与范围判断见[状态与配置](config-and-status.md)。Codex private cache 和 installed manifest 不参与普通生命周期、repair、residue 或 cleanup 成败判断，AW 不直接删除它们。
+管理记录、路径存在和共享引用不自动授予删除权限。对于仍在 Catalog 的插件，有效共享 native、禁用 activation 和 user 继承本身也不构成 project 的待清理输出；确认下架后的例外见[停用已移除插件](#停用已从-catalog-移除的插件)。状态证据与范围判断见[状态与配置](config-and-status.md)。Codex private cache 和 installed manifest 不参与普通生命周期、repair、residue 或 cleanup 成败判断，AW 不直接删除它们。
 
 ## 写入流程与确认
 
@@ -102,9 +102,13 @@ force cleanup 是专属损坏输出的恢复动作，不是删除权限升级。
 
 ### 停用已从 Catalog 移除的插件
 
-已确认从健康 Active Catalog 移除的插件通过普通 `aw plugin remove` 的停用分支处理。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式 scope 的需求和输出；配置删除默认关闭，明确选择时删除该插件全部本机 common／平台设置，并在 Review 说明全局影响。独立目录包与共享残留必须可见。
+已确认从健康 Active Catalog 移除的插件通过普通 `aw plugin remove` 的退役（retire）分支处理。普通 `cleanup` 不读取 Active、不自动升级为退役，也不删除强配置。退役在公共授权点完整校验 Active（不只校验传输完整性），在本次操作内冻结 source identity、snapshot digest、插件缺席事实和部署计划；写锁内在首次写入前重新核验这些依据，Active 变化或插件恢复上架时返回 `operationReviewStale`。退役模式参与部署及 OperationPlan 指纹，不能用普通卸载或离线清理的计划执行退役。
 
-停用失败的恢复命令保留 scope 和 Review 中已确定的输出 Agent 集合；未完成的配置删除保留 `--delete-config`，已完成时不再请求。独立目录残留提供精确人工检查指引，重试重新 Review，不自动携带 `--yes`。
+退役只取消显式 scope 的需求，不扫描或修改其他项目目录。配置删除默认关闭，明确选择时删除该插件全部本机 common／平台设置，并在 Review 说明全局影响。对于 Codex、Claude、Copilot，只有证实同源 AW 归属、原生登记观测可确认且没有归属冲突，退役才可忽略其他 scope 或项目的共享引用，撤销共享原生登记并清除共享包及精确市场条目。这里绕过的是 `sharedReferences` 对 AW-owned 共享包的保留规则，不是 `foreign`、`shared` 或 `unknown` ownership 的删除保护。Claude managed 登记仍阻断。多插件退役的部署证据绑定实际目标的原生登记、激活及市场条目，其他已确认插件的变更不使该目标失效；共享文件的实际原子写入仍以当时完整现场复核、保留无关字段。
+
+共享包已缺席时，只有当前平台的 canonical marketplace 配置证明了 Active source identity，且宿主市场登记指向同一 canonical 根，才允许清理当前 scope 的失效激活或原生登记；缺少、损坏或冲突的证据不能授权解绑。现场只有可证明归属的独占补足、没有共享原生包、登记或激活线索时，仍按独占 owner 证据清理，不要求本来就没有生成的市场。逐平台动作与后置观测顺序见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Review 说明共享包退役导致其他项目使用失效，但其声明保留，进入对应项目后再收尾；不隐藏任何实际残留。共享原生目标只有真实观察到包和登记均缺席（无登记路由可为不适用）且清理动作完成时才算完成。
+
+已确认下架但退役未完成时，重新审阅并运行 `aw plugin remove <selector> --scope <scope>`；不能用保留共享包的 outputs-only 清理代替退役。仅在需要离线清理所选独占输出时，使用 `--only outputs` 和明确的 target。未完成的配置删除保留显式 `--delete-config` 的重新 Review 指引，已完成时不再请求。独立目录残留提供精确人工检查指引，重试不自动携带 `--yes`。
 
 ## 平台执行入口与结果
 

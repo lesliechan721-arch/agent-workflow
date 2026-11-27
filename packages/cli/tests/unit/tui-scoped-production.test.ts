@@ -20,6 +20,8 @@ import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { readCatalogSnapshotLogicalIdentity, resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { readCatalogGenerationState, resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
+import { validateCatalogSnapshotComplete } from '../../src/utils/catalog-snapshot.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile, removeCodexMarketplace } from '../../src/utils/codex-config.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture, git, rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
@@ -136,6 +138,75 @@ describe('scoped TUI production reads', () => {
     const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
     expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'ready' }]);
     expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(1);
+  });
+
+  it('checks a newly discovered missing declaration on scoped refresh and revokes stale evidence', async () => {
+    const value = await fixture(true);
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    try {
+      await controller.load();
+      expect(controller.getPluginOverview('local/gone')).toBeUndefined();
+      const active = await resolveActiveCatalogGeneration({ sourceId: 'local', env: value.env });
+      await addRoot({ ...value, scope: 'project' }, 'local/gone', active.logicalIdentity);
+      expect(await controller.refreshScopedInventory('project')).toBe(true);
+      expect(controller.getPluginOverview('local/gone')?.retirementCandidate).toBe(true);
+      // Valid transport bytes and bundles, but the snapshot no longer matches the session's digest.
+      const manifestPath = path.join(active.snapshotPath, 'catalog-manifest.json');
+      await fs.appendFile(manifestPath, '\n');
+      expect(await controller.refreshScopedInventory('project')).toBe(true);
+      const root = controller.listScopedInventoryRoots('project').find((item) => item.pluginId === 'local/gone');
+      expect(root?.sourceUnavailable).toBe(true);
+      expect(controller.getPluginOverview('local/gone')?.retirementCandidate).toBeUndefined();
+    } finally { controller.dispose(); }
+  });
+
+  // Test Value Gate: transport accepts an index version that disagrees with the bundle.
+  // Real User surplus and a Project declaration must both follow the complete Active check.
+  it('keeps missing plugins visible across incomplete, healthy and inactive generations', async () => {
+    const value = await fixture(true);
+    const plan = await prepareRecovery('sync', ['local/demo'], {
+      context: 'user', scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0', targets: ['generic'],
+    }, { nativeCliRunner: value.context.nativeCliRunner });
+    try { expect((await executeRecovery(plan, { yes: true })).ok).toBe(true); }
+    finally { await plan.context.dispose(); }
+    await removeRoot({ ...value, scope: 'user' }, 'local/demo');
+    await createCatalogSnapshotFixture(value.source, 'other');
+    await fs.remove(path.join(value.source, 'plugins/demo'));
+    const manifestPath = path.join(value.source, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    try {
+      for (const state of ['incomplete', 'healthy', 'inactive']) {
+        if (state === 'inactive') await fs.remove(resolveCatalogGenerationStatePath(value.env));
+        else {
+          manifest.entries[0].version = state === 'incomplete' ? '1.2.3' : '1.0.0';
+          await fs.writeJson(manifestPath, manifest);
+          await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env,
+            cliVersion: '1.0.0', impactConfirmed: true });
+          if (state === 'incomplete') {
+            const active = await resolveActiveCatalogGeneration({ sourceId: 'local', env: value.env });
+            await expect(validateCatalogSnapshotComplete(active.snapshotPath)).rejects.toThrow(/version.*does not match its plugin bundle/u);
+          } else expect(await controller.refreshScopedInventory('project')).toBe(false);
+        }
+        await controller.load();
+        const checkView = () => {
+          const plugin = controller.getPluginOverview('local/demo');
+          expect(plugin?.catalogEntryMissing).toBe(true);
+          const declared = controller.listScopedInventoryRoots('project').find((item) => item.pluginId === 'local/demo');
+          const extra = controller.listScopedInventoryRoots('user', 'extraInstalled').find((item) => item.pluginId === 'local/demo');
+          for (const item of [plugin, declared, extra]) {
+            expect(item).toBeDefined();
+            expect(item?.retirementCandidate === true).toBe(state === 'healthy');
+            expect(item?.sourceUnavailable === true).toBe(state !== 'healthy');
+          }
+        };
+        checkView();
+        for (const scope of ['project', 'user'] as const) {
+          expect(await controller.refreshScopedInventory(scope)).toBe(true);
+        }
+        checkView();
+      }
+    } finally { controller.dispose(); }
   });
 
   it('drains in-flight source reads on cancellation without scanning the Active snapshot for damage', async () => {

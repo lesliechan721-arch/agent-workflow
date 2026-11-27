@@ -139,7 +139,7 @@ import type { Diagnostic } from '../output/public-result.js';
 import { describeSkillInvocationControl, SKILL_INVOCATION_NOTICE,
   type SkillInvocationControl, type SkillInvocationNoticeReason } from '../utils/skill-invocation-warning.js';
 import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines,
-  componentDeliveryLines, deliveryNoticeText } from './deployment-view.js';
+  componentDeliveryLines, deliveryNoticeText, sharedNativeRetirementImpact } from './deployment-view.js';
 import { inventoryRecoveryActions, projectDeploymentNotices, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
@@ -224,6 +224,8 @@ type ScopedUiFlow =
       scopes: Scope[]; focus: number }
   | { stage: 'recoveryScope'; scope: Scope; selector: string; selectors?: string[]; command: 'uninstall' | 'cleanup';
       scopes: Scope[]; focus: number }
+  | { stage: 'recoveryScope'; scope: Scope; selector: string; command: 'retire'; deleteConfig: boolean;
+      scopes: Scope[]; focus: number }
   | { stage: 'targets'; scope: Scope; agents: AgentId[]; savedAgents: AgentId[]; focus: number }
   | { stage: 'preparing'; scope: Scope; request: 'recovery' | 'retire' | 'targets' | 'intent'; focus: number }
   | { stage: 'setup'; scope: Scope; request: ScopedRecoveryRequest; preflight: GuidedSetupPreflight; focus: number }
@@ -259,6 +261,10 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
   if (plan.kind === 'targets' || plan.kind === 'intent') return [];
   if (plan.kind === 'retire') return [
     ...(plan.plan.options.deleteConfig ? ['本次会删除此插件的全部本机设置（通用与各 Agent），影响所有项目。'] : []),
+    ...new Set(scopedDeploymentPlans(plan).flatMap((deployment) => {
+      const impact = sharedNativeRetirementImpact(deployment);
+      return impact ? [impact] : [];
+    })),
     ...(plan.scope === 'user' && plan.plan.plannedImpact.outputs
       ? ['本次会清理个人原生输出，可能影响其他项目。'] : []),
   ];
@@ -5256,10 +5262,14 @@ export function ConsoleAppV4(props: {
       help = '↑↓ 移动 · Enter/Space 勾选 · s 保存 · r 重新检查 · Esc 返回';
     } else if (flow.stage === 'recoveryScope') {
       title = flow.command === 'uninstall' ? '选择卸载范围' : '选择清理范围';
-      description = '确认变化后处理此范围，保留其他范围仍需要的内容。';
+      description = flow.command === 'retire'
+        ? '选择要清理的范围；共享影响将在操作汇总中列出。'
+        : '确认变化后处理此范围，保留其他范围仍需要的内容。';
       actions = flow.scopes.map((selectedScope) => ({ label: scopeLabel(selectedScope),
-        status: 'error', run: () => beginScopedTask({ kind: 'recovery', command: flow.command,
-          scope: selectedScope, selectors: flow.selectors ?? [flow.selector] }) }));
+        status: 'error', run: () => flow.command === 'retire'
+          ? beginScopedTask({ kind: 'retire', selector: flow.selector, scope: selectedScope, deleteConfig: flow.deleteConfig })
+          : beginScopedTask({ kind: 'recovery', command: flow.command,
+            scope: selectedScope, selectors: flow.selectors ?? [flow.selector] }) }));
       content = <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />;
     } else if (flow.stage === 'intentScope') {
       title = flow.action === 'add' ? '选择插件需求范围' : '选择要移出的清单';
@@ -5495,8 +5505,8 @@ export function ConsoleAppV4(props: {
         ? [{ actionId: 'inventory-remove-demand', label: '移除此插件需求（保留安装）',
           run: () => beginScopedTask({ kind: 'intent', action: 'remove', scope: route.scope,
             selector: activeRoot.pluginId }) }] : []),
-      ...(activeRoot && activeRoot.sourceState === 'ready'
-        && activeRoot.blockers?.some((blocker) => blocker.code === 'pluginUnavailable')
+      ...(activeRoot?.retirementCandidate && (section === 'extraInstalled'
+        || activeRoot.sourceState === 'ready' && activeRoot.blockers?.some((blocker) => blocker.code === 'pluginUnavailable'))
         ? [{ actionId: 'inventory-retire', label: '停用已移除插件（保留设置）',
           run: () => beginScopedTask({ kind: 'retire', scope: route.scope,
             selector: activeRoot.pluginId, deleteConfig: false }) },
@@ -5693,7 +5703,8 @@ export function ConsoleAppV4(props: {
       name: item.displayName,
       sourceLabel: item.sourceLabel,
       description: item.configOnly
-        ? '来源当前没有这个插件；可以查看已保存设置或定点重置设置层。'
+        ? item.retirementCandidate ? '插件已下架；可以查看或显式清理已保存设置。'
+          : '来源当前没有这个插件；可以查看已保存设置或定点重置设置层。'
         : item.description,
       placementSummary: (() => {
         const subject = props.controller.getPluginDetailSubject(item.pluginId);
@@ -7193,10 +7204,10 @@ export function ConsoleAppV4(props: {
     context = `${plugin.sourceLabel}${plugin.version ? ` · ${plugin.version}` : ''}`;
     title = plugin.displayName;
     description = '';
-    const updateTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly ? []
+    const updateTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly || plugin.retirementCandidate ? []
       : props.controller.listPluginWriteTaskCandidates('update')
         .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
-    const restoreTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly ? []
+    const restoreTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly || plugin.retirementCandidate ? []
       : props.controller.listPluginWriteTaskCandidates('restore')
         .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
     const updateAction: ActionItem | undefined = updateTaskCandidates.length > 0 ? {
@@ -7245,7 +7256,7 @@ export function ConsoleAppV4(props: {
         description: '当前插件设置问题需要先完成或修正设置',
         status: 'warning',
         run: () => go({ name: 'issueDetail', issueId: configIssue.issueId }),
-      } : plugin.aggregateStatus === 'unavailable'
+      } : plugin.retirementCandidate ? undefined : plugin.aggregateStatus === 'unavailable'
       ? plugin.capabilityUnsupported && !plugin.sourceUnavailable ? {
           label: '需要升级 AW CLI',
           description: '查看缺少的功能和安全恢复方向',
@@ -7325,7 +7336,7 @@ export function ConsoleAppV4(props: {
             : '当前没有已声明的所需插件或使用者',
           run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
         } : undefined;
-    const uninstallAction: ActionItem | undefined = installed ? {
+    const uninstallAction: ActionItem | undefined = installed && !plugin.retirementCandidate ? {
       actionId: 'uninstall',
       label: '卸载',
       description: plugin.installedPlacements.length === 1
@@ -7353,7 +7364,31 @@ export function ConsoleAppV4(props: {
         go({ name: 'uninstallTargets', pluginId: plugin.pluginId });
       },
     } : undefined;
-    const cleanupAction: ActionItem | undefined = plugin.configOnly
+    const retirementScopes = plugin.retirementCandidate ? (['user', 'project'] as const).filter((candidate) => {
+      const inventory = snapshot.scopedInventories[candidate];
+      return detailSubject.declarations[candidate].state === 'declared'
+        || detailSubject.placements.some((placement) => placement.scope === candidate)
+        || [...(inventory?.declaredRoots ?? []), ...(inventory?.extraInstalledRoots ?? [])].some((root) => root.pluginId === plugin.pluginId)
+        || props.controller.listPluginWriteBatchTargets('cleanup', [plugin.pluginId]).some((target) => target.scope === candidate);
+    }) : [];
+    const cleanupScopes = retirementScopes.length ? retirementScopes : plugin.savedConfigScopes;
+    const beginRetirement = (deleteConfig: boolean): void => {
+      if (cleanupScopes.length === 1) {
+        beginScopedTask({ kind: 'retire', selector: plugin.pluginId, scope: cleanupScopes[0]!, deleteConfig });
+      } else {
+        setScopedFlow({ stage: 'recoveryScope', scope, selector: plugin.pluginId, command: 'retire',
+          deleteConfig, scopes: cleanupScopes, focus: 0 });
+      }
+    };
+    const cleanupAction: ActionItem | undefined = plugin.retirementCandidate ? {
+      actionId: 'cleanup',
+      label: plugin.configOnly ? '清理已删除插件并删除设置' : '清理已删除插件',
+      description: plugin.configOnly ? '显式删除全部本机设置；确认前不会写入'
+        : '预览所选范围的全部残留；默认保留设置',
+      disabled: cleanupScopes.length ? undefined : '当前无法确认残留范围，请重新检查',
+      status: 'error',
+      run: () => beginRetirement(plugin.configOnly === true),
+    } : plugin.configOnly
       || plugin.removedPluginCleanupRequired ? {
       actionId: 'cleanup',
       label: plugin.removedPluginCleanupRequired ? '清理已删除插件' : '检查并清理插件残留',
@@ -7373,7 +7408,7 @@ export function ConsoleAppV4(props: {
     actions = dedupeActions([
       ...(exceptionalAction ? [{ ...exceptionalAction, actionId: 'exceptional' }] : []),
       ...(restoreAction ? [{ ...restoreAction, actionId: 'restore' }] : []),
-      ...(hasPortablePlacement && !restoreAction ? [{ actionId: 'sync', label: '同步并修复…',
+      ...(hasPortablePlacement && !plugin.retirementCandidate && !restoreAction ? [{ actionId: 'sync', label: '同步并修复…',
         run: () => beginScopedTask({ kind: 'recovery', command: 'sync',
           scope: detailSubject.placements.some((placement) => placement.scope === 'project')
             || detailSubject.declarations.project.state === 'declared' ? 'project' : 'user',
@@ -7407,6 +7442,9 @@ export function ConsoleAppV4(props: {
       ...(dependencyAction ? [dependencyAction] : []),
       ...(uninstallAction ? [uninstallAction] : []),
       ...(cleanupAction ? [cleanupAction] : []),
+      ...(plugin.retirementCandidate && !plugin.configOnly && plugin.savedConfigScopes.length > 0
+        ? [{ actionId: 'cleanup-config', label: '清理已删除插件并删除设置', status: 'error' as const,
+          run: () => beginRetirement(true) }] : []),
       {
         actionId: 'more',
         label: '更多操作',

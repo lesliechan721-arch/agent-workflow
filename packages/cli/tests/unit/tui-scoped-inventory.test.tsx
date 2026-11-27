@@ -8,6 +8,8 @@ import { buildScopedInventory, type ScopedInventoryLoadResult } from '../../src/
 import { buildPluginDetailSubject } from '../../src/tui/plugin-detail.js';
 import { PluginDetailCard, ProjectRootCard } from '../../src/tui/entity-cards.js';
 import { buildTuiViewModel } from '../../src/tui/model.js';
+import { deploymentPlanLines } from '../../src/tui/deployment-view.js';
+import type { FrozenDeploymentPlan, PlannedEffect } from '../../src/platforms/contracts.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { prepareRecovery } from '../../src/recovery/coordinator.js';
@@ -34,6 +36,38 @@ const status: TuiStatusLoadResult = {
       sources: [{ id: 'official', identity: 'source', type: 'path', primary: true, requestedRef: 'local' }] },
     filters: { plugins: [], platform: 'both', cwd: '/tmp/project' }, targets: [], errors: [] },
 };
+
+function retiredStatus(): TuiStatusLoadResult {
+  const result = structuredClone(status);
+  result.pluginSummaries = [];
+  result.payload.catalog.sources[0]!.freshness = 'active';
+  result.catalogGenerations = [{ sourceId: 'official', sourceType: 'path', state: 'ready', active: {
+    catalogVersion: '2.0.0', channel: 'latest', requestedRef: 'local', resolvedCommit: 'active',
+    storeKey: 'active-store', digestShort: 'snapshot',
+  } }];
+  result.retirementSourceChecks = { official: 'active-store' };
+  return result;
+}
+
+function retiredRecovery(scope: 'user' | 'project'): ScopedInventoryLoadResult {
+  const result = recovery(scope);
+  result.inventory![0]!.blockers = [{ code: 'pluginUnavailable', message: 'removed' }];
+  result.inventory![0]!.targetResults = [];
+  return result;
+}
+
+function retirementDeployment(scope: 'user' | 'project', effects: Array<Pick<PlannedEffect, 'kind' | 'destination' | 'nativeScope'>>,
+  platform: 'codex' | 'claude' = 'codex'): FrozenDeploymentPlan {
+  return {
+    operation: 'cleanup',
+    binding: { platform, route: `${platform}-marketplace`, scope: { kind: scope },
+      plugin: { pluginId: 'official/demo' }, consumers: [] },
+    effects: effects.map((effect, index) => ({ id: String(index), physicalKey: 'shared',
+      componentIds: [], destructive: true, ...effect })),
+    expected: { components: [], unmet: [], omitted: [] },
+    evidence: { layout: { packageRoot: '/package/demo' }, sharedReferences: 'present', confirmedCatalogRetirement: true },
+  } as unknown as FrozenDeploymentPlan;
+}
 
 function recovery(scope: 'user' | 'project'): ScopedInventoryLoadResult {
   return { scope, intent: { state: 'valid' }, selection: { agents: ['codex'], preferences: 'valid' },
@@ -87,6 +121,121 @@ async function readScopedPages(
 afterEach(cleanup);
 
 describe('scoped inventory in Ink', () => {
+  // Test Value Gate: an absent entry alone must never authorize retirement; the view and both
+  // inventory sections depend on a healthy, resolved Active source, even for residual-only IDs.
+  it.each(['healthy', 'deleted', 'inactive', 'error', 'invalidActive', 'unchecked', 'staleCheck', 'listed'] as const)(
+    'projects retirement eligibility from the %s catalog snapshot', (state) => {
+      const loaded = retiredStatus();
+      if (state === 'deleted') loaded.payload.catalog.sources = [];
+      if (state === 'inactive') delete loaded.payload.catalog.sources[0]!.freshness;
+      if (state === 'error') loaded.payload.catalog.sources[0]!.errorCode = 'catalogReadFailed';
+      if (state === 'invalidActive') loaded.catalogGenerations![0]!.state = 'repairRequired';
+      if (state === 'unchecked') delete loaded.retirementSourceChecks;
+      if (state === 'staleCheck') loaded.retirementSourceChecks = { official: 'previous-store' };
+      const current = retiredRecovery('project');
+      current.extraObserved = [{ pluginId: 'official/extra', agent: null, scope: 'project',
+        delivery: null, observation: 'unknown' }];
+      if (state === 'listed') loaded.pluginSummaries = ['demo', 'extra'].map((pluginName) => ({
+        pluginId: `official/${pluginName}`, pluginName, displayName: pluginName, description: '',
+      }));
+      const model = buildTuiViewModel({ status: loaded.payload, pluginSummaries: loaded.pluginSummaries,
+        residualPluginIds: ['official/demo', 'official/extra'],
+        retirementSourceChecks: loaded.retirementSourceChecks,
+        catalogGenerations: new Map(loaded.catalogGenerations!.map((source) => [source.sourceId, source])) });
+      const inventory = buildScopedInventory({ recovery: current, status: loaded.payload,
+        pluginSummaries: loaded.pluginSummaries,
+        retirementSourceChecks: loaded.retirementSourceChecks,
+        catalogGenerations: new Map(loaded.catalogGenerations!.map((source) => [source.sourceId, source])) });
+      expect(model.plugins).toHaveLength(2);
+      expect(inventory.declaredRoots).toHaveLength(1);
+      expect(inventory.extraInstalledRoots).toHaveLength(1);
+      for (const plugin of [...model.plugins, ...inventory.declaredRoots, ...inventory.extraInstalledRoots]) {
+        expect(plugin.retirementCandidate === true).toBe(state === 'healthy');
+        expect(plugin.sourceUnavailable === true).toBe(state !== 'healthy' && state !== 'listed');
+      }
+    });
+
+  // Test Value Gate: selecting the scope is a user decision, not a target heuristic;
+  // detail must retire all discovered targets without routing to single-target cleanup/uninstall.
+  it.each(['single', 'dual', 'configOnly'] as const)('routes %s retired detail to the correct Review request', async (mode) => {
+    const loaded = retiredStatus();
+    loaded.scopedRecovery = {};
+    if (mode !== 'configOnly') {
+      const project = retiredRecovery('project');
+      project.existingTargets = [{ pluginId: 'official/demo', agent: 'copilot', scope: 'project' }];
+      project.extraObserved = [{ pluginId: 'official/demo', agent: 'copilot', scope: 'project',
+        delivery: { kind: 'native', platform: 'copilot' }, observation: 'verified', content: 'satisfied' }];
+      project.inventory = [];
+      loaded.scopedRecovery.project = project;
+      if (mode === 'dual') loaded.scopedRecovery.user = retiredRecovery('user');
+    } else loaded.configStoreInventory = [{ pluginId: 'official/demo', pluginName: 'demo', sourceId: 'official', scope: 'user' }];
+    const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(),
+      loadStatus: async () => loaded, prepareScopedTask });
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 100, rows: 40 }} />);
+    await tick();
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).not.toContain('恢复插件来源');
+    expect(frame).not.toContain('卸载');
+    await focusAction(instance, mode === 'configOnly' ? '清理已删除插件并删除设置' : '清理已删除插件');
+    await press(instance, '\r');
+    if (mode === 'dual') {
+      expect(instance.lastFrame()).toContain('选择清理范围');
+      expect(prepareScopedTask).not.toHaveBeenCalled();
+      await press(instance, '\u001b[B');
+      await press(instance, '\r');
+    }
+    expect(prepareScopedTask).toHaveBeenCalledWith({ kind: 'retire', scope: mode === 'configOnly' ? 'user' : 'project',
+      selector: 'official/demo', deleteConfig: mode === 'configOnly' }, expect.anything());
+    instance.unmount();
+    controller.dispose();
+  });
+
+  // Test Value Gate: extra installations are retained in all source states; only a confirmed
+  // removed entry gets the retirement action. The same page still permits opening details.
+  it.each(['healthy', 'listed', 'deleted'] as const)('routes a %s extra installation from inventory', async (state) => {
+    const loaded = retiredStatus();
+    if (state === 'listed') loaded.pluginSummaries = status.pluginSummaries;
+    if (state === 'deleted') loaded.payload.catalog.sources = [];
+    const current = retiredRecovery('user');
+    current.inventory = [];
+    current.extraObserved = [{ pluginId: 'official/demo', agent: null, scope: 'user', delivery: null, observation: 'unknown' }];
+    const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => loaded,
+      loadScopedStatus: async () => current, prepareScopedTask });
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'user' }, { inventorySection: 'extraInstalled' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 100, rows: 40 }} />);
+    await tick();
+    expect(controller.listScopedInventoryRoots('user', 'extraInstalled')).toHaveLength(1);
+    expect(instance.lastFrame()?.includes('停用已移除插件（保留设置）')).toBe(state === 'healthy');
+    if (state === 'healthy') {
+      await focusAction(instance, '停用已移除插件（保留设置）');
+      await press(instance, '\r');
+      expect(prepareScopedTask).toHaveBeenCalledWith({ kind: 'retire', scope: 'user',
+        selector: 'official/demo', deleteConfig: false }, expect.anything());
+    } else {
+      await press(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'pluginDetail', pluginId: 'official/demo' });
+      expect(prepareScopedTask).not.toHaveBeenCalled();
+    }
+    instance.unmount();
+    controller.dispose();
+  });
+
+  // Test Value Gate: a no-package Claude local-only follow-up must not claim a shared package
+  // deletion; a real shared registration withdrawal is disclosed even without a package.
+  it('discloses only the shared retirement effects that are actually frozen', () => {
+    const local = retirementDeployment('project', [{ kind: 'unregister', nativeScope: 'local', destination: '/market' }], 'claude');
+    const shared = retirementDeployment('project', [{ kind: 'unregister', nativeScope: 'user', destination: '/market' }], 'claude');
+    expect(deploymentPlanLines([local]).join('\n')).not.toMatch(/删除共享插件包|撤销共享原生登记/);
+    const sharedText = deploymentPlanLines([shared]).join('\n');
+    expect(sharedText).toContain('撤销共享原生登记');
+    expect(sharedText).not.toMatch(/删除共享插件包|保留其他使用位置/);
+  });
+
   it('offers sync on the declared Project root when a usable personal dependency has an old Project copy', () => {
     const pluginId = 'official/demo';
     const provider = 'official/dependency';
@@ -635,10 +784,9 @@ describe('scoped inventory in Ink', () => {
   });
 
   it('guards a changed targets draft and keeps retirement config deletion opt-in', async () => {
-    const current = recovery('project');
-    current.inventory![0]!.blockers = [{ code: 'pluginUnavailable', message: 'removed' }];
+    const current = retiredRecovery('project');
     const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
-    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(retiredStatus()),
       loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask });
     await controller.load();
     controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
@@ -1143,11 +1291,12 @@ describe('scoped inventory in Ink', () => {
     { name: 'User generic Skills', scope: 'user' as const, kind: 'portable' as const },
     { name: 'shared Native', scope: 'project' as const, kind: 'shared' as const },
     { name: 'joint child shared Native', scope: 'project' as const, kind: 'joint-shared' as const },
-    { name: 'retirement config deletion', scope: 'project' as const, kind: 'retire' as const },
+    { name: 'retirement config deletion', scope: 'project' as const, kind: 'retire' as const, deleteConfig: true },
     { name: 'User retirement output', scope: 'user' as const, kind: 'retire' as const },
-  ])('requires a separate, default-return risk confirmation for $name', async ({ scope, kind }) => {
-    const current = recovery(scope);
-    if (kind === 'retire') current.inventory![0]!.blockers = [{ code: 'pluginUnavailable', message: 'removed' }];
+    { name: 'Project shared retirement without config deletion', scope: 'project' as const, kind: 'retire' as const, sharedRetirement: true },
+    { name: 'User shared retirement without config deletion', scope: 'user' as const, kind: 'retire' as const, sharedRetirement: true },
+  ])('requires a separate, default-return risk confirmation for $name', async ({ scope, kind, deleteConfig, sharedRetirement }) => {
+    const current = kind === 'retire' ? retiredRecovery(scope) : recovery(scope);
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope,
       command: kind === 'retire' ? 'intent:retire' : 'sync', ok: true,
       intent: { state: 'valid', roots: ['official/demo'] }, requestedRoots: ['official/demo'],
@@ -1159,9 +1308,13 @@ describe('scoped inventory in Ink', () => {
       requiresConfirmation: true, sharedImpact: { warning: '共享内容可能影响其他项目。' },
     } }] } }];
     const plan = kind === 'retire' ? { kind: 'retire', scope, plan: {
-      receipt, options: { deleteConfig: scope === 'project' },
-      plannedImpact: { declaration: true, preferences: true, config: scope === 'project', outputs: true },
+      receipt, options: { deleteConfig: !!deleteConfig },
+      plannedImpact: { declaration: true, preferences: true, config: !!deleteConfig, outputs: true },
       changes: ['删除当前范围声明。'], warnings: [], context: { dispose: async () => {} },
+      ...(sharedRetirement ? { operationPlan: { deploymentPlans: [retirementDeployment(scope, [
+        { kind: 'unregister', destination: '/market' },
+        { kind: 'remove-owned', destination: '/package/demo' },
+      ])] } } : {}),
     } } : { kind: 'recovery', scope, plan: { receipt,
       plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
       changes: [], warnings: [], context: { dispose: async () => {} },
@@ -1175,7 +1328,8 @@ describe('scoped inventory in Ink', () => {
       }] } } : {}),
     } } as unknown as ScopedTuiPlan;
     const executeScopedTask = vi.fn().mockResolvedValue({ kind: 'recovery', receipt });
-    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(),
+      loadStatus: vi.fn().mockResolvedValue(kind === 'retire' ? retiredStatus() : status),
       loadScopedStatus: vi.fn().mockResolvedValue(current),
       prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask });
     await controller.load();
@@ -1184,7 +1338,7 @@ describe('scoped inventory in Ink', () => {
     const size = kind === 'portable' ? sizes[1]! : sizes[0]!;
     const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
     await tick();
-    if (kind === 'retire') await focusAction(instance, scope === 'project'
+    if (kind === 'retire') await focusAction(instance, deleteConfig
       ? '停用已移除插件并删除设置' : '停用已移除插件（保留设置）');
     else await press(instance, 'c');
     if (kind === 'retire') await press(instance, '\r');
@@ -1198,7 +1352,13 @@ describe('scoped inventory in Ink', () => {
     expect(checkedFrame(instance, size)).toContain('返回检查');
     expect(checkedFrame(instance, size)).toContain('› 返回检查');
     const riskFrame = checkedFrame(instance, size);
-    if (kind === 'retire' && scope === 'project') {
+    if (sharedRetirement) {
+      expect(riskFrame).toContain('删除共享插件包');
+      expect(riskFrame).not.toContain('保留其他使用位置');
+      const reviewText = deploymentPlanLines(plan.kind === 'retire' ? plan.plan.operationPlan!.deploymentPlans : []).join('\n');
+      expect(reviewText).toContain('其他项目的该插件将一并失效');
+      expect(reviewText).toContain('其他项目的需求声明保留');
+    } else if (kind === 'retire' && deleteConfig) {
       expect(riskFrame).toContain('全部本机设置');
       expect(riskFrame).toContain('通用与各');
       expect(riskFrame).toContain('Agent），影响所有项目');

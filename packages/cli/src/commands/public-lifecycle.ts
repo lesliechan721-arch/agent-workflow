@@ -305,15 +305,17 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
         if (active.length) plans.push(await prepareRecovery('uninstall', active, { ...recovery, retiringCatalogRoots: retired }, runtime));
         for (const selector of retired) plans.push(await prepareRetire({ ...location, selector, signal: context.signal, cliVersion: options.cliVersion, yes: options.yes, deleteConfig: options.deleteConfig, preservePreferences: true }, runtime));
         const effects = plans.flatMap((plan) => 'command' in plan ? effectsForPlan(plan) : [
+          ...(plan.operationPlan?.deploymentPlans?.flatMap(deploymentConfirmationEffects) ?? []),
           ...restorationEffects(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.restorations ?? [] : [])),
           ...additionalPermissionEffects(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.additionalImpacts ?? [] : [])),
           ...(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? relatedProjectPermissionEffects(action.permissionRemoval?.batch) : []) ?? []),
           ...plan.receipt.targetResults.map((target) => ({ code: 'removeOwnedOutput', message: 'Remove proven owned output of a retired plugin.', impact: 'selected-scope' as const, subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope } }))]);
         if (options.deleteConfig) effects.push(...exact.map((pluginId) => ({ code: 'deletePluginConfig', message: 'Delete all local common and platform configuration for this plugin.', impact: 'user-wide' as const, subject: { pluginId, scope: 'user' as const } })));
+        const uniqueEffects = [...new Map(effects.map((effect) => [JSON.stringify(effect), effect])).values()];
         const invalidPlan = plans.find((plan) => 'blockExecution' in plan
           ? plan.blockExecution || plan.receipt.targetResults.some((target) => target.blockers.length > 0)
           : plan.receipt.blockers.length > 0);
-        if (invalidPlan || !confirm(effects)) {
+        if (invalidPlan || !confirm(uniqueEffects)) {
           for (const plan of plans) appendReceipt(plan.receipt);
           result.status = 'blocked';
           if (!invalidPlan) result.diagnostics.push(publicDiagnostic('confirmationRequired'));

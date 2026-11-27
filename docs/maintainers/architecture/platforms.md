@@ -90,6 +90,8 @@ namespaceRoot 是稳定公开安装命名空间：CLI 注册使用实际配置�
 
 Codex、Claude 和 Copilot 在各自的客户端配置根中使用 `aw-<source-id>` 作为本地市场登记名，插件登记 ID 为 `<plugin>@aw-<source-id>`。市场冲突按所选客户端的配置根判断，同名市场须指向本次 AW 来源目录才能复用。
 
+现场盘点同时识别原 `<AW_HOME>/marketplaces/<sourceId>` 和当前 `<AW_HOME>/platforms/<platform>/<namespaceId>/marketplaces/<sourceId>`。当前 namespace 按规范化后的宿主配置根、platform 和 route 推导，读取 schema 2 市场配置及该平台自己的 manifest，再匹配精确的宿主登记和当前可见 scope 的激活记录。离线清理复用已核验的恢复候选；相互冲突的市场名、无法绑定的同名原生条目或外来路径仍为未知，symlink 和非 canonical 路径不能授予归属。
+
 activationKey 另含启用位置与需求 scope。身份字符串、路径存在或需求记录本身均不授予删除权；归属和共享检查仍由现有公共管线执行。
 
 ### 1.3 固定 render scope
@@ -125,6 +127,14 @@ Codex 共享 package 单元中的 Agent 引用总是按 user 渲染视图评估�
 | generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
 表格定义固定适配方式。AW 检查实际入口、scope 和组件映射后发布可交付的内容，并记录具体缺口。各版本、宿主和产品面的会话资格另按实际证据记录。
+
+健康 Active 确认插件已下架的[退役](lifecycle.md#停用已从-catalog-移除的插件)复用同一 adapter 计划与执行管线。共享原生包的退役动作与普通停用不同：
+
+- Codex 撤销精确的全局 `plugin remove` 登记；退役删除相应的激活键（而非保留 `enabled = false`）。有包的 project 退役还清除同源用户激活，保留其他项目配置与 User 独占补足。
+- Claude 先区分当前 scope、user 和 managed 登记。managed 或无法证明归属的登记阻断；project 登记按真实项目目录身份匹配，合法路径别名不能漏掉当前 local，也不扩大 canonical 市场路径的归属判断。project 有包退役仅对实际存在的当前 local 和同源 user 登记执行 `plugin uninstall`，全部所需卸载完成才检查聚合登记缺席。仅继承 user 时不调用 local 卸载；登记已缺席的孤儿包不调用 disable。对已经缺包的其他项目，须经 canonical 市场配置、原生 marketplace list 及 `known_marketplaces.json` 证明同源后，才解绑该项目的 local 登记。
+- Copilot 先成功执行精确的全局 `plugin uninstall`，再删除当前 scope 及有包退役涉及的用户 `enabledPlugins[id]` 键、市场条目和包。全部完成后才检查登记缺席，避免把 `source: live` 的市场候选误作未卸载。普通卸载和停用仍按原有布尔激活与共享引用规则处理。
+
+清理已验证的市场投影时，只原子移除对应平台 manifest 内精确匹配 `name` 和 `source: ./plugins/<plugin>` 的条目（Codex `.agents/plugins/marketplace.json`、Claude `.claude-plugin/marketplace.json`、Copilot `.github/plugin/marketplace.json`）；不覆盖损坏或未证明归属的清单。保留其他条目、合法的空 `plugins: []` 及市场登记。所有无包收尾只改当前 scope，仍要求 canonical 市场归属和同源 Active 证据，并阻断未知原生观测。
 
 Agent 命名由 Core 单一策略表决定，规则与 renderer 可见前缀见[运行时命名合同](../../reference/plugin-runtime.md#32-platformrendercontext-v3)。Claude 的角色写入包内默认的 `agents/` 目录，以规范化短名落盘，由宿主以插件命名空间调用；其余支持 Agent 的宿主使用 AW 来源与插件前缀。安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。[Claude 清单参考](https://code.claude.com/docs/en/plugins-reference#component-path-forms)
 

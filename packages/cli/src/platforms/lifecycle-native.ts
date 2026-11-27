@@ -5,6 +5,7 @@ import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment, selectedNativeConsumer } from './inspection.js';
+import { removeRetirementMarketplaceEntry } from './retirement-native.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
   return ['codex-marketplace', 'claude-marketplace', 'antigravity-cli', 'pi-package',
@@ -61,6 +62,10 @@ export function nativeLifecycleEffectKey(binding: DeploymentBinding, effect: Pla
 
 export async function executeNativeLifecycle(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>, effect: PlannedEffect): Promise<MutationOutcome> {
+  // Retirement is based on independently frozen, exact scope observations.
+  // A previous native receipt (even for a shared physical package) cannot
+  // prove another scope or retry has actually been withdrawn.
+  if (prepared.plan.evidence.confirmedCatalogRetirement) return executeNativeLifecycleEffect(ctx, prepared, effect);
   const key = nativeLifecycleEffectKey(prepared.plan.binding, effect);
   if (!key || !ctx.nativeEffects) return executeNativeLifecycleEffect(ctx, prepared, effect);
   let outcome = ctx.nativeEffects.get(key);
@@ -95,6 +100,10 @@ async function dispatchNativeEffect(ctx: MutationContext,
   const { binding, evidence } = prepared.plan;
   const { identity, product, before } = prepared.driverState;
   if (!identity) blocked('nativeIdentityUnconfirmed');
+  if (effect.kind === 'remove-marketplace-entry') {
+    if (prepared.plan.operation !== 'cleanup' || evidence.confirmedCatalogRetirement !== true) blocked('nativeIdentityUnconfirmed');
+    return removeRetirementMarketplaceEntry(ctx, binding, evidence.nativeRetirement?.marketplaceProof ?? null);
+  }
   if (!product && !(effect.kind === 'deactivate' && binding.route === 'codex-marketplace')) blocked('clientInstallEntryUnavailable');
   const scope = binding.scope.kind === 'user' ? 'user' : 'local';
   const cwd = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
@@ -160,7 +169,7 @@ async function dispatchNativeEffect(ctx: MutationContext,
       }
       break;
     case 'claude-marketplace':
-      await run(['plugin', effect.kind === 'unregister' ? 'uninstall' : effect.kind === 'refresh' ? 'update' : 'install', id, '--scope', scope]);
+      await run(['plugin', effect.kind === 'unregister' ? 'uninstall' : effect.kind === 'refresh' ? 'update' : 'install', id, '--scope', effect.nativeScope ?? scope]);
       break;
     case 'antigravity-cli': {
       if (effect.kind === 'unregister' || effect.kind === 'refresh') {

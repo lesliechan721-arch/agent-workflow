@@ -97,7 +97,7 @@ import {
 } from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import { hasStatusInstallationEvidence } from './scoped-inventory.js';
-import { buildScopedInventory,
+import { buildScopedInventory, inventoryPluginIds,
   type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
 import { guidedSkipWarning } from './guided-setup.js';
 import { projectScopedRecoveryHistory, type ScopedTuiPlan } from './scoped-flow.js';
@@ -118,6 +118,7 @@ import {
 import { normalizeTuiRoute, type RouteEntityState } from './screen-registry.js';
 import {
   type CatalogSourceGenerationViewModel,
+  type RetirementSourceChecks,
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
@@ -866,6 +867,7 @@ export interface PluginOperationProgressLine {
 
 export interface TuiStatusLoadResult {
   scopedRecovery?: Partial<Record<Scope, ScopedInventoryLoadResult>>;
+  retirementSourceChecks?: RetirementSourceChecks;
   projectRoot?: string;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
@@ -2253,6 +2255,8 @@ export class TuiController {
           && (target.providerScope === undefined || target.providerScope === target.scope)),
       ]),
       retainedNativePluginIds,
+      residualPluginIds: Object.values(this.#status.scopedRecovery ?? {}).flatMap(inventoryPluginIds),
+      retirementSourceChecks: this.#status.retirementSourceChecks,
       sourceHealth: this.#health,
       sourceDetails: this.#status.sourceDetails,
       catalogFreshness: this.#catalogFreshness,
@@ -2278,8 +2282,11 @@ export class TuiController {
       }
       this.#scopedInventories[scope] = buildScopedInventory({
         recovery,
+        retirementSourceChecks: this.#status.retirementSourceChecks,
         status: this.#status.payload,
-        pluginSummaries: this.#viewModel.plugins,
+        pluginSummaries: this.#status.pluginSummaries,
+        sourceHealth: this.#health,
+        catalogGenerations: this.#catalogGenerations,
         targetRevisions: this.#status.targetRevisions,
         dependencyOverviews: recovery.dependencyOverviews ?? this.#status.dependencyOverviews,
         ...(scope === 'project' && this.#status.projectRoot
@@ -2576,11 +2583,11 @@ export class TuiController {
     }
     this.#health.clear();
     for (const source of status.payload.catalog.sources) {
+      const unavailable = source.error !== undefined || source.errorCode !== undefined;
       this.#health.set(source.id, {
         sourceId: source.id,
-        state: source.error ? 'unavailable'
-          : 'ready',
-        ...(source.error ? { message: '来源当前没有可用数据。' } : {}),
+        state: unavailable ? 'unavailable' : 'ready',
+        ...(unavailable ? { message: '来源当前没有可用数据。' } : {}),
       });
       if (!this.#catalogFreshness.has(source.id)) {
         this.#catalogFreshness.set(source.id, { sourceId: source.id, state: 'notChecked' });
@@ -2678,8 +2685,12 @@ export class TuiController {
     try {
       const recovery = await this.#trackRead(this.dependencies.loadScopedStatus(scope, this.#abort.signal));
       if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
+      this.#status.retirementSourceChecks = { ...this.#status.retirementSourceChecks, ...recovery.retirementSourceChecks };
       const inventory = buildScopedInventory({
         recovery, status: { ...this.#status.payload, targets: [] }, pluginSummaries: this.#status.pluginSummaries,
+        retirementSourceChecks: this.#status.retirementSourceChecks,
+        sourceHealth: this.#health,
+        catalogGenerations: this.#catalogGenerations,
         dependencyOverviews: recovery.dependencyOverviews ?? this.#status.dependencyOverviews,
         ...(scope === 'project' && this.#status.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
       });

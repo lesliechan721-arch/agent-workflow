@@ -11,7 +11,7 @@ import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGrou
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory, hasSharedUserPackage } from '../platforms/layout.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
@@ -312,9 +312,9 @@ async function ownedSupplements(binding: DeploymentBinding, root: string | null,
   }
   return result;
 }
-function readContext(context: RebuildExecutionContext, cwd: string): ReadContext {
+function readContext(context: RebuildExecutionContext, cwd: string, confirmedCatalogRetirement?: true): ReadContext {
   return { cwd, invocationCwd: context.invocationCwd, env: context.env, runner: context.nativeCliRunner, signal: context.signal,
-    codexObservationSession: context.codexObservationSession };
+    confirmedCatalogRetirement, codexObservationSession: confirmedCatalogRetirement ? undefined : context.codexObservationSession };
 }
 function operation(input: TargetInput): 'ensure' | 'reinstall' | 'remove' | 'cleanup' {
   return input.command === 'uninstall' ? 'remove' : input.command === 'cleanup' ? 'cleanup'
@@ -536,7 +536,7 @@ export class PlatformRebuildSession {
     private readonly adapterFor: typeof getAgentPluginAdapter = getAgentPluginAdapter) {}
   updateContext(context: RebuildExecutionContext): void {
     this.context = context;
-    for (const ctx of this.contexts) Object.assign(ctx, readContext(context, ctx.cwd));
+    for (const ctx of this.contexts) Object.assign(ctx, readContext(context, ctx.cwd, ctx.confirmedCatalogRetirement));
   }
   setOwnershipExecutor(executor: OwnedComponentExecutor): void { this.ownership = executor; }
   private root(): Promise<string> { return this.staging ??= fs.mkdtemp(path.join(os.tmpdir(), 'aw-deployment-')); }
@@ -653,7 +653,11 @@ export class PlatformRebuildSession {
     this.marketplaceTargets.clear(); this.marketplaceCandidatesFrozen = false;
   }
   freezeMarketplaceCandidates(): void { this.marketplaceCandidatesFrozen = true; }
-  private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null, operation: operation(input) }); }
+  private retirementMode(input: TargetInput): true | undefined {
+    return input.command === 'cleanup' && hasSharedUserPackage(input.platform) && this.context.confirmedCatalogRetirement === true ? true : undefined;
+  }
+  private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null,
+    operation: operation(input), confirmedCatalogRetirement: this.retirementMode(input) }); }
   private resolve(input: TargetInput, placementProbeGroup?: PlacementProbeGroup): Promise<TargetResolution> {
     const key = this.key(input);
     // Inspection of a shared package does not request activation in that scope.
@@ -662,8 +666,10 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = input.readOnlyInspectionPlan && input.observationBatch ? { ...readContext(this.context, input.cwd), ...input.observationBatch }
-          : this.ordinaryReadContext(readContext(this.context, input.cwd), input.platform);
+        const mode = this.retirementMode(input);
+        const readCtx = readContext(this.context, input.cwd, mode);
+        const ctx = mode ? readCtx : input.readOnlyInspectionPlan && input.observationBatch ? { ...readCtx, ...input.observationBatch }
+          : this.ordinaryReadContext(readCtx, input.platform);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -872,8 +878,9 @@ export class PlatformRebuildSession {
     return result.prepared;
   }
   private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
-    const ctx = readContext(this.context, input.cwd);
-    const ordinaryCtx = input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
+    const confirmedCatalogRetirement = this.retirementMode(input);
+    const ctx = readContext(this.context, input.cwd, confirmedCatalogRetirement);
+    const ordinaryCtx = confirmedCatalogRetirement ? ctx : input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
       : this.ordinaryReadContext(ctx, input.platform);
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
@@ -1062,7 +1069,7 @@ export class PlatformRebuildSession {
       const managedCommandReview = await captureManagedCommandReviewEvidence({ binding: entry.binding,
         renderUnits: entry.layout.renderUnits, inactivePermissions: units.flatMap((unit) => unit.finalized.invocationPolicy.inactivePermissions), projections });
       const currentMutable = async (batch?: NativeObservationBatch) => {
-        const observation = await adapter.inspect(batch ? { ...ctx, ...batch } : ctx, entry.binding);
+        const observation = await adapter.inspect(batch && !confirmedCatalogRetirement ? { ...ctx, ...batch } : ctx, entry.binding);
         return { observation, references: await sharedReferences(this.context, entry.binding, observation, entry.layout),
           paths: await Promise.all(components.map(async (component) => {
             if ('path' in component) return pathEvidence(component.path);
@@ -1079,6 +1086,7 @@ export class PlatformRebuildSession {
       };
       const shadowedUser = operation(input) === 'ensure' ? await grokUserBehindProject(ctx, entry.binding, entry.observation) : undefined;
       const fingerprintParts = async (discovery?: { value: unknown }) => ({
+        confirmedCatalogRetirement: this.retirementMode(input),
         ...(shadowedUser && { grokUserContent: await grokUserContentDigest(shadowedUser) }),
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
@@ -1116,7 +1124,7 @@ export class PlatformRebuildSession {
       if (ordinaryObservation !== undefined && ordinaryObservation !== artifactValueDigest(mutableBaseline.observation)) {
         throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
       }
-      const preparationObservation = entry.binding.route === 'antigravity-cli' || antigravityProject
+      const preparationObservation = confirmedCatalogRetirement || entry.binding.route === 'antigravity-cli' || antigravityProject
         ? mutableBaseline.observation : entry.observation;
       const piInventoryKey = piProjectInventoryKey(entry.binding, entry.layout.activationPath);
       const matchesMutable = (current: Awaited<ReturnType<typeof currentMutable>>): boolean => {
@@ -1348,7 +1356,7 @@ export class PlatformRebuildSession {
           }) : [];
           return { observation: mutable.observation, verifiedSupplementIds };
         } });
-      const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
+      const evidence: PreparationEvidence = { confirmedCatalogRetirement, fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
           contentDigest: state === 'present' ? await ownedContentDigest(component, ctx) : undefined,
           physicalKey: component.identity.physicalKey ?? entry.binding.physicalKey }))),
@@ -1364,14 +1372,14 @@ export class PlatformRebuildSession {
         const notice = await missingPermissionOwnershipWarning(ctx, entry.binding.plugin.pluginId, entry.binding.scope.kind, settingsPath ?? hostPolicyPath, entry.binding.platform, grokProjectBlocked);
         if (notice) evidence.permissionOwnershipWarning = notice;
       }
-      if (entry.binding.platform === 'codex') {
+      if (!confirmedCatalogRetirement && entry.binding.platform === 'codex') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli'
           || removing && consumer.entry?.kind === 'directory')?.entry;
         if (!hostEntry || hostEntry.kind === 'generic') throw new Error('nativeActivationEvidenceUnknown');
         const config = await readCodexConfigFile(path.join(hostEntry.configRoot, 'config.toml'));
         evidence.userActivationEnabled = config.snapshot.plugins[entry.layout.nativeIdentity.registrationId!]?.enabled === true;
       }
-      if (entry.binding.platform === 'copilot') {
+      if (!confirmedCatalogRetirement && entry.binding.platform === 'copilot') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
         if (hostEntry?.kind === 'cli') {
           const settings = await jsonObject(path.join(hostEntry.configRoot, 'settings.json'));
@@ -1380,7 +1388,7 @@ export class PlatformRebuildSession {
             ? (enabled as Record<string, unknown>)[entry.layout.nativeIdentity.registrationId!] === true : 'unknown';
         }
       }
-      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
+      if (!confirmedCatalogRetirement && entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
         const plannedUser = [...this.requestedOperations.values()].find((request) => request.scope === 'user'
           && request.platform === input.platform && sourceIdentity(request).sourceIdentity === entry.binding.plugin.sourceIdentity
           && sourceIdentity(request).pluginId === entry.binding.plugin.pluginId);
@@ -1760,6 +1768,7 @@ export class PlatformRebuildSession {
           if (receipt.diagnostics.some(({ code }) => code === 'processCleanupUnconfirmed')) return receipts;
           if ((prepared.plan.operation === 'remove' || prepared.plan.operation === 'cleanup'
             || prepared.plan.expected.components.length === 0 && prepared.plan.expected.unmet.length === 0)
+            && prepared.plan.evidence.confirmedCatalogRetirement !== true
             && prepared.plan.evidence.sharedReferences !== 'none' && receipt.after.package === 'present') {
             receipt.diagnostics.push({ code: prepared.plan.evidence.sharedReferences === 'unknown' ? 'sharedReferenceUnknown' : 'sharedPackageRetained', severity: 'warning',
               message: prepared.plan.evidence.sharedReferences === 'unknown'

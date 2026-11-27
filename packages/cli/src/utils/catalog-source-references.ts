@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { codexMarketplacePathKey, isCanonicalCodexMarketplaceRegistration } from './codex-shared-native.js';
+import { isCanonicalCodexMarketplaceRegistration } from './codex-shared-native.js';
 import { readIntentReferences } from '../recovery/demand.js';
 import { resolveIntentPath } from '../intent/intent-store.js';
 import type { Dirent } from 'node:fs';
@@ -31,10 +31,10 @@ import {
   type OwnedComponent,
 } from './ownership.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
-import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
-import { getDeploymentLayout, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { canonicalMarketplaceRegistrationPath, readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
+import { getDeploymentLayout, getManagedPlatformRoot, getInvocationPolicyPhysicalKey, isAntigravityProjectDirectory } from '../platforms/layout.js';
 import { deploymentPackageComponent } from '../platforms/inspection.js';
-import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
+import { canonicalNamespaceRoot, getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { offlinePermissionComponents } from '../platforms/permission-ownership.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
 import { readPlatformPackageContentDigest } from './platform-empty-state.js';
@@ -64,9 +64,19 @@ export interface CatalogSourceReference {
   ownedComponent?: OwnedComponent;
   pathEvidence?: string;
   recoveryCandidate?: RecoveryCandidate;
+  /** Strict root identity (or a verified package in the current canonical namespace). */
+  marketplaceRoot?: string;
+  /** Observed host registration; null denotes a non-local or unconfirmed location. */
+  marketplaceRegistrationPath?: string | null;
+  /** A manifest entry records residue, not an activation or package-owner proof. */
+  marketplaceManifestEntry?: true;
+  /** Host policy registration, never an AW activation/removal grant. */
+  managedNativeRegistration?: true;
+  /** Claude retains false settings after uninstall. A preference alone is not a deployment. */
+  disabledNativeActivation?: true;
 }
 
-export function canonicalMarketplaceRegistrationNames(
+export function legacyCanonicalMarketplaceRegistrationNames(
   references: readonly CatalogSourceReference[],
   sourceId: string,
 ): string[] {
@@ -74,16 +84,132 @@ export function canonicalMarketplaceRegistrationNames(
     reference.kind === 'namespacedMarketplace'
     && reference.sourceId === sourceId
     && reference.pluginName === undefined
+    && reference.platform === undefined
+    && reference.marketplaceRoot
     && reference.marketplaceName
       ? [reference.marketplaceName]
       : []))];
 }
 
+function isNativeMarketplaceConsumer(reference: CatalogSourceReference): boolean {
+  return !reference.disabledNativeActivation && !reference.marketplaceManifestEntry;
+}
+
+/** Raw host consumers and their canonical inventory copies can describe the
+ * same registration. Ignore that duplicate only when its binding is resolved. */
+export function scopedCleanupMarketplaceEvidence(options: {
+  references: readonly CatalogSourceReference[];
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+}): { registrations: CatalogSourceReference[]; consumers: CatalogSourceReference[]; unboundConsumers: CatalogSourceReference[] } {
+  const { references, pluginName, platform, scope } = options;
+  const registrations = references.filter((reference) => reference.kind === 'namespacedMarketplace'
+    && reference.platform === platform && reference.pluginName === undefined
+    && reference.marketplaceRegistrationPath !== undefined
+    && (reference.scope === undefined || reference.scope === 'user' || reference.scope === scope));
+  const consumers = references.filter((reference) => reference.kind === 'namespacedMarketplace'
+    && reference.pluginName === pluginName && reference.platform === platform
+    && reference.scope === scope && reference.marketplaceName);
+  const nativeConsumers = consumers.filter(isNativeMarketplaceConsumer);
+  const unboundConsumers = nativeConsumers.filter((consumer) => {
+    if (consumer.sourceId !== undefined) return false;
+    const boundRoots = new Set(nativeConsumers.flatMap((bound) => bound.sourceId && bound.sourceIdentity && bound.marketplaceRoot
+      && bound.marketplaceName === consumer.marketplaceName && bound.projectKey === consumer.projectKey
+      ? [bound.marketplaceRoot] : []));
+    const observedPaths = new Set(registrations.filter((entry) => entry.marketplaceName === consumer.marketplaceName)
+      .map((entry) => entry.marketplaceRegistrationPath));
+    return observedPaths.size === 0 ? boundRoots.size !== 1
+      : observedPaths.size !== 1 || [...observedPaths].some((location) => !location || !boundRoots.has(location));
+  });
+  return { registrations, consumers, unboundConsumers };
+}
+
+/** Resolve the same scope-local identity for offline preview and execution. A root
+ * identifies a marketplace, not a package or permission to remove that package. */
+export function resolveCleanupMarketplaceIdentity(options: {
+  references: readonly CatalogSourceReference[];
+  sourceId: string;
+  sourceIdentity: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+}): { marketplaceName?: string; nativeRegistration?: true; marketplaceIdentityUnresolved?: true } {
+  const { references, sourceId, sourceIdentity, pluginName, platform, scope } = options;
+  if (platform !== 'codex' && platform !== 'claude' && platform !== 'copilot') return {};
+  const { registrations, consumers, unboundConsumers } = scopedCleanupMarketplaceEvidence(options);
+  const roots = references.filter((reference) => reference.kind === 'namespacedMarketplace'
+    && reference.pluginName === undefined && reference.marketplaceRoot && reference.marketplaceName
+    && (reference.platform === platform || platform !== 'copilot' && reference.platform === undefined));
+  const matchedConsumers = consumers.filter((reference) => reference.sourceId === sourceId);
+  const candidates = references.filter((reference) => reference.sourceId === sourceId
+    && reference.sourceIdentity === sourceIdentity && reference.pluginName === pluginName
+    && reference.platform === platform && reference.scope === scope
+    && reference.recoveryCandidate?.evidence === 'verified' && reference.marketplaceRoot);
+  const liveNames = new Set(matchedConsumers.map((reference) => reference.marketplaceName!));
+  const provenNames = new Map<string, Set<string>>();
+  const addName = (name: string, root: string): void => {
+    const paths = provenNames.get(name) ?? new Set<string>();
+    paths.add(root);
+    provenNames.set(name, paths);
+  };
+  for (const reference of candidates) {
+    const candidate = reference.recoveryCandidate!;
+    const id = candidate.nativeIdentity?.registrationId;
+    const separator = id?.lastIndexOf('@') ?? -1;
+    if (id && separator > 0 && candidate.binding.platform === platform && candidate.binding.scope.kind === scope
+      && candidate.binding.plugin.sourceId === sourceId && candidate.binding.plugin.sourceIdentity === sourceIdentity
+      && id.slice(0, separator) === pluginName && id.slice(separator + 1)
+      && candidate.nativeIdentity?.sourceLocation === path.join(reference.marketplaceRoot!, 'plugins', pluginName)) {
+      const name = id.slice(separator + 1);
+      liveNames.add(name);
+      addName(name, reference.marketplaceRoot!);
+    }
+  }
+  const hasVerifiedCandidate = provenNames.size > 0;
+  for (const root of roots) {
+    if (root.sourceId !== sourceId || root.sourceIdentity !== sourceIdentity) continue;
+    if (liveNames.size === 0 || liveNames.has(root.marketplaceName!)) addName(root.marketplaceName!, root.marketplaceRoot!);
+  }
+  const unresolved = (): { marketplaceIdentityUnresolved: true } => ({ marketplaceIdentityUnresolved: true });
+  if (liveNames.size > 1 || provenNames.size > 1) return unresolved();
+  if (provenNames.size === 0) return unboundConsumers.length > 0 || matchedConsumers.some(isNativeMarketplaceConsumer)
+    || references.some((reference) => reference.sourceId === sourceId
+    && reference.sourceIdentity === sourceIdentity && reference.pluginName === pluginName
+    && reference.platform === platform && reference.scope === scope && reference.recoveryCandidate?.evidence === 'verified')
+    ? unresolved() : {};
+  const [marketplaceName, paths] = [...provenNames][0]!;
+  if (liveNames.size === 1 && !liveNames.has(marketplaceName)) return unresolved();
+  const observed = registrations.filter((registration) => registration.marketplaceName === marketplaceName);
+  // An empty canonical root alone does not resolve some other, unbound
+  // marketplace's same-name activation. Preserve it and report the ambiguity.
+  if (!observed.length && !hasVerifiedCandidate && unboundConsumers.some((consumer) =>
+    consumer.marketplaceName !== marketplaceName)) return unresolved();
+  // Multiple physical markets sharing a name cannot be disambiguated by the name alone.
+  // An actual host registration can conclusively select one of those roots.
+  if (observed.some((registration) => !registration.marketplaceRegistrationPath
+    || !paths.has(registration.marketplaceRegistrationPath))) return unresolved();
+  const selectedPaths = observed.length ? new Set(observed.map((registration) => registration.marketplaceRegistrationPath!)) : paths;
+  if (selectedPaths.size !== 1) return unresolved();
+  const selectedRoot = [...selectedPaths][0]!;
+  if (candidates.some((candidate) => candidate.marketplaceRoot !== selectedRoot)) return unresolved();
+  if (!observed.length && roots.some((root) => root.marketplaceName === marketplaceName
+    && root.marketplaceRoot !== selectedRoot)) return unresolved();
+  if (roots.some((root) => root.marketplaceRoot === selectedRoot
+    && (root.sourceId !== sourceId || root.sourceIdentity !== sourceIdentity || root.marketplaceName !== marketplaceName))) return unresolved();
+  const matchingActivation = consumers.some((consumer) => isNativeMarketplaceConsumer(consumer) && !consumer.managedNativeRegistration
+    && consumer.marketplaceName === marketplaceName
+    && (consumer.sourceId === undefined || consumer.sourceId === sourceId && consumer.sourceIdentity === sourceIdentity));
+  return { marketplaceName, ...(matchingActivation ? { nativeRegistration: true as const } : {}) };
+}
+
 interface NativeMarketplaceConsumer {
   pluginName: string;
-  platform: 'codex' | 'claude';
+  platform: 'codex' | 'claude' | 'copilot';
   scope: 'user' | 'project';
   projectKey?: string | null;
+  managedNativeRegistration?: true;
+  disabledNativeActivation?: true;
 }
 
 function pluginNameFromMarketplaceId(pluginId: string, marketplaceName: string): string | null {
@@ -100,9 +226,10 @@ function claudeConsumersFromSettings(
 ): NativeMarketplaceConsumer[] {
   if (!value) return [];
   const output: NativeMarketplaceConsumer[] = [];
-  for (const pluginId of Object.keys(isRecord(value.enabledPlugins) ? value.enabledPlugins : {})) {
+  for (const [pluginId, enabled] of Object.entries(isRecord(value.enabledPlugins) ? value.enabledPlugins : {})) {
     const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);
-    if (pluginName) output.push({ pluginName, platform: 'claude', scope });
+    if (pluginName) output.push({ pluginName, platform: 'claude', scope,
+      ...(enabled === false ? { disabledNativeActivation: true as const } : {}) });
   }
   const plugins = isRecord(value.plugins) && isRecord(value.plugins.installed)
     ? value.plugins.installed
@@ -122,6 +249,7 @@ function claudeConsumersFromInstalled(
   marketplaceName: string,
   currentProject: string,
   includeHistoricalProjects = false,
+  includeManaged = false,
 ): NativeMarketplaceConsumer[] {
   const output: NativeMarketplaceConsumer[] = [];
   if (value !== null && !isRecord(value)) {
@@ -146,12 +274,16 @@ function claudeConsumersFromInstalled(
       if (item.scope !== undefined
         && item.scope !== 'user'
         && item.scope !== 'project'
-        && item.scope !== 'local') {
+        && item.scope !== 'local'
+        && item.scope !== 'managed') {
         throw new Error(`Claude installed_plugins record ${key} has an invalid scope.`);
       }
       if (item.projectPath !== undefined && typeof item.projectPath !== 'string') {
         throw new Error(`Claude installed_plugins record ${key} has an invalid projectPath.`);
       }
+      // Managed policy is a host-global residual clue, but is never an AW
+      // user registration or an independent project reference.
+      if (item.scope === 'managed' && !includeManaged) continue;
       const itemMarketplace = typeof item.marketplace === 'string'
         ? item.marketplace
         : pluginNameFromMarketplaceId(key, marketplaceName) ? marketplaceName : undefined;
@@ -167,7 +299,8 @@ function claudeConsumersFromInstalled(
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
-      output.push({ pluginName, platform: 'claude', scope, ...(scope === 'project' ? { projectKey } : {}) });
+      output.push({ pluginName, platform: 'claude', scope, ...(scope === 'project' ? { projectKey } : {}),
+        ...(item.scope === 'managed' ? { managedNativeRegistration: true as const } : {}) });
     }
   }
   return output;
@@ -233,6 +366,7 @@ function inventoryErrorRelevance(
     [path.join(repoRoot, '.codex'), 'codex'],
     [path.join(repoRoot, '.agents'), 'codex'],
     [path.join(repoRoot, '.claude'), 'claude'],
+    [path.join(repoRoot, '.github', 'copilot'), 'copilot'],
   ];
   for (const [root, platform] of projectRoots) {
     if (pathSegmentsWithin(root, location) !== null) {
@@ -250,7 +384,16 @@ function inventoryErrorRelevance(
   if (pathSegmentsWithin(getClaudeHome(env), location) !== null) {
     return { global: false, platform: 'claude', scope: 'user' };
   }
+  const copilotRoot = resolvePlatformConfigRoot('copilot', { env, cwd });
+  if (pathSegmentsWithin(copilotRoot, location) !== null) {
+    return { global: false, platform: 'copilot', scope: 'user' };
+  }
   for (const root of new Set([awHome, canonicalAwHome])) {
+    const platformPath = pathSegmentsWithin(path.join(root, 'platforms'), location);
+    if (platformPath && (platformPath.length <= 2 || platformPath[2] === 'marketplaces')
+      && (platformPath[0] === 'codex' || platformPath[0] === 'claude' || platformPath[0] === 'copilot')) {
+      return { global: false, platform: platformPath[0], ...(platformPath[3] ? { sourceId: platformPath[3] } : {}) };
+    }
     const marketplace = pathSegmentsWithin(path.join(root, 'marketplaces'), location);
     if (marketplace?.[0]) return { global: false, sourceId: marketplace[0] };
   }
@@ -292,7 +435,7 @@ function inventoryError(
   relevance?: CatalogSourceInventoryError['relevance'],
 ): CatalogSourceInventoryError {
   const message = error instanceof Error ? error.message : String(error);
-  const sensitiveRoots = [getCodexHome(env), getClaudeHome(env), resolveRepoRootSync(cwd)];
+  const sensitiveRoots = [getCodexHome(env), getClaudeHome(env), resolvePlatformConfigRoot('copilot', { env, cwd }), resolveRepoRootSync(cwd)];
   return {
     code: 'stateInventoryFailed',
     kind,
@@ -1009,6 +1152,7 @@ async function oldMarketplaceReferences(
   const claudeInstalledPath = path.join(getClaudeHome(env), 'plugins', 'installed_plugins.json');
   const output: CatalogSourceReference[] = [];
   const marketplacesRoot = path.join(resolveAwHome(env), 'marketplaces');
+  const canonicalLegacyRoot = path.join(await canonicalNamespaceRoot(resolveAwHome(env)), 'marketplaces');
   const namespacedPrimaryRoots = new Set<string>();
   const marketplaceEntries = await inventoryCanonicalDirectoryEntries({
     errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd,
@@ -1030,6 +1174,7 @@ async function oldMarketplaceReferences(
     }) as Record<string, unknown> | null;
     if (manifest?.name === 'aw' && config?.schemaVersion === 2 && config.sourceId === entry.name) {
       namespacedPrimaryRoots.add(path.normalize(path.join(marketplacesRoot, entry.name)));
+      namespacedPrimaryRoots.add(path.join(canonicalLegacyRoot, entry.name));
     }
   }
 
@@ -1071,12 +1216,13 @@ async function oldMarketplaceReferences(
     && declarationPaths.every((entry) => namespacedPrimaryRoots.has(path.normalize(entry)));
   if ((
     settings && (Object.hasOwn(settings.extraKnownMarketplaces ?? {}, 'aw')
-    || hasAwPluginConsumerKeys(settings.enabledPlugins)
+    || Object.entries(settings.enabledPlugins ?? {}).some(([key, enabled]) => isAwPluginConsumerKey(key) && enabled !== false)
     || hasAwPluginConsumerKeys(settings.plugins?.installed)
     || hasClaudeMarketplaceConsumer(settings.plugins?.installed))
   ) && !claudeAwIsNamespaced) {
     output.push({ kind: 'legacyMarketplace', location: claudeSettingsPath });
     for (const consumer of claudeConsumersFromSettings(settings as unknown as Record<string, unknown>, 'aw', 'user')) {
+      if (consumer.disabledNativeActivation) continue;
       output.push({ kind: 'legacyMarketplace', location: claudeSettingsPath, ...consumer });
     }
   }
@@ -1122,6 +1268,7 @@ async function oldMarketplaceReferences(
   });
   if (!claudeAwIsNamespaced) {
     for (const consumer of claudeConsumersFromSettings(projectSettings, 'aw', 'project')) {
+      if (consumer.disabledNativeActivation) continue;
       output.push({ kind: 'legacyMarketplace', location: projectSettingsPath, ...consumer });
     }
   }
@@ -1167,16 +1314,43 @@ function sourceIdFromCanonicalMarketplacePath(
   return sourceId !== '' && sourceId !== '.' && sourceId !== '..' ? sourceId : null;
 }
 
-function registeredMarketplaceRoots(
-  value: unknown,
-  marketplacesRoot: string,
-): Array<{ marketplaceName: string; sourceId: string }> {
-  if (!isRecord(value)) return [];
-  return Object.entries(value).flatMap(([marketplaceName, declaration]) =>
-    collectMarketplaceDeclarationPaths(declaration).flatMap((candidate) => {
-      const sourceId = sourceIdFromCanonicalMarketplacePath(candidate, marketplacesRoot);
-      return sourceId ? [{ marketplaceName, sourceId }] : [];
-    }));
+const MARKETPLACE_PLATFORMS = ['codex', 'claude', 'copilot'] as const;
+type MarketplacePlatform = typeof MARKETPLACE_PLATFORMS[number];
+
+async function managedMarketplaceDirectories(awRoot: string, cwd: string, env: NodeJS.ProcessEnv): Promise<Map<MarketplacePlatform, string>> {
+  const directories = new Map<MarketplacePlatform, string>();
+  for (const platform of MARKETPLACE_PLATFORMS) {
+    const configRoot = await canonicalNamespaceRoot(resolvePlatformConfigRoot(platform, { cwd, env }));
+    directories.set(platform, path.join(getManagedPlatformRoot(awRoot, platform, `${platform}-marketplace`, configRoot), 'marketplaces'));
+  }
+  return directories;
+}
+
+function pluginMarketplaceName(pluginId: string): string | undefined {
+  const separator = pluginId.lastIndexOf('@');
+  return separator > 0 && separator < pluginId.length - 1 ? pluginId.slice(separator + 1) : undefined;
+}
+
+/** A missing package container is valid after removal; a foreign container is not. */
+async function assertMarketplacePluginsContainer(root: string): Promise<void> {
+  const pluginsRoot = path.join(root, 'plugins');
+  const stat = await fs.lstat(pluginsRoot).catch((error: unknown) => {
+    if (isAbsentState(error)) return null;
+    throw error;
+  });
+  if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('Marketplace plugins container must be a canonical directory.');
+}
+
+async function readEnabledPluginsInventory(location: string): Promise<Record<string, unknown>> {
+  const value: unknown = await readJsonFileIfExists(location);
+  if (value === null || value === undefined) return {};
+  if (!isRecord(value) || value.enabledPlugins !== undefined && !isRecord(value.enabledPlugins)) {
+    throw new Error('Native settings enabledPlugins must be a JSON object.');
+  }
+  if (isRecord(value.enabledPlugins) && Object.values(value.enabledPlugins).some((enabled) => typeof enabled !== 'boolean')) {
+    throw new Error('Native settings enabledPlugins entries must be boolean.');
+  }
+  return isRecord(value.enabledPlugins) ? value.enabledPlugins : {};
 }
 
 /** Operation-local fingerprints bind reviewed output bytes; they do not confer ownership. */
@@ -1258,7 +1432,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
       if (platform === 'grok') add(path.join(projectRoot, '.grok/plugins'), platform, 'project', 'grok-directory', hostRoot);
     }
   }
-  const awRoot = resolveAwHome(options.env);
+  const awRoot = await canonicalNamespaceRoot(resolveAwHome(options.env));
   const managed = path.join(awRoot, 'platforms');
   for (const platform of NATIVE_PLATFORM_TARGETS) {
     const namespaces = await inventoryCanonicalDirectoryEntries({ location: path.join(managed, platform),
@@ -1352,9 +1526,14 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
             nativeIdentity: scopedLayout.nativeIdentity, evidence: antigravityCopy && !inspectCopy ? 'unknown' : 'verified' };
           // A copied marker is a native recovery clue, never direct filesystem
           // removal authority for the cache or ownership of the AW source path.
+          const currentMarketplaceRoot = scopedLayout.marketplaceRoot && descriptor.managed
+            ? path.join(getManagedPlatformRoot(awRoot, descriptor.platform, descriptor.route,
+              await canonicalNamespaceRoot(descriptor.hostRoot)), 'marketplaces', marker.sourceId) : null;
           references.push({ kind: antigravityCopy ? 'namespacedMarketplace' : 'namespacedOwner', location: markerPath, sourceId: marker.sourceId,
             sourceIdentity: marker.sourceIdentity, pluginName: marker.plugin, platform: descriptor.platform, scope,
-            ...(!antigravityCopy ? { ownedComponent: component } : {}), recoveryCandidate, pathEvidence });
+            ...(!antigravityCopy ? { ownedComponent: component } : {}), recoveryCandidate, pathEvidence,
+            ...(currentMarketplaceRoot && scopedLayout.marketplaceRoot === currentMarketplaceRoot
+              ? { marketplaceRoot: currentMarketplaceRoot } : {}) });
         }
       } catch (error) {
         errors.push(inventoryError(error, markerPath, 'nativeOwnerRead', options.env, options.cwd,
@@ -1561,53 +1740,149 @@ export async function inventoryCatalogSourceReferences(options: {
   const marketplaceEntries = await inventoryCanonicalDirectoryEntries({
     errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd: options.cwd,
   });
-  for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
-    const separator = pluginId.lastIndexOf('@');
-    if (separator <= 0 || separator === pluginId.length - 1) continue;
-    references.push({
-      kind: 'namespacedMarketplace',
-      location: codexConfigPath,
-      pluginName: pluginId.slice(0, separator),
-      marketplaceName: pluginId.slice(separator + 1),
-      platform: 'codex',
-      scope: 'user',
-    });
-  }
-  for (const pluginId of Object.keys(projectCodexConfig?.snapshot.plugins ?? {})) {
-    const separator = pluginId.lastIndexOf('@');
-    if (separator <= 0 || separator === pluginId.length - 1) continue;
-    references.push({
-      kind: 'namespacedMarketplace',
-      location: projectCodexConfigPath,
-      pluginName: pluginId.slice(0, separator),
-      marketplaceName: pluginId.slice(separator + 1),
-      platform: 'codex',
-      scope: 'project',
-    });
-  }
-  for (const [location, registrations] of [
-    [codexConfigPath, Object.entries(codexConfig?.snapshot.marketplaces ?? {}).flatMap(([marketplaceName, marketplace]) => {
-      const source = codexMarketplacePathKey(marketplace.source);
-      const root = codexMarketplacePathKey(marketplacesRoot);
-      const sourceId = marketplace.sourceType === 'local' && !marketplace.sourcePointsToManifest
-        && source !== undefined && root !== undefined
-        ? sourceIdFromCanonicalMarketplacePath(source, root)
-        : null;
-      return sourceId ? [{ marketplaceName, sourceId }] : [];
-    })],
-    [userClaudeSettingsPath, registeredMarketplaceRoots(userClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
-    [projectClaudeSettingsPath, registeredMarketplaceRoots(projectClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
-    [claudeKnownPath, [
-      ...registeredMarketplaceRoots(claudeKnown, marketplacesRoot),
-      ...registeredMarketplaceRoots(claudeKnown?.marketplaces, marketplacesRoot),
-    ]],
+  const canonicalAwRoot = await canonicalNamespaceRoot(awHome);
+  const managedDirectories = await managedMarketplaceDirectories(canonicalAwRoot, options.cwd, env);
+  const canonicalLegacyRoot = path.join(canonicalAwRoot, 'marketplaces');
+  const projectClaudeLocalSettingsPath = path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.local.json');
+  const projectClaudeLocalSettings = await inventoryRead({
+    operation: () => readJsonFileIfExists<Record<string, unknown>>(projectClaudeLocalSettingsPath), absent: null, errors,
+    location: projectClaudeLocalSettingsPath, kind: 'nativeStateRead', env, cwd: options.cwd,
+  });
+  const nativeConsumers: CatalogSourceReference[] = [];
+  const addConsumer = (location: string, marketplaceName: string, consumer: NativeMarketplaceConsumer): void => {
+    nativeConsumers.push({ kind: 'namespacedMarketplace', location, marketplaceName, ...consumer });
+  };
+  for (const [location, plugins, platform, scope] of [
+    [codexConfigPath, codexConfig?.snapshot.plugins ?? {}, 'codex', 'user'],
+    [projectCodexConfigPath, projectCodexConfig?.snapshot.plugins ?? {}, 'codex', 'project'],
+    ...await Promise.all((['user', 'project'] as const).map(async (scope) => {
+      const location = scope === 'user'
+        ? path.join(resolvePlatformConfigRoot('copilot', { cwd: options.cwd, env }), 'settings.json')
+        : path.join(resolveRepoRootSync(options.cwd), '.github', 'copilot', 'settings.local.json');
+      const plugins = await inventoryRead({ operation: () => readEnabledPluginsInventory(location), absent: {}, errors,
+        location, kind: 'nativeStateRead', env, cwd: options.cwd });
+      return [location, plugins, 'copilot', scope] as const;
+    })),
   ] as const) {
-    for (const registration of registrations) references.push({
-      kind: 'namespacedMarketplace',
-      location,
-      sourceId: registration.sourceId,
-      marketplaceName: registration.marketplaceName,
-    });
+    for (const pluginId of Object.keys(plugins)) {
+      const marketplaceName = pluginMarketplaceName(pluginId);
+      if (marketplaceName) addConsumer(location, marketplaceName, {
+        pluginName: pluginNameFromMarketplaceId(pluginId, marketplaceName)!, platform, scope,
+      });
+    }
+  }
+  for (const [location, settings, scope] of [
+    [userClaudeSettingsPath, userClaudeSettings, 'user'],
+    [projectClaudeSettingsPath, projectClaudeSettings, 'project'],
+    [projectClaudeLocalSettingsPath, projectClaudeLocalSettings, 'project'],
+  ] as const) {
+    if (!settings) continue;
+    const installed = isRecord(settings.plugins) && isRecord(settings.plugins.installed) ? settings.plugins.installed : {};
+    const names = new Set([
+      ...Object.keys(isRecord(settings.enabledPlugins) ? settings.enabledPlugins : {}).map(pluginMarketplaceName),
+      ...Object.values(installed).flatMap((entry) => isRecord(entry) && typeof entry.marketplace === 'string' ? [entry.marketplace] : []),
+    ].filter((name): name is string => !!name));
+    for (const name of names) for (const consumer of claudeConsumersFromSettings(settings, name, scope)) addConsumer(location, name, consumer);
+  }
+  const installedClaudeNames = new Set<string>();
+  if (isRecord(claudeInstalled?.plugins)) for (const [id, raw] of Object.entries(claudeInstalled.plugins)) {
+    const name = pluginMarketplaceName(id);
+    if (name) installedClaudeNames.add(name);
+    for (const entry of Array.isArray(raw) ? raw : [raw]) {
+      if (isRecord(entry) && typeof entry.marketplace === 'string') installedClaudeNames.add(entry.marketplace);
+    }
+  }
+  try {
+    if (installedClaudeNames.size === 0) claudeConsumersFromInstalled(claudeInstalled, '', path.normalize(canonicalProjectRoot));
+    for (const name of installedClaudeNames) for (const consumer of claudeConsumersFromInstalled(claudeInstalled, name,
+      path.normalize(canonicalProjectRoot), options.includePlatformHistoricalProjects === true, true)) addConsumer(claudeInstalledPath, name, consumer);
+  } catch (error) {
+    errors.push(inventoryError(error, claudeInstalledPath, 'nativeStateRead', env, options.cwd));
+  }
+  references.push(...nativeConsumers);
+
+  // Host paths are matched lexically against only the legacy root and the current
+  // platform/route namespace. Never adopt a host's foreign directory or another namespace.
+  const registrations: CatalogSourceReference[] = [];
+  const appendRegistration = (platform: MarketplacePlatform, location: string, marketplaceName: string,
+    registrationPath: string | null, scope?: Scope): void => {
+    const sourceId = registrationPath
+      ? (sourceIdFromCanonicalMarketplacePath(registrationPath, canonicalLegacyRoot)
+        ?? sourceIdFromCanonicalMarketplacePath(registrationPath, managedDirectories.get(platform)!))
+      : null;
+    registrations.push({ kind: 'namespacedMarketplace', location, platform, marketplaceName,
+      ...(sourceId ? { sourceId } : {}), ...(scope ? { scope } : {}), marketplaceRegistrationPath: registrationPath });
+  };
+  for (const [location, config, scope] of [
+    [codexConfigPath, codexConfig, 'user'], [projectCodexConfigPath, projectCodexConfig, 'project'],
+  ] as const) {
+    for (const [name, marketplace] of Object.entries(config?.snapshot.marketplaces ?? {})) {
+      const source = marketplace.sourceType === 'local' && !marketplace.sourcePointsToManifest ? marketplace.source : undefined;
+      appendRegistration('codex', location, name, canonicalMarketplaceRegistrationPath(source, awHome, canonicalAwRoot), scope);
+    }
+  }
+  for (const [location, declarations, scope] of [
+    [userClaudeSettingsPath, userClaudeSettings?.extraKnownMarketplaces, 'user'],
+    [projectClaudeSettingsPath, projectClaudeSettings?.extraKnownMarketplaces, 'project'],
+    [projectClaudeLocalSettingsPath, projectClaudeLocalSettings?.extraKnownMarketplaces, 'project'],
+    [claudeKnownPath, claudeKnown, undefined], [claudeKnownPath, claudeKnown?.marketplaces, undefined],
+  ] as const) {
+    if (!isRecord(declarations)) continue;
+    for (const [name, declaration] of Object.entries(declarations)) {
+      if (name === 'marketplaces' && location === claudeKnownPath) continue;
+      const declaredSource = isRecord(declaration) ? declaration.source : undefined;
+      const foreignSource = typeof declaredSource === 'string' && declaredSource !== 'directory' && !path.isAbsolute(declaredSource)
+        || isRecord(declaredSource) && declaredSource.source !== undefined && declaredSource.source !== 'directory';
+      const paths = [...new Set(collectMarketplaceDeclarationPaths(declaration)
+        .map((candidate) => canonicalMarketplaceRegistrationPath(candidate, awHome, canonicalAwRoot)))];
+      appendRegistration('claude', location, name, !foreignSource && paths.length === 1 ? paths[0] ?? null : null, scope);
+    }
+  }
+  references.push(...registrations);
+
+  for (const [platform, directory] of managedDirectories) {
+    const root = await inventoryCanonicalDescendantDirectory({ root: canonicalAwRoot,
+      segments: path.relative(canonicalAwRoot, directory).split(path.sep), errors,
+      kind: 'marketplaceDirectoryRead', env, cwd: options.cwd });
+    const entries = root ? await inventoryCanonicalDirectoryEntries({ errors, location: root,
+      kind: 'marketplaceDirectoryRead', env, cwd: options.cwd }) : [];
+    const registeredIds = registrations.filter((registration) => registration.platform === platform && registration.marketplaceRegistrationPath
+      && sourceIdFromCanonicalMarketplacePath(registration.marketplaceRegistrationPath, directory) !== null)
+      .flatMap((registration) => registration.sourceId ? [registration.sourceId] : []);
+    for (const sourceId of new Set([...entries.map((entry) => entry.name), ...registeredIds])) {
+      const marketplaceRoot = path.join(directory, sourceId);
+      const configPath = path.join(marketplaceRoot, 'config.json');
+      const strictRoot = root ? await inventoryRead({ operation: async () => {
+        if (!await inventoryCanonicalDirectory({ errors, location: marketplaceRoot, kind: 'marketplaceRootValidation', env, cwd: options.cwd })) return null;
+        await assertMarketplacePluginsContainer(marketplaceRoot);
+        const manifestPath = path.join(marketplaceRoot, platform === 'codex' ? '.agents/plugins/marketplace.json'
+          : platform === 'claude' ? '.claude-plugin/marketplace.json' : '.github/plugin/marketplace.json');
+        for (const location of [configPath, manifestPath]) {
+          if (await canonicalNamespaceRoot(location) !== location) throw new Error('Marketplace path contains a symbolic link.');
+        }
+        return readStrictNamespacedMarketplaceRoot({ rootDir: marketplaceRoot, sourceId, platform, trustedMarketplaceRoot: directory });
+      }, absent: null, reportAbsent: true, errors, location: marketplaceRoot, kind: 'marketplaceRootValidation', env, cwd: options.cwd }) : null;
+      const names = new Set(registrations.filter((registration) => registration.platform === platform
+        && registration.marketplaceRegistrationPath === marketplaceRoot).flatMap((registration) => registration.marketplaceName ? [registration.marketplaceName] : []));
+      if (strictRoot) {
+        const { marketplaceName, sourceIdentity } = strictRoot.config;
+        names.add(marketplaceName);
+        references.push({ kind: 'namespacedMarketplace', sourceId, sourceIdentity, marketplaceName, marketplaceRoot, platform, location: configPath });
+        for (const entry of strictRoot.manifest.plugins as unknown[]) {
+          if (!isRecord(entry) || typeof entry.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(entry.name)
+            || entry.source !== `./plugins/${entry.name}`) continue;
+          references.push({ kind: 'namespacedMarketplace', sourceId, sourceIdentity, marketplaceName, marketplaceRoot, platform,
+            location: configPath, pluginName: entry.name, scope: 'user', marketplaceManifestEntry: true });
+        }
+      }
+      for (const consumer of nativeConsumers) {
+        if (consumer.platform !== platform || consumer.disabledNativeActivation
+          || !consumer.marketplaceName || !names.has(consumer.marketplaceName)) continue;
+        const exact = strictRoot?.config.marketplaceName === consumer.marketplaceName;
+        references.push({ ...consumer, location: configPath, sourceId,
+          ...(exact ? { sourceIdentity: strictRoot.config.sourceIdentity, marketplaceRoot } : {}) });
+      }
+    }
   }
   for (const sourceEntry of marketplaceEntries) {
     const marketplaceRoot = path.join(marketplacesRoot, sourceEntry.name);
@@ -1624,10 +1899,15 @@ export async function inventoryCatalogSourceReferences(options: {
     });
     const strictRoot = canonicalRoot
       ? await inventoryRead({
-          operation: () => readStrictNamespacedMarketplaceRoot({
-            rootDir: marketplaceRoot,
-            sourceId: sourceEntry.name,
-          }),
+          operation: async () => {
+            await assertMarketplacePluginsContainer(marketplaceRoot);
+            const expectedRoot = path.join(canonicalLegacyRoot, sourceEntry.name);
+            for (const location of [marketplaceRoot, configPath, agentsManifestPath, path.join(marketplaceRoot, '.claude-plugin/marketplace.json')]) {
+              const expected = path.join(expectedRoot, path.relative(marketplaceRoot, location));
+              if (await canonicalNamespaceRoot(location) !== expected) throw new Error('Marketplace path contains a symbolic link.');
+            }
+            return readStrictNamespacedMarketplaceRoot({ rootDir: marketplaceRoot, sourceId: sourceEntry.name });
+          },
           absent: null,
           reportAbsent: true,
           errors,
@@ -1676,39 +1956,10 @@ export async function inventoryCatalogSourceReferences(options: {
       ? codexConfig?.snapshot.marketplaces[marketplaceName]
       : undefined;
     const codexMarketplaceIsCanonical = isCanonicalCodexMarketplaceRegistration(codexMarketplace, marketplaceRoot);
-    const consumers: NativeMarketplaceConsumer[] = [];
-    if (marketplaceName !== null && (strictRoot !== null || codexMarketplaceIsCanonical)) {
-      for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
-        const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);
-        if (pluginName) consumers.push({ pluginName, platform: 'codex', scope: 'user' });
-      }
-      for (const pluginId of Object.keys(projectCodexConfig?.snapshot.plugins ?? {})) {
-        const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);
-        if (pluginName) consumers.push({ pluginName, platform: 'codex', scope: 'project' });
-      }
-    }
-    if (marketplaceName !== null) {
-      consumers.push(
-        ...claudeConsumersFromSettings(userClaudeSettings, marketplaceName, 'user'),
-        ...claudeConsumersFromSettings(projectClaudeSettings, marketplaceName, 'project'),
-      );
-      try {
-        consumers.push(...claudeConsumersFromInstalled(
-          claudeInstalled,
-          marketplaceName,
-          path.normalize(canonicalProjectRoot),
-          options.includePlatformHistoricalProjects === true,
-        ));
-      } catch (error) {
-        errors.push(inventoryError(
-          error,
-          claudeInstalledPath,
-          'nativeStateRead',
-          env,
-          options.cwd,
-        ));
-      }
-    }
+    const consumers = nativeConsumers.filter((consumer) => consumer.platform !== 'copilot'
+      && !consumer.disabledNativeActivation
+      && consumer.marketplaceName === marketplaceName
+      && (consumer.platform !== 'codex' || strictRoot !== null || codexMarketplaceIsCanonical));
     if (marketplaceName !== null && strictRoot !== null) {
       references.push({
         kind: 'namespacedMarketplace',
@@ -1716,16 +1967,18 @@ export async function inventoryCatalogSourceReferences(options: {
         sourceId: sourceEntry.name,
         ...(sourceIdentity ? { sourceIdentity } : {}),
         marketplaceName,
+        marketplaceRoot: path.join(canonicalLegacyRoot, sourceEntry.name),
       });
     }
     if (marketplaceName !== null) {
       for (const consumer of consumers) references.push({
+        ...consumer,
         kind: 'namespacedMarketplace',
         location: configPath,
         sourceId: sourceEntry.name,
         ...(sourceIdentity ? { sourceIdentity } : {}),
         marketplaceName,
-        ...consumer,
+        ...(strictRoot ? { marketplaceRoot: path.join(canonicalLegacyRoot, sourceEntry.name) } : {}),
       });
     }
   }
@@ -1744,6 +1997,11 @@ export async function inventoryCatalogSourceReferences(options: {
     reference.scope ?? '',
     reference.marketplaceName ?? '',
     reference.projectKey ?? '',
+    reference.marketplaceRoot ?? '',
+    reference.marketplaceRegistrationPath ?? '',
+    reference.marketplaceManifestEntry ? 'manifest' : '',
+    reference.managedNativeRegistration ? 'managed' : '',
+    reference.disabledNativeActivation ? 'disabled' : '',
   ].join('\0'), reference])).values()];
   unique.sort((left, right) => left.location.localeCompare(right.location));
   const knownNames = [...new Set([...(options.knownPluginNames ?? []), ...unique.flatMap((reference) =>
