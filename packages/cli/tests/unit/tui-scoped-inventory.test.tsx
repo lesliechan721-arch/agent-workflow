@@ -786,8 +786,9 @@ describe('scoped inventory in Ink', () => {
   it('guards a changed targets draft and keeps retirement config deletion opt-in', async () => {
     const current = retiredRecovery('project');
     const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
+    const previewAgentSettings = vi.fn(async () => ({ blocked: false, reasons: [], conflicts: [], counts: {} }));
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(retiredStatus()),
-      loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask });
+      loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask, previewAgentSettings });
     await controller.load();
     controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
@@ -799,14 +800,20 @@ describe('scoped inventory in Ink', () => {
     await escape(instance);
     await focusAction(instance, 'Agent 管理');
     await press(instance, '\r');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('◆ Codex'));
+    // Wait for the actual Agent settings preview, not merely the first frame.
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('◆ 已选 2 个'));
     await focusAction(instance, '◆ Codex');
     await press(instance, '\r');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('› ◇ Codex'));
+    await vi.waitFor(() => {
+      expect(instance.lastFrame()).toContain('› ◇ Codex');
+      expect(instance.lastFrame()).toContain('◆ 已选 1 个');
+    });
+    expect(previewAgentSettings).toHaveBeenCalledWith(expect.objectContaining({ targets: ['claude'] }), undefined);
     await escape(instance);
     expect(checkedFrame(instance, sizes[0]!)).toContain('还有未保存的修改');
     expect(prepareScopedTask).toHaveBeenCalledTimes(1);
     instance.unmount();
+    controller.dispose();
   });
 
   it('retries only two irregular failed pairs and checks unknown targets separately', async () => {

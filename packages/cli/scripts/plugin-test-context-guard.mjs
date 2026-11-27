@@ -40,6 +40,9 @@ if (files && isDeclaredTestEntry(files)) {
     get(target, key) { rejectRead(key); return Reflect.get(target, key); },
     has(target, key) { rejectRead(key); return Reflect.has(target, key); },
     getOwnPropertyDescriptor(target, key) { rejectRead(key); return Reflect.getOwnPropertyDescriptor(target, key); },
+    // Node's process.env requires its own receiver for writes to existing keys.
+    // Keep native fixture updates working without relaxing the two read guards.
+    set(target, key, value) { return Reflect.set(target, key, value); },
   });
   // Keep node:process's named env export on the same guarded object.
   syncBuiltinESMExports();

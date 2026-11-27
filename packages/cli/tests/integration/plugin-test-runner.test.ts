@@ -414,11 +414,16 @@ describe('plugin script test runner', () => {
       '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_CONTEXT"));',
       '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_PLATFORM"));',
       '  assert.ok(!fs.existsSync(path.join(process.env.HOME, "..", "context.json")));',
-      '  const child = spawnSync(process.execPath, ["-p", "process.env.AW_PLUGIN_CONTEXT"], {',
+      // A target-independent test may install and replace its native fixture
+      // context. The platform-read guard must preserve ordinary env writes.
+      '  process.env.AW_NATIVE_TOOL_CONTEXT = "fixture-before";',
+      '  process.env.AW_NATIVE_TOOL_CONTEXT = "fixture-after";',
+      '  assert.equal(process.env.AW_NATIVE_TOOL_CONTEXT, "fixture-after");',
+      '  const child = spawnSync(process.execPath, ["-p", "JSON.stringify([process.env.AW_PLUGIN_CONTEXT, process.env.AW_NATIVE_TOOL_CONTEXT])"], {',
       '    env: { ...process.env, AW_PLUGIN_CONTEXT: "private" }, encoding: "utf8",',
       '  });',
       '  assert.equal(child.status, 0, child.stderr);',
-      '  assert.equal(child.stdout.trim(), "private");',
+      '  assert.deepEqual(JSON.parse(child.stdout), ["private", "fixture-after"]);',
       '  console.log("independent marker");',
       '});',
     ].join('\n'));
