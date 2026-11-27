@@ -17,6 +17,7 @@ import { runCliEntry } from '../helpers/cli-entry.js';
 import type { CommandResult } from '../../src/output/public-result.js';
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 import { useEmptyGitRepositoryFixture } from '../helpers/git-repository-fixture.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 
 const createEmptyGitRepository = useEmptyGitRepositoryFixture();
 
@@ -259,15 +260,18 @@ describe('Grok native recovery and trust', () => {
 
   // Grok reports just the winning package of each name in the project. The
   // first publication can hide its exact User provider while other writes stay observable.
-  it.each(['unchanged', 'owned hook', 'foreign hook', 'reordered hooks', 'unmapped User hook', 'foreign registration',
+  it.for(['unchanged', 'owned hook', 'foreign hook', 'reordered hooks', 'unmapped User hook', 'foreign registration',
     'edited User source', 'edited User copy', 'edited Project copy', 'reordered sources'] as const)(
-    'rechecks a hidden Grok User provider with %s', async (change) => {
-      const { cwd, env, aw, trustAndRetry, runner, registered } = await grokTrustFixture({
+    'rechecks a hidden Grok User provider with %s', async (change, test) => {
+      // Keep the original deadline. Hosted slow runners need phase evidence
+      // to distinguish fixture/trust setup from the guarded Project writes.
+      const timing = createCommandTestTiming(test);
+      const { cwd, env, aw, trustAndRetry, runner, registered } = await timing.measure('fixture', 'grok-trust', () => grokTrustFixture({
         baseHook: ['owned hook', 'foreign hook', 'reordered hooks'].includes(change),
-      });
-      const first = await aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user', '--target', 'grok']);
-      const second = await trustAndRetry(first, 'base', 'bundle');
-      expect((await trustAndRetry(second, 'bundle', 'bundle')).status).toBe('success');
+      }));
+      const first = await timing.measure('command', 'user-install', () => aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user', '--target', 'grok']));
+      const second = await timing.measure('command', 'trust-base-and-retry', () => trustAndRetry(first, 'base', 'bundle'));
+      expect((await timing.measure('command', 'trust-bundle-and-retry', () => trustAndRetry(second, 'bundle', 'bundle'))).status).toBe('success');
       const base = registered.get('base')!;
       const projectRoot = path.join(cwd, '.grok/plugins');
       const firstProject = path.join(projectRoot, 'aw-local-base');
@@ -310,9 +314,9 @@ describe('Grok native recovery and trust', () => {
         if (firstCompleted && change === 'reordered sources') snapshot.plugins.reverse();
         return { ...result, stdout: JSON.stringify(snapshot) };
       };
-      const promoted = await runRecovery('install', ['local/base', 'local/bundle'],
+      const promoted = await timing.measure('command', 'project-promotion', () => runRecovery('install', ['local/base', 'local/bundle'],
         { cwd, env, cliVersion: '1.0.0', scope: 'project', context: 'project', targets: ['grok'], yes: true },
-        { nativeCliRunner, onInstallProgress: ({ completed }) => { if (completed === 1) firstCompleted = true; } });
+        { nativeCliRunner, onInstallProgress: ({ completed }) => { if (completed === 1) firstCompleted = true; } }));
       expect(promoted.targetResults.find((target) => target.pluginId === 'local/base' && target.scope === 'project')?.execution).toBe('applied');
       const next = promoted.targetResults.find((target) => target.pluginId === 'local/bundle' && target.scope === 'project');
       if (change === 'unchanged' || change === 'owned hook') {

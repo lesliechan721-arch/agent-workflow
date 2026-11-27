@@ -127,7 +127,7 @@ const componentCommandTimeoutMs = 180000;
 
 // Shared authoring and scope commands use the same receipt and process evidence
 // boundary. The result is data, not a callback into a suite's report.
-async function executeComponentCommand(executeAw, args, { command, platform, cwd, env, cliEntry = cli, trace = false, stageLog }) {
+async function executeComponentCommand(executeAw, args, { command, platform, cwd, env, cliEntry = cli, trace = false, stageLog, frozenRoot }) {
   let response;
   let value;
   let stage = 'execute';
@@ -135,7 +135,7 @@ async function executeComponentCommand(executeAw, args, { command, platform, cwd
     ...command, stage, error: kind, ...componentProcessEvidence(error, response), ...componentReceiptEvidence(receipt, command, platform),
   });
   try {
-    response = await executeAw(publicAwNodeLauncher(cliEntry, trace),
+    response = await executeAw(publicAwNodeLauncher(cliEntry, trace, frozenRoot),
       [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
       { cwd, env, timeoutMs: componentCommandTimeoutMs });
     // A Windows Job failure can return 250 even after AW has printed a receipt.
@@ -157,6 +157,19 @@ async function authoringAw(executeAw, args, cwd, env) {
   const outcome = await executeComponentCommand(executeAw, args, { command: componentCommand(args), cwd, env });
   if (outcome.failure) throw new ComponentCommandError(outcome.failure);
   return outcome.value;
+}
+
+// A traceEntry is supplied only for Hosted suites with a selected native entry.
+// Retain separate per-command files and the existing bounded evidence modes.
+export function componentTraceMode(command, { traceEntry, platform, scope, suite }) {
+  if (!traceEntry) return undefined;
+  const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
+  if (platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
+    && (suite === 'candidate' || matrixInstall)) return 'codex-component-install';
+  if (platform === 'grok' && command.command === 'target.set') return 'grok-component-discovery';
+  if (platform === 'claude' && scope === 'project' && suite === 'matrix'
+    && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
+    && ['matrix/hook-only', 'matrix/single-hook'].includes(command.pluginIds[0])) return 'claude-component-remove';
 }
 
 const componentTraceCategories = {
@@ -830,7 +843,7 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
     let componentTraceIndex = 0;
-    async function result(args, cwd = project, trustRetry, cliEntry = cli) {
+    async function result(args, cwd = project, trustRetry, cliEntry = cli, frozenRoot) {
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
       const command = componentCommand(args, dependencies);
@@ -844,15 +857,7 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
         && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
         ? path.join(root, 'candidate-batch-stages.jsonl') : undefined;
       const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && command.command === 'target.set';
-      const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
-      const installTrace = traceEntry && platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
-        && (suite === 'candidate' || matrixInstall);
-      const grokTrace = traceEntry && platform === 'grok' && command.command === 'target.set';
-      const claudeTrace = traceEntry && platform === 'claude' && scope === 'project' && suite === 'matrix'
-        && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
-        && command.pluginIds[0] === 'matrix/hook-only';
-      const traceMode = installTrace ? 'codex-component-install' : grokTrace ? 'grok-component-discovery'
-        : claudeTrace ? 'claude-component-remove' : undefined;
+      const traceMode = componentTraceMode(command, { traceEntry, platform, scope, suite });
       const trace = Boolean(discoveryTrace || traceMode);
       const traceFile = discoveryTrace ? path.join(root, 'target-discovery.jsonl')
         : traceMode ? path.join(root, `${traceMode}-${++componentTraceIndex}.jsonl`) : undefined;
@@ -863,7 +868,7 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
       let outcome;
       let failure;
       try {
-        outcome = await executeComponentCommand(executeAw, args, { command, platform, cwd, env: commandEnv, cliEntry, trace, stageLog });
+        outcome = await executeComponentCommand(executeAw, args, { command, platform, cwd, env: commandEnv, cliEntry, trace, stageLog, frozenRoot });
         failure = outcome.failure;
       } catch (error) {
         if (error instanceof ComponentCommandError) failure = error.failure;

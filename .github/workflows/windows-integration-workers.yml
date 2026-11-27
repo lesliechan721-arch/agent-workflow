@@ -22,13 +22,13 @@ jobs:
     # Before merge, a same-repository PR label starts a new full sample of its
     # exact head SHA. No required CI or release evidence comes from this run.
     if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && (github.event.label.name == 'windows-integration-1-worker' || github.event.label.name == 'windows-integration-2-workers'))
-    name: Windows integration comparison / ${{ matrix.index }} of 3
+    name: Windows integration comparison / ${{ matrix.index }} of 4
     runs-on: windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        index: [1, 2, 3]
+        index: [1, 2, 3, 4]
     env:
       AW_TEST_WORKERS: '1'
       INTEGRATION_WORKERS: ${{ inputs.workers || (github.event.label.name == 'windows-integration-2-workers' && '2' || '1') }}
@@ -48,9 +48,9 @@ jobs:
         with:
           os: win32
           arch: x64
-          shard: ${{ matrix.index }}/3
+          shard: ${{ matrix.index }}/4
           workers: ${{ env.INTEGRATION_WORKERS }}
-          process-lifecycle: ${{ matrix.index == 3 }}
+          process-lifecycle: ${{ matrix.index == 4 }}
       - name: Save failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

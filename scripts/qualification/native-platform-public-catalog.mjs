@@ -4,6 +4,7 @@ import path from 'node:path';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
 import { installReceiptCodes, nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
+import { resolveFrozenPublicAwPackage } from './native-platform-public-process.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
 // Candidate plugins own no native roles (all three deliver Skills and/or main-session instructions only).
@@ -169,14 +170,9 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     assert.deepEqual(rejected.value.data.targetResults, []);
     const diagnostics = rejected.value.diagnostics.map(item => item.code);
     assert(diagnostics.includes('sourceUnavailable'));
-    const root = process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT;
-    assert(root && path.isAbsolute(root), 'Provide the installed historical AW package directory.');
-    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-    assert.equal(manifest.name, '@lesliechan721/aw');
-    assert.equal(manifest.version, '0.1.0-beta.85');
-    const entry = path.join(root, manifest.bin.aw);
-    baseline = args => ctx.result(args, ctx.project, undefined, entry);
-    report.catalog.baselineCli = manifest.version;
+    const historical = resolveFrozenPublicAwPackage(process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT);
+    baseline = args => ctx.result(args, ctx.project, undefined, historical.entry, historical.root);
+    report.catalog.baselineCli = historical.version;
     report.catalog.candidateInstall = { status: rejected.value.status, exitCode: rejected.exitCode, diagnostics };
   }
   const installation = await baseline(request);

@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { execute, repoRoot } from './native-platform-runtime.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
@@ -6,12 +8,34 @@ import { createProcessQueryTimingDiagnostic } from './native-platform-process-qu
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
+// The historical installation is a separate package with its own runner
+// singleton. Bind its known entry and module, not an arbitrary entry's imports.
+export function resolveFrozenPublicAwPackage(root, entry) {
+  assert(root && path.isAbsolute(root), 'Provide the installed historical AW package directory.');
+  root = realpathSync(root);
+  function packageFile(relative) {
+    const expected = path.join(root, relative);
+    const actual = realpathSync(expected);
+    assert(actual === expected && statSync(actual).isFile(), 'Historical AW package file is not contained in its package.');
+    return actual;
+  }
+  const manifest = JSON.parse(readFileSync(packageFile('package.json'), 'utf8'));
+  assert.equal(manifest.name, '@lesliechan721/aw');
+  assert.equal(manifest.version, '0.1.0-beta.85');
+  assert(['dist/index.js', './dist/index.js'].includes(manifest.bin?.aw), 'Unexpected historical AW entry.');
+  const cliEntry = packageFile('dist/index.js');
+  if (entry !== undefined) assert.equal(realpathSync(entry), cliEntry, 'Historical AW entry does not match its package.');
+  return { root, entry: cliEntry, pluginScripts: packageFile('dist/src/utils/plugin-scripts.js'), version: manifest.version };
+}
+
 // Only the public AW entry needs to carry the outer lease across its private
 // renderer/preApply environment. Ordinary native clients use their own launchers.
-export function publicAwNodeLauncher(entry, trace = false) {
-  const preload = process.platform === 'linux' ? './native-platform-public-plugin-marker.mjs'
-    : trace ? './native-platform-managed-trace.mjs' : undefined;
-  return { executable: process.execPath, prefix: [...(preload ? ['--import', new URL(preload, import.meta.url).href] : []), entry] };
+export function publicAwNodeLauncher(entry, trace = false, frozenRoot) {
+  const frozen = frozenRoot === undefined ? undefined : resolveFrozenPublicAwPackage(frozenRoot, entry);
+  const preload = process.platform === 'linux' ? new URL('./native-platform-public-plugin-marker.mjs', import.meta.url)
+    : trace ? new URL('./native-platform-managed-trace.mjs', import.meta.url) : undefined;
+  if (frozen && process.platform === 'linux') preload.searchParams.set('frozenRoot', frozen.root);
+  return { executable: process.execPath, prefix: [...(preload ? ['--import', preload.href] : []), frozen?.entry ?? entry] };
 }
 
 // AW manages independent native-command groups. This is a compatibility

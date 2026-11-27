@@ -8,7 +8,9 @@ import { partitionByDuration } from './integration-sequencer.mjs';
 
 const cliRoot = fileURLToPath(new URL('../', import.meta.url));
 const repoRoot = path.resolve(cliRoot, '../..');
-const shardCounts = { win32: 3, darwin: 2 };
+const shardCounts = { win32: 4, darwin: 2, linux: 2 };
+const acceptedCounts = { win32: [3, 4], darwin: [2], linux: [1, 2] };
+const jobPrefixes = { win32: 'win32 x64', darwin: 'darwin arm64', linux: 'Linux x64' };
 const timingHeader = 'run_id\tjob_id\tplatform\tshard\tfile\tseconds';
 const integrationFile = /^tests\/integration\/.+\.test\.tsx?$/u;
 
@@ -24,9 +26,8 @@ function median(values) {
 
 function validateRow(row) {
   const { runId, jobId, platform, shard, file, seconds } = row;
-  const count = shardCounts[platform];
-  if (!positiveId(runId) || !positiveId(jobId) || !Object.hasOwn(shardCounts, platform)
-    || !Array.from({ length: count }, (_, index) => (index + 1) + '/' + count).includes(shard)
+  if (!positiveId(runId) || !positiveId(jobId) || !Object.hasOwn(acceptedCounts, platform)
+    || !acceptedCounts[platform].some((count) => Array.from({ length: count }, (_, index) => (index + 1) + '/' + count).includes(shard))
     || !integrationFile.test(file) || !Number.isFinite(seconds) || seconds <= 0) {
     throw new Error('Invalid timing row: ' + JSON.stringify(row));
   }
@@ -52,7 +53,7 @@ export function parseIntegrationLog(log, job) {
     } else if (/^↓\s+integration\s+tests[/\\]integration[/\\].+?\.test\.tsx?\s+\(\d+\s+tests?\s+\|\s+\d+\s+skipped\)$/u.test(line)) {
       skipped++;
     } else if (rows.length && line.startsWith('Test Files')) {
-      // The integration step ends here. Shard 3/2 subsequently runs separate
+      // The integration step ends here. The final shard subsequently runs separate
       // process-lifecycle and diagnostic tests which must not enter the table.
       const summary = /^Test Files\s+(\d+)\s+passed(?:\s+\|\s+(\d+)\s+skipped)?\s+\((\d+)\)$/u.exec(line);
       if (summary) {
@@ -100,35 +101,62 @@ function groupBy(rows, key) {
   return groups;
 }
 
+// Each source run must contain a full matrix. Historical and current counts
+// may coexist across runs, but never within one platform of a single run.
+function validateTopology(runId, platform, jobs) {
+  const counts = new Set(jobs.map((job) => Number(job.shard.split('/')[1])));
+  if (counts.size > 1) throw new Error(runId + ': mixed shard counts for ' + platform);
+  const count = [...counts][0];
+  if (!acceptedCounts[platform].includes(count)) {
+    throw new Error(runId + ': missing or unsupported shard count for ' + platform);
+  }
+  const ids = new Set();
+  for (let index = 1; index <= count; index++) {
+    const shard = index + '/' + count;
+    const matches = jobs.filter((job) => job.shard === shard);
+    if (!matches.length) throw new Error(runId + ': missing ' + platform + ' ' + shard);
+    if (matches.length !== 1 || ids.has(matches[0].jobId)) {
+      throw new Error(runId + ': multiple jobs or duplicate job ID for ' + platform + ' ' + shard);
+    }
+    ids.add(matches[0].jobId);
+  }
+  if (jobs.length !== count) throw new Error(runId + ': invalid shards for ' + platform);
+  return count;
+}
+
 function validateRuns(rows) {
   for (const row of rows) validateRow(row);
   const runs = groupBy(rows, (row) => row.runId);
   if (runs.size < 3 || runs.size > 5) throw new Error('Provide 3–5 distinct successful CI runs.');
+  const sourceCoverage = [];
   for (const [runId, runRows] of runs) {
-    for (const [platform, count] of Object.entries(shardCounts)) {
+    const shards = {};
+    for (const platform of Object.keys(shardCounts)) {
       const files = new Set();
       const platformRows = runRows.filter((row) => row.platform === platform);
-      for (let index = 1; index <= count; index++) {
-        const shard = index + '/' + count;
-        const jobRows = platformRows.filter((row) => row.shard === shard);
-        if (!jobRows.length) throw new Error(runId + ': missing ' + platform + ' ' + shard);
-        if (new Set(jobRows.map((row) => row.jobId)).size !== 1) {
-          throw new Error(runId + ': multiple jobs for ' + platform + ' ' + shard);
-        }
-        for (const row of jobRows) {
-          if (files.has(row.file)) throw new Error(runId + ': duplicate ' + platform + ' file ' + row.file);
-          files.add(row.file);
-        }
+      const jobs = [...groupBy(platformRows, (row) => row.shard + '/' + row.jobId).values()].map((jobRows) => jobRows[0]);
+      shards[platform] = validateTopology(runId, platform, jobs);
+      for (const row of platformRows) {
+        if (files.has(row.file)) throw new Error(runId + ': duplicate ' + platform + ' file ' + row.file);
+        files.add(row.file);
       }
     }
+    for (const jobRows of groupBy(runRows, (row) => row.jobId).values()) {
+      if (new Set(jobRows.map((row) => row.platform + '/' + row.shard)).size !== 1) {
+        throw new Error(runId + ': duplicate job ID ' + jobRows[0].jobId + ' across shards or platforms');
+      }
+    }
+    sourceCoverage.push({ runId, shards });
   }
-  return [...runs.keys()].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  return sourceCoverage.sort((a, b) => a.runId.localeCompare(b.runId, 'en', { numeric: true }));
 }
 
-export function calibrateDurations(rows, files) {
-  const sourceRuns = validateRuns(rows);
-  const table = { sourceRuns, seconds: {} };
+export function calibrateDurations(rows, files, previousTable) {
+  const sourceCoverage = validateRuns(rows);
+  const table = { sourceRuns: sourceCoverage.map(({ runId }) => runId), seconds: {} };
   const report = {};
+  const pendingSplitGroups = {};
+  const splitGroups = Object.entries(previousTable?.splitEstimates?.localSecondsByParent ?? {});
   if (!files.length || files.some((file) => !integrationFile.test(file)) || new Set(files).size !== files.length) {
     throw new Error('Expected unique discovered ordinary integration files.');
   }
@@ -152,14 +180,39 @@ export function calibrateDurations(rows, files) {
       normalized.push(...jobRows.map((row) => ({ ...row, seconds: row.seconds / factor })));
     }
     const normalizedByFile = groupBy(normalized, (row) => row.file);
+    // Keep the whole still-discovered group together until every child has
+    // multiple actual observations on this platform. Mixing measured and old
+    // relative weights within the group would distort its total placement.
+    const pendingFiles = new Set();
+    for (const [parent, localSeconds] of splitGroups) {
+      const children = Object.keys(localSeconds).filter((file) => files.includes(file));
+      if (children.some((file) => (normalizedByFile.get(file)?.length ?? 0) < 2)) {
+        pendingSplitGroups[parent] = localSeconds;
+        for (const child of children) pendingFiles.add(child);
+      }
+    }
+
     const seconds = {};
+    const retainedEstimateFiles = [];
+    let measuredFiles = 0;
     for (const file of [...files].sort()) {
+      if (pendingFiles.has(file)) {
+        const previous = previousTable.seconds[platform]?.[file];
+        if (Number.isFinite(previous) && previous > 0) {
+          seconds[file] = previous;
+          retainedEstimateFiles.push(file);
+        }
+        continue;
+      }
       const samples = normalizedByFile.get(file) ?? [];
       // A single observation (or none) isn't a multi-run estimate. Let the
       // existing sequencer use its median fallback and report the gap.
-      if (samples.length >= 2) seconds[file] = Math.max(0.001, Number(median(samples.map((row) => row.seconds)).toFixed(3)));
+      if (samples.length >= 2) {
+        seconds[file] = Math.max(0.001, Number(median(samples.map((row) => row.seconds)).toFixed(3)));
+        measuredFiles++;
+      }
     }
-    if (!Object.keys(seconds).length) throw new Error('No multi-run measurements for discovered ' + platform + ' files.');
+    if (!Object.keys(seconds).length) throw new Error('No multi-run measurements or retained estimates for discovered ' + platform + ' files.');
     table.seconds[platform] = seconds;
     const specs = files.map((file) => ({ moduleId: path.join(cliRoot, file) }));
     const known = Object.values(seconds).sort((a, b) => a - b);
@@ -170,7 +223,8 @@ export function calibrateDurations(rows, files) {
     }));
     const totals = shards.map((shard) => shard.seconds);
     report[platform] = {
-      measuredFiles: Object.keys(seconds).length,
+      measuredFiles,
+      retainedEstimateFiles,
       unmeasuredFiles: files.filter((file) => !Object.hasOwn(seconds, file)),
       ignoredFiles: [...byFile.keys()].filter((file) => !files.includes(file)).sort(),
       fallbackSeconds: fallback,
@@ -179,7 +233,14 @@ export function calibrateDurations(rows, files) {
       ratio: Number((Math.max(...totals) / Math.min(...totals)).toFixed(3)),
     };
   }
-  return { table, report };
+  if (Object.keys(pendingSplitGroups).length) {
+    table.splitEstimates = {
+      ...previousTable.splitEstimates,
+      sourceRuns: previousTable.splitEstimates.sourceRuns ?? previousTable.sourceRuns,
+      localSecondsByParent: pendingSplitGroups,
+    };
+  }
+  return { table, report, sourceCoverage };
 }
 
 function gh(args) {
@@ -197,16 +258,21 @@ function readCiRuns(runIds) {
       throw new Error('Run ' + runId + ' is not a successful ci.yml run.');
     }
     const { jobs } = JSON.parse(gh(['run', 'view', runId, '--attempt', String(run.run_attempt), '--json', 'jobs']));
-    for (const [platform, count] of Object.entries(shardCounts)) {
-      for (let index = 1; index <= count; index++) {
-        const name = (platform === 'win32' ? 'win32 x64' : 'darwin arm64') + ' / Node 24 / integration ' + index + ' of ' + count;
-        const matches = jobs.filter((job) => job.name === name);
-        if (matches.length !== 1 || matches[0].conclusion !== 'success') {
-          throw new Error('Run ' + runId + ': missing successful job ' + name);
-        }
-        const jobId = String(matches[0].databaseId);
-        const log = gh(['run', 'view', runId, '--job', jobId, '--log']);
-        rows.push(...parseIntegrationLog(log, { runId, jobId, platform, shard: index + '/' + count }));
+    for (const [platform, prefix] of Object.entries(jobPrefixes)) {
+      const base = prefix + ' / Node 24 / integration';
+      const candidates = jobs.filter((job) => job.name === base || job.name.startsWith(base + ' '))
+        .map((job) => {
+          const match = /^ (\d+) of (\d+)$/u.exec(job.name.slice(base.length));
+          const shard = match ? match[1] + '/' + match[2] : platform === 'linux' && job.name === base ? '1/1' : null;
+          if (!shard || job.conclusion !== 'success') {
+            throw new Error('Run ' + runId + ': invalid or unsuccessful job ' + job.name);
+          }
+          return { runId, platform, jobId: String(job.databaseId), shard };
+        });
+      validateTopology(runId, platform, candidates);
+      for (const job of candidates) {
+        const log = gh(['run', 'view', runId, '--job', job.jobId, '--log']);
+        rows.push(...parseIntegrationLog(log, job));
       }
     }
   }
@@ -215,7 +281,7 @@ function readCiRuns(runIds) {
 
 function readLogDirectory(directory) {
   return fs.readdirSync(directory).filter((name) => name.endsWith('.log')).sort().flatMap((name) => {
-    const match = /^(\d+)-(\d+)-(win32|darwin)-(\d+)-of-(\d+)\.log$/u.exec(name);
+    const match = /^(\d+)-(\d+)-(win32|darwin|linux)-(\d+)-of-(\d+)\.log$/u.exec(name);
     if (!match) throw new Error('Expected RUN_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log: ' + name);
     const [, runId, jobId, platform, index, count] = match;
     return parseIntegrationLog(fs.readFileSync(path.join(directory, name), 'utf8'),
@@ -242,6 +308,7 @@ function main() {
       + '  [--timings-out FILE] [--write]\n'
       + 'Supply 3–5 successful CI runs. Local logs must be complete successful job logs,\n'
       + 'named RUN_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log; TSV uses the extracted timing header.\n'
+      + 'Each run must include Windows (3 or 4 shards), macOS (2), and Linux Node 24 (1 or 2).\n'
       + 'Without --write, print estimates without replacing integration-durations.json.');
     return;
   }
@@ -253,10 +320,18 @@ function main() {
     : parseTimingsTsv(fs.readFileSync(values.tsv, 'utf8'));
   validateRuns(rows);
   if (values['timings-out']) fs.writeFileSync(values['timings-out'], formatTimingsTsv(rows));
-  const { table, report } = calibrateDurations(rows, discoverIntegrationFiles());
-  console.log(JSON.stringify({ sourceRuns: table.sourceRuns, units: 'normalized file seconds, not job wall-clock', ...report }, null, 2));
+  const tableUrl = new URL('./integration-durations.json', import.meta.url);
+  const previousTable = JSON.parse(fs.readFileSync(tableUrl, 'utf8'));
+  const { table, report, sourceCoverage } = calibrateDurations(rows, discoverIntegrationFiles(), previousTable);
+  console.log(JSON.stringify({
+    sourceRuns: table.sourceRuns,
+    sourceCoverage,
+    splitEstimateSourceRuns: table.splitEstimates?.sourceRuns,
+    units: 'normalized file seconds, not job wall-clock',
+    ...report,
+  }, null, 2));
   if (values.write) {
-    fs.writeFileSync(new URL('./integration-durations.json', import.meta.url), JSON.stringify(table, null, 2) + '\n');
+    fs.writeFileSync(tableUrl, JSON.stringify(table, null, 2) + '\n');
   }
 }
 

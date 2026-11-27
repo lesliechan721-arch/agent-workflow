@@ -27,7 +27,7 @@ export default class IntegrationSequencer extends BaseSequencer {
   async shard(files) {
     const platform = process.env.AW_TEST_SHARD_PLATFORM || process.platform;
     const seconds = durations.seconds[platform];
-    if (!seconds) throw new Error(`No integration timing profile for ${platform}. Use win32 or darwin.`);
+    if (!seconds) throw new Error(`No integration timing profile for ${platform}. Use win32, darwin or linux.`);
     if (files.some((spec) => spec.project.name !== 'integration')) {
       throw new Error('The duration sequencer requires --project integration.');
     }

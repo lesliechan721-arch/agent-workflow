@@ -1,6 +1,6 @@
 # 持续集成（CI）规范
 
-本文件面向仓库维护者，定义官方 GitHub Actions 持续集成管线的职责、触发机制、矩阵配置、Windows 与 macOS 测试分片规则、自动 Beta 验证复用与产物验证边界。本地测试执行参见 [测试指南](testing.md)，发版流水线参见 [官方发布与失败恢复指南](release.md)。
+本文件面向仓库维护者，定义官方 GitHub Actions 持续集成管线的职责、触发机制、矩阵配置、普通集成测试与 Windows 插件测试分片规则、自动 Beta 验证复用与产物验证边界。本地测试执行参见 [测试指南](testing.md)，发版流水线参见 [官方发布与失败恢复指南](release.md)。
 
 ---
 
@@ -27,9 +27,9 @@
 
 CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux Node 22 兼容验证）：
 
-- **Linux Node 22/24 普通测试**：按 Node 版本和 unit/integration 分为四个独立 runner，每个默认最多 4 workers：
-  - **Unit 入口**：保留前置 `pnpm build`（部分真实作者验证单测依赖已构建的 Core 导出和 CLI dist 合同），然后运行 package 单元测试、`test:workers`，随后运行 `test:types`。
-  - **Integration 入口**：运行普通 integration 与串行 `process-lifecycle`。
+- **Linux Node 22/24 普通测试**：每个 Node 版本包含一个 unit job 和两个 integration 分片 job，默认最多 4 workers：
+  - **Unit 入口**：保持名称 `Linux x64 / Node <22|24> / unit`，保留前置 `pnpm build`（部分真实作者验证单测依赖已构建的 Core 导出和 CLI dist 合同），然后运行 package 单元测试、`test:workers`，随后运行 `test:types`。
+  - **Integration 入口**：名称为 `Linux x64 / Node <22|24> / integration 1 of 2` 和 `2 of 2`；同样保留前置 build。采用下述按文件耗时的两路分片，每个 Node 版本的分片 2 随后运行原有串行 `process-lifecycle`，Node 24 的分片 1 在集成测试前执行一次 shipped Catalog User capability matrix。
 - **macOS arm64 普通测试**：普通 integration 按历史耗时分为两个独立 runner，每片默认最多 2 workers；分片 2 随后串行运行 integration 中的 `process-lifecycle` 测试。
 - **Linux 插件环境**：Linux 插件测试执行一次正式构建，并将构建出的 CLI 严格配置到 `PATH` 中；随后通过 `pnpm plugin:test:built` 运行已有 runner，不重复编译。
 - **矩阵复合 Action**：普通 CI 和 release candidate 的插件矩阵均调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64（默认 3 workers）、macOS arm64（默认 2 workers）和 Windows x64（显式 1 worker）。Linux/macOS 普通测试及非 Windows 插件测试的默认并发可由仓库变量 `AW_TEST_WORKERS` 覆盖；普通 Windows 集成与插件测试固定 1 worker，不受该仓库变量覆盖；显式参数与串行约束优先。
@@ -37,38 +37,38 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 
 ### 2.2 Windows 独立测试分片与长时任务（CI1）
 
-为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套独立的 Runner、分片算法与超时配置。六个 job 都用固定 Go 工具链独立准备本次源码候选，不等待 `native-windows-job`。原生构建采用隔离临时 Go 缓存，`setup-go` 的 `cache` 保持 `false`，有真实净收益证据时再调整。
+为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套独立的 Runner、分片算法与超时配置。七个 job 都用固定 Go 工具链独立准备本次源码候选，不等待 `native-windows-job`。原生构建采用隔离临时 Go 缓存，`setup-go` 的 `cache` 保持 `false`，有真实净收益证据时再调整。
 
-#### 2.2.1 Windows 普通集成测试三路分片（Vitest Runner）
+#### 2.2.1 Windows 普通集成测试四路分片（Vitest Runner）
 
-- **Job 名称**：`win32 x64 / Node 24 / integration 1 of 3`、`2 of 3`、`3 of 3`。
+- **Job 名称**：`win32 x64 / Node 24 / integration 1 of 4`、`2 of 4`、`3 of 4`、`4 of 4`。
 - **工作目录**：`packages/cli`。
 - **执行命令**：
   ```bash
-  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/3"
+  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/4"
   ```
-- **并发与 Runner**：采用三个独立的 Vitest runner，普通 CI 使用固定 1 worker（不受仓库变量覆盖）。普通平台集成步骤由 `.github/actions/platform-integration` 共享，Windows 最后一片的 process-lifecycle、command-runtime-config 仍串行。
-- **2 workers 准入**：[独立 Windows integration 对照工作流](../../.github/workflows/windows-integration-workers.yml) 使用同一真实平台准备、分片与串行尾步骤。合并前给同仓 PR 分别添加 `windows-integration-1-worker` 或 `windows-integration-2-workers` 标签（首次若仓库没有对应标签，先创建同名标签；重复前移除再添加）；合并后也可手动指定 workers。每个样本核对精确 head SHA 与实际生效 workers，完整执行三片。固定同一 SHA 至少 3 次 2 workers 样本与 1 worker 基线对照，所有样本无新增失败、文件锁错误或超时且逐次最慢片实际执行时长的中位数净降至少 15%，才允许切换普通 CI；排队单独记录。对照运行不是发布或普通 CI 必需证据。
+- **并发与 Runner**：采用四个独立的 Vitest runner，普通 CI 使用固定 1 worker（不受仓库变量覆盖）。普通平台集成步骤由 `.github/actions/platform-integration` 共享，Windows 最后一片的 process-lifecycle、command-runtime-config 仍串行。
+- **2 workers 准入**：[独立 Windows integration 对照工作流](../../.github/workflows/windows-integration-workers.yml) 使用同一真实平台准备、分片与串行尾步骤。合并前给同仓 PR 分别添加 `windows-integration-1-worker` 或 `windows-integration-2-workers` 标签（首次若仓库没有对应标签，先创建同名标签；重复前移除再添加）；合并后也可手动指定 workers。每个样本核对精确 head SHA 与实际生效 workers，完整执行四片。固定同一 SHA 至少 3 次完整 2 workers 样本与同拓扑 1 worker 基线对照，所有样本零失败、文件锁错误或超时且逐次最慢片实际执行时长的中位数净降至少 15%，才允许切换普通 CI；排队单独记录。对照运行不是发布或普通 CI 必需证据；历史三片对照不能作为四片的准入依据。
 - **完整互斥校验入口**：
   为验证各分片在测试文件分配上的严格互斥与完整性，在 `packages/cli` 目录下执行：
   ```bash
-  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/3" --json
+  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/4" --json
   ```
   **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
-- **分片 3 附加任务**：
-  除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
+- **分片 4 附加任务**：
+  除集成测试外，分片 4 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
   同一 Windows runner 运行 `tests/unit/command-runtime-config.test.ts`，验证托管命令通过原生、正斜杠和混合路径读取已安装的配置。
 - **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
 
 #### 普通集成测试的耗时分配
 
-Windows 三片与 macOS 两片使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
+Windows 四片、macOS 两片与 Linux 每个 Node 版本两片均使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
 
-`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。重测试拆分后暂缺新 CI 样本时，可按同一次本机实际文件耗时的相对份额分配原文件的历史权重；`splitEstimates` 明确记录这种估计的来源，下次取得成功托管运行的文件级样本时重新刷新，不将它当作该平台实测耗时。观察到持续失衡或重测试发生变化时，从 3–5 次成功 CI 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。从仓库根目录运行 `node packages/cli/scripts/refresh-integration-durations.mjs --help` 查看参数，可输入多个成功的 `--run` ID 或完整 job 日志目录 `--log-dir`；先查看预计分片分布与未测文件，再加 `--write` 更新表。脚本按实际发现集保留有多次测量的文件，以各 job 相对共同文件中位耗时的比例校正机型速度，再取多次样本的中位数。未测或完全跳过的文件继续使用已有 fallback。表中的值用于相对分配，不是性能门槛或 wall-clock 保证。
+`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run，Linux profile 取 Node 24 实测文件级样本，同样供 Node 22 分配。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。重测试拆分后的每个子文件必须使用不同于原文件的新文件名，避免旧的整文件实测耗时被误认为子文件耗时。暂缺新 CI 样本时，可按同一次本机实际文件耗时的相对份额分配原文件的历史权重；`splitEstimates` 记录估计来源（包括原始父文件权重的 `sourceRuns`，与本次刷新使用的 run 独立）。刷新时每个平台独立判断：仍存在的所有子文件均有至少两次实际样本后，才用实测耗时替换该组全部估计值；否则保留该组原有权重，继续刷新其他文件。所有平台均完成替换时才移除该组估计来源。观察到持续失衡或重测试发生变化时，从 3–5 次成功 CI 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。从仓库根目录运行 `node packages/cli/scripts/refresh-integration-durations.mjs --help` 查看参数，可输入多个成功的 `--run` ID 或完整 job 日志目录 `--log-dir`；每个 run 必须完整覆盖 Windows（历史 3 片或当前 4 片）、macOS（2 片）及 Linux Node 24（历史未分片或当前 2 片），同一平台在单个 run 内禁止混合分片数或重复覆盖。先查看来源 run 覆盖、当前 4/2/2 预计分片分布、实测文件数（`measuredFiles`）、保留的估计文件（`retainedEstimateFiles`）及使用 fallback 的文件（`unmeasuredFiles`），再加 `--write` 更新表。脚本按实际发现集保留有多次测量的文件，以各 job 相对共同文件中位耗时的比例校正机型速度，再取多次样本的中位数。未测或完全跳过的文件继续使用已有 fallback。表中的值用于相对分配，不是性能门槛或 wall-clock 保证。
 
-macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`，使用上述命令并将分片参数改为 `<index>/2`。Windows 分片 3 和 macOS 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
+Linux 两个 Node 版本和 macOS 使用相同命令，将分片参数改为 `<index>/2`。macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`。Windows 分片 4、macOS 和 Linux 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
 
-CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32` 或 `darwin`；本地未设置时使用宿主平台。跨平台检查分配时可显式选择对应 profile，这只检查分配，不能代替该平台实际测试。自定义 sequencer 只允许 `--project integration`；不指定分片 config 的本地完整测试入口保持原行为。
+CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32`、`darwin` 或 `linux`；本地未设置时使用宿主平台。跨平台检查分配时可显式选择对应 profile，这只检查分配，不能代替该平台实际测试。自定义 sequencer 只允许 `--project integration`；不指定分片 config 的本地完整测试入口保持原行为。
 
 更新分片后，对每个平台运行全部 `list --shard --json`，核对各片文件集合互斥、并集等于未分片发现的集合。`pnpm test:workers` 另用真实 Vitest fixture 验证这一边界，包括耗时表中不存在的 `.tsx` 文件。
 
@@ -193,7 +193,7 @@ CI 的 Linux Node 24 发布验证分为两个独立必要检查：
 
 手动运行选中 `component_matrix=true`，或给 PR 添加 `native-qualification-components` 标签，可在 `all` 的真实客户端资格中追加单组件、混合包和第一方安装检查。各检查使用独立临时 HOME 与本地 Catalog，断言安装回执、作用域、实际文件、无变化同步、更新、移除和重装。generic 还核对外来文件冲突及零产物，并在 Ubuntu x64 通过公开入口安装全部官方插件。全官方目录资格先取得固定版本的真实 `agent-browser` 原生程序，供 browser-use 的安装前检查在隔离 PATH 调用。Cursor 的固定发行包仅在 Ubuntu x64 运行。Pi 从 Git 原始字节提取冻结快照，先核对已发布清单的 SHA-256，确认候选 CLI 拒绝冻结的 beta.76 旧命令声明且未写入需求。已发布的 AW CLI beta.85 在隔离环境中建立旧安装，核对旧角色缺口与调度 Skill 依赖错误。随后在旧快照仍可用时撤销退役根插件的需求，切换到候选 Catalog 和 CLI，设置 Guide 的平台基线、同步 Guide 并安装两个新消费者；核对三个 Skill 的实际文件（候选不再交付原生 `subagent` 角色）。候选目录资格同时检查两套消费者的主会话 Instruction（generic 省略）及无专用原生角色。单独运行 frozen 套件时，`AW_QUALIFICATION_FROZEN_CLI_ROOT` 指向已安装的 beta.85 包目录。Antigravity 通过 `client=antigravity-user-public` 加同一开关，在专用的六宿主资格中检查两个作用域。也可选择单一客户端以单独复验。[公共组件资格](../../scripts/qualification/native-platform-public-components.mjs) · [工作流](../../.github/workflows/native-platform-qualification.yml)
 
-完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。两台 macOS 宿主合计四组作业。选择全部宿主时，另外的 `qualify-ubuntu-extras` 在 Ubuntu x64 独立承担 Cursor 和 generic 附加组件资格，同样只等待候选，不增加 macOS 作业。每组内部独立的资格操作共用并发池，macOS 和 Windows 默认 2 路、Linux 默认 3 路；同一源代码树两架构组件组的对照表明 Windows 两路可减少三个重型客户端操作竞争时出现的探测和多插件批次超时；通过环境变量 `AW_QUALIFICATION_CONCURRENCY` 指定 1–3，设为 1 可串行调试；手动触发可选择 `qualification_concurrency=1|2|3` 做固定候选对照，默认 auto 与 PR 标签采用上述宿主默认值。合成矩阵按完整输入变体共用组级临时作者环境和真实构建的模板；每套件复制自己的快照。模板环境不依赖单个套件的临时 PATH 或报告，首个套件退出后更新构建仍可运行；模板命令失败的受控证据归入每个受影响的套件，独立变体仍继续。
+完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。两台 macOS 宿主合计四组作业。选择全部宿主时，另外的 `qualify-ubuntu-extras` 在 Ubuntu x64 独立承担 Cursor 和 generic 附加组件资格，同样只等待候选，不增加 macOS 作业。每组内部独立的资格操作共用并发池，macOS 和 Windows 一般默认 2 路、Linux 默认 3 路；Hosted `macos-15-intel` 的 `codex,pi,claude` 组件组默认 1 路（两路重复出现 Claude Project 移除时无法确认进程收尾，保留原失败判定并串行对照），Intel 另一组和 macOS arm64 保持两路，本地未设置并发变量时仍按通常宿主默认值。同一源代码树两架构组件组的对照表明 Windows 两路可减少三个重型客户端操作竞争时出现的探测和多插件批次超时；通过环境变量 `AW_QUALIFICATION_CONCURRENCY` 指定 1–3，设为 1 可串行调试；手动触发可选择 `qualification_concurrency=1|2|3` 做固定候选对照，默认 auto 与 PR 标签采用上述宿主默认值。合成矩阵按完整输入变体共用组级临时作者环境和真实构建的模板；每套件复制自己的快照。模板环境不依赖单个套件的临时 PATH 或报告，首个套件退出后更新构建仍可运行；模板命令失败的受控证据归入每个受影响的套件，独立变体仍继续。
 
 | 客户端 | 每台宿主的制品 | 宿主相关检查 |
 | --- | --- | --- |
@@ -203,11 +203,11 @@ CI 的 Linux Node 24 发布验证分为两个独立必要检查：
 
 从同一次 Actions 运行读取每台宿主两组的 `report.json`、对应作业结果。Ubuntu x64 的完整组件资格还要求独立附加作业通过、四份组件报告齐全；该作业不生成主客户端 `report.json`，直接查看组件报告与步骤结果。各组报告在成功或失败后均上传，失败不取消其他组；只有实际成功的必需单元才构成通过。只选一个客户端或关闭组件矩阵时，每台宿主仍使用一个 `native-qualification-<runner>` 制品。接口观察仍由原 Ubuntu x64 客户端组单独上传，接口专项保留自己的报告。
 
-Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，把本次外层 AW 的标记传给脚本的隔离环境。脚本 runner 同时生成自己的标记并管理自己的进程组。若调用已经带有另一份外层标记，资格工具会在启动前报错。组件报告用 `pluginScriptSupervision` 记录这项测试条件。观察器逐次检查标记和退出情况，当前归属无法确认时保留失败。[资格预加载器](../../scripts/qualification/native-platform-public-plugin-marker.mjs)
+Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，把本次外层 AW 的标记传给脚本的隔离环境。冻结目录的历史基线仅对已验证的 `@lesliechan721/aw@0.1.0-beta.85` 包和入口使用该包自己的脚本 runner；候选与历史包分别绑定。脚本 runner 同时生成自己的标记并管理自己的进程组。若调用已经带有另一份外层标记，资格工具会在启动前报错。组件报告用 `pluginScriptSupervision` 记录这项测试条件。观察器逐次检查标记和退出情况，当前归属无法确认时保留失败。[资格预加载器](../../scripts/qualification/native-platform-public-plugin-marker.mjs)
 
 组件资格要求 v2 回执属于本次公开命令，并且状态符合公开退出码。`commandFailures` 保留最多 16 条失败，包含实际取得的退出和清理信息。POSIX 进程观察器会将外层 AW 正常退出时仍存活的后代判为清理失败。有观察记录时，报告附上首末快照、按 PID 和启动时间匹配的进程名、行形态和身份确认。AW 返回失败回执，或 AW 写完回执后外层清理失败时，`awReceipt` 保留受控的状态、诊断和已知夹具的目标结果。`scope` 和 `context` 分别记录命令适用的安装范围与请求上下文。`target.set` 写个人偏好，Catalog 来源命令没有插件安装范围。独立 Catalog 插件各自保留失败及已知夹具名称。[公开 CLI 退出码](../reference/cli.md#3-状态与进程退出码) · [公共组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
-Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。各宿主的 Grok `target set` 失败时，从本次 AW 回执保存 Grok 的可用性分类及固定原因码。Windows 还记录本次版本和帮助查询的有限样本。macOS 的 Claude Project 组件矩阵移除 `matrix/hook-only` 失败时，会保留本次移除已执行的原生操作类别和已知清理原因。Codex Project 的官方候选或合成矩阵独立安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。`operationPlanStale` 有细分原因时，报告保留既有的受控分类。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
+Windows 的 Copilot 和 Antigravity 组件资格在每个隔离环境第一次执行 `target set` 时记录实际探测命令的退出码、超时和清理状态。各宿主的 Grok `target set` 失败时，从本次 AW 回执保存 Grok 的可用性分类及固定原因码。Windows 还记录本次版本和帮助查询的有限样本。macOS 的 Claude Project 组件矩阵移除 `matrix/hook-only` 或 `matrix/single-hook` 失败时，会保留本次移除已执行的原生操作类别和已知清理原因。Codex Project 的官方候选或合成矩阵独立安装失败时，`nativeCommandTrace` 记录同一次安装中经托管运行器完成的版本查询、列表查询和固定系统 PowerShell 查询，以及实际取得的耗时、退出码、超时和清理状态。跟踪文件每次安装独立，只有上述受控元数据进入报告。预加载器未取得记录时保留采样状态，后续命令独立运行。`operationPlanStale` 有细分原因时，报告保留既有的受控分类。[公开组件资格](../../scripts/qualification/native-platform-public-components.mjs)
 
 跨范围依赖资格在隔离环境先为 User 安装官方 `agent-skill-toolkit` 与其依赖，再为 Project 安装 `aw-development-toolkit`。检查项目首次安装完成、两项依赖的全部个人技能文件保持原样、公开项目目录只包含根插件应交付的技能、独立状态就绪及再次同步零写入。Antigravity 另核对根插件的实际目录短名。Grok 再用一条命令显式安装两个项目包，检查二者都已落盘。仅撤销这两项需求后，按根查询应指出两项待清理依赖。一次普通同步应移除两份项目副本，并保留个人和项目根原有的技能文件。[跨范围资格](../../scripts/qualification/native-platform-public-catalog.mjs)
 

@@ -8,7 +8,7 @@ import { preparePublicClientEntry, preparePublicClientPath, preparePublicClientP
 import { qualifyRemainingPlugins } from './native-platform-public-catalog.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { componentReceiptEvidence, grokTrustTargets, runComponentQualification, runComponentSuites } from './native-platform-public-components.mjs';
+import { componentReceiptEvidence, componentTraceMode, grokTrustTargets, runComponentQualification, runComponentSuites } from './native-platform-public-components.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 import { qualificationGroup } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
@@ -887,6 +887,25 @@ test('retains Grok target selection evidence with or without a Windows command t
     assert.deepEqual(failure.nativeCommandTrace, expectedTrace);
     assert(!JSON.stringify(report).includes(sentinel));
   }
+});
+
+// Test Value Gate: both observed Claude hook-removal cleanup failures must
+// retain the existing bounded native trace, not just the first hook fixture.
+test('selects the Claude cleanup trace only for each individual Project matrix hook removal', () => {
+  const unit = { traceEntry: process.execPath, platform: 'claude', scope: 'project', suite: 'matrix' };
+  const command = { command: 'plugin.remove', scope: 'project', pluginIds: ['matrix/single-hook'] };
+  for (const id of ['matrix/hook-only', 'matrix/single-hook']) {
+    assert.equal(componentTraceMode({ ...command, pluginIds: [id] }, unit), 'claude-component-remove');
+  }
+  for (const ineligible of [
+    { ...unit, traceEntry: undefined }, { ...unit, platform: 'codex' },
+    { ...unit, scope: 'user' }, { ...unit, suite: 'candidate' },
+  ]) assert.equal(componentTraceMode(command, ineligible), undefined);
+  for (const ineligible of [
+    { ...command, command: 'plugin.install' }, { ...command, scope: 'user' },
+    { ...command, pluginIds: [] }, { ...command, pluginIds: ['matrix/single-hook', 'matrix/hook-only'] },
+    { ...command, pluginIds: ['matrix/single-agent'] }, { ...command, pluginIds: ['other/single-hook'] },
+  ]) assert.equal(componentTraceMode(ineligible, unit), undefined);
 });
 
 // Test Value Gate: an explicit write scope is independent of the context used to inspect status.
