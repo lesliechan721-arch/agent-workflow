@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
-import { calibrateDurations, formatTimingsTsv, parseIntegrationLog, parseTimingsTsv } from '../../packages/cli/scripts/refresh-integration-durations.mjs';
+import { calibrateDurations, formatTimingsTsv, parseIntegrationLog, parseTimingsTsv, readCiRuns, readCiSampleJobs, readLogDirectory } from '../../packages/cli/scripts/refresh-integration-durations.mjs';
 
 // Protect the evidence boundary: partially skipped test files still ran, while
 // later serial steps must not contribute to ordinary integration weights.
@@ -190,4 +193,165 @@ test('refresh retains whole pending split groups per platform until all children
     assert.equal(complete.table.seconds[platform][childB], 8);
     assert.deepEqual(complete.report[platform].retainedEstimateFiles, []);
   }
+});
+
+// Exercise the actual collection interface at the external gh boundary. Job and
+// attempt fields use GitHub's REST shape; different attempts of one run must
+// retain independent identities all the way through logs and calibration.
+function attemptFixture() {
+  const headSha = 'a'.repeat(40);
+  const names = [
+    'win32 x64 / Node 24 / integration 1 of 4', 'win32 x64 / Node 24 / integration 2 of 4',
+    'win32 x64 / Node 24 / integration 3 of 4', 'win32 x64 / Node 24 / integration 4 of 4',
+    'darwin arm64 / Node 24 / integration 1 of 2', 'darwin arm64 / Node 24 / integration 2 of 2',
+    'Linux x64 / Node 24 / integration 1 of 2', 'Linux x64 / Node 24 / integration 2 of 2',
+    'Linux x64 / Node 24 / unit', 'beta',
+  ];
+  const metadata = new Map();
+  const jobs = new Map();
+  const logs = new Map();
+  for (const [runId, attempt] of [[77, 1], [77, 2], [77, 3], [88, 1]]) {
+    const key = runId + '@' + attempt;
+    const start = Date.UTC(2026, 10, 27, 12, attempt);
+    metadata.set(key, {
+      id: runId, run_attempt: attempt, status: 'completed', conclusion: 'success',
+      path: '.github/workflows/ci.yml', head_sha: headSha, run_started_at: new Date(start).toISOString(),
+    });
+    jobs.set(key, names.map((name, index) => {
+      const id = runId * 1000 + attempt * 10 + index;
+      logs.set(String(id), {
+        runId: String(runId), attempt: String(attempt),
+        log: '✓ integration tests/integration/file-' + index + '.test.ts (1 test) 10ms\n Test Files  1 passed (1)\n',
+      });
+      return {
+        id, name, run_id: runId, run_attempt: attempt, head_sha: headSha,
+        status: 'completed', conclusion: name === 'beta' ? 'skipped' : 'success',
+        started_at: name === 'beta' ? null : new Date(start + 1000).toISOString(),
+        completed_at: name === 'beta' ? null : new Date(start + 2000).toISOString(),
+      };
+    }));
+  }
+  function invokeGh(args) {
+    if (args[0] === 'api') {
+      const [, runId, attempt, listJobs] = /\/runs\/(\d+)(?:\/attempts\/(\d+)(\/jobs\?per_page=100)?)?$/u.exec(args[3]);
+      if (!attempt) return JSON.stringify(metadata.get(runId + '@' + (runId === '77' ? '3' : '1')));
+      const key = runId + '@' + attempt;
+      if (!listJobs) return JSON.stringify(metadata.get(key));
+      const sampleJobs = jobs.get(key);
+      // Include two pages so accidentally truncating the attempt job list
+      // cannot pass just because the fixture fits in one page.
+      return JSON.stringify([
+        { total_count: sampleJobs.length, jobs: sampleJobs.slice(0, 4) },
+        { total_count: sampleJobs.length, jobs: sampleJobs.slice(4) },
+      ]);
+    }
+    const jobId = args[args.indexOf('--job') + 1];
+    const log = logs.get(jobId);
+    assert.equal(args[2], log.runId);
+    assert.equal(args[args.indexOf('--attempt') + 1], log.attempt);
+    return log.log;
+  }
+  return { metadata, jobs, invokeGh };
+}
+
+test('exact successful attempts of one run and legacy remote IDs retain distinct sample provenance', () => {
+  const fixture = attemptFixture();
+  const rows = readCiRuns(['77@1', '77@2', '77@3', '88'], fixture.invokeGh);
+  assert.deepEqual(parseTimingsTsv(formatTimingsTsv(rows)), rows);
+  const files = [...new Set(rows.map((row) => row.file))];
+  const { table, report, sourceCoverage } = calibrateDurations(rows, files);
+  assert.deepEqual(table.sourceRuns, ['77@1', '77@2', '77@3', '88@1']);
+  assert.equal(report.win32.normalizationFactors.length, 16);
+  for (const sample of sourceCoverage) {
+    assert.deepEqual(sample.shards, { win32: 4, darwin: 2, linux: 2 });
+  }
+});
+
+test('full reruns may expand an initially skipped reusable workflow into fresh descendant jobs', () => {
+  const fixture = attemptFixture();
+  const beta = fixture.jobs.get('77@2').find((job) => job.name === 'beta');
+  const fresh = fixture.jobs.get('77@2').find((job) => job.name.endsWith('/ unit'));
+  Object.assign(beta, {
+    name: 'beta / candidates', conclusion: 'success',
+    started_at: fresh.started_at, completed_at: fresh.completed_at,
+  });
+  assert.equal(readCiSampleJobs('77@2', fixture.invokeGh).jobs.length, 8);
+  beta.started_at = fixture.jobs.get('77@1')[0].started_at;
+  beta.completed_at = fixture.jobs.get('77@1')[0].completed_at;
+  assert.throws(() => readCiSampleJobs('77@2', fixture.invokeGh), /reused or invalid job execution times/u);
+  beta.started_at = fresh.started_at;
+  beta.completed_at = fresh.completed_at;
+  fresh.name += ' / unexpected descendant';
+  assert.throws(() => readCiSampleJobs('77@2', fixture.invokeGh), /partial rerun/u);
+});
+
+test('attempt collection rejects composite, partial, unsuccessful and duplicate evidence', () => {
+  const request = (keys, fixture) => readCiRuns(keys, fixture.invokeGh);
+  const keys = ['77@1', '77@2', '77@3'];
+  const fixture = attemptFixture();
+  assert.throws(() => request(['77@1', '77@1', '77@3'], fixture), /distinct/u);
+  assert.throws(() => request(['77', '77@1', '77@2'], fixture), /mix bare and explicit/u);
+  assert.throws(() => request(['77@01', '77@2', '77@3'], fixture), /distinct RUN_ID/u);
+
+  const failed = attemptFixture();
+  failed.metadata.get('77@2').conclusion = 'failure';
+  assert.throws(() => request(keys, failed), /not a successful ci\.yml attempt/u);
+
+  const wrongAttempt = attemptFixture();
+  wrongAttempt.jobs.get('77@2')[0].run_attempt = 1;
+  assert.throws(() => request(keys, wrongAttempt), /mismatched attempt jobs/u);
+
+  const copied = attemptFixture();
+  // GitHub can copy a previous successful execution into a partial rerun
+  // with entirely new job IDs and the current run_attempt.
+  const previous = copied.jobs.get('77@1').find((job) => job.name.endsWith('/ unit'));
+  const inherited = copied.jobs.get('77@2').find((job) => job.name.endsWith('/ unit'));
+  inherited.started_at = previous.started_at;
+  inherited.completed_at = previous.completed_at;
+  assert.throws(() => request(keys, copied), /reused or invalid job execution times/u);
+
+  const missingTimes = attemptFixture();
+  missingTimes.jobs.get('77@2')[0].completed_at = null;
+  assert.throws(() => request(keys, missingTimes), /reused or invalid job execution times/u);
+  const reversedTimes = attemptFixture();
+  reversedTimes.jobs.get('77@2')[0].completed_at = reversedTimes.metadata.get('77@2').run_started_at;
+  assert.throws(() => request(keys, reversedTimes), /reused or invalid job execution times/u);
+  const missingStart = attemptFixture();
+  missingStart.metadata.get('77@2').run_started_at = null;
+  assert.throws(() => request(keys, missingStart), /missing valid attempt start/u);
+
+  const partial = attemptFixture();
+  partial.jobs.set('77@2', partial.jobs.get('77@2').filter((job) => !job.name.endsWith('/ unit'))); // Timing matrix itself still complete.
+  assert.throws(() => request(keys, partial), /partial rerun/u);
+  const missing = attemptFixture();
+  missing.jobs.get('77@1').splice(0, 1);
+  assert.throws(() => readCiSampleJobs('77@1', missing.invokeGh), /missing.*win32.*1\/4/u);
+
+  const reusedId = attemptFixture();
+  reusedId.jobs.get('77@2')[0].id = reusedId.jobs.get('77@1')[0].id;
+  assert.throws(() => request(keys, reusedId), /Duplicate job IDs across CI samples/u);
+});
+
+test('local logs and TSV preserve qualified samples and reject overlapping attempts or reused jobs', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-timing-attempts-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const rows = fixtureSamples().map((row) => ({ ...row, runId: row.runId === '1' ? '1' : '77@' + row.runId }));
+  const files = [...new Set(rows.map((row) => row.file))];
+  for (const row of rows) {
+    const logName = [row.runId, row.jobId, row.platform, row.shard.replace('/', '-of-')].join('-') + '.log';
+    const logPath = path.join(root, logName);
+    fs.appendFileSync(logPath, '✓ integration ' + row.file + ' (1 test) ' + row.seconds + 's\n');
+  }
+  for (const log of fs.readdirSync(root)) {
+    const logPath = path.join(root, log);
+    const count = fs.readFileSync(logPath, 'utf8').trim().split('\n').length;
+    fs.appendFileSync(logPath, ' Test Files  ' + count + ' passed (' + count + ')\n');
+  }
+  const parsed = readLogDirectory(root);
+  assert.deepEqual(calibrateDurations(parsed, files).table, calibrateDurations(rows, files).table);
+  assert.deepEqual(calibrateDurations(parseTimingsTsv(formatTimingsTsv(rows)), files).table.sourceRuns,
+    ['1', '77@2', '77@3']);
+  assert.throws(() => calibrateDurations(rows.map((row) => row.runId === '1' ? { ...row, runId: '77' } : row), files), /mix bare and explicit/u);
+  assert.throws(() => calibrateDurations(rows.map((row) => row.jobId === '21' ? { ...row, jobId: '11' } : row), files), /duplicate job ID.*across samples/u);
+  assert.throws(() => calibrateDurations(rows.filter((row) => row.jobId !== '24'), files), /missing.*win32.*4\/4/u);
 });

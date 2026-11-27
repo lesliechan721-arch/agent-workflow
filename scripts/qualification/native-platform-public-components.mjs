@@ -164,8 +164,10 @@ async function authoringAw(executeAw, args, cwd, env) {
 export function componentTraceMode(command, { traceEntry, platform, scope, suite }) {
   if (!traceEntry) return undefined;
   const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
-  if (platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
-    && (suite === 'candidate' || matrixInstall)) return 'codex-component-install';
+  const userHookInstall = scope === 'user' && matrixInstall && command.scope === 'user'
+    && command.pluginIds[0] === 'matrix/single-hook';
+  if (platform === 'codex' && command.command === 'plugin.install'
+    && (scope === 'project' && (suite === 'candidate' || matrixInstall) || userHookInstall)) return 'codex-component-install';
   if (platform === 'grok' && command.command === 'target.set') return 'grok-component-discovery';
   if (platform === 'claude' && scope === 'project' && suite === 'matrix'
     && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1

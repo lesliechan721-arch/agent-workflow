@@ -354,7 +354,8 @@ async function observePublicComponentSuites(ctx, publicClientEntry) {
       let traceEntry;
       if (hostedTrace && process.platform === 'win32') {
         if (['copilot', 'antigravity', 'grok'].includes(ctx.platform)) traceEntry = ctx.launcher.prefix[0] ?? publicClientEntry;
-        else if (ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite)) traceEntry = publicClientEntry;
+        else if (ctx.platform === 'codex' && (scope === 'project' && ['matrix', 'candidate'].includes(suite)
+          || scope === 'user' && suite === 'matrix')) traceEntry = publicClientEntry;
       }
       if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
         traceEntry = publicClientEntry;

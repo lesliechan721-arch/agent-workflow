@@ -844,6 +844,66 @@ test('keeps Windows Codex Project matrix traces attached to the right installs',
   assert(!JSON.stringify(report).includes(sentinel));
 });
 
+// Test Value Gate: this observed User install failure needs the trace of its
+// own command, without enabling the Project suite's broader trace selection.
+test('retains bounded Windows Codex User matrix trace only for the single-hook install', async () => {
+  const unit = { platform: 'codex', scope: 'user', suite: 'matrix', traceEntry: process.execPath };
+  const hook = { command: 'plugin.install', scope: 'user', pluginIds: ['matrix/single-hook'] };
+  for (const other of [
+    { ...hook, command: 'plugin.remove' }, { ...hook, scope: 'project' },
+    { ...hook, pluginIds: ['matrix/single-hook', 'matrix/single-mcp'] },
+    { ...hook, pluginIds: ['other/single-hook'] },
+  ]) assert.equal(componentTraceMode(other, unit), undefined);
+  assert.equal(componentTraceMode(hook, { ...unit, suite: 'candidate' }), undefined);
+  assert.equal(componentTraceMode(hook, { ...unit, traceEntry: undefined }), undefined);
+
+  const sentinel = 'private_user_hook_payload';
+  const sample = { category: 'windows-system-powershell', elapsedMs: 102, threw: false, exitCode: 0 };
+  const traces = [];
+  const report = await runComponentQualification({ ...unit, clientPath: process.env.PATH }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env, cwd }) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      const traced = command === 'plugin.install' && args[2] === 'matrix/single-hook';
+      assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE, traced ? 'codex-component-install' : undefined);
+      if (traced) {
+        assert.deepEqual(JSON.parse(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES), [process.execPath]);
+        const file = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
+        traces.push(file);
+        await fs.writeFile(file, [
+          { phase: 'installation', state: 'installed' },
+          { phase: 'finish', ...sample, argv: [sentinel], env: { SECRET: sentinel } },
+          { phase: 'finish', ...sample, category: sentinel, stderr: sentinel },
+        ].map(row => JSON.stringify(row)).join('\n') + '\n', { flag: 'wx' });
+      } else assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'codex', installations: [] }] });
+      if (command === 'dev.catalog.build') await fs.mkdir(path.join(cwd, '.aw/catalog'), { recursive: true });
+      if (command === 'dev.plugin.create') {
+        const folder = path.join(cwd, 'plugins', 'single-skill', '.agents-plugin');
+        await fs.mkdir(folder, { recursive: true });
+        await fs.writeFile(path.join(folder, 'plugin.json'), '{}');
+      }
+      if (command !== 'plugin.install') return publicResponse(command, {});
+      const pluginId = args[2];
+      return { ...publicResponse(command, {}), exitCode: 4, stdout: JSON.stringify({
+        schemaVersion: 2, command, status: 'partial', diagnostics: [{ code: 'operationPlanStale', message: sentinel }],
+        data: { targetResults: [{ pluginId, target: 'codex', scope: 'user', execution: 'not-run', blockerCodes: ['operationPlanStale'] }] },
+      }) };
+    },
+  });
+  assert.equal(report.status, 'failed');
+  assert.equal(traces.length, 1);
+  const failure = report.commandFailures.find(item => item.pluginIds?.[0] === 'matrix/single-hook');
+  assert.equal(failure.exitCode, 4);
+  assert.equal(failure.awReceipt.status, 'partial');
+  assert.deepEqual(failure.awReceipt.diagnostics, [{ code: 'operationPlanStale' }]);
+  assert.deepEqual(failure.nativeCommandTrace, { state: 'captured', installation: 'installed', records: [sample] });
+  assert(report.commandFailures.some(item => item !== failure));
+  assert(report.commandFailures.every(item => item === failure || item.nativeCommandTrace === undefined));
+  assert(!JSON.stringify(report).includes(sentinel));
+  await assert.rejects(fs.stat(traces[0]), { code: 'ENOENT' });
+});
+
 // A blocked target preference is just one AW command. Its evidence must
 // distinguish missing samples from a started native check without other targets.
 test('retains Grok target selection evidence with or without a Windows command trace', async t => {

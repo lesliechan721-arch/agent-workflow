@@ -18,6 +18,24 @@ function positiveId(id) {
   return /^[1-9]\d*$/u.test(id);
 }
 
+// The existing run_id TSV column carries the sample identity. Bare historic
+// local samples remain valid, but cannot overlap an explicit attempt.
+function sampleIdentity(key) {
+  return /^([1-9]\d*)(?:@([1-9]\d*))?$/u.exec(key);
+}
+
+function validateSampleKeys(keys) {
+  if (keys.some((key) => !sampleIdentity(key)) || new Set(keys).size !== keys.length) {
+    throw new Error('Sample IDs must be distinct RUN_ID or RUN_ID@ATTEMPT values.');
+  }
+  for (const [runId, samples] of groupBy(keys, (key) => sampleIdentity(key)[1])) {
+    if (samples.includes(runId) && samples.length > 1) {
+      throw new Error('Cannot mix bare and explicit attempt IDs for run ' + runId);
+    }
+  }
+  if (keys.length < 3 || keys.length > 5) throw new Error('Provide 3–5 distinct successful CI runs or attempts.');
+}
+
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -26,7 +44,7 @@ function median(values) {
 
 function validateRow(row) {
   const { runId, jobId, platform, shard, file, seconds } = row;
-  if (!positiveId(runId) || !positiveId(jobId) || !Object.hasOwn(acceptedCounts, platform)
+  if (!sampleIdentity(runId) || !positiveId(jobId) || !Object.hasOwn(acceptedCounts, platform)
     || !acceptedCounts[platform].some((count) => Array.from({ length: count }, (_, index) => (index + 1) + '/' + count).includes(shard))
     || !integrationFile.test(file) || !Number.isFinite(seconds) || seconds <= 0) {
     throw new Error('Invalid timing row: ' + JSON.stringify(row));
@@ -127,8 +145,9 @@ function validateTopology(runId, platform, jobs) {
 function validateRuns(rows) {
   for (const row of rows) validateRow(row);
   const runs = groupBy(rows, (row) => row.runId);
-  if (runs.size < 3 || runs.size > 5) throw new Error('Provide 3–5 distinct successful CI runs.');
+  validateSampleKeys([...runs.keys()]);
   const sourceCoverage = [];
+  const jobOwners = new Map();
   for (const [runId, runRows] of runs) {
     const shards = {};
     for (const platform of Object.keys(shardCounts)) {
@@ -141,10 +160,14 @@ function validateRuns(rows) {
         files.add(row.file);
       }
     }
-    for (const jobRows of groupBy(runRows, (row) => row.jobId).values()) {
+    for (const [jobId, jobRows] of groupBy(runRows, (row) => row.jobId)) {
       if (new Set(jobRows.map((row) => row.platform + '/' + row.shard)).size !== 1) {
-        throw new Error(runId + ': duplicate job ID ' + jobRows[0].jobId + ' across shards or platforms');
+        throw new Error(runId + ': duplicate job ID ' + jobId + ' across shards or platforms');
       }
+      if (jobOwners.has(jobId)) {
+        throw new Error(runId + ': duplicate job ID ' + jobId + ' across samples (also in ' + jobOwners.get(jobId) + ')');
+      }
+      jobOwners.set(jobId, runId);
     }
     sourceCoverage.push({ runId, shards });
   }
@@ -247,42 +270,92 @@ function gh(args) {
   return execFileSync('gh', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
 }
 
-function readCiRuns(runIds) {
-  if (runIds.some((id) => !positiveId(id)) || new Set(runIds).size !== runIds.length) {
-    throw new Error('Run IDs must be distinct positive decimal IDs.');
+function attemptJobs(runId, attempt, headSha, invokeGh) {
+  const endpoint = 'repos/{owner}/{repo}/actions/runs/' + runId + '/attempts/' + attempt + '/jobs?per_page=100';
+  const pages = JSON.parse(invokeGh(['api', '--method', 'GET', endpoint, '--paginate', '--slurp']));
+  const jobs = pages.flatMap((page) => page.jobs);
+  if (!jobs.length || jobs.length !== pages[0].total_count
+    || new Set(jobs.map((job) => job.id)).size !== jobs.length
+    || jobs.some((job) => !positiveId(job.id) || String(job.run_id) !== runId
+      || String(job.run_attempt) !== attempt || job.head_sha !== headSha)) {
+    throw new Error(runId + '@' + attempt + ': incomplete, reused, or mismatched attempt jobs.');
   }
-  const rows = [];
-  for (const runId of runIds) {
-    const run = JSON.parse(gh(['api', '--method', 'GET', 'repos/{owner}/{repo}/actions/runs/' + runId]));
-    if (run.path !== '.github/workflows/ci.yml' || run.conclusion !== 'success') {
-      throw new Error('Run ' + runId + ' is not a successful ci.yml run.');
-    }
-    const { jobs } = JSON.parse(gh(['run', 'view', runId, '--attempt', String(run.run_attempt), '--json', 'jobs']));
-    for (const [platform, prefix] of Object.entries(jobPrefixes)) {
-      const base = prefix + ' / Node 24 / integration';
-      const candidates = jobs.filter((job) => job.name === base || job.name.startsWith(base + ' '))
-        .map((job) => {
-          const match = /^ (\d+) of (\d+)$/u.exec(job.name.slice(base.length));
-          const shard = match ? match[1] + '/' + match[2] : platform === 'linux' && job.name === base ? '1/1' : null;
-          if (!shard || job.conclusion !== 'success') {
-            throw new Error('Run ' + runId + ': invalid or unsuccessful job ' + job.name);
-          }
-          return { runId, platform, jobId: String(job.databaseId), shard };
-        });
-      validateTopology(runId, platform, candidates);
-      for (const job of candidates) {
-        const log = gh(['run', 'view', runId, '--job', job.jobId, '--log']);
-        rows.push(...parseIntegrationLog(log, job));
-      }
-    }
-  }
-  return rows;
+  return jobs;
 }
 
-function readLogDirectory(directory) {
+// Resolve bare remote IDs to a specific attempt before collecting evidence.
+// Read the exact attempt endpoints: latest-run job lists can be composites.
+export function readCiSampleJobs(key, invokeGh = gh) {
+  const identity = sampleIdentity(key);
+  if (!identity) throw new Error('Invalid CI sample ID ' + key);
+  const [, runId, requestedAttempt] = identity;
+  const endpoint = 'repos/{owner}/{repo}/actions/runs/' + runId;
+  const attempt = requestedAttempt ?? String(JSON.parse(invokeGh(['api', '--method', 'GET', endpoint])).run_attempt);
+  if (!positiveId(attempt)) throw new Error('Invalid attempt for run ' + runId);
+  const sampleId = runId + '@' + attempt;
+  const run = JSON.parse(invokeGh(['api', '--method', 'GET', endpoint + '/attempts/' + attempt]));
+  if (String(run.id) !== runId || String(run.run_attempt) !== attempt || !run.head_sha
+    || run.path !== '.github/workflows/ci.yml' || run.status !== 'completed' || run.conclusion !== 'success') {
+    throw new Error('Sample ' + sampleId + ' is not a successful ci.yml attempt.');
+  }
+  const runStartedAt = Date.parse(run.run_started_at);
+  if (!Number.isFinite(runStartedAt)) throw new Error(sampleId + ': missing valid attempt start time.');
+  const jobs = attemptJobs(runId, attempt, run.head_sha, invokeGh);
+  // GitHub may assign copied successful jobs new IDs and the current
+  // run_attempt while retaining their original execution timestamps.
+  for (const job of jobs) {
+    if (job.conclusion === 'skipped') continue;
+    const startedAt = Date.parse(job.started_at);
+    const completedAt = Date.parse(job.completed_at);
+    if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt)
+      || startedAt < runStartedAt || completedAt < startedAt) {
+      throw new Error(sampleId + ': reused or invalid job execution times for ' + job.name);
+    }
+  }
+  // A successful partial rerun can inherit the first attempt's outcome. It
+  // must not be counted as an independent full sample, even if all of the
+  // timing jobs happen to be among the rerun subset.
+  if (attempt !== '1') {
+    const initialJobs = attemptJobs(runId, '1', run.head_sha, invokeGh);
+    const names = new Set(jobs.map((job) => job.name));
+    // A skipped reusable workflow appears as a placeholder. After upstream
+    // recovery it can legitimately expand into fresh descendant jobs.
+    if (initialJobs.some((job) => !names.has(job.name)
+      && !(job.conclusion === 'skipped' && jobs.some((current) => current.name.startsWith(job.name + ' / '))))) {
+      throw new Error(sampleId + ': partial rerun; missing initial workflow jobs.');
+    }
+  }
+  const selected = [];
+  for (const [platform, prefix] of Object.entries(jobPrefixes)) {
+    const base = prefix + ' / Node 24 / integration';
+    const candidates = jobs.filter((job) => job.name === base || job.name.startsWith(base + ' '))
+      .map((job) => {
+        const match = /^ (\d+) of (\d+)$/u.exec(job.name.slice(base.length));
+        const shard = match ? match[1] + '/' + match[2] : platform === 'linux' && job.name === base ? '1/1' : null;
+        if (!shard || job.status !== 'completed' || job.conclusion !== 'success') {
+          throw new Error('Sample ' + sampleId + ': invalid or unsuccessful job ' + job.name);
+        }
+        return { runId: sampleId, platform, jobId: String(job.id), shard };
+      });
+    validateTopology(sampleId, platform, candidates);
+    selected.push(...candidates);
+  }
+  return { runId, attempt, jobs: selected };
+}
+
+export function readCiRuns(runIds, invokeGh = gh) {
+  validateSampleKeys(runIds);
+  const samples = runIds.map((key) => readCiSampleJobs(key, invokeGh));
+  const selectedIds = samples.flatMap((sample) => sample.jobs.map((job) => job.jobId));
+  if (new Set(selectedIds).size !== selectedIds.length) throw new Error('Duplicate job IDs across CI samples.');
+  return samples.flatMap(({ runId, attempt, jobs }) => jobs.flatMap((job) =>
+    parseIntegrationLog(invokeGh(['run', 'view', runId, '--attempt', attempt, '--job', job.jobId, '--log']), job)));
+}
+
+export function readLogDirectory(directory) {
   return fs.readdirSync(directory).filter((name) => name.endsWith('.log')).sort().flatMap((name) => {
-    const match = /^(\d+)-(\d+)-(win32|darwin|linux)-(\d+)-of-(\d+)\.log$/u.exec(name);
-    if (!match) throw new Error('Expected RUN_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log: ' + name);
+    const match = /^([1-9]\d*(?:@[1-9]\d*)?)-(\d+)-(win32|darwin|linux)-(\d+)-of-(\d+)\.log$/u.exec(name);
+    if (!match) throw new Error('Expected SAMPLE_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log: ' + name);
     const [, runId, jobId, platform, index, count] = match;
     return parseIntegrationLog(fs.readFileSync(path.join(directory, name), 'utf8'),
       { runId, jobId, platform, shard: index + '/' + count });
@@ -304,10 +377,13 @@ function main() {
   } });
   if (values.help) {
     console.log('Usage: node packages/cli/scripts/refresh-integration-durations.mjs\n'
-      + '  (--run RUN_ID --run RUN_ID --run RUN_ID [--run ...] | --log-dir DIR | --tsv FILE)\n'
+      + '  (--run SAMPLE_ID --run SAMPLE_ID --run SAMPLE_ID [--run ...] | --log-dir DIR | --tsv FILE)\n'
       + '  [--timings-out FILE] [--write]\n'
-      + 'Supply 3–5 successful CI runs. Local logs must be complete successful job logs,\n'
-      + 'named RUN_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log; TSV uses the extracted timing header.\n'
+      + 'Supply 3–5 independent successful full CI attempts. SAMPLE_ID is RUN_ID@ATTEMPT,\n'
+      + 'or a bare RUN_ID (latest attempt for remote --run; legacy ID for local inputs).\n'
+      + 'Do not mix a bare ID with explicit attempts of the same run, or reuse job IDs.\n'
+      + 'Local logs must be complete successful job logs, named SAMPLE_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log;\n'
+      + 'TSV keeps its original run_id column, containing the sample ID.\n'
       + 'Each run must include Windows (3 or 4 shards), macOS (2), and Linux Node 24 (1 or 2).\n'
       + 'Without --write, print estimates without replacing integration-durations.json.');
     return;
@@ -315,7 +391,6 @@ function main() {
   if ([values.run, values['log-dir'], values.tsv].filter(Boolean).length !== 1) {
     throw new Error('Choose exactly one timing source: --run, --log-dir or --tsv (see --help).');
   }
-  if (values.run && (values.run.length < 3 || values.run.length > 5)) throw new Error('Provide 3–5 distinct successful CI runs.');
   const rows = values.run ? readCiRuns(values.run) : values['log-dir'] ? readLogDirectory(values['log-dir'])
     : parseTimingsTsv(fs.readFileSync(values.tsv, 'utf8'));
   validateRuns(rows);

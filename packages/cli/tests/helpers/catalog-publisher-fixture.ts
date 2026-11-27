@@ -20,7 +20,7 @@ export const execFileAsync = promisify(execFile);
 
 const publisherTempBase = os.tmpdir();
 const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
-const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |uses only the first-parent Catalog history|rejects stable Plugin identity reuse and downgrade after a deletion|reuses unchanged beta Plugin identity after deletion)/u;
+const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |rejects a published branch from a different Workspace identity|uses only the first-parent Catalog history|rejects stable Plugin identity reuse and downgrade after a deletion|reuses unchanged beta Plugin identity after deletion)/u;
 
 export function quietIo() {
   return { stdout: () => undefined, stderr: () => undefined };

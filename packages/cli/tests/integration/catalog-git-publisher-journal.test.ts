@@ -188,22 +188,8 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     );
   });
 
-  it('rejects a published branch from a different Workspace identity without local or remote writes', async () => {
-    const { root: firstRoot, remote } = await createWorkspace('1.0.0');
-    const firstPublication = await plan(firstRoot);
-    await apply(firstRoot, firstPublication);
-    const remoteRefsBefore = await git(remote, ['show-ref']);
-
-    const { root: secondRoot } = await createWorkspace('1.0.1', remote);
-    const [firstMarker, secondMarker] = await Promise.all([
-      fs.readJson(path.join(firstRoot, '.aw-workspace.json')) as Promise<Record<string, unknown>>,
-      fs.readJson(path.join(secondRoot, '.aw-workspace.json')) as Promise<Record<string, unknown>>,
-    ]);
-    expect(secondMarker.workspaceIdentity).not.toBe(firstMarker.workspaceIdentity);
-
-    await expect(plan(secondRoot)).rejects.toThrow(/different Workspace identity/u);
-    await expect(fs.pathExists(path.join(secondRoot, '.aw', 'publish', '1.0.1'))).resolves.toBe(false);
-    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteRefsBefore);
+  it('rejects a published branch from a different Workspace identity without local or remote writes', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
   });
 
   it('plans from committed HEAD and persists a reduced authorization identity and pending repo', async () => {

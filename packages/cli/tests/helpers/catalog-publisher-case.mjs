@@ -82,10 +82,12 @@ async function git(cwd, args) {
 
 const quietIo = () => ({ stdout: () => undefined, stderr: () => undefined });
 
-async function createWorkspace(version = '1.0.0') {
+async function createWorkspace(version = '1.0.0', existingRemote) {
   const root = await temporaryRoot();
-  const remote = await temporaryRoot();
-  await git(root, ['init', '--bare', '--quiet', remote]);
+  const remote = existingRemote ?? await temporaryRoot();
+  if (existingRemote === undefined) {
+    await git(root, ['init', '--bare', '--quiet', remote]);
+  }
   await git(root, ['init', '--quiet']);
   await runCli([
     'dev', 'catalog', 'create', '--workspace-root', root, '--catalog-version', version,
@@ -218,6 +220,27 @@ async function runCase() {
       assert.equal(await publishedPluginVersion(unchanged), '0.1.0-beta.1');
       assert.equal((await stage('apply.restored', () => apply(root, unchanged))).state, 'published');
     }
+    return;
+  }
+  if (testName === 'rejects a published branch from a different Workspace identity without local or remote writes') {
+    const { root: firstRoot, remote } = await stage('createWorkspace.first', () => createWorkspace('1.0.0'));
+    const firstPublication = await stage('plan.first', () => plan(firstRoot));
+    await stage('apply.first', () => apply(firstRoot, firstPublication));
+    const remoteRefsBefore = await stage('read refs', () => git(remote, ['show-ref']));
+
+    const { root: secondRoot } = await stage('createWorkspace.second', () => createWorkspace('1.0.1', remote));
+    await stage('verify identities', async () => {
+      const [firstMarker, secondMarker] = await Promise.all([
+        fs.readJson(path.join(firstRoot, '.aw-workspace.json')),
+        fs.readJson(path.join(secondRoot, '.aw-workspace.json')),
+      ]);
+      assert.notEqual(secondMarker.workspaceIdentity, firstMarker.workspaceIdentity);
+    });
+    await stage('plan.reject', () => assert.rejects(plan(secondRoot), /different Workspace identity/u));
+    await stage('verify no writes', async () => {
+      assert.equal(await fs.pathExists(path.join(secondRoot, '.aw', 'publish', '1.0.1')), false);
+      assert.equal(await git(remote, ['show-ref']), remoteRefsBefore);
+    });
     return;
   }
   if (testName === 'allows a renamed remote alias when its fetch and push identity is unchanged') {
