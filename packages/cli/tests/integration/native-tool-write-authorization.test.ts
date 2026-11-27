@@ -10,7 +10,7 @@ import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator
 import { operationPlanNativeToolChanges } from '../../src/commands/operation-plan.js';
 import { listManagedCommandPackages, readInstalledCommandProducer, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { readIntentFixture, writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { createNativeTestExecution, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { resolvePreferencesPath, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
@@ -40,7 +40,7 @@ const uninstallWriteCommand: typeof nativeUninstallWriteCommand = (names, option
   nativeWrite(nativeUninstallWriteCommand, names, options, runtime);
 
 describe('native declaration confirmation at ordinary write entries', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['claude', 'opencode'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['claude', 'opencode'] }); });
   // Test Value Gate: projection-only tests cannot prove confirmation precedes
   // requirement, producer, script and platform writes. Use real CLI/catalog/installed state,
   // and the same accepted-plan contract used by the existing Review bridge.

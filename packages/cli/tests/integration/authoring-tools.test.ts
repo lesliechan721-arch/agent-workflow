@@ -267,7 +267,7 @@ async function writeDynamicArtifactPlugin(
       '  const requirements = [{feature:`component.kind.${component.kind}`}, ...(component.kind === "agent" ? [{feature:"agent.execution",values:["isolated-context"]},{feature:"agent.prompt-mode",values:["host-default"]},{feature:"agent.model"}] : [{feature:"instruction.coverage",values:["main"]}])];',
       '  const gaps = requirements.filter(requirement => { const fact = requirement.feature.startsWith("component.kind.") ? request.platformCapabilities.kinds[component.kind] : request.platformCapabilities.features[requirement.feature]; return fact?.status !== "supported" || requirement.values?.some(value => !fact.values?.includes(value)); });',
       '  if (component.name === undefined || component.name.includes("/")) components.push(component);',
-      '  else if (gaps.length) unmet.push({id:component.id,kind:component.kind,name:component.name,requiredFeatures:gaps,reasonCode:"capability-unverified"});',
+      '  else if (gaps.length) unmet.push({id:component.id,kind:component.kind,name:component.name,requiredFeatures:gaps,reasonCode:"interface-unsupported"});',
       '  else components.push(component);',
       '}',
       'process.stdout.write(JSON.stringify({version:3,components,omitted,unmet}));',
@@ -3473,11 +3473,7 @@ describe('authoring tools', () => {
     await fs.writeFile(rendererPath, renderer([{ ...artifact, routes: {} }]));
     const empty = JSON.parse((await runValidatePlugin(pluginDir, ['--json'])).stdout);
     expect(empty).toMatchObject({ ok: true, errors: [] });
-    // An unsupported production profile reports its capability gap before it can materialize the Skill.
-    const expectedGap = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch)
-      ? '[command-route-unreachable] []'
-      : '[capability-unverified] [{"feature":"component.kind.skill"}]';
-    expect(empty.warnings).toContain(`component unmet (codex/user): skill:helper ${expectedGap}`);
+    expect(empty.warnings).toContain('component unmet (codex/user): skill:helper [command-route-unreachable] []');
 
     await fs.writeFile(rendererPath, renderer([artifact]));
     await writeAuthoringPluginManifest(pluginDir, { ...manifest, platforms: ['codex', 'claude', 'generic'] });
@@ -3552,7 +3548,7 @@ describe('authoring tools', () => {
         'import fs from "node:fs";',
         'const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         'if (c.surface !== "agent-plugin" || c.scope !== "user" || c.platform !== "claude") throw new Error("wrong shared Skill profile");',
-        'const unmet = c.allowedOutputKinds.includes("skill") ? [{ id: "scoped-skill", kind: "skill", name: "scoped-helper", requiredFeatures: [{ feature: "skill.tools", values: ["denylist"] }], reasonCode: "capability-unverified" }] : [];',
+        'const unmet = c.allowedOutputKinds.includes("skill") ? [{ id: "scoped-skill", kind: "skill", name: "scoped-helper", requiredFeatures: [{ feature: "skill.tools", values: ["denylist"] }], reasonCode: "interface-unsupported" }] : [];',
         'console.log(JSON.stringify({ version: 3, components: [], omitted: [], unmet }));',
       ].join('\n'),
     });
@@ -3561,8 +3557,8 @@ describe('authoring tools', () => {
       ok: true,
       errors: [],
       warnings: expect.arrayContaining([
-        'component unmet (claude/user): skill:native-helper [delivery-unavailable] [{"feature":"skill.tools","values":["denylist"]}]',
-        'component unmet (claude/user): scoped-skill [capability-unverified] [{"feature":"skill.tools","values":["denylist"]}]',
+        'component unmet (claude/user): skill:native-helper [interface-unsupported] [{"feature":"skill.tools","values":["denylist"]}]',
+        'component unmet (claude/user): scoped-skill [interface-unsupported] [{"feature":"skill.tools","values":["denylist"]}]',
       ]),
     });
 
@@ -3590,7 +3586,7 @@ describe('authoring tools', () => {
         'const path = await import("node:path");',
         'if (process.env.AW_CODEX_HOME || process.env.AW_CLAUDE_HOME) throw new Error("test home variable leaked");',
         'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-        'if (context.schemaVersion !== 2 || context.surface !== "agent-plugin" || Object.hasOwn(context, "paths")) throw new Error("wrong public renderer context");',
+        'if (context.schemaVersion !== 3 || context.surface !== "agent-plugin" || Object.hasOwn(context, "paths")) throw new Error("wrong public renderer context");',
         'if (!process.env.HOME || process.env.HOME !== process.env.USERPROFILE) throw new Error("missing isolated user home");',
         'const rendererHomes = [process.env.AW_HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.HOME, ...["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"].map((key) => process.env[key])];',
         'if (rendererHomes.some((home) => !home || !path.isAbsolute(home))) throw new Error("missing isolated state home");',
@@ -3803,13 +3799,13 @@ describe('authoring tools', () => {
         "import path from 'node:path';",
         "const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
         `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({scope:c.scope,kinds:c.allowedOutputKinds,schemaKeys:Object.keys(c.config.schema.fields),valueKeys:Object.keys(c.config.values),previousComponents:c.previousComponents,resources:c.resources.map(resource=>({kind:resource.kind,exists:fs.existsSync(resource.root)})),awHome:process.env.AW_HOME})+'\\n');`,
-        'if (c.schemaVersion !== 2 || c.surface !== "agent-plugin" || c.platformCapabilities.schemaVersion !== 2 || c.platformCapabilities.basis !== "profile") throw new Error("wrong context");',
+        'if (c.schemaVersion !== 3 || c.surface !== "agent-plugin" || c.platformCapabilities.schemaVersion !== 3 || c.platformCapabilities.basis !== "profile") throw new Error("wrong context");',
         'const components = [], unmet = [];',
         'if (c.allowedOutputKinds.includes("skill")) {',
         ' if (Object.hasOwn(c.config.schema.fields,"secret") || Object.hasOwn(c.config.values,"secret")) throw new Error("sensitive Skill input");',
         ' if (c.scope !== "user") throw new Error("shared Skill scope drift");',
         ' for (const id of ["native-shared","other-shared"]) {',
-        '  if(c.platformCapabilities.kinds.skill.status!=="supported") unmet.push({id,kind:"skill",name:id,requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"capability-unverified"});',
+        '  if(c.platformCapabilities.kinds.skill.status!=="supported") unmet.push({id,kind:"skill",name:id,requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"interface-unsupported"});',
         '  else components.push({id,kind:"skill",name:id,content:{files:{"SKILL.md":{text:`---\\nname: ${id}\\ndescription: Shared Skill.\\n---\\n`},"README.md":{text:`# ${id}\\n`}}}});',
         ' }',
         '}',

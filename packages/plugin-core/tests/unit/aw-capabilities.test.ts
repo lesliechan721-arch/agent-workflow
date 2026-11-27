@@ -59,6 +59,7 @@ describe('AW capability contracts', () => {
       'aw.plugin-config-clears-on-change.v1', 'aw.plugin-config-ref-override.v1',
     ]))
     expect(registry.filter((id) => id.startsWith('aw.plugin-config-suggestions.'))).toEqual(['aw.plugin-config-suggestions.v2'])
+    expect(registry.filter((id) => id.startsWith('aw.platform-render-context.'))).toEqual(['aw.platform-render-context.v3'])
     expect(registry).toContain('aw.installed-runtime-config.v2')
     expect(registry).not.toContain('aw.installed-runtime-config.v1')
     expect(normalizeAwCapabilities([
@@ -117,7 +118,7 @@ describe('AW capability contracts', () => {
       artifacts: { configKeys: [] },
     }))).toEqual([
       'aw.platform-components.v3',
-      'aw.platform-render-context.v2',
+      'aw.platform-render-context.v3',
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v2',
       'aw.plugin-manifest.v4',

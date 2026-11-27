@@ -18,7 +18,6 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
-import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 
 const sessions: PlatformRebuildSession[] = [];
@@ -113,12 +112,7 @@ async function nativeFixture(cwd: string, env: NodeJS.ProcessEnv, platform: 'cod
   });
   const runtime = () => {
     const context = { ...createCommandExecutionContext({ env, nativeCliRunner }), platformRebuildSession: undefined as PlatformRebuildSession | undefined };
-    // Qualify only this synthetic Skill. Client discovery, projection, ownership and mutations remain real.
-    context.platformRebuildSession = new PlatformRebuildSession(context, (target) => {
-      const adapter = getAgentPluginAdapter(target);
-      return { ...adapter, capabilities: (input) => adapter.capabilities({ ...input, profile: { ...input.profile,
-        kinds: { ...input.profile.kinds, skill: { ...input.profile.kinds.skill, status: 'supported', reasonCodes: [] } } } }) };
-    });
+    context.platformRebuildSession = new PlatformRebuildSession(context);
     sessions.push(context.platformRebuildSession);
     return context;
   };

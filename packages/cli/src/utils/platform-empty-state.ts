@@ -1,8 +1,10 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import {
-  assertFeatureRequirement, COMPONENT_KINDS, getComponentFeatureRequirements, getPlatformCapabilityFact, normalizeStaticPluginComponents, partitionStaticPluginComponents, resolveInvocationPolicy,
-  type CommandRoutes, type ComponentUnmet, type PlatformCapabilitiesV2, type PluginComponent,
+  applyStaticSkillAgentUnmet, assertFeatureRequirement, COMPONENT_KINDS, getComponentFeatureRequirements,
+  getPlatformCapabilityFact, normalizeStaticPluginComponents, partitionStaticPluginComponents, resolveCanonicalRuntimeSourceIdentity,
+  resolveInvocationPolicy, resolvePlatformAgentNaming,
+  type CommandRoutes, type ComponentUnmet, type PlatformCapabilitiesV3, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
@@ -63,31 +65,25 @@ export interface PlatformInputEvidenceOptions {
   commandRoutes?: CommandRoutes;
   units: Array<{
     renderUnit: RenderUnit;
-    capabilities: PlatformCapabilitiesV2;
+    capabilities: PlatformCapabilitiesV3;
     config: ResolvedArtifactRenderConfig;
   }>;
 }
 
-function staticCapabilityInputs(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2): unknown {
-  const { deliveryFeatures } = capabilities;
+function staticCapabilityInputs(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV3): unknown {
   return components.map((component) => {
     const kind = capabilities.kinds[component.kind];
     const features = getComponentFeatureRequirements(component, { deliveryOnly: true })
-      .filter(({ feature }) => !deliveryFeatures || feature !== `component.kind.${component.kind}`)
       .map(({ feature, values }) => {
         const maxBytes = component.kind === 'instruction' && feature === 'instruction.coverage'
           && ['codex', 'claude'].includes(capabilities.platform) ? capabilities.features[feature]?.maxBytes : undefined;
-        // The writer handles a component's own fields. Cross-kind requirements still depend on the host.
-        if (deliveryFeatures && feature.startsWith(`${component.kind}.`)) {
-          const mapping = deliveryFeatures.find((entry) => entry.feature === feature);
-          const delivery = mapping ? { values: values?.filter((value) => mapping.values?.includes(value)) } : null;
-          return { feature, delivery, maxBytes };
-        }
         const fact = getPlatformCapabilityFact(feature, capabilities);
         return { feature, status: fact.status, reasonCodes: fact.reasonCodes,
-          ...(values ? { values: (fact.values ?? []).filter((value) => values.includes(value)) } : {}), maxBytes };
+          ...(values ? { values: (fact.values ?? []).filter((value) => values.includes(value)) } : {}),
+          ...(component.kind === 'agent' && feature === 'agent.model' && component.content.model && fact.values
+            ? { modelAllowed: fact.values.includes(component.content.model) } : {}), maxBytes };
       });
-    return { id: component.id, kind: deliveryFeatures ? { delivery: kind.delivery } : kind, features };
+    return { id: component.id, kind, features };
   });
 }
 
@@ -114,17 +110,45 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
     const batches = resolvePlatformComponentBatches({ manifest, platform, renderScope: renderScope.kind, kinds, config });
     const declared = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform,
       capabilities: capabilityView, allowedOutputKinds: kinds, deferPartition: true });
-    const expected = partitionStaticPluginComponents(declared.components, capabilityView);
-    if (batches.some((batch) => batch.config.issues.length)) throw new Error('platformEmptyStateConfigInvalid');
-    return { renderUnit, capabilityView, declared, expected, batches };
+    const expected = await applyStaticSkillAgentUnmet({
+      expected: partitionStaticPluginComponents(declared.components, capabilityView), manifest, platform, capabilities: capabilityView,
+      allowDynamicAgentDeferral: manifest.artifacts !== undefined,
+      readSource: async (source) => {
+        if (source.kind !== 'bundle') throw new Error('platformEmptyStateStaticSourceInvalid');
+        const identity = await resolveCanonicalRuntimeSourceIdentity(plugin.rootDir, source.path, 'static Skill Agent reference');
+        return fs.readFile(identity.sourceRealPath, 'utf8');
+      },
+    });
+    // Even a Skill removed by the static cascade depends on the Agent view.
+    const hasSkillInput = declared.components.some((component) => component.kind === 'skill')
+      || batches.some((batch) => batch.allowedOutputKinds.includes('skill'));
+    // A shared Codex package must use its own User config and capabilities, not either activation's supplement.
+    const agentBatches = hasSkillInput
+      ? resolvePlatformComponentBatches({ manifest, platform, renderScope: renderScope.kind, kinds: ['agent'], config }) : [];
+    if ([...batches, ...agentBatches].some((batch) => batch.config.issues.length)) throw new Error('platformEmptyStateConfigInvalid');
+    const agentDeclarations = hasSkillInput && !kinds.includes('agent')
+      ? await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform,
+        capabilities: capabilityView, allowedOutputKinds: ['agent'], deferPartition: true }) : declared;
+    const agents = agentDeclarations.components.filter((component) => component.kind === 'agent');
+    const agentInputs = hasSkillInput ? {
+      agentNaming: resolvePlatformAgentNaming(platform, binding.plugin),
+      declarations: agents,
+      capabilities: staticCapabilityInputs(agents, capabilityView),
+      // The stable public ID and resolved declaration already capture role identity.
+      // Evidence must not impose placeholder-key restrictions on unreferenced roles.
+      omitted: agentDeclarations.omitted.filter(({ kind }) => kind === 'agent'),
+    } : undefined;
+    return { renderUnit, capabilityView, declared, expected, batches, agentBatches, agentInputs };
   }));
   // A running renderer can read its bundle via AW_PLUGIN_ROOT, in addition to the declared resource roots.
-  const sourceDigest = prepared.some(({ batches }) => batches.length) ? await calculatePluginBundleFingerprint(plugin.rootDir) : undefined;
-  const resources = prepared.some(({ batches }) => batches.length)
+  const hasDynamicInputs = prepared.some(({ batches, agentBatches }) => batches.length || agentBatches.length);
+  const sourceDigest = hasDynamicInputs ? await calculatePluginBundleFingerprint(plugin.rootDir) : undefined;
+  const resources = hasDynamicInputs
     ? (await resolvePlatformComponentResources(plugin)).map(({ kind, name, digest }) => ({ kind, name, digest })) : undefined;
-  const units = await Promise.all(prepared.map(async ({ renderUnit, capabilityView, declared, expected, batches }) => {
+  const units = await Promise.all(prepared.map(async ({ renderUnit, capabilityView, declared, expected, batches, agentBatches, agentInputs }) => {
     const { id, physicalKey, renderScope, output, kinds } = renderUnit;
-    const dynamic = batches.length ? { sourceDigest, manifest, batches, capabilities: capabilityView, resources } : undefined;
+    const dynamic = batches.length || agentBatches.length ? { sourceDigest, manifest, batches, capabilities: capabilityView, resources,
+      ...(agentBatches.length ? { agentBatches } : {}) } : undefined;
     const staticResources = await readStaticComponentResourceInputs({ plugin, expected: declared, staticResourceRoot, capabilities: capabilityView });
     const instructionUnit = platform === 'grok' && output === 'package'
       && (expected.components.some(({ kind }) => kind === 'agent') || batches.some((batch) => batch.allowedOutputKinds.includes('agent')))
@@ -144,7 +168,7 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
       [...(allow ?? []), ...(sandbox?.excludedCommands ?? [])].flatMap((rule) =>
         typeof rule === 'string' ? [] : [managedCommandRouteIsReachable(commandRoutes, rule.argsPrefix)])) : undefined;
     return { id, physicalKey, renderScope, output, kinds: [...kinds],
-      inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, route: binding.route, renderScope, dynamic, declared, expected,
+      inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, route: binding.route, renderScope, dynamic, declared, expected, agentInputs,
         capabilities: staticCapabilityInputs(declared.components, capabilityView), staticResources, instructions, instructionRenderer, policy,
         ...(hasSkills ? { requires: manifest.requires?.aw, nativeTools: manifest.nativeTools } : {}),
         invocationSelector: invocationPolicy?.invocationSelector, commandSkillAvailable, commandPermissions }) };

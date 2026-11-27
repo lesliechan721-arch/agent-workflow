@@ -212,12 +212,13 @@ async function runQualification(executable, authenticatedSkills, report) {
     await aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
     await aw(['source', 'sync', source, '--yes']);
     const update = await aw(syncProject);
-    const expected = process.platform === 'darwin' && process.arch === 'arm64' ? [{
+    const expected = [{
       subject: { pluginId: id, target: 'antigravity', scope: 'project', field: 'skill.scope-hidden' },
       detail: { reasonCode: 'invocationControlUnsupported', skillInvocationControls: [
+        { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnsupported', product: 'cli' },
         { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported', product: 'cli' },
       ] },
-    }] : [];
+    }];
     requireNotice(update, expected);
     report.updatedPublication = await projectBytes(a, 2);
     report.updateNotices = expected.map(({ detail }) => detail);

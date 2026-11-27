@@ -19,7 +19,7 @@ import { createTuiControllerDependencies } from '../../src/tui/controller-runtim
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { focusAction, input, nextTurn, confirmReview } from '../helpers/tui-console-app-input.js';
 import { createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -60,7 +60,7 @@ async function waitFrame(instance: ReturnType<typeof render>, label: string): Pr
 }
 
 async function fixture() {
-  installNativeTestQualification({ platforms: ['codex', 'antigravity'], discovery: true });
+  installNativeTestDiscovery({ platforms: ['codex', 'antigravity'] });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout: { fixtureCwd: cwd } } = isolation;
   await fs.ensureDir(path.join(cwd, '.git'));

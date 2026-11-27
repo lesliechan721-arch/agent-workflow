@@ -4,7 +4,7 @@ import {
   normalizeCommandRoutesArtifact,
   type CommandRoutesArtifact,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV2,
+  type PlatformCapabilitiesV3,
   type PlatformComponentPlanV3,
   type ComponentKind,
   type PlatformTarget,
@@ -39,9 +39,10 @@ export function validateCommandRoutesPlan(plan: unknown, refreshKeys: readonly s
 
 export function validatePlatformComponentPlan(options: {
   plan: unknown; platform: PlatformTarget; scope: Scope; allowedOutputKinds: readonly ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV2; configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[];
-  resources?: import('@lesliechan721/aw-plugin-core/manifest').PlatformRenderContextV2['resources']; sourceDirs?: readonly string[];
+  platformCapabilities: PlatformCapabilitiesV3; configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[];
+  resources?: import('@lesliechan721/aw-plugin-core/manifest').PlatformRenderContextV3['resources']; sourceDirs?: readonly string[];
   requiredAwCapabilities?: readonly string[];
+  hasInstructionAgentRecipients?: boolean;
 }): PlatformComponentPlanV3 {
   assertPlatformComponentPlan(options.plan, options);
   return options.plan;

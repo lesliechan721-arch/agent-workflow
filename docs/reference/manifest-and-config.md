@@ -9,7 +9,8 @@ AW 各模块采用独立版本演进，不要将不同合同的版本号混淆�
 | 合同对象 | 当前版本 | 作用 |
 | --- | --- | --- |
 | Plugin Manifest | `schemaVersion: 4` | 插件源码元数据与声明入口结构 |
-| Platform Render Context | `schemaVersion: 2` | 动态生成器的输入与稳定平台能力 |
+| Platform Render Context | `schemaVersion: 3` | 动态生成器的输入、稳定平台能力及 Agent 命名 |
+| Platform Capabilities | `schemaVersion: 3` | 平台标准交付与特性映射 |
 | Platform Component Plan | `version: 3` | 五类平台组件的完整动态期望集合 |
 | Config Definition | `schemaVersion: 5` | Manifest 内的配置声明、引用、校验与展示定义 |
 | Config Store | `schemaVersion: 6` | 用户配置持久化存储 Envelope 格式 |
@@ -103,6 +104,8 @@ aw dev plugin capabilities --surface config --json
   - `aw.plugin-config-ref-override.v1`：本地引用覆写 `platformOnly` 或 `suggestions` 时派生。
   - `aw.plugin-config-summary.v1`：使用配置摘要展示时派生要求。
   - `aw.plugin-config-array.v1`：使用数组配置字段时派生要求。
+  - `aw.platform-components.v3`、`aw.platform-render-context.v3`：声明 artifacts 时派生。
+  - `aw.skill-agent-placeholder.v1`：静态或构建后 Skill Markdown 引用同包 Agent 时派生；动态 renderer 生成该占位符时显式声明。详见[Skill 引用同包 Agent](#skill-agent-placeholder)。
   - `aw.installed-runtime-config.v2`：使用运行时配置读取时声明。
 - `dependencies`：同 Catalog 来源内的运行时依赖插件名称数组（仅写裸插件名，不得包含来源前缀）。依赖图必须无环，且依赖的平台支持集合必须覆盖当前插件。
 
@@ -141,15 +144,23 @@ type InstructionContent = {
 | `nativeHooks` | 平台 ID 到 `{ id, event, feedback, matcher?, command, requires? }[]` 的映射 |
 | `permissions` | 保留 allow/ask/deny、托管命令的 `argsPrefix` 声明及 Claude sandbox 策略，见[命令权限](managed-commands.md#skill-引用与宿主权限) |
 
-公共 Hook 的 `event` 为 `before_tool | after_tool | session_start`，`feedback` 必填，为 `notify | context | block`。应用 override 后必须有 `command`。原生事件只接受该平台 registry 登记的事件和反馈合同；generic 不支持 Hooks。两种 Hook 的 `requires` 都是 `FeatureRequirement[]`。通知不等于阻断，不得丢弃必需反馈后报告成功。
+公共 Hook 的 `event` 为 `before_tool | after_tool | session_start`，`feedback` 必填，为 `notify | context | block`。应用 override 后必须有 `command`。原生事件只接受该平台 registry 登记的事件和反馈合同；已映射但无响应协议的事件仅允许 notify，generic 不支持 Hooks。两种 Hook 的 `requires` 都是 `FeatureRequirement[]`。通知不等于阻断，不得丢弃必需反馈后报告成功。
 
 `agentOverrides` 是平台 ID 到字段覆盖或 `null` 的映射。`null` 表示本平台有意不提供；未指定沿用公共条目，数组整体替换，不递归合并任意宿主配置，不允许覆盖稳定 `id`。权限 override 仍只接受明确支持的策略字段，平台键合法不等于平台执行了该策略。
 
-Agent 未提供 `model` 或 `tools` 时使用实际消费者默认。`tools: []` 明确要求无工具。`promptMode` 缺省 `host-default`，其实际组合语义由固定平台 profile 说明。指定模型、工具限制或 append/replace 时必须有等价映射。缺少必要映射会跳过该执行入口，例如无法表达 `tools: []` 时跳过角色，继续安装同包的独立组件。Pi 的角色交付和执行扩展见[平台架构](../maintainers/architecture/platforms.md#2-原生包正文与-lifecycle-路由)。
+Agent 未提供 `model` 或 `tools` 时使用实际消费者默认。`tools: []` 明确要求无工具。`promptMode` 缺省 `host-default`，其实际组合语义由固定平台 profile 说明。指定模型、工具限制或 append/replace 时必须有等价映射。若 `features["agent.model"].values` 提供有限白名单，model 必须命中（Antigravity 为 `inherit`、`flash_lite`、`flash`、`pro`）；任意精确模型 ID 不能替代宿主档位。缺少必要映射会跳过该执行入口，例如无法表达 `tools: []` 时跳过角色，继续安装同包的独立组件。Pi 的角色交付和执行扩展见[平台架构](../maintainers/architecture/platforms.md#2-原生包正文与-lifecycle-路由)。
 
 Instructions 的 `coverage` 必填且非空，正文直接注入；`paths` 有值时还要求路径匹配能力。只支持部分 audience 时，仅投影支持部分，并以原组件 ID 关联具体缺失 audience。模型、工具权限和 Hook 阻断不属于可分离语义。
 
 静态 ID 固定为 `skill:<目录名>`、`mcp:<server key>`、`agent:<公共 name>`、`instruction:<公共 name>`、`hook:<id>`、`native-hook:<platform>:<id>`。override 改显示名不改 ID。静态与动态 ID 跨类别共同查重，映射后的宿主名称也须无冲突。
+
+<a id="skill-agent-placeholder"></a>
+
+**Skill 引用同包 Agent。** 用双花括号包围 `aw.agent:<name>` 表示受控占位符，name 非空、无空白、换行、控制字符或右花括号，并可归一化为合法组件名。静态引用匹配稳定公共名（`agent:<公共 name>` 的后缀）；`agentOverrides.<platform>.name` 只改变实际调用名。动态引用匹配组件逻辑 name。引用键按 Core 的 `nativeComponentName` 归一化匹配。不能归一化的公共名不能被占位符引用；若其实际平台名合法，独立 Agent 仍可交付，且继续接受投影名和重名校验。动态省略或 unmet 条目无 name 时，去掉可选 `agent:` 前缀的 id 仅在可归一化为引用键时参与匹配。
+
+- 扫描所有非 author-only Skill Markdown（包括 SKILL.md、references、README 和代码块）。残缺或非法语法报 `agentReferenceInvalid`。禁止在 SKILL.md frontmatter 的 name 字段使用占位符；其他字符串字段按合法 YAML 引号直接书写占位符，不用 YAML 转义拼出标识。教学文档应分开写标识和花括号。
+- 需求解析对静态引用自动派生 `aw.skill-agent-placeholder.v1`；构建完成模板、文件选择与 runtime files 注入后补扫所有平台 Skill，能力要求写入 bundle manifest 和 requirements receipt。动态 renderer 生成含占位符的 Skill 时，源码 Manifest 须显式声明此能力。
+- 纯静态插件在作者校验/build 阶段拒绝未声明 Agent 或目标平台有意省略的角色（`agentOverrides.<platform>: null`）。混合插件对静态表外名称延迟至静态与动态组件合并后核验，命中静态省略角色仍拒绝。实际绑定、能力缺口和导出规则见[运行时合同](plugin-runtime.md#skill-agent-reference)。
 
 MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`http | sse` 使用 `url`、可选 `headers`。两种字段不得混用。宿主变量引用只按已核验语法投影，不把敏感配置原值写入包。
 

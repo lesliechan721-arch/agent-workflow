@@ -5,9 +5,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import { Ajv2020 } from 'ajv/dist/2020.js'
 
 import {
   DEFAULT_CATALOG_WORKSPACE_VERSION,
+  resolveProjectedAgentName,
+  COMPONENT_KINDS,
+  CAPABILITY_REASON_CODES,
+  type PlatformCapabilitiesV3,
+  type PlatformRenderContextV3,
   getHookHandlerContract,
   assertNativeHookEvent,
   assertNativeComponentHookEvent,
@@ -21,6 +27,9 @@ import {
 } from '@lesliechan721/aw-plugin-core'
 import {
   computeAwCapabilitySetDigest,
+  resolvePlatformAgentNaming,
+  resolveAgentInvocationName,
+  assertPlatformRenderContext,
   createHookHandlerResponse,
   assertNoDuplicateHookHandlers as assertManifestHookHandlers,
   assertPluginManifestStructure,
@@ -180,6 +189,43 @@ process.stdout.write(result.stdout);process.stderr.write(result.stderr);process.
       $schema: 'https://json-schema.org/draft/2020-12/schema',
       title: 'PluginManifestSourceV4',
     })
+  })
+  it('ships the V3 capability and context schemas and Agent naming primitives through public exports', async () => {
+    const loadSchema = async (file: string) => JSON.parse(await fs.readFile(require.resolve(`@lesliechan721/aw-plugin-core/schemas/${file}`), 'utf8'))
+    const ajv = new Ajv2020({ strict: true, inlineRefs: false })
+    ajv.addSchema(await loadSchema('plugin-manifest-v4.json'))
+    ajv.addSchema(await loadSchema('platform-components.json'))
+    const validateCapabilities = ajv.compile(await loadSchema('platform-capabilities-v3.json'))
+    const validateContext = ajv.compile(await loadSchema('platform-render-context-v3.json'))
+    for (const obsolete of ['platform-capabilities-v2.json', 'platform-render-context-v2.json']) {
+      expect(() => require.resolve(`@lesliechan721/aw-plugin-core/schemas/${obsolete}`)).toThrow()
+    }
+    const platformCapabilities: PlatformCapabilitiesV3 = { schemaVersion: 3, platform: 'codex', scope: 'user', basis: 'profile', agentNamingMode: 'aw-prefix',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV3['kinds'],
+      features: { 'agent.model': { status: 'supported', reasonCodes: [], values: ['example/model'] } },
+    }
+    const plugin = { pluginId: 'official/demo', name: 'demo', version: '1.0.0' }
+    const agentNaming = resolvePlatformAgentNaming('codex', plugin)
+    const rendererContext: PlatformRenderContextV3 = { schemaVersion: 3, platform: 'codex', scope: 'user', surface: 'agent-plugin', plugin,
+      config: { schema: { schemaVersion: 5, fields: {} }, values: {}, sources: {}, issues: [] },
+      changedConfigKeys: [], allowedOutputKinds: ['agent'], platformCapabilities, agentNaming, resources: [], previousComponents: [],
+    }
+    expect(validateCapabilities(platformCapabilities)).toBe(true)
+    expect(validateContext(rendererContext)).toBe(true)
+    for (const reason of CAPABILITY_REASON_CODES) {
+      expect(validateCapabilities({ ...platformCapabilities, features: { 'agent.model': { status: 'unsupported', reasonCodes: [reason] } } })).toBe(true)
+    }
+    for (const invalid of ['capability-unverified', 'consumer-missing', 'consumer-disabled', 'policy-blocked', 'invented']) {
+      const invalidFact = { status: 'unsupported', reasonCodes: [invalid] }
+      expect(validateCapabilities({ ...platformCapabilities, kinds: { ...platformCapabilities.kinds, hook: { ...invalidFact, delivery: [] } } })).toBe(false)
+      expect(validateCapabilities({ ...platformCapabilities, features: { 'agent.model': invalidFact } })).toBe(false)
+    }
+    expect(validateCapabilities({ ...platformCapabilities, schemaVersion: 2 })).toBe(false)
+    expect(validateContext({ ...rendererContext, schemaVersion: 2 })).toBe(false)
+    assertPlatformRenderContext(rendererContext)
+    expect(resolveProjectedAgentName(agentNaming, 'Reviewer')).toBe('aw-official-demo-reviewer')
+    expect(resolveAgentInvocationName(resolvePlatformAgentNaming('claude', plugin), 'Reviewer')).toBe('demo:reviewer')
+    expect(getAwCapabilityRegistry().filter((id) => id.startsWith('aw.platform-render-context.'))).toEqual(['aw.platform-render-context.v3'])
   })
   it('ships array validation, schema and capability through the public package', async () => {
     const config = { schemaVersion: 3, fields: { labels: {

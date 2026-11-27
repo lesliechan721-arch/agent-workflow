@@ -7,7 +7,6 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -39,7 +38,6 @@ describe('public Copilot discovery budget', () => {
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: configured.digest, env });
     await setTargets({ cwd, env, scope: 'user' }, ['copilot']);
-    installNativeTestQualification({ platforms: ['copilot'] });
     const packageRoot = path.join(bin, 'node_modules/@github/copilot');
     const entry = path.join(packageRoot, 'npm-loader.js');
     await fs.outputFile(entry, '#!/usr/bin/env node\n', { mode: 0o755 });

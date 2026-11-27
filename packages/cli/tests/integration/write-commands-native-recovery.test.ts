@@ -29,7 +29,7 @@ import type { PluginMeta } from '../../src/types.js';
 import { parseOwnedTextHeader, readSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { getNativeTestLayout, installNativeTestQualification, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
 
 import {
   installWriteCommand,
@@ -55,12 +55,12 @@ function observedTarget(status: RecoveryStatus, pluginId: string, scope: 'user' 
 }
 
 let codexLayout: Awaited<ReturnType<typeof getNativeTestLayout>>;
-let nativeQualification: ReturnType<typeof installNativeTestQualification>;
+let nativeDiscovery: ReturnType<typeof installNativeTestDiscovery>;
 const nativeId = (name: string) => `${name}@${codexLayout.marketplaceName}`;
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    nativeQualification = installNativeTestQualification({ discovery: true });
+    nativeDiscovery = installNativeTestDiscovery();
     const isolation = getCurrentSourceTestIsolation();
     // Use only namespace positions from this synthetic identity. Ownership fixtures use their actual source identity.
     codexLayout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/namespace-fixture',
@@ -2331,8 +2331,7 @@ describe('five namespaced write commands', () => {
 
   it('ignores private Codex payload drift during status and sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    nativeQualification.restore();
-    installNativeTestQualification();
+    nativeDiscovery.restore();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-payload-drift-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -2980,8 +2979,7 @@ describe('five namespaced write commands', () => {
 
   it('keeps pure-native intent visible when status only observes cache residue', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    nativeQualification.restore();
-    installNativeTestQualification();
+    nativeDiscovery.restore();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dual-native-status-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -3059,8 +3057,7 @@ describe('five namespaced write commands', () => {
       }
       return originalRunner(invocation);
     });
-    nativeQualification.restore();
-    installNativeTestQualification();
+    nativeDiscovery.restore();
     const synced = await syncFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: '' },
@@ -3460,8 +3457,7 @@ describe('five namespaced write commands', () => {
 
   it('reports observed registration through one read-only system Codex discovery per scope', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    nativeQualification.restore();
-    installNativeTestQualification();
+    nativeDiscovery.restore();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'status-trust-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);

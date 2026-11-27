@@ -111,7 +111,7 @@ export function getHookHandlerContract(platform: PlatformId, dialect: 'common' |
 export function createHookHandlerResponse(options: { platform: PlatformId; dialect: 'common' | 'native'; event: string; feedback: HookFeedback; message?: string }): { exitCode: 0 | 2; stdout: string; stderr: string } {
   const handler = getHookHandlerContract(options.platform, options.dialect, options.event);
   const response = handler.protocol?.responses[options.feedback];
-  if (!response) throw new Error('Hook handler feedback protocol is unverified or unsupported.');
+  if (!response) throw new Error('Hook handler feedback has no registered wire protocol.');
   const message = options.message ?? '';
   if (options.feedback !== 'notify' && message.trim() === '') throw new Error('Hook handler context/block feedback requires a non-empty message.');
   const substitute = (value: HookResponseBody): HookResponseBody => {

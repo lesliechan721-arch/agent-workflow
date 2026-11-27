@@ -245,7 +245,7 @@ describe('native platform lifecycle', () => {
 
   it.each(['static', 'legacy-renderer', 'complete-renderer'] as const)('withdraws an unsafe role only with its full declaration (%s)', async (source) => {
     const input = supplementOnlyFixture();
-    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', reasonCode: 'capability-unverified',
+    input.expected.unmet = [{ id: 'role-b', name: 'b', kind: 'agent', reasonCode: 'interface-unsupported',
       requiredFeatures: [{ feature: 'agent.tools', values: ['allowlist'] }] }];
     input.expected.sources['role-b'] = source === 'static' ? 'static' : 'dynamic';
     if (source === 'complete-renderer') input.expected.declaredComponentIds = ['role-a', 'role-b'];

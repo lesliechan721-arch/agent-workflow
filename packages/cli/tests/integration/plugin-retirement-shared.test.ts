@@ -14,7 +14,7 @@ import type { PluginMeta } from '../../src/types.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime, createNativeDependencyCatalog, replaceCatalogSourcesConfig, snapshotRegularTree } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 
@@ -83,7 +83,7 @@ it.each(['codex', 'claude', 'copilot'] as const)(
   async (platform) => {
     const isolation = getCurrentSourceTestIsolation();
     const { env, layout } = isolation;
-    installNativeTestQualification({ platforms: [platform], discovery: true,
+    installNativeTestDiscovery({ platforms: [platform],
       ...(platform === 'copilot' ? { executable: process.execPath } : {}) });
     const projectA = layout.fixtureCwd;
     const projectB = path.join(layout.rootDir, 'project-b');

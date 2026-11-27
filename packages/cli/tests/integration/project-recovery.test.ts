@@ -20,7 +20,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -140,7 +140,7 @@ async function nativeRuntime(setup: Fixture) {
 }
 
 describe('scoped recovery integration', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery(); });
   // Test Value Gate: preparation must retain a useful failure stage and known errno without exposing arbitrary error data.
   it.each(['ENAMETOOLONG', 'private-config-value'])('reports safe Portable preparation diagnostics (%s)', async (code) => {
     const setup = await fixture([{ name: 'alpha' }]);

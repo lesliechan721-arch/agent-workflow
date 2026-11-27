@@ -261,7 +261,7 @@ POSIX RPC helper 在直接客户端关闭后、输出 JSON 前，等待初始进
 
 断言失败终止该 scope 的后续步骤，另一 scope 和客户端仍继续。Grok Project 候选夹具只在临时 GROK_HOME 写精确目录授信状态（固定1.0.77既有实测格式），安装/更新后以新的 inspect 启用状态、原生路径指向副本字节及 neutral 隔离判定；这是显式测试前提，不是产品自动授信或已验证的公开授信命令；Grok 本地更新必须按实际行为判定，不因为是已知问题而算通过。核心失败和未验证均返回非零，非阻塞 observations 与 excluded 不使核心失败；报告通过 `always()` 上传并生成 job summary，保留14天；需要长期引用的通过证据另按固定资格归档规则保存。
 
-托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317`、OpenCode CLI `2.0.0` 为记录六环境的 User/Project 普通 Skill，Grok CLI `1.0.77` 为四个有官方分发环境的 User/Project；各记录分别限定 scope，其他版本、产品面及组件不继承。缺资格或 scope 不可证明时仍 unverified，不注入候选 profile 或 force 绕过。Claude 依原生管理与有效启用状态记录开放有限资格，Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。
+托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。生产 profile 采用确定性平台能力；固定客户端版本、候选字节、作用域与实测证据仍由 qualification harness 独立核对。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317`、OpenCode CLI `2.0.0` 为记录六环境的 User/Project 普通 Skill，Grok CLI `1.0.77` 为四个有官方分发环境的 User/Project；各记录分别限定 scope，其他版本、产品面及组件不继承。缺少实际证据或 scope 不可证明时，资格报告仍为 unverified，不注入候选 profile 或 force 绕过。Claude 的 Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。历史实测记录保留在 `scripts/qualification/evidence/` 供维护者、CI 与文档引用，不导入生产 CLI 或作为运行时能力判定条件。
 
 公开场景先检查固定入口身份。Windows npm 入口经正常包、bin、路径及 shim 校验。安装后核对目标与 neutral 的新原生结果、公开就绪状态和实际消费字节。版本更新后再次核对状态，然后保留插件版本 `0.1.1`，将同一 Skill 改为 v3 投影计划生成的正文。激活新来源后、同步前必须报告待同步并保留已确认的包和启用事实。同步后核对实际消费文件字节与公开就绪状态。User 两处消费位置均核对，Project 仍验证外部关闭。移除后的新管理查询必须证明两处的有效范围关闭：独占登记消失，精确成功回执证明共享保留时才允许已禁用登记继续存在。
 
@@ -287,7 +287,7 @@ POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom
 node scripts/qualification/native-platforms.mjs --write-candidate /tmp/aw-native-candidate.json --source-sha "$(git rev-parse HEAD)"
 pnpm qualification:native-platforms --candidate /tmp/aw-native-candidate.json --client codex --executable /absolute/path/to/codex --report /tmp/aw-native-report.json
 # --install 替代 --executable：明确允许在临时目录下载固定公共 npm 包。
-# --public-aw：另外验证公开 AW CLI，未取得生产资格的 scope 保持 unverified。
+# --public-aw：另外验证公开 AW CLI；未取得直接观察证据的 scope 在资格报告中保持 unverified。
 ```
 
 本地未提交源码的 SHA 仅标识 checkout 基线，实际候选字节由清单摘要标识；不能把本地报告称为该 Git commit 的干净构建。Actions 报告另绑定 run ID、attempt、runner image 和操作系统版本。远端执行要求工作流及对应源码已经存在于 GitHub。`workflow_dispatch` 入口要求工作流先存在于默认分支（[GitHub 事件规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)）；显式 PR 标签入口允许合并前验证，并绑定该次 PR 合并候选 SHA。不通过该入口提交源码、发布产品或修改真实用户配置。

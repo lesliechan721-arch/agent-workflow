@@ -23,10 +23,10 @@ const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('ya
 const userTargets = {
   codex: { version: '0.167.0', manual: true },
   claude: { version: '2.1.317', manual: true },
-  antigravity: { version: '1.3.4', manual: false },
+  antigravity: { version: '1.3.4', manual: true },
   pi: { version: '1.5.0', manual: true },
   opencode: { version: '2.0.0', manual: true },
-  copilot: { version: '1.0.95', manual: false },
+  copilot: { version: '1.0.95', manual: true },
   grok: { version: '1.0.77', manual: true },
   generic: { version: null, manual: false },
   cursor: { version: '2026.11.05-86047df', manual: true },
@@ -138,7 +138,6 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
       await writePluginConfigStore({ ...ctx, sourceId: 'official', sourceIdentity, pluginName: 'agent-subagent',
         scope: 'user', platform, values: { generalTaskProfile: { executor: 'native' } } });
     }
-    const profileHost = { platform: 'darwin', arch: 'arm64' };
     for (const [scope, pluginInventory] of [['user', report.plugins], ['project', report.projectPlugins]]) {
       for (const plugin of plugins) {
         const { manifest } = plugin;
@@ -161,8 +160,7 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
           const [binding] = resolution.bindings;
           const unit = resolution.renderUnits.find(item => item.kinds.includes('skill'));
           assert(binding && unit, `Missing ${scope} Skill render unit for ${platform}`);
-          const capabilities = adapter.capabilities({ binding, renderUnit: unit, profile: getQualifiedPlatformProfile(platform, profileHost),
-            observation: { prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } } });
+          const capabilities = adapter.capabilities({ binding, renderUnit: unit, profile: getQualifiedPlatformProfile(platform) });
           const staticResourceRoot = manifest.skills ? path.join(plugin.rootDir, platform) : plugin.rootDir;
           const options = { pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform, capabilities };
           const expected = await normalizeStaticPluginComponents(options);
@@ -183,8 +181,8 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
             unmet: unmet.map(({ id, reasonCode, requiredFeatures }) => ({ id, reasonCode, requiredFeatures })), omitted };
           if (manifest.skills) {
             const declared = await declaredSkills(path.join(staticResourceRoot, manifest.skills));
-            // Source declarations form the independent delivery oracle. Capability
-            // evidence describes the host policy; it never removes a shipped Skill.
+            // Source declarations form the independent delivery oracle for this
+            // Catalog. Invocation preferences do not remove a shipped Skill.
             const authorSkills = authors.get(manifest.name).skills;
             const names = [...authorSkills.keys()].sort();
             assert.deepEqual([...declared.keys()].sort(), names, label);
@@ -229,8 +227,7 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
               assert.equal(roleUnit?.renderScope.kind, 'project');
               const roleConfig = await resolveArtifactRenderConfig({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
                 pluginName: manifest.name, manifest, platform, ...ctx, referencePlugins: plugins, scope: 'project' });
-              const roleCapabilities = adapter.capabilities({ binding, renderUnit: roleUnit, profile: getQualifiedPlatformProfile(platform, profileHost),
-                observation: { prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } } });
+              const roleCapabilities = adapter.capabilities({ binding, renderUnit: roleUnit, profile: getQualifiedPlatformProfile(platform) });
               roleSet = (await preparePlatformComponents({ plugin, platform, ...ctx, config: roleConfig, capabilities: roleCapabilities,
                 renderScope: 'project', kinds: roleUnit.kinds, staticResourceRoot, commandEnv: ctx.env })).expected;
               inventory.platforms[platform].projectSupplement = roleSet.components.map(component => component.id);

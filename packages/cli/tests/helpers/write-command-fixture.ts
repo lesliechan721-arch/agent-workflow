@@ -751,7 +751,7 @@ export async function writeDynamicSkillRenderer(options: {
     ...(options.fail ? ['throw new Error("renderer failed");'] : []),
     'const fact = context.platformCapabilities.kinds.skill;',
     'if (fact.status !== "supported") plan.unmet.push({ id: "dynamic-skill", kind: "skill",',
-    `  name: ${JSON.stringify(options.skillKey)}, requiredFeatures: [{ feature: "component.kind.skill" }], reasonCode: fact.reasonCodes[0] ?? "capability-unverified" });`,
+    `  name: ${JSON.stringify(options.skillKey)}, requiredFeatures: [{ feature: "component.kind.skill" }], reasonCode: fact.reasonCodes[0] ?? "interface-unsupported" });`,
     'else plan.components.push({ id: "dynamic-skill", kind: "skill",',
     `  name: ${JSON.stringify(options.skillKey)}, content: { files: {`,
     `    "SKILL.md": { text: ${JSON.stringify(`---\nname: ${options.skillKey}\ndescription: Dynamic skill.\n---\n`)} },`,

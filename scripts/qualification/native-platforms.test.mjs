@@ -49,7 +49,7 @@ test('binds actual runtime schema bytes to the candidate', async t => {
     'packages/plugin-core/schemas', 'packages/agent-skill-eval/dist', 'scripts/qualification']) {
     await fs.mkdir(path.join(root, relative), { recursive: true });
   }
-  const schema = path.join(root, 'packages/plugin-core/schemas/platform-capabilities-v2.json');
+  const schema = path.join(root, 'packages/plugin-core/schemas/platform-capabilities-v3.json');
   const manifest = path.join(root, 'candidate.json');
   const sourceSha = process.env.GITHUB_SHA ?? 'a'.repeat(40);
   await fs.writeFile(schema, '{"type":"object"}\n');

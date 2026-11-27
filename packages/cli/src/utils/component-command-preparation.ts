@@ -20,6 +20,7 @@ import type { RenderUnit } from '../platforms/contracts.js';
 import type { PlatformTarget, PluginMeta } from '../types.js';
 import { artifactValueDigest } from './artifact-plan.js';
 import type { PreparedPlatformComponents } from './artifact-renderer.js';
+import { bindPlatformSkillAgents, type SkillAgentBinding } from './component-agent-binding.js';
 import { type DynamicSkillTree, writeDynamicSkillTree } from './dynamic-skill-tree.js';
 import { managedCommandProducerIdentity, prepareManagedCommandPackage } from './managed-command-materialization.js';
 import { injectInstalledRuntimeConfig } from './runtime-config.js';
@@ -43,6 +44,7 @@ export async function finalizePlatformSkillProducers(options: {
   env: NodeJS.ProcessEnv;
   /** Deployments supply the frozen candidate or installed record. Null means no usable package. */
   commandRecord?: InstalledCommandProducer | null;
+  agentBinding?: SkillAgentBinding;
   portable?: boolean;
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
@@ -53,10 +55,11 @@ export async function finalizePlatformSkillProducers(options: {
     return { prepared: options.prepared, invocationPolicy: selectPlatformInvocationPolicy({ platform, permissions: [] }, subject), skills: [] };
   }
 
-  const skills = options.prepared.expected.components.flatMap((component) => {
+  const bound = await bindPlatformSkillAgents(plugin, platform, options.prepared, options.agentBinding);
+  const skills = bound.expected.components.flatMap((component) => {
     if (component.kind !== 'skill') return [];
     validatePortableSkillName(component.name, 'Skill component name');
-    const files = options.prepared.resources.files.filter((file) => file.componentId === component.id);
+    const files = bound.resources.files.filter((file) => file.componentId === component.id);
     const tree: DynamicSkillTree = {
       skillKey: component.name,
       files: Object.fromEntries(files.map((file) => [file.path, Buffer.from(file.bytes)])),
@@ -113,9 +116,9 @@ export async function finalizePlatformSkillProducers(options: {
     { name: plugin.manifest.name, version: plugin.manifest.version },
     plugin.manifest.requires?.aw.capabilities ?? [],
   ), null, 2)}\n`);
-  const components: PluginComponent[] = structuredClone(options.prepared.expected.components.filter((component) => !blockedSkills.has(component.id)));
-  const unmet = [...options.prepared.expected.unmet,
-    ...options.prepared.expected.components.filter((component) => blockedSkills.has(component.id))
+  const components: PluginComponent[] = structuredClone(bound.expected.components.filter((component) => !blockedSkills.has(component.id)));
+  const unmet = [...bound.expected.unmet,
+    ...bound.expected.components.filter((component) => blockedSkills.has(component.id))
       .map((component) => ({ id: component.id, kind: component.kind, name: component.name,
         requiredFeatures: [], reasonCode: COMMAND_ROUTE_UNREACHABLE }))];
   for (const skill of retainedSkills) {
@@ -124,9 +127,9 @@ export async function finalizePlatformSkillProducers(options: {
       skill.tree.files[file] = Buffer.from(text);
     }
     skill.tree.files['aw-plugin-requirements.json'] = receipt;
-    const snapshot = options.prepared.runtimeConfigSnapshots[skill.componentId];
+    const snapshot = bound.runtimeConfigSnapshots[skill.componentId];
     await injectInstalledRuntimeConfig(skill.tree, snapshot, snapshot ? { origin: createRuntimeConfigOrigin({
-      snapshot, inputDigest: options.prepared.evidence.renderInputDigest,
+      snapshot, inputDigest: bound.evidence.renderInputDigest,
     }) } : {});
     await fs.remove(skill.resourceRoot);
     await writeDynamicSkillTree(skill.resourceRoot, skill.tree);
@@ -135,15 +138,15 @@ export async function finalizePlatformSkillProducers(options: {
     if (!component || component.kind !== 'skill') throw new Error('componentSkillIdentityChanged');
     component.content.files = Object.fromEntries(Object.keys(component.content.files).map((file) => {
       const bytes = skill.tree.files[file]!;
-      const original = options.prepared.resources.files.find((entry) => entry.componentId === skill.componentId && entry.path === file);
+      const original = bound.resources.files.find((entry) => entry.componentId === skill.componentId && entry.path === file);
       const resource = component.content.files[file];
       return [file, resource && original?.bytes.equals(bytes) ? resource : { text: bytes.toString('utf8') }];
     }));
   }
   const files = [
-    ...options.prepared.resources.files.filter((file) => !skills.some((skill) => skill.componentId === file.componentId)),
+    ...bound.resources.files.filter((file) => !skills.some((skill) => skill.componentId === file.componentId)),
     ...retainedSkills.flatMap((skill) => Object.entries(skill.tree.files).map(([file, bytes]) => {
-      const original = options.prepared.resources.files.find((entry) => entry.componentId === skill.componentId && entry.path === file);
+      const original = bound.resources.files.find((entry) => entry.componentId === skill.componentId && entry.path === file);
       return {
         componentId: skill.componentId, path: file, bytes,
         ...(original?.source && original.bytes.equals(bytes) ? { source: original.source } : {}),
@@ -151,16 +154,16 @@ export async function finalizePlatformSkillProducers(options: {
       };
     })),
   ];
-  const resourceDigest = artifactValueDigest({ inputDigest: options.prepared.resources.digest, files: files.map(({ componentId, path: file, bytes, mode }) => ({
+  const resourceDigest = artifactValueDigest({ inputDigest: bound.resources.digest, files: files.map(({ componentId, path: file, bytes, mode }) => ({
     componentId, path: file, digest: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`, mode,
   })) });
   const prepared: PreparedPlatformComponents = {
-    ...options.prepared,
-    expected: { ...options.prepared.expected, components, unmet },
+    ...bound,
+    expected: { ...bound.expected, components, unmet },
     empty: components.length ? null : unmet.length ? 'unmet' : 'intentional',
-    resources: { ...options.prepared.resources, files, digest: resourceDigest },
-    evidence: { ...options.prepared.evidence, resourceDigest, renderInputDigest: artifactValueDigest({
-      components: options.prepared.evidence.renderInputDigest,
+    resources: { ...bound.resources, files, digest: resourceDigest },
+    evidence: { ...bound.evidence, resourceDigest, renderInputDigest: artifactValueDigest({
+      components: bound.evidence.renderInputDigest,
       ...(usesCommand ? { command: commandRecord ?? null } : {}),
     }) },
   };

@@ -82,7 +82,7 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。原生包输入摘要考虑组件 renderer 的 configKeys，并纳入适用的托管命令调用选择器。增删包级运行配置会改变该选择器，即使插件版本和静态 Skill 源文件都未变化，状态也会提示同步。共享命令包独立核对已应用的路由输入及按平台快照。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
-静态组件的输入摘要采用该类别的写入方式和所需字段的交付映射。显式跨类别前提仍采用宿主运行资格，动态 renderer 仍绑定完整的能力输入。Pi 角色已就绪时，状态根据现场扩展更新执行提示，单纯的扩展变动不要求同步角色文件。
+静态组件的输入摘要采用该类别的写入方式与所需特性（含跨类别要求）；动态 renderer 绑定完整 V3 能力输入。含 Skill 的单元纳入 Agent 命名与对应 Agent 交付输入，Codex 共享包固定 user 视图见[固定 render scope](platforms.md#13-固定-render-scope)。静态 Agent 缺口导致引用它的 Skill 整项 unmet；只读状态、空集证据与准备使用同一静态判定，混合插件的动态引用在不执行 renderer 时留给已有交付证据核对。Pi 角色已就绪时，状态根据现场扩展更新执行提示，单纯的扩展变动不要求同步角色文件。
 
 OpenCode、Grok 和 Antigravity CLI Global 的 `status` 对照当前 scope 下该插件的权限声明、AW 归属记录，以及上次交付实际采用的原生规则。已交付规则被删时显示待修复；归属受损、配置不可读或 Grok 项目信任无法核验时显示未确认。保留其他插件和用户的独立规则；有意跳过的动作不计为丢失。检查只反映已配置的规则，宿主的会话批准另行决定。
 

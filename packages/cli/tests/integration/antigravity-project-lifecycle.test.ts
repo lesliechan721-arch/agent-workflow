@@ -12,11 +12,11 @@ import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { SKILL_OWNER_MARKER, type SkillOwnerMarker } from '../../src/utils/ownership.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function projectFixture(sourceIds = ['local']) {
-  installNativeTestQualification({ platforms: ['antigravity'], discovery: true, executable: process.execPath });
+  installNativeTestDiscovery({ platforms: ['antigravity'], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = await fs.realpath(layout.fixtureCwd);
   await git(cwd, ['init', '--quiet']);

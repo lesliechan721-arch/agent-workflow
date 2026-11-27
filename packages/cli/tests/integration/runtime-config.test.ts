@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
 import { materializeProfilePluginComponents } from '../../src/review/skill-materialization.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
@@ -91,7 +91,7 @@ console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('
 }
 
 describe('installed runtime config', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['codex'] }); });
   it('isolates same-name source snapshots, keeps saved values inactive, and applies through the real writer', async () => {
     const alpha = await fixture('alpha');
     const beta = await fixture('beta');

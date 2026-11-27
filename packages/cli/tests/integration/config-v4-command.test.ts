@@ -14,7 +14,7 @@ import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { runSafeCli } from '../helpers/cli-runtime.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
@@ -23,7 +23,7 @@ import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 
 describe('public config command', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['codex', 'claude'] }); });
   it('advertises v4, preserves raw values, rejects invalid candidates, and leaves installed runtime resources unchanged until sync', async (test) => {
     const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();

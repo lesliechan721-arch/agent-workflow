@@ -1,8 +1,9 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createIsolatedSkillEnv, prepareSkillPluginBundle } from '../../src/review/skill-materialization.js';
+import { createIsolatedSkillEnv, materializeProfilePluginComponents, prepareSkillPluginBundle } from '../../src/review/skill-materialization.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
 import { finalizePlatformSkillProducers } from '../../src/utils/component-command-preparation.js';
@@ -39,6 +40,34 @@ async function finalize(options: {
   });
 }
 describe('Skill materialization', () => {
+  it('uses the authoring identity for roles in a complete offline profile', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-role-materialization-'));
+    tempRoots.push(root);
+    const pluginRoot = path.join(root, 'plugin');
+    const env = await createIsolatedSkillEnv(process.env, path.join(root, 'isolated'));
+    const manifest: PluginManifestSource = {
+      schemaVersion: 4, name: 'role-profile', version: '0.1.0', description: 'Agent profile fixture.',
+      platforms: ['codex'],
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      extensions: { agents: [{ name: 'reviewer', description: 'Reviews changes.', prompt: 'Review the input.' }] },
+    };
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), manifest);
+    const source = await readPluginManifest(pluginRoot);
+    const prepared = await prepareSkillPluginBundle({ plugin: source, plugins: [source], workRoot: path.join(root, 'work'), env });
+    try {
+      const result = await materializeProfilePluginComponents({ plugin: prepared.bundlePlugin, platform: 'codex',
+        scope: 'project', cwd: root, env, outputRoot: path.join(root, 'output') });
+      expect(result.codexRoleFiles).toHaveLength(1);
+      const file = result.codexRoleFiles[0]!;
+      const name = 'aw-authoring-role-profile-reviewer';
+      expect(path.basename(file)).toBe(`${name}.toml`);
+      expect(getStaticTOMLValue(parseTOML(await fs.readFile(file, 'utf8')))).toMatchObject({ name, developer_instructions: 'Review the input.' });
+      expect(await fs.pathExists(path.join(env.CODEX_HOME!, 'agents'))).toBe(false);
+    } finally {
+      await prepared.cleanup();
+    }
+  });
+
   it.each([
     ['static', 'static'],
     ['static', 'dynamic'],

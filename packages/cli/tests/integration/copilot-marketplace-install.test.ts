@@ -8,20 +8,20 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 // Test Value Gate: a local marketplace exposes its other live entries before
 // their packages are published. The batch must still register both roots.
 it.each(['user', 'project'] as const)('installs two Copilot %s roots despite the second appearing early in the native list', async (scope) => {
-  installNativeTestQualification({ platforms: ['copilot'], discovery: true, executable: process.execPath });
+  installNativeTestDiscovery({ platforms: ['copilot'], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
   const source = path.join(cwd, 'catalog');
   const host = resolvePlatformConfigRoot('copilot', { cwd, env });
   const userSettings = path.join(host, 'settings.json');
   const projectSettings = path.join(cwd, '.github', 'copilot', 'settings.local.json');
-  const plugins = [{ name: 'helper', roles: ['delegate'], dependencies: [] },
+  const plugins = [{ name: 'helper', roles: ['reviewer'], dependencies: [] },
     { name: 'review', roles: ['reviewer', 'planner'], dependencies: ['helper'] }];
   const ids = plugins.map(({ name }) => `team/${name}`);
   const prompt = (name: string) => `Carry out the ${name} role.`;
@@ -85,7 +85,7 @@ it.each(['user', 'project'] as const)('installs two Copilot %s roots despite the
   expect(observedUnpublishedSibling).toBe(true);
   expect(installed).toEqual(plugins.map(({ name }) => name));
   for (const { name, roles } of plugins) for (const role of roles) {
-    expect(await fs.readFile(path.join(market!.root, 'plugins', name, 'com.github.copilot', 'agents', `${role}.agent.md`), 'utf8'))
+    expect(await fs.readFile(path.join(market!.root, 'plugins', name, 'com.github.copilot', 'agents', `aw-team-${name}-${role}.agent.md`), 'utf8'))
       .toContain(prompt(role));
   }
   expect(await run('status')).toMatchObject({ status: 'success', data: { allSatisfied: true, inSync: true,

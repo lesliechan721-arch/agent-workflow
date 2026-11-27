@@ -11,7 +11,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 // Test Value Gate: native delivery, status and no-op sync agree with the actual
@@ -25,7 +25,7 @@ it.each([
   { target: 'grok', scope: 'project', includesMain: true, hasRole: false, dynamicRules: true },
   { target: 'grok', scope: 'project', includesMain: true, hasRole: true, dynamicRules: true },
 ] as const)('projects $target $scope instructions with main=$includesMain, role=$hasRole, and dynamic rules=$dynamicRules', async ({ target, scope, includesMain, hasRole, dynamicRules }) => {
-  installNativeTestQualification({ platforms: [target], discovery: true, executable: process.execPath });
+  installNativeTestDiscovery({ platforms: [target], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
   const source = path.join(cwd, 'catalog');
@@ -123,13 +123,14 @@ it.each([
   expect(install.status).toBe('success');
   expect(install.data, JSON.stringify(install)).toMatchObject({ remainingTargets: [], targetResults: [expected] });
   const packageRoot = target === 'copilot' ? path.join(marketplaceRoot!, 'plugins', 'demo') : grokPackage;
-  const roleFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot', 'agents', 'reviewer.agent.md')
-    : path.join(packageRoot, 'agents', 'reviewer.md');
+  const roleFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot', 'agents', 'aw-local-demo-reviewer.agent.md')
+    : path.join(packageRoot, 'agents', 'aw-local-demo-reviewer.md');
   const grokRules = scope === 'user' ? path.join(host, 'rules') : path.join(cwd, '.grok/rules');
   const mainFile = target === 'copilot' ? path.join(packageRoot, 'com.github.copilot/rules/preserve.md')
     : path.join(grokRules, 'aw-local-demo-preserve.md');
   if (hasRole) {
     const body = await fs.readFile(roleFile, 'utf8');
+    expect(body).toContain('name: "aw-local-demo-reviewer"');
     expect(body).toContain(dynamicRules ? `${prompt}\n` : `${prompt}\n\n${instruction}\n`);
   } else expect(await fs.pathExists(roleFile)).toBe(false);
   if (includesMain) expect(await fs.readFile(mainFile, 'utf8')).toContain(instruction);

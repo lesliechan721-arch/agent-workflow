@@ -5,7 +5,7 @@ import { computeCanonicalDirectoryDigest } from '@lesliechan721/agent-skill-eval
 import {
   COMPONENT_KINDS,
   type ComponentKind,
-  type PlatformCapabilitiesV2,
+  type PlatformCapabilitiesV3,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../generators/local-plugin.js';
@@ -17,6 +17,7 @@ import { projectPlatform, projectSkillDocument } from '../platforms/projection.j
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
+import { skillAgentBinding, type RawPlatformUnit } from '../utils/component-agent-binding.js';
 import { finalizePlatformSkillProducers } from '../utils/component-command-preparation.js';
 import { getAuthoringPlatformCapabilities } from './platform-profile.js';
 
@@ -106,6 +107,7 @@ export async function materializeProfilePluginComponents(options: {
   portable?: boolean;
   kinds?: readonly ComponentKind[];
   config?: ResolvedArtifactRenderConfig;
+  userConfig?: ResolvedArtifactRenderConfig;
   commandRecord?: Parameters<typeof finalizePlatformSkillProducers>[0]['commandRecord'];
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
@@ -141,17 +143,20 @@ export async function materializeProfilePluginComponents(options: {
   const preparation: ComponentPreparationBinding[] = [];
   const skills: Array<{ id: string; name: string; path: string; dynamic: boolean }> = [];
   const codexRoleFiles: string[] = [];
-  const preparedUnits: Array<{ unit: RenderUnit; capabilities: PlatformCapabilitiesV2;
+  const rawUnits: RawPlatformUnit[] = [];
+  const preparedUnits: Array<{ unit: RenderUnit; capabilities: PlatformCapabilitiesV3;
     finalized: Awaited<ReturnType<typeof finalizePlatformSkillProducers>> }> = [];
   try {
     for (const unit of resolution.renderUnits) {
       const kinds = unit.output === 'generic' && options.portable && options.kinds ? options.kinds
         : unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
       if (!kinds.length) continue;
-      const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind, {
-        activationScope: options.scope, portable: options.portable,
+      const capabilities: PlatformCapabilitiesV3 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind, {
+        portable: options.portable,
       });
-      const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
+      const sharedCodexPackage = options.platform === 'codex' && unit.output === 'package' && unit.renderScope.kind === 'user';
+      const supplied = sharedCodexPackage && options.config?.targetScope === 'project' ? options.userConfig : options.config;
+      const config = supplied ? { ...supplied, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
         pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
         referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
         sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
@@ -159,15 +164,19 @@ export async function materializeProfilePluginComponents(options: {
       });
       const platformResourceRoot = path.join(options.plugin.rootDir, options.platform);
       const staticResourceRoot = await fs.pathExists(platformResourceRoot) ? platformResourceRoot : options.plugin.rootDir;
-      const grokRoleUnit = options.platform === 'grok' && unit.output === 'supplement' ? preparedUnits.find((entry) =>
+      const grokRoleUnit = options.platform === 'grok' && unit.output === 'supplement' ? rawUnits.find((entry) =>
         entry.unit.output === 'package' && artifactValueDigest(entry.unit.renderScope) === artifactValueDigest(unit.renderScope)) : undefined;
-      const prepared = await preparePlatformComponents({
+      const request: RawPlatformUnit['request'] = {
         ...options, renderScope: unit.renderScope.kind, kinds, capabilities, config,
-        staticResourceRoot, hasInstructionAgentRecipients: grokRoleUnit?.finalized.prepared.expected.components.some(({ kind }) => kind === 'agent'),
+        staticResourceRoot, hasInstructionAgentRecipients: grokRoleUnit?.prepared.expected.components.some(({ kind }) => kind === 'agent'),
         commandEnv: options.env,
-      });
+      };
+      rawUnits.push({ unit, request, prepared: await preparePlatformComponents(request) });
+    }
+    for (const raw of rawUnits) {
+      const { unit, prepared, request: { capabilities } } = raw;
       const finalized = await finalizePlatformSkillProducers({
-        ...options, renderUnit: unit, prepared,
+        ...options, renderUnit: unit, prepared, agentBinding: skillAgentBinding(raw, rawUnits),
         skillWorkRoot: path.join(options.outputRoot, '.prepare-skills', unit.id.replace(/[^a-z0-9]/gu, '')),
       });
       preparedUnits.push({ unit, capabilities, finalized });

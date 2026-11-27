@@ -6,7 +6,7 @@ import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnos
 import { runCli } from '../../src/index.js';
 import { createCapturedCliIo, runCliEntry } from '../helpers/cli-entry.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
@@ -107,7 +107,7 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
 // Test Value Gate: protect public results and real writes at the confirmation, source, and ownership boundaries.
 describe('public plugin lifecycle', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputJson(path.join(resolvePlatformConfigRoot('pi', { cwd: isolation.layout.fixtureCwd, env: isolation.env }), 'settings.json'), { packages: [], defaultProjectTrust: 'always' });
     const bin = path.join(isolation.layout.fixtureCwd, 'pi-controlled-bin');

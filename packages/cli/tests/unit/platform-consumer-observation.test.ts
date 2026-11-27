@@ -17,7 +17,6 @@ import { executeRebuildOperation } from '../../src/commands/rebuild-operations.j
 import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 
 async function fixture(platform: 'pi' | 'grok', project = false) {
   const isolated = getCurrentSourceTestIsolation();
@@ -35,8 +34,7 @@ async function fixture(platform: 'pi' | 'grok', project = false) {
   } });
   const binding = resolved.bindings[0]!;
   const layout = await getDeploymentLayout(ctx, binding);
-  const caps = async () => getPlatformCapabilities({ binding, renderUnit: resolved.renderUnits[0]!,
-    observation: await inspectDeployment(ctx, binding), profile: getQualifiedPlatformProfile(platform) });
+  const caps = () => getPlatformCapabilities({ binding, renderUnit: resolved.renderUnits[0]!, profile: getQualifiedPlatformProfile(platform) });
   return { ctx, host, binding, layout, caps, setPiList: (value: string) => { piList = value; } };
 }
 
@@ -57,7 +55,6 @@ async function grokPackage(item: Awaited<ReturnType<typeof fixture>>, body: stri
 }
 
 async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = false) {
-  installNativeTestQualification({ platforms: ['grok'] });
   const item = await fixture('grok');
   const bin = path.join(item.ctx.cwd, 'bin');
   await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -447,16 +444,20 @@ describe('public native consumer observation', () => {
     const warning = async (ids = ['reviewer']) => piAgentConsumerDiagnostic(item.binding, await inspectDeployment(item.ctx, item.binding), ids);
     expect(await warning([])).toBeUndefined();
     expect(await warning()).toMatchObject({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode: 'piAgentConsumerMissing' } });
+    const baseline = item.caps();
+    expect(baseline.kinds.agent).toEqual({ status: 'supported', delivery: ['native-extension'], reasonCodes: [] });
     const root = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
     await consumer(root);
     await fs.outputJson(item.layout.activationPath, { packages: [{ source: 'npm:@tintinweb/pi-subagents@0.22.0', extensions: [] }] });
     expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentConsumerDisabled' } });
+    expect(item.caps()).toEqual(baseline);
     await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0'] });
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['different-package'] });
     const denied = await inspectDeployment(item.ctx, item.binding);
     expect(denied.prerequisites.agentConsumers.candidates[0]).toMatchObject({ id: '@tintinweb/pi-subagents', version: '0.22.0',
       enabled: 'yes', trust: 'trusted', packageAccess: 'denied', settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
     expect(await warning()).toMatchObject({ detail: { reasonCode: 'piAgentPackageAccessDenied' } });
+    expect(item.caps()).toEqual(baseline);
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['example'] });
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({
       scope: { kind: 'user' }, packageAccess: 'allowed', trust: 'trusted',
@@ -546,7 +547,7 @@ describe('public native consumer observation', () => {
     expect(piAgentConsumerDiagnostic(item.binding, denied, ['reviewer'])).toMatchObject({ detail: { reasonCode: 'piProjectTrustRequired' } });
   });
 
-  it('withholds a missing Pi consumer warning when an unknown extension or unreadable settings could affect it', async () => {
+  it('distinguishes unreadable Pi settings from an unknown extension without blocking Agent delivery', async () => {
     const item = await fixture('pi');
     const unknownPackage = path.join(item.ctx.cwd, 'custom-extension');
     await consumer(unknownPackage, '1.0.0', 'custom-extension');
@@ -559,7 +560,12 @@ describe('public native consumer observation', () => {
     const unreadable = await inspectDeployment(item.ctx, item.binding);
     expect(unreadable.configuration?.activation).toBe('enabled');
     expect(unreadable.prerequisites.agentConsumers.observation).toBe('unknown');
-    expect(piAgentConsumerDiagnostic(item.binding, unreadable, ['reviewer'])).toBeUndefined();
+    expect(unreadable.diagnostics.map(({ code }) => code)).toContain('piConfigurationUnconfirmed');
+    expect(item.caps().kinds.agent.status).toBe('supported');
+    expect(piAgentConsumerDiagnostic(item.binding, unreadable, ['reviewer'])).toMatchObject({
+      code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode: 'piConfigurationUnconfirmed' },
+    });
+    expect(piAgentConsumerDiagnostic(item.binding, unreadable, [])).toBeUndefined();
   });
 
   it('observes project trust independently and does not fabricate a consumer from a source string', async () => {

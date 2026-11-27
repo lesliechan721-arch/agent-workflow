@@ -33,6 +33,7 @@ describe('AW capability CLI commands', () => {
         capabilities: expect.arrayContaining([
           'aw.cli-output.v2',
           'aw.self-check.v2',
+          'aw.platform-render-context.v3',
           'aw.skill-eval.v3',
           'aw.review-preparation.v2',
           'aw.review-inspection.v3',

@@ -6,12 +6,12 @@ import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-source
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { replaceCatalogSourcesConfig } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function installFixture(initialMode: 'initial' | 'role-only') {
-  installNativeTestQualification({ platforms: ['codex'], discovery: true });
+  installNativeTestDiscovery({ platforms: ['codex'] });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout: { fixtureCwd: cwd } } = isolation;
   const source = path.join(cwd, 'native-config-source');

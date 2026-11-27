@@ -3,7 +3,7 @@ import os from 'node:os';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
@@ -127,7 +127,7 @@ function failManifestAfterActiveCheck(file: string, stages: string[]) {
 }
 
 describe('joint recovery through real Catalog and owned outputs', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery(); });
   it.each([false, true])('keeps exact TUI pairs and their provider in Review and recovery (provider excluded=%s)', async (blocked) => {
     const value = await fixture(false, ['opencode', 'generic'], false, { a: ['d'], b: [], d: [] });
     const project = { ...value.options, scope: 'project' as const };
@@ -1909,7 +1909,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
 describe('independent native package publication', () => {
   // Test Value Gate: both owners must publish under the same OpenCode root without losing a sibling package.
   it('copies two reviewed OpenCode packages concurrently and reads back both owners and skills', async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const value = await fixture(false, ['opencode'], false, { a: [], b: [], d: [] });
     const options = { ...value.options, scope: 'user' as const };
     await setTargets(options, ['opencode']);
@@ -1950,7 +1950,7 @@ describe('independent native package publication', () => {
 });
 
 describe('native install with shared registration', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery(); });
 
   it.each(['install', 'sync', 'rebuild'] as const)('blocks %s publication after a Project hook changes a transitive User provider', async (command) => {
     const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
@@ -2115,7 +2115,7 @@ describe('native install with shared registration', () => {
 });
 
 it('reports each failed provider in a three-level chain and retries the only declared root', async () => {
-  installNativeTestQualification({ discovery: true });
+  installNativeTestDiscovery();
   const value = await fixture(false, ['generic'], true, { b: ['d'], d: ['a'], a: [] });
   await fs.remove(await resolveIntentPath({ ...value.options, scope: 'user' }));
   const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
@@ -2145,7 +2145,7 @@ it('reports each failed provider in a three-level chain and retries the only dec
 // A requirements-only exit leaves the installed Project consumer able to use its dependency.
 it.each(['inherited skills', 'healthy project copy', 'damaged project copy', 'missing declared copy', 'removed consumer'] as const)(
   'removes a User root while accounting for %s in the current project', async (scenario) => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const value = await fixture(false, ['opencode']);
     const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
     const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
@@ -2179,7 +2179,7 @@ it.each(['inherited skills', 'healthy project copy', 'damaged project copy', 'mi
 );
 
 it('syncs a Claude project that still uses two shared User dependencies', async () => {
-  installNativeTestQualification({ discovery: true });
+  installNativeTestDiscovery();
   const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
   const value = await fixture(false, ['claude'], false, { a: ['d'], b: ['a', 'd'], d: [] });
   const user = { ...value.options, scope: 'user' as const, context: 'user' as const, targets: ['claude'] };
@@ -2202,7 +2202,7 @@ it('syncs a Claude project that still uses two shared User dependencies', async 
 
 it.each(['owned consumer', 'foreign consumer', 'removed consumer', 'healthy project copy'] as const)(
   'protects only dependencies still needed by a delisted %s', async (scenario) => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const value = await fixture(false, ['opencode']);
     const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
     const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
