@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.85",
+  "catalogVersion": "0.1.0-beta.86",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "97807c4f51d3a7f364cfdb27d0a739004271b1db"
+    "sourceHead": "1f2d1bbf06aad7bb655703d1911ed26a678c5f8d"
   },
   "entries": [
     {
@@ -53,7 +53,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [
         "agent-subagent"
       ],
@@ -61,7 +61,7 @@
         "aw": {
           "capabilities": [
             "aw.platform-components.v3",
-            "aw.platform-render-context.v2",
+            "aw.platform-render-context.v3",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-clears-on-change.v1",
             "aw.plugin-config-cross-plugin-value-ref.v1",
@@ -79,9 +79,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:41fce0040591af85b3be3f90d82e2794f5570b9fa8e9f1494ef018152ca5c967",
-      "manifestDigest": "sha256:82abd07666443fdaa9329f163b53a8d7dad8ab348d87b0184f033f1301fe031d",
-      "contentDigest": "sha256:d2f1a13949f722b5bc11710bd59d2919f194ae89bdf0269793865dbeb0a80359"
+      "artifactDigest": "sha256:9dad8ce5e2ee17f90ac36cbf7f3476721e683cec9c2d4306c5a65b07809fdd48",
+      "manifestDigest": "sha256:c20c245d64596fccd40f61c8944c07e0ec0181d763b60168d757514684c13823",
+      "contentDigest": "sha256:b87e605cb54e138a2b97e3a7b683c5c8554383f45e058df0419fe788fb47fce9"
     },
     {
       "name": "agent-content-toolkit",
@@ -149,7 +149,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [
         "agent-subagent"
       ],
@@ -157,7 +157,7 @@
         "aw": {
           "capabilities": [
             "aw.platform-components.v3",
-            "aw.platform-render-context.v2",
+            "aw.platform-render-context.v3",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-clears-on-change.v1",
             "aw.plugin-config-cross-plugin-value-ref.v1",
@@ -175,9 +175,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4d5ecadfd3aea8ca2d2073f35ad76cddf10e681c4cad12451d46de287aa31d85",
-      "manifestDigest": "sha256:5adc6833ff0dee87b18d2fc2e3829e284b1ec6f4b21e57dd66fee178bea1f46a",
-      "contentDigest": "sha256:506f8a91597c2cc30c9d28338ef8476645d1fc59ca3f9301db7611e5cd651b29"
+      "artifactDigest": "sha256:49109a23d468ef57d67669bbb9678f9b0b7c6a1783a6bd31ce2f1a153c817451",
+      "manifestDigest": "sha256:901b44de30f8c28ca8a71f862087e4ba12ccfbcc60a8dbb02fe64448a5cb3918",
+      "contentDigest": "sha256:22a9c83d3abab4a8f363775295634083183adb9c94a3e0ad929704bfb55f7125"
     },
     {
       "name": "agent-skill-toolkit",
@@ -245,7 +245,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.2",
+      "version": "0.2.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -254,7 +254,7 @@
             "aw.managed-commands.v2",
             "aw.native-tools.v3",
             "aw.platform-components.v3",
-            "aw.platform-render-context.v2",
+            "aw.platform-render-context.v3",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-clears-on-change.v1",
@@ -273,9 +273,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:d1c6dec838547b872b3cc55b9cc97165b4068c1b4510118e5ec573fe1b14bdda",
-      "manifestDigest": "sha256:61bc3815b53da059902ddda568d69ad26ec639b77c3b6bf70e7cc2933a8f1b3b",
-      "contentDigest": "sha256:821ae44634cc81aab1603db4b97fa522aff799ee0a302723963115d35b194bad"
+      "artifactDigest": "sha256:a699be6edff8f351f1772c5b62d989b5a71f3dea20446e024db09ca7cabfc2c2",
+      "manifestDigest": "sha256:8f0809ba7aa87151daec7790ca36395a44d0b2c7dab73b371094138b2bc351b0",
+      "contentDigest": "sha256:cbfaa2dd3e02854ea31176b87a77ddfafb03ef6b17781d8861cb3746d5e943f5"
     },
     {
       "name": "aw-development-toolkit",
@@ -298,7 +298,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.23",
+      "version": "0.1.0-beta.24",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -324,9 +324,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:2d5bce30be50d4c29888f11f817b00996cc7acebd522539270d136dbe5a88582",
-      "manifestDigest": "sha256:ca1b36a913c2fc9c2419a9a4f4878edaa2240b3da1582f0ceebd403ff0856508",
-      "contentDigest": "sha256:e5091b76bd546194278e2aaeefade422692bf38d73a44eba2bbb1d63262a4609"
+      "artifactDigest": "sha256:1a885c8f7fa8c40b5b77cc8373f33e1b18cb147a3d501160088c3e2c77a7d972",
+      "manifestDigest": "sha256:50981eefa17ae89fa8dc4f7c31c3c869cfbcc1e5e4df4025820d7c86817d128f",
+      "contentDigest": "sha256:ad086c5422b17602d9a22433363c3dfaa7b163ecbdbb6810c5b5fd5b876d5726"
     },
     {
       "name": "aw-skill-eval-runner",

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-advisor",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "面向任意工作的独立只读第二意见：在任务中途陷入判断卡点或高代价拍板前自发求助独立顾问（未配置覆盖且允许外发时优先异构外部模型），主会话逐条核验后再裁决。",
   "marketplace": {
     "category": "workflow",
@@ -23,7 +23,7 @@
     "aw": {
       "capabilities": [
         "aw.platform-components.v3",
-        "aw.platform-render-context.v2",
+        "aw.platform-render-context.v3",
         "aw.plugin-config-array.v1",
         "aw.plugin-config-clears-on-change.v1",
         "aw.plugin-config-cross-plugin-value-ref.v1",

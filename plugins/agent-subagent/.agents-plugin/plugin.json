@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "agent-subagent",
-  "version": "0.2.0-beta.2",
+  "version": "0.2.0-beta.3",
   "description": "组织已授权的通用子代理委派、原生与外部执行器自省、执行配置与跨平台调度。",
   "marketplace": {
     "category": "workflow",
@@ -24,7 +24,7 @@
         "aw.managed-commands.v2",
         "aw.native-tools.v3",
         "aw.platform-components.v3",
-        "aw.platform-render-context.v2",
+        "aw.platform-render-context.v3",
         "aw.plugin-build-config.v1",
         "aw.plugin-config-array.v1",
         "aw.plugin-config-clears-on-change.v1",

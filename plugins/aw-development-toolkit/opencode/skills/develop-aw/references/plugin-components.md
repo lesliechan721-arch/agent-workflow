@@ -16,6 +16,10 @@
 
 Skill 显式调用的参数与副作用在用户说明中前置；宿主可将它显示为 slash 入口，作者不声明独立 command 资源。安装和生成结果须保留相应平台的调用语义；不能只看 source frontmatter 就确认两端均生效。
 
+Agent model 有限值由平台能力提供。Antigravity 仅接受 inherit、flash_lite、flash、pro；先查 agent.model.values，不能将精确模型 ID 静默改为另一档位。Skill 需要调用同包 Agent 时，采用 平台投影（references/platform-projection.md）的命名和引用规则；agentOverrides 的 name 改名保留公共引用键，null 声明省略。
+
+Hook 使用 hook-handlers surface 的原生事件、反馈协议和 matcher 事实；有 nativeEvent 但 protocol 为 null 时只允许 notify。context 与 block 须有对应协议，不用通知模拟阻断。
+
 MCP 的凭据值不进入 Skill、日志或分发包。生命周期由实际 runtime/CLI 管理，文字描述不能代替成功运行或清理证据。
 
 ## 声明配置

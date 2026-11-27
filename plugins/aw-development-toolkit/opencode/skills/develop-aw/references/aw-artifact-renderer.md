@@ -6,7 +6,7 @@
 
 Manifest v4 的 artifacts 声明 configKeys、可选 sourceDirs/runtimeImports/scopes；不预枚举动态 ID。scripts.artifacts.render 指向 Node 入口。仅有托管命令 renderer 时可以不声明 artifacts。
 
-从 AW_PLUGIN_CONTEXT 文件读取 schemaVersion=2、surface=agent-plugin、platform、实际 render scope、plugin、config、changedConfigKeys、allowedOutputKinds、platformCapabilities、resources 和 previousComponents。resources 是已核验只读入口，previousComponents 只有本批身份。platformCapabilities v2 包含 platform、scope、basis、kinds、features 和可选的 deliveryFeatures。具体交付及运行资格的判断采用 平台投影（references/platform-projection.md）。
+从 AW_PLUGIN_CONTEXT 文件读取 PlatformRenderContextV3（schemaVersion=3、surface=agent-plugin），含 platform、实际 render scope、plugin、config、changedConfigKeys、allowedOutputKinds、platformCapabilities、agentNaming、resources 和 previousComponents。resources 是已核验只读入口，previousComponents 只有本批身份。artifacts 自动派生 aw.platform-components.v3 与 aw.platform-render-context.v3；Core 公开 schemas/platform-render-context-v3.json 和 schemas/platform-capabilities-v3.json。V3 能力按平台提供 agentNamingMode、kinds、features；顶层 agentNaming 提供当前插件的 mode、filePrefix、invocationPrefix，与能力 mode 一致。声明逻辑角色名，需实际调用名时使用 Core 的 resolveAgentInvocationName(context.agentNaming, role)。具体交付和调用名规则采用 平台投影（references/platform-projection.md）。
 
 每 render unit 按 Skill/非 Skill 权限分批。Skill 批次只见非敏感配置及依赖，非 Skill 批次不能输出 Skill；交集为空不调用。按 allowedOutputKinds 选择本批类别，不能从前一批输出发现下一批。changedConfigKeys 仅供优化，仍返回本批完整集合。配置从零新增组件和能力依据变化同样重新准备。
 
@@ -18,7 +18,7 @@ Manifest v4 的 artifacts 声明 configKeys、可选 sourceDirs/runtimeImports/s
 
 Skill 的 content.files 将相对路径映射到 {text} 或 {source:{kind:'bundle',path}} / {source:{kind:'runtime-import',name,path}}，必须有有效 SKILL.md，保留 README、二进制资源及运行闭包。引用不能越过已声明来源、包含绝对路径或逃逸链接。作者不覆盖保留 owner/runtime/command 文件。
 
-`omitted` 表达作者有意不提供或配置关闭。`unmet` 表达仍有期望但缺少所需能力、配置或依赖，保留 requiredFeatures 的 feature 和具体 values。可返回符合声明及资源合同的完整组件，由 AW 处理标准映射，例如 Hook 要求 block 而目标只有 notify 时，保留 block 缺口。Instructions 拆分 audience 时，交付组件只含支持部分，缺口用 componentId 关联并列明缺少的 audience。模型、工具权限和阻断保持原要求。原因码须符合能力输入或登记的依赖与配置原因。
+`omitted` 表达作者有意不提供或配置关闭。省略 Agent 时，若逻辑 name 与稳定 id（或 agent: 前缀后的名称）不同，填写 name，使 Skill 引用能识别作者有意省略。`unmet` 表达仍有期望但缺少所需能力、配置或依赖，保留 requiredFeatures 的 feature 和具体 values。可返回符合声明及资源合同的完整组件，由 AW 处理标准映射，例如 Hook 要求 block 而目标只有 notify 时，保留 block 缺口。Instructions 拆分 audience 时，交付组件只含支持部分，缺口用 componentId 关联并列明缺少的 audience。模型、工具权限和阻断保持原要求。agent.model 有有限 values 白名单时，模型不匹配可报告 requiredFeatures: [{ feature: "agent.model" }]，无需枚举第三方模型名。已映射 Hook 无响应协议时仅支持 notify，不用其模拟 context/block。原因码须符合能力输入或登记的依赖与配置原因。
 
 只有类别支持不足时使用对应 component.kind.<kind> 要求，不给普通 Skill 发明调用默认值。动态输出与静态条目用同一规则。动态 omitted 不能关闭静态条目。
 
@@ -34,6 +34,6 @@ stdout 仅 JSON，诊断写 stderr；所有输出不得泄露敏感值。stdout 
 
 同一个 renderer 可以接收单独的 `managed-commands` 请求。根据 surface 分支处理。动态路由使用 User 公共配置、无平台的请求和 ArtifactPlan v2。返回格式与替换语义见 托管命令（`references/managed-commands.md`）。
 
-组件准备先取得完整集合并验证身份和运行资源。Skill 的命令引用与权限按本次共享路由表一起校验，再注入保留文件并冻结。组件遗漏、能力缺口和资源错误按各自的组件规则处理。
+组件准备先取得完整集合并验证身份和运行资源，后绑定同包 Agent 引用。动态 Skill 使用上述占位符须在源码 Manifest 显式要求 aw.skill-agent-placeholder.v1；按实际 render scope 构建 Agent 视图，不从 Skill 批次越界输出角色。Skill 的命令引用与权限按本次共享路由表一起校验，再注入保留文件并冻结。组件遗漏、能力缺口和资源错误按各自的组件规则处理。
 
 runtimeConfig 位于实际动态 Skill 组件，keys 必须在 artifacts.configKeys 的非敏感闭包并要求已核验运行能力。AW 注入 reader；不手写保留文件，不读最新全局 store 替代本产物已应用配置。
