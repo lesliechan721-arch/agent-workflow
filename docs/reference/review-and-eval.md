@@ -149,7 +149,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
       "plugin": "example-plugin",
       "platform": "codex",
       "renderScope": "user",
-      "profileId": "codex:0.155.0:darwin-arm64-cli-0.167.0-skills",
+      "profileId": "codex:0.155.0",
       "capabilitiesDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "expectedDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "resourceDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -179,7 +179,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
   - `subject`：绑定被审插件名称、可选 Skill 与可选 suite；
   - `profile`：保存 platform、scope、`inputDigest` 和已验证的非敏感配置覆盖。Review profile 的 `id` 必须严格等于 `${platform}-${scope}`（如 `codex-user`）；
   - `artifacts`：数组形式，记录生成物的 kind（`eval-target` | `eval-workspace` | `eval-cases` | `portable-skill` | `review-skill`）、相对路径与 sha256 摘要；
-  - `preparation`：必填非空数组；每个实际准备的平台/插件记录 `plugin`、`platform`、`renderScope`、`profileId`、`capabilitiesDigest`、`expectedDigest`、`resourceDigest`、`renderInputDigest`、`outputs: [{path,digest}]`、`components: [{id,kind,name,source}]`、`omitted` 与 `unmet`。`source` 为 static/dynamic，输出路径是相对路径。只记录摘要和规范身份，不记录配置原值或私有绝对路径。Review 保留并核验原生投影摘要；Eval/export 的 outputs 为空，最终 Skill/工作区由 artifacts 绑定。缺少 preparation 的绑定须重新 prepare。
+  - `preparation`：必填非空数组；每个实际准备的平台/插件记录 `plugin`、`platform`、`renderScope`、`profileId`（平台与接口基线，不绑定取证宿主）、`capabilitiesDigest`、`expectedDigest`、`resourceDigest`、`renderInputDigest`、`outputs: [{path,digest}]`、`components: [{id,kind,name,source}]`、`omitted` 与 `unmet`。`source` 为 static/dynamic，输出路径是相对路径。只记录摘要和规范身份，不记录配置原值或私有绝对路径。Review 保留并核验原生投影摘要；Eval/export 的 outputs 为空，最终 Skill/工作区由 artifacts 绑定。缺少 preparation 的绑定须重新 prepare。
   - `preparation[].declaredGapIds?: string[]`：用于 `generic` 恢复，列出在本次准备中具有完整组件声明的 `unmet[].id`。每个 ID 必须关联同一单元的一个 `unmet`。旧 renderer 若只返回缺项且未提供完整内容，恢复继续保护相关旧输出。删除还须按现场证明 AW 独占归属。[旧输出保护](../maintainers/architecture/lifecycle.md#平台执行入口与结果)
   - Review profile 的 `requestedSkills` 记录显式选择；其 inputDigest 包含固定 capabilities。动态集合通过真实准备及绑定取得，inspect 不运行 renderer。
   - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput、preparation 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。

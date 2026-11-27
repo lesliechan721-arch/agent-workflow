@@ -4,7 +4,6 @@ import { pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getPlatformFeatureRegistry, type PlatformCapabilitiesV2 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
@@ -16,7 +15,6 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import * as registry from '../../src/platforms/registry.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { materializeProfilePluginComponents } from '../../src/review/skill-materialization.js';
-import * as authorProfile from '../../src/review/platform-profile.js';
 import { readScopedRecoveryStatus } from '../../src/recovery/status.js';
 import { observeIntent, writeIntent } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
@@ -31,20 +29,6 @@ afterEach(async () => {
   await Promise.all(sessions.splice(0).map((session) => session.dispose()));
   vi.restoreAllMocks();
 });
-
-// Supply test-only runtime qualification and a Claude delivery mapping. The
-// adapter still resolves, projects, publishes and inspects the actual bytes.
-function qualifySkillCapabilities(input: PlatformCapabilitiesV2): PlatformCapabilitiesV2 {
-  const capabilities = structuredClone(input);
-  capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
-  for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
-    capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) };
-  }
-  if (capabilities.platform === 'claude' && capabilities.deliveryFeatures) {
-    capabilities.deliveryFeatures.push({ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] });
-  }
-  return capabilities;
-}
 
 function packageRoot(target: Awaited<ReturnType<ReturnType<typeof createRebuildIntegration>['buildTarget']>>): string {
   return target.platformDeployment!.plans[0]!.evidence.layout.packageRoot;
@@ -91,13 +75,15 @@ const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'
 if (context.surface !== 'agent-plugin') throw new Error('Unexpected component surface.');
 const plan = { version: 3, components: [], omitted: [], unmet: [] };
 if (context.allowedOutputKinds.includes('skill')) {
- const requirements = [{ feature: 'component.kind.skill' }, { feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }];
+ const runtimeConfig = context.platform === 'codex' ? { keys: ['mode'] } : undefined;
+ const requirements = [{ feature: 'component.kind.skill' }];
+ if (runtimeConfig) requirements.push({ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] });
  const missing = requirements.filter(requirement => requirement.feature === 'component.kind.skill'
   ? context.platformCapabilities.kinds.skill.status !== 'supported'
   : context.platformCapabilities.features[requirement.feature].status !== 'supported');
  if (missing.length) plan.unmet.push({ id: context.platform + '-skill', kind: 'skill', name: 'native-skill',
-  requiredFeatures: missing, reasonCode: 'capability-unverified' });
- else plan.components.push({ id: context.platform + '-skill', kind: 'skill', name: 'native-skill', runtimeConfig: { keys: ['mode'] }, content: { files: {
+  requiredFeatures: missing, reasonCode: 'interface-unsupported' });
+ else plan.components.push({ id: context.platform + '-skill', kind: 'skill', name: 'native-skill', runtimeConfig, content: { files: {
   'SKILL.md': { text: '---\\nname: native-skill\\ndescription: Native package fixture\\n---\\n# ' + context.config.values.mode + '\\nRun {{aw.command}} run.\\n' },
   'README.md': { source: { kind: 'bundle', path: 'skill-resources/native-skill/README.md' } },
   'agents/openai.yaml': { source: { kind: 'bundle', path: 'skill-resources/native-skill/agents/openai.yaml' } },
@@ -128,15 +114,8 @@ console.log(JSON.stringify(plan));
         reasonCodes: [], entry: { kind: 'cli' as const, executable: platform, configRoot: resolvePlatformConfigRoot(platform, ctx) },
       }] };
     },
-    capabilities(input: Parameters<typeof adapter.capabilities>[0]) {
-      return qualifySkillCapabilities(adapter.capabilities(input));
-    },
   }]));
   vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => adapters.get(platform)!);
-  const realProfile = authorProfile.getAuthoringPlatformCapabilities;
-  vi.spyOn(authorProfile, 'getAuthoringPlatformCapabilities').mockImplementation((platform, scope) =>
-    qualifySkillCapabilities(realProfile(platform, scope)));
-
   const nativeCalls: string[][] = [];
   const codexInstalled = new Map<string, string>();
   const codexMarketplaces = new Map<string, string>();
@@ -310,6 +289,10 @@ describe('Native Skill package projection', () => {
       path.join(isolation.layout.claudeHomeDir, 'skills')]) {
       expect(await fs.pathExists(path.join(root, 'native-skill'))).toBe(false);
     }
+    if (platform === 'claude') {
+      expect(await fs.pathExists(path.join(skill, 'scripts', 'aw-runtime-config.mjs'))).toBe(false);
+      return;
+    }
     const reader = pathToFileURL(path.join(skill, 'scripts', 'aw-runtime-config.mjs')).href;
     const caller = path.join(skill, 'scripts', 'run.mjs');
     const value = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '--eval',
@@ -340,9 +323,12 @@ describe('Native Skill package projection', () => {
       selectedSkills: ['native-skill'], kinds: ['skill'] });
     expect(review.skills).toHaveLength(1);
     expect(review.preparation.flatMap((unit) => unit.unmet)).toEqual([]);
-    expect(await fs.readJson(path.join(review.skills[0]!.path, '.aw-runtime-config.json'))).toMatchObject({
-      installedIdentity: { platform, scope: 'user', configScope: 'user' },
-    });
+    const snapshot = path.join(review.skills[0]!.path, '.aw-runtime-config.json');
+    if (platform === 'codex') {
+      expect(await fs.readJson(snapshot)).toMatchObject({ installedIdentity: { platform, scope: 'user', configScope: 'user' } });
+    } else {
+      expect(await fs.pathExists(snapshot)).toBe(false);
+    }
     expect(await fs.readFile(path.join(review.skills[0]!.path, 'SKILL.md'), 'utf8')).toContain(`# ${platform}-value`);
   });
 });

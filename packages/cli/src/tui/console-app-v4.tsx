@@ -409,7 +409,6 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
 const skillInvocationExplanations: Record<SkillInvocationNoticeReason, (reader?: string) => string> = {
   noBoundExecutor: () => '通用输出没有绑定执行客户端，无法保证',
   invocationControlUnsupported: (reader) => `${reader ?? '该客户端'}不支持`,
-  invocationControlUnverified: (reader) => `尚未验证${reader ? ` ${reader} ` : '该客户端'}能否保证`,
   invocationControlDegraded: (reader) => `观察到${reader ? ` ${reader}` : '该客户端'}未执行`,
 };
 
@@ -430,8 +429,7 @@ function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], 
     }
     const groups = new Map<string, string[]>();
     for (const control of controls) {
-      const reader = control.product ? platform === 'codex' ? 'Codex 桌面 App'
-        : skillInvocationProductLabel(platform, control.product) : undefined;
+      const reader = control.product ? skillInvocationProductLabel(control.product) : undefined;
       const explanation = skillInvocationExplanations[control.reasonCode](reader);
       groups.set(explanation, [...(groups.get(explanation) ?? []), skillInvocationControlLabel(control)]);
     }
@@ -439,7 +437,7 @@ function skillInvocationResultLines(diagnostics: readonly RecoveryDiagnostic[], 
     return [`${position}${explanations.join('')}`,
       ...(technical ? [`  ${SKILL_INVOCATION_NOTICE} · ${reasonCode}`, ...controls.map((control) =>
         `  ${describeSkillInvocationControl(control)} · ${control.reasonCode}${control.product
-          ? ` · ${platform === 'codex' ? 'Codex 桌面 App' : skillInvocationProductLabel(platform, control.product)}` : ''}`)] : [])];
+          ? ` · ${skillInvocationProductLabel(control.product)}` : ''}`)] : [])];
   });
 }
 

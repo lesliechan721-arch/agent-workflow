@@ -17,7 +17,7 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { setTargets, writePreferences, createEmptyPreferences, resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
 
@@ -126,7 +126,7 @@ async function fixture(kind: 'config' | 'skill' | 'command' | 'nested' | 'platfo
 }
 
 describe('platform configuration CLI', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['cursor'] }); });
   // Test Value Gate: rejected writes/apply leave stopped-target data intact, including when its target is excluded.
   it('blocks inactive platforms before writes and apply, but still permits inspecting and clearing historical overrides', async () => {
     const f = await fixture();

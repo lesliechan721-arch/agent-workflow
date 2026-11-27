@@ -84,8 +84,8 @@ describe('native deployment public and TUI consumers', () => {
           detail: { reasonCode: 'delivery-unavailable', path: '/private/test-user/arguments',
             skippedPermissionActions: ['allow', 'deny', '/private/test-user/arguments'] as NonNullable<Diagnostic['detail']>['skippedPermissionActions'] } },
         { code: 'skillInvocationPolicyNotGuaranteed', message: 'Private details.',
-          subject: { pluginId, target: 'antigravity', scope, field: 'skill.unknown' }, detail: { reasonCode: 'invocationControlUnverified',
-            skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnverified', product: 'app' }] } },
+          subject: { pluginId, target: 'antigravity', scope, field: 'skill.unknown' }, detail: { reasonCode: 'unrecognizedControl',
+            skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported' }] } },
         { code: 'skillInvocationPolicyNotGuaranteed', message: 'Private details.',
           subject: { pluginId, target: 'antigravity', scope, field: 'skill.commit' }, detail: { reasonCode: 'invocationControlUnsupported',
             skillInvocationControls: [{ feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported', product: 'cli' }] } },
@@ -265,15 +265,15 @@ describe('native deployment public and TUI consumers', () => {
         execution: failed ? 'failed' : 'applied', observation: failed ? 'missing' : 'verified',
         blockers: failed ? [{ code: 'writeFailed', message: 'Write did not complete.' }] : [], requiredBy: [],
         reasons: [...user.reasons ?? [], ...(!failed ? [{
-          code, message: 'Installed Skill "diagnose". Invocation control is unverified.',
+          code, message: 'Installed Skill "diagnose". Manual invocation cannot be disabled.',
           subject: { pluginId, target: 'codex', scope: 'project' as const, field: 'skill.diagnose' },
-          detail: { reasonCode: 'invocationControlUnverified' },
+          detail: { reasonCode: 'invocationControlUnsupported' },
         }, {
-          code, message: 'Installed Skill "review". Visibility is unsupported and model invocation is unverified.',
+          code, message: 'Installed Skill "review". Manual invocation and visibility cannot be disabled.',
           subject: { pluginId, target: 'codex', scope: 'project' as const, field: 'skill.review' },
-          detail: { reasonCode: 'invocationControlUnverified', skillInvocationControls: [
+          detail: { reasonCode: 'invocationControlUnsupported', skillInvocationControls: [
             { reasonCode: 'invocationControlUnsupported' as const, feature: 'skill.visibility', values: ['hidden'] },
-            { reasonCode: 'invocationControlUnverified' as const, feature: 'skill.invocation.model', values: ['true'], product: 'app' as const },
+            { reasonCode: 'invocationControlUnsupported' as const, feature: 'skill.invocation.manual', values: ['false'] },
           ] },
         }] : [])],
       };
@@ -312,10 +312,9 @@ describe('native deployment public and TUI consumers', () => {
       expect(frame).not.toContain('diagnose 已安装');
     } else {
       expect(frame).not.toContain('重试明确失败项');
-      expect(frame).toContain('Codex · 当前项目 · diagnose 已安装。尚未验证该客户端');
-      expect(frame).toContain('Invocation control is unverified.');
-      expect(frame).toContain('不支持「隐藏 Skill」');
-      expect(frame).toContain('尚未验证 Codex 桌面 App 能否保证「允许模型自动调用」');
+      expect(frame).toContain('Codex · 当前项目 · diagnose 已安装。该客户端不支持');
+      expect(frame).toContain('Manual invocation cannot be disabled.');
+      expect(frame).toContain('不支持「隐藏 Skill、禁止用户显式调用」');
       expect(frame).not.toContain('Installed Skill "review".');
     }
     await input(instance, 'd');
@@ -324,7 +323,7 @@ describe('native deployment public and TUI consumers', () => {
     expect(instance.lastFrame()).toContain('noBoundExecutor');
     if (!failed) {
       expect(instance.lastFrame()).toContain('skill.visibility=hidden · invocationControlUnsupported');
-      expect(instance.lastFrame()).toContain('skill.invocation.model=true · invocationControlUnverified · Codex 桌面 App');
+      expect(instance.lastFrame()).toContain('skill.invocation.manual=false · invocationControlUnsupported');
       expect(instance.lastFrame()).not.toContain('Installed Skill "review".');
     }
     value.dispose();
@@ -422,10 +421,12 @@ describe('native deployment public and TUI consumers', () => {
   // Test Value Gate: public JSON must retain concrete capability values and product/effect facts while excluding renderer content and private prerequisites.
   it('projects frozen requirements and completed product facts without private content', () => {
     const plan = deployment(); const receipt = scopedReceipt({ kind: 'recovery', scope: 'user', selectors: ['official/agent-lab'] });
+    plan.expected.omitted.push({ id: 'opaque-role', kind: 'agent', name: 'reviewer', reason: 'config-disabled' },
+      { id: 'optional-role', kind: 'agent', reason: 'not-offered' });
     receipt.ok = false; receipt.outputsMayHaveChanged = true; receipt.targetResults = [target(plan), genericGapTarget()];
     const result = projectReceipt('target.set', receipt);
     const projected = (result.data as { targetResults: Array<{ deploymentPlans: unknown[]; deploymentReceipts: unknown[] }> }).targetResults[0]!;
-    expect(projected.deploymentPlans[0]).toMatchObject({ expected: { unmet: [
+    expect(projected.deploymentPlans[0]).toMatchObject({ expected: { omitted: plan.expected.omitted, unmet: [
       { componentId: 'guard', requiredFeatures: [{ feature: 'hook.common.before_tool', values: ['block'] }] },
       { componentId: 'rules', requiredFeatures: [{ feature: 'instruction.coverage', values: ['plugin-agents'] }] },
     ] } });

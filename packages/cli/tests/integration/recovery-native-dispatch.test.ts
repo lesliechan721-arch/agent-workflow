@@ -13,7 +13,7 @@ import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
 import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
@@ -23,7 +23,7 @@ import type { CommandResult } from '../../src/output/public-result.js';
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 
 async function grokTrustFixture({ failProject = false, baseHook = false, commandPermissions = false, permissionOnly = false } = {}) {
-  installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+  installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
   await git(cwd, ['init', '--quiet']);
@@ -336,7 +336,7 @@ describe('native recovery dispatch', () => {
     ['agent', 'project configuration'], ['agent', 'project trust'], ['agent', 'same-name source'], ['hook', 'extra package file'],
     ['hook', 'foreign hook'], ['rule', 'foreign rule'], ['rule', 'edited rule'], ['rule', 'same-name User rule'],
   ] as const)('revalidates Grok Project batch with %s and %s', async (kind, change) => {
-      installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+      installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
       const { env, layout } = getCurrentSourceTestIsolation();
       const cwd = await fs.realpath(layout.fixtureCwd);
       await fs.ensureDir(path.join(cwd, '.git'));
@@ -429,7 +429,7 @@ describe('native recovery dispatch', () => {
           if (change === 'foreign rule') await fs.outputFile(manualRule, 'Manual rule.');
           if (change === 'edited rule') await fs.writeFile(rule, (await fs.readFile(rule, 'utf8')).replace('Keep the draft.', 'Edit the draft.'));
           if (change === 'edited package') {
-            const file = path.join(provider, 'agents/base-reviewer.md');
+            const file = path.join(provider, 'agents/aw-local-base-base-reviewer.md');
             await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('Check the new output.', 'Check the old output.'));
           }
           if (change === 'deleted rule') await fs.unlink(rule);
@@ -447,12 +447,12 @@ describe('native recovery dispatch', () => {
           return files.map((file) => ({ name: path.basename(file, '.md'), source: { type: 'plugin', plugin_name: plugin.name, path: path.join(directory, file) } }));
         }))).flat();
         if (externalChange && change === 'reordered agents') {
-          const providerIndex = agents.findIndex((agent) => agent.name === 'base-reviewer');
-          const consumerIndex = agents.findIndex((agent) => agent.name === 'bundle-reviewer');
+          const providerIndex = agents.findIndex((agent) => agent.name === 'aw-local-base-base-reviewer');
+          const consumerIndex = agents.findIndex((agent) => agent.name === 'aw-local-bundle-bundle-reviewer');
           [agents[providerIndex], agents[consumerIndex]] = [agents[consumerIndex]!, agents[providerIndex]!];
         }
         if (externalChange && change === 'moved new agent') {
-          const added = agents.splice(agents.findIndex((agent) => agent.name === 'extra-role'), 1)[0]!;
+          const added = agents.splice(agents.findIndex((agent) => agent.name === 'aw-local-base-extra-role'), 1)[0]!;
           agents.push(added);
         }
         const hooks = (await Promise.all(plugins.map(async (plugin) => {
@@ -501,13 +501,13 @@ describe('native recovery dispatch', () => {
       const install = await runPublicLifecycle('install', requested, options, { nativeCliRunner });
       expect(install, JSON.stringify(install.diagnostics)).toMatchObject({ status: 'success', data: { remainingTargets: [],
         targetResults: requested.map((pluginId) => ({ pluginId, execution: 'applied', content: 'satisfied' })) } });
-      if (baseAgent) expect(await fs.readFile(path.join(provider, 'agents', 'base-reviewer.md'), 'utf8')).toContain('Check the base output.');
+      if (baseAgent) expect(await fs.readFile(path.join(provider, 'agents', 'aw-local-base-base-reviewer.md'), 'utf8')).toContain('Check the base output.');
       if (baseRule) expect(await fs.readFile(rule, 'utf8')).toContain('Keep the draft.');
       if (kind === 'hook') expect(await fs.readJson(path.join(provider, 'hooks', 'hooks.json'))).toHaveProperty('hooks');
       if (kind === 'rule') expect(await fs.pathExists(provider)).toBe(false);
       const unchangedNames = independentUpgrade ? names.filter((name) => name !== 'base') : ['bundle'];
       const readUnchangedRoles = () => Promise.all(unchangedNames.map(async (name) => {
-        const file = path.join(projectPlugins, 'aw-local-' + name, 'agents', `${name}-reviewer.md`);
+        const file = path.join(projectPlugins, 'aw-local-' + name, 'agents', `aw-local-${name}-${name}-reviewer.md`);
         const [text, { mtimeMs }] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
         return { name, text, mtimeMs };
       }));
@@ -532,12 +532,12 @@ describe('native recovery dispatch', () => {
             names.map((name) => ({ pluginId: 'local/' + name, execution: name === 'base' ? 'applied' : 'no-op', blockerCodes: [] })));
           expect(update.status).toBe('success');
           expect(await fs.readFile(path.join(provider, 'skills/base/SKILL.md'), 'utf8')).toContain('Base skill 1.');
-          expect(await fs.readFile(path.join(provider, 'agents/base-reviewer.md'), 'utf8')).toContain('Check the new output.');
+          expect(await fs.readFile(path.join(provider, 'agents/aw-local-base-base-reviewer.md'), 'utf8')).toContain('Check the new output.');
           expect(await fs.readFile(path.join(provider, '.mcp.json'), 'utf8')).toContain('http://127.0.0.1:1/1');
           if (kind === 'drop components') expect(await fs.pathExists(path.join(provider, 'hooks/hooks.json'))).toBe(false);
           else expect(await fs.readFile(path.join(provider, 'hooks/hooks.json'), 'utf8')).toContain('echo updated');
           if (kind === 'add components' || kind === 'drop components') {
-            expect(await fs.pathExists(path.join(provider, 'agents/extra-role.md'))).toBe(kind === 'add components');
+            expect(await fs.pathExists(path.join(provider, 'agents/aw-local-base-extra-role.md'))).toBe(kind === 'add components');
           }
           expect(await fs.readFile(rule, 'utf8')).toContain('Keep the final draft.');
           const updatedStatus = await runPublicPluginStatus([], statusOptions, { nativeCliRunner });
@@ -552,7 +552,7 @@ describe('native recovery dispatch', () => {
             { execution: 'applied', blockerCodes: [] }, { execution: 'applied', blockerCodes: [] },
             { execution: 'failed', blockerCodes: ['operationPlanStale'] },
           ]);
-          if (change === 'edited package') expect(await fs.readFile(path.join(provider, 'agents/base-reviewer.md'), 'utf8')).toContain('Check the old output.');
+          if (change === 'edited package') expect(await fs.readFile(path.join(provider, 'agents/aw-local-base-base-reviewer.md'), 'utf8')).toContain('Check the old output.');
           if (change === 'deleted rule') expect(await fs.pathExists(rule)).toBe(false);
         }
       }
@@ -563,7 +563,7 @@ describe('native recovery dispatch', () => {
     });
 
   it.each(['unchanged', 'external edit'] as const)('revalidates Grok User rules after a partial install with %s', async (scenario) => {
-    installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+    installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
     const { env, layout } = getCurrentSourceTestIsolation();
     const cwd = layout.fixtureCwd;
     const catalog = path.join(cwd, 'catalog');
@@ -634,7 +634,7 @@ describe('native recovery dispatch', () => {
   // already published the new AW source. Its untouched neighbor stays a no-op.
   it.each(['trusted', 'retry after refusal', 'foreign registration', 'edited native copy'] as const)(
     'revalidates a Grok User batch refresh with %s', async (scenario) => {
-      installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+      installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
       const { env, layout } = getCurrentSourceTestIsolation();
       const cwd = layout.fixtureCwd;
       const catalog = path.join(cwd, 'catalog');
@@ -674,7 +674,7 @@ describe('native recovery dispatch', () => {
       let authorized = true;
       let editAfterRefresh = false;
       let edited = false;
-      const mixedCopy = path.join(host, 'installed-plugins/local-mixed/agents/reviewer.md');
+      const mixedCopy = path.join(host, 'installed-plugins/local-mixed/agents/aw-local-mixed-reviewer.md');
       const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
         if (editAfterRefresh && !edited) {
           edited = true;
@@ -687,8 +687,8 @@ describe('native recovery dispatch', () => {
         else if (args[0] === 'inspect') stdout = JSON.stringify({
           grokVersion: '1.0.77', projectTrusted: authorized, projectRoot: null,
           plugins: list.map(({ name, path: installed }) => ({ name, path: installed, enabled: true, scope: 'user' })),
-          agents: list.map(({ name, version, path: installed }) => ({ name: 'reviewer', description: name === 'mixed' ? version : 'Review.',
-            source: { type: 'plugin', plugin_name: name, path: path.join(installed, 'agents/reviewer.md') } })),
+          agents: list.map(({ name, version, path: installed }) => ({ name: `aw-local-${name}-reviewer`, description: name === 'mixed' ? version : 'Review.',
+            source: { type: 'plugin', plugin_name: name, path: path.join(installed, `agents/aw-local-${name}-reviewer.md`) } })),
           hooks: (await Promise.all(list.map(async (plugin) => {
             const target = path.join(plugin.path, 'hooks/hooks.json');
             return await fs.pathExists(target) ? [{ event: '(plugin)', hookType: 'file', target, matcher: null,
@@ -725,7 +725,7 @@ describe('native recovery dispatch', () => {
       expect((await sync()).status).toBe('success');
       await writeCatalog(2);
       await updateSource();
-      const otherRole = path.join(registered.get('other')!.path, 'agents/reviewer.md');
+      const otherRole = path.join(registered.get('other')!.path, 'agents/aw-local-other-reviewer.md');
       const otherMtime = (await fs.stat(otherRole)).mtimeMs;
       if (scenario === 'retry after refusal') {
         authorized = false;
@@ -757,7 +757,7 @@ describe('native recovery dispatch', () => {
   // Read role-only text from both native package routes, and verify the same
   // target's rules projection and quiet follow-up status.
   it.each(['user', 'project'] as const)('reports a complete Grok %s dynamic supplement projection ready', async (scope) => {
-    installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+    installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
     const { env, layout } = getCurrentSourceTestIsolation();
     const cwd = layout.fixtureCwd;
     await fs.ensureDir(path.join(cwd, '.git'));
@@ -825,7 +825,7 @@ describe('native recovery dispatch', () => {
       expect(result.status, JSON.stringify(result)).toBe('success');
     }
     const nativePackage = scope === 'user' ? installed : projectPackage;
-    expect(await fs.readFile(path.join(nativePackage, 'agents/reviewer.md'), 'utf8')).toContain('Keep this inside the reviewer role.');
+    expect(await fs.readFile(path.join(nativePackage, 'agents/aw-local-demo-reviewer.md'), 'utf8')).toContain('Keep this inside the reviewer role.');
     const rules = scope === 'user' ? path.join(host, 'rules') : path.join(cwd, '.grok', 'rules');
     expect(await fs.pathExists(path.join(rules, 'aw-local-demo-role-context.md'))).toBe(false);
     const rendered = await fs.readFile(trace, 'utf8');
@@ -1120,8 +1120,16 @@ describe('native recovery dispatch', () => {
     const bin = path.join(cwd, 'bin');
     const env = { ...isolation.env, PATH: bin };
     await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'fixture entry', { mode: 0o755 });
+    const skill = { id: 'review-guide', name: 'review-guide', kind: 'skill', requires: [{ feature: 'component.kind.agent' }],
+      content: { files: { 'SKILL.md': { text: '---\nname: review-guide\ndescription: Use the installed reviewer.\n---\nReview the work.\n' },
+        'README.md': { text: 'Use the reviewer.' } } } };
+    await fs.outputFile(path.join(source, 'plugins/roles/render.mjs'), `import fs from 'node:fs';
+const { allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('skill') ? [${JSON.stringify(skill)}] : [],omitted:[],unmet:[]}));`);
     await createCatalogSnapshotFixture(source, 'roles', [], 'Pi roles.', (manifest) => {
       manifest.platforms = ['pi'];
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
       manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review the work.', prompt: 'Check the work.' }] };
     });
     const config = await readCatalogSourcesConfigSnapshot(env);
@@ -1154,12 +1162,13 @@ describe('native recovery dispatch', () => {
       const result = await runCliEntry(['plugin', ...args, '--context', 'user', '--json'], { cwd, env, nativeCliRunner, interactive: false });
       return { exitCode: result.exitCode, value: result.parseJsonStdout<CommandResult>() };
     };
-    const role = { target: 'pi', scope: 'user', satisfaction: 'installed', installedComponentCount: 1,
-      installedComponentIds: ['agent:reviewer'] };
+    const role = { target: 'pi', scope: 'user', satisfaction: 'installed', installedComponentCount: 2,
+      installedComponentIds: expect.arrayContaining(['agent:reviewer', 'review-guide']) };
     const notice = (reasonCode: string) => expect.objectContaining({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode } });
     const install = await aw('install', 'local/roles', '--scope', 'user', '--yes');
     expect(install, JSON.stringify(install)).toMatchObject({ exitCode: 0, value: { diagnostics: expect.arrayContaining([notice('piAgentConsumerMissing')]),
       data: { remainingTargets: [], targetResults: [role] } } });
+    expect(await fs.readFile(path.join(packageRoot, 'skills/review-guide/SKILL.md'), 'utf8')).toContain('Review the work.');
     const agentRoot = path.join(packageRoot, 'agents');
     const [agentFile] = await fs.readdir(agentRoot);
     const rolePath = path.join(agentRoot, agentFile!);
@@ -1181,6 +1190,14 @@ describe('native recovery dispatch', () => {
     expect(await assertStatus()).toContainEqual(notice('piAgentConsumerDisabled'));
     await fs.outputJson(settings, { packages: [registration, extension] });
     expect((await assertStatus()).map(({ code }) => code)).not.toContain('piAgentConsumerUnavailable');
+    const extensionSettings = path.join(root, 'subagents.json');
+    await fs.outputJson(extensionSettings, { packageAgents: false });
+    expect(await assertStatus()).toContainEqual(notice('piAgentPackageAccessDenied'));
+    await fs.writeFile(extensionSettings, '{');
+    const unreadable = await assertStatus();
+    expect(unreadable.map(({ code }) => code)).toContain('piConfigurationUnconfirmed');
+    expect(unreadable).toContainEqual(notice('piConfigurationUnconfirmed'));
+    await fs.writeJson(extensionSettings, {});
     const sync = await aw('sync', 'local/roles', '--yes');
     expect(sync, JSON.stringify(sync)).toMatchObject({ exitCode: 0, value: { data: { remainingTargets: [], changes: { outputs: 'none' } } } });
     expect(installs).toBe(1);

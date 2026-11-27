@@ -23,7 +23,7 @@ import { resolveManagedCommand } from '../../src/utils/managed-command-store.js'
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import type { CatalogResolution, PluginMeta } from '../../src/types.js';
 import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
@@ -32,7 +32,7 @@ import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 // Review must use the same frozen routes, Skill substitutions, and host rules as execution.
 describe('prepared managed command Review', () => {
   it.each(['codex', 'claude', 'opencode'] as const)('shows the %s permissions from prepared output and the actual dispatch entry', async (platform) => {
-    installNativeTestQualification({ platforms: [platform], discovery: true });
+    installNativeTestDiscovery({ platforms: [platform] });
     const isolated = await createIsolatedTestEnv();
     let context: RebuildExecutionContext | undefined;
     try {
@@ -146,7 +146,7 @@ describe('prepared managed command Review', () => {
   });
 
   it('reviews the first saved-config apply through the real controller', async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex'] });
     const isolated = await createIsolatedTestEnv();
     let controller: TuiController | undefined;
     try {

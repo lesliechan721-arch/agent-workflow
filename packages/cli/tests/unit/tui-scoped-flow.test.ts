@@ -174,8 +174,8 @@ it('keeps one Skill notice per delivered location in partial recovery history an
     code: 'skillInvocationPolicyNotGuaranteed',
     message: 'Private diagnostic from /private/catalog/skill.',
     subject: { pluginId: 'team/provider', target: 'codex', scope, field: 'skill.commit' },
-    detail: { reasonCode: 'invocationControlUnverified', path: '/private/catalog/skill', skillInvocationControls: [
-      { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+    detail: { reasonCode: 'invocationControlUnsupported', path: '/private/catalog/skill', skillInvocationControls: [
+      { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnsupported' },
       { feature: 'skill.visibility', values: ['hidden'], reasonCode: 'invocationControlUnsupported' },
     ] },
   });
@@ -208,8 +208,8 @@ it('keeps one Skill notice per delivered location in partial recovery history an
     { pluginId: project.pluginId, state: 'completed', diagnosticIds: [warnings[1]!.id] },
   ]);
   for (const text of [operationDiagnosticText(record), store.preview('sync')!.content]) {
-    expect(text.match(/skill\.commit · invocationControlUnverified/gu)).toHaveLength(2);
-    expect(text.match(/skill\.invocation\.model=false · invocationControlUnverified · product=app/gu)).toHaveLength(2);
+    expect(text.match(/skill\.commit · invocationControlUnsupported/gu)).toHaveLength(2);
+    expect(text.match(/skill\.invocation\.manual=false · invocationControlUnsupported/gu)).toHaveLength(2);
     expect(text.match(/skill\.visibility=hidden · invocationControlUnsupported/gu)).toHaveLength(2);
     expect(text).not.toContain('Private diagnostic');
     expect(text).not.toContain('/private/catalog');

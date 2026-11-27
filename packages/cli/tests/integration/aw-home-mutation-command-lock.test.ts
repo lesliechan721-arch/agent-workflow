@@ -26,7 +26,7 @@ import {
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { createNativeTestExecution, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 
 interface MutationChildRun {
@@ -177,7 +177,7 @@ describe('public AW_HOME mutation command lock', () => {
   });
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex'] });
     const { isolation } = await configureCatalog();
     await syncCatalogSourceGeneration({
       sourceId: 'team',

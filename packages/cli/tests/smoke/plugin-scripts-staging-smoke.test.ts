@@ -203,13 +203,7 @@ describe('plugin scripts staging smoke', () => {
     const renderUnit = resolution.renderUnits.find((unit) => unit.kinds.includes('skill'))!;
     expect(binding).toBeDefined();
     expect(renderUnit).toBeDefined();
-    // These explicit lower-boundary facts exercise the real artifact closure.
-    // They do not qualify a Codex client or claim model/tool execution support.
     const capabilities = profiles.getAuthoringPlatformCapabilities('codex', 'user');
-    capabilities.kinds.skill = { status: 'supported', reasonCodes: [], delivery: ['native-package'] };
-    for (const [feature, values] of [
-      ['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],
-    ] as const) capabilities.features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
     const configStore = await importSmokeSnapshotModule<typeof import('../../src/utils/plugin-config.js')>(
       path.join(snapshot.cliDistRoot, 'src', 'utils', 'plugin-config.js'));
     const configOptions = { pluginName: plugin.manifest.name, manifest: plugin.manifest,

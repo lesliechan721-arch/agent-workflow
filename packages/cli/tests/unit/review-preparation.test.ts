@@ -6,12 +6,12 @@ import {
   type PluginManifestSource,
 } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
+import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { prepareReviewTarget } from '../../src/commands/review-preparation.js'
 import { inspectReviewTarget } from '../../src/commands/review-inspection.js'
 import { resolveReviewSelection } from '../../src/review/review-selection.js'
-import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js'
 import { getProfileRenderScopes } from '../../src/platforms/layout.js'
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js'
 import {
@@ -19,7 +19,6 @@ import {
   readAwSourceBinding,
   validateAwSourceBindingForWorkspace,
 } from '../../src/review/source-binding.js'
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js'
 
 const roots: string[] = []
 
@@ -106,7 +105,7 @@ if (context.allowedOutputKinds.includes('skill')) for (const name of names) {
     plan.omitted.push({id:name,kind:'skill',reason:'config-disabled'}); continue;
   }
   if (context.platformCapabilities.kinds.skill.status !== 'supported') {
-    plan.unmet.push({id:name,kind:'skill',name,requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'capability-unverified'});continue;
+    plan.unmet.push({id:name,kind:'skill',name,requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'interface-unsupported'});continue;
   }
   plan.components.push({id:name,kind:'skill',name,content:{files:{
     'SKILL.md':{text:'---\\nname: '+name+'\\ndescription: Prepared fixture.\\n---\\n# '+name+'\\n'},
@@ -151,7 +150,7 @@ const plan = {version:3,components:[],omitted:[],unmet:[]};
 const names = context.platform === 'codex' ? ['native','extension'] : ['portable'];
 if (context.allowedOutputKinds.includes('skill')) for (const name of names) {
  if(context.platformCapabilities.kinds.skill.status !== 'supported') {
-  plan.unmet.push({id:name,kind:'skill',name,requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'capability-unverified'});continue;
+  plan.unmet.push({id:name,kind:'skill',name,requiredFeatures:[{feature:'component.kind.skill'}],reasonCode:'interface-unsupported'});continue;
  }
  plan.components.push({id:name,kind:'skill',name,content:{files:{
   'SKILL.md':{text:'---\\nname: '+name+'\\ndescription: Shared config fixture.\\n---\\n# '+name+'\\n'},
@@ -236,7 +235,6 @@ afterEach(async () => {
 
 describe('Review preparation', () => {
   it('prepares only the selected consumer using isolated dependency overrides and rechecks its source binding', async () => {
-    installNativeTestQualification({ platforms: ['codex'] })
     const fixture = await createWorkspace('aw-review-cross-config-')
     const pluginRoot = await createDynamicPlugin(fixture.root)
     const consumerPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
@@ -569,11 +567,6 @@ describe('Review preparation', () => {
       })
 
       expect(result.exitCode, JSON.stringify(result.receipt)).toBe(0)
-      if (getAuthoringPlatformCapabilities(platform, expectedConfigScope).kinds.skill.status !== 'supported') {
-        expect(result.receipt.skills).toEqual([])
-        expect(result.receipt.preparation?.flatMap((unit) => unit.unmet)).toContainEqual(expect.objectContaining({name:skill,reasonCode:'capability-unverified'}))
-        return
-      }
       expect(result.receipt).toMatchObject({
         ok: true,
         skills: [{ skill, state: 'ready', profile: { platform, scope } }],
@@ -602,7 +595,6 @@ describe('Review preparation', () => {
   ] as const)(
     'keeps shared native and ordinary project config aligned for %s/%s',
     async (platform, skill) => {
-      if (platform === 'codex') installNativeTestQualification({ platforms: ['codex'] })
       const fixture = await createWorkspace('aw-review-shared-config-')
       const pluginRoot = await createSharedConfigPlugin(fixture.root)
       const configFile = path.join(fixture.root, 'review-config.json')
@@ -686,6 +678,30 @@ describe('Review preparation', () => {
       ]))
     },
   )
+
+  it('uses the workspace review-source identity for prepared Codex role files', async () => {
+    const fixture = await createWorkspace()
+    const pluginRoot = await writePlugin(fixture.root, manifest('role-review', {
+      skills: './skills',
+      extensions: { agents: [{ name: 'reviewer', description: 'Reviews changes.', prompt: 'Review the input.' }] },
+    }))
+    await writeNativeSkill(pluginRoot, 'review')
+    const output = path.join(fixture.root, '_review-output', 'roles')
+    const result = await prepareReviewTarget({ cwd: fixture.root, target: pluginRoot, platform: 'codex', scope: 'project',
+      out: output, env: fixture.env })
+    expect(result.exitCode, JSON.stringify(result.receipt)).toBe(0)
+    const binding = await readAwSourceBinding(result.receipt.sourceBindingPath!)
+    const agentUnit = binding.preparation!.find((unit) => unit.components.some(({ kind }) => kind === 'agent'))!
+    expect(agentUnit.outputs).toHaveLength(1)
+    const nativeRoot = path.join(output, agentUnit.outputs[0]!.path)
+    const stages = await fs.readdir(nativeRoot)
+    expect(stages).toHaveLength(1)
+    const roleRoot = path.join(nativeRoot, stages[0]!, 'output')
+    const name = 'aw-review-source-role-review-reviewer'
+    expect(await fs.readdir(roleRoot)).toEqual([`${name}.toml`])
+    const text = await fs.readFile(path.join(roleRoot, `${name}.toml`), 'utf8')
+    expect(getStaticTOMLValue(parseTOML(text))).toMatchObject({ name, developer_instructions: 'Review the input.' })
+  })
 
   it('rejects output overlap and symlink ancestors before running a build', async () => {
     const fixture = await createWorkspace()

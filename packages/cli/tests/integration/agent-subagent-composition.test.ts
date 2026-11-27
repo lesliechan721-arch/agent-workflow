@@ -6,7 +6,7 @@ import { expect, it } from 'vitest';
 
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -17,7 +17,7 @@ const advisor = 'staged/agent-advisor';
 // Test Value Gate: exercise the actual shipped dependency graph, renderer,
 // same-source suggestions provider and active-platform reference protection together.
 it('installs the three subagent plugins, uses their shared provider, and protects only active references', async () => {
-  installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+  installNativeTestDiscovery({ platforms: ['codex', 'claude'] });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout: { fixtureCwd: cwd } } = isolation;
   await fs.ensureDir(path.join(cwd, '.git'));

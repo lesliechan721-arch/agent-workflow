@@ -128,6 +128,9 @@ export function deliveryNoticeMessage(code: string, detail?: Diagnostic['detail'
       : `Some invocation policy actions were skipped${position}.`;
   }
   const reasonCode = detail?.reasonCode;
+  if (reasonCode === 'piConfigurationUnconfirmed') {
+    return 'Pi roles are installed. Agent extension settings could not be read; execution availability remains unknown. Check the settings and reload Pi.';
+  }
   if (reasonCode === 'piAgentPackageSourceUnsupported') {
     return 'Pi roles are installed. The detected pi-subagents version cannot read this Pi package source. Enable a compatible extension such as @tintinweb/pi-subagents and reload Pi.';
   }

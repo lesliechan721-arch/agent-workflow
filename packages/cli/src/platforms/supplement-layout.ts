@@ -1,19 +1,22 @@
 import path from 'node:path';
-import { resolvePlatformEntries, type ComponentUnmet, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { resolvePlatformEntries, resolveProjectedAgentName, type ComponentUnmet, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
 import type { OwnedComponent } from '../utils/ownership.js';
 import type { DeploymentBinding } from './contracts.js';
 import { getDeploymentResourceKey, getNativePackageName, type DeploymentLayout } from './layout.js';
-import { nativeComponentName } from './projection-files.js';
+import { agentNamingForBinding, nativeComponentName } from './projection-files.js';
 
 type SupplementIdentity = Pick<PluginComponent, 'kind' | 'name'>;
 
 /** Fixed host locations depend on declared identity, never on component content. */
 export function supplementRelativePath(binding: DeploymentBinding, component: SupplementIdentity): string {
-  const name = `${getDeploymentResourceKey(binding.plugin)}-${nativeComponentName(component.name)}`;
-  if (binding.platform === 'codex' && component.kind === 'agent') return `${name}.toml`;
-  if (binding.platform === 'grok' && component.kind === 'instruction') return `${name}.md`;
+  if (binding.platform === 'codex' && component.kind === 'agent') {
+    return `${resolveProjectedAgentName(agentNamingForBinding(binding), component.name)}.toml`;
+  }
+  if (binding.platform === 'grok' && component.kind === 'instruction') {
+    return `${getDeploymentResourceKey(binding.plugin)}-${nativeComponentName(component.name)}.md`;
+  }
   throw new Error('platformProjectionSupplementKindUnsupported');
 }
 

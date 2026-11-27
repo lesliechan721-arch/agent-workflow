@@ -49,6 +49,7 @@ export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], 
   }
   if (code !== PI_AGENT_CONSUMER_NOTICE) return '旧输出仍保留，可能仍在生效。请先检查该位置再重试。';
   const reason = detail?.reasonCode;
+  if (reason === 'piConfigurationUnconfirmed') return 'Pi 角色已安装。无法读取角色扩展设置，尚不能确定执行器是否可用。请检查设置并重载 Pi。';
   if (reason === 'piAgentConsumerDisabled') return 'Pi 角色已安装。请启用兼容的角色扩展并重载 Pi。';
   if (reason === 'piAgentPackageAccessDenied') return 'Pi 角色已安装。请检查角色扩展能否访问此包并重载 Pi。';
   if (reason === 'piAgentPackageSourceUnsupported') return 'Pi 角色已安装。检测到的 pi-subagents 版本无法读取此包来源。请启用兼容的扩展，例如 @tintinweb/pi-subagents，然后重载 Pi。';

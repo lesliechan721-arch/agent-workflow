@@ -15,10 +15,7 @@ import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
 import { getPhysicalKey } from '../../src/platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { DeploymentBinding } from '../../src/platforms/contracts.js';
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { prepareRetire, executeRetire } from '../../src/recovery/retirement.js';
-import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
-import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -98,19 +95,6 @@ async function directoryCatalog(root: string, platform: 'opencode' | 'codex' | '
   await fs.writeJson(catalogPath, { ...catalog, entries: [await createCatalogManifestV7Entry(meta, pluginRoot)] });
 }
 
-function qualifiedSession(runtime: RebuildCommandRuntime): PlatformRebuildSession {
-  const context = createCommandExecutionContext({ env: runtime.env, nativeCliRunner: runtime.nativeCliRunner });
-  // Only qualification facts are synthetic. Layout, preparation, publication and ownership use production code.
-  return new PlatformRebuildSession(context, (platform) => {
-    const adapter = getAgentPluginAdapter(platform);
-    return { ...adapter, capabilities: (input) => {
-      const facts = adapter.capabilities(input);
-      facts.kinds.skill = { ...facts.kinds.skill, status: 'supported', reasonCodes: [] };
-      return facts;
-    } };
-  });
-}
-
 async function nativeFixtureRuntime(): Promise<RebuildCommandRuntime> {
   const isolation = getCurrentSourceTestIsolation();
   const env = { ...isolation.env };
@@ -184,11 +168,9 @@ async function invokeNativeWriter(
     selectedTargets: ids.flatMap((pluginId) => platforms.map((platform) => ({ pluginId, platform }))),
     includeSelectedInDemand: writer === installNativeWriteCommand,
   });
-  const qualified = writer !== cleanupNativeWriteCommand && runtime?.nativeCliRunner ? qualifiedSession(runtime) : undefined;
   try {
-    return await writer(pluginNames, options, { ...runtime, ...(qualified ? { platformRebuildSession: qualified } : {}), executionInput: native.executionInput });
+    return await writer(pluginNames, options, { ...runtime, executionInput: native.executionInput });
   } finally {
-    await qualified?.dispose();
     await native.dispose();
   }
 }

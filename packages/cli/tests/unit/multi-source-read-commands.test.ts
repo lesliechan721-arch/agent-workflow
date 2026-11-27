@@ -22,7 +22,7 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { resolvePluginConfigStorePath, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
@@ -225,7 +225,7 @@ describe('multi-source read commands', () => {
   });
 
   it('reports status schema 8 and continues after one source failure', async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex', 'claude'] });
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('good');
     const bad = fixturePath('bad');
@@ -477,7 +477,7 @@ describe('multi-source read commands', () => {
   }));
 
   it('ignores marker-only and foreign static project Skill directories', () => withSuccessfulCodexPluginList(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex'] });
     const isolation = getCurrentSourceTestIsolation();
     await ensureProjectRepository();
     const sourceRoot = fixturePath('partial-collision');
@@ -826,7 +826,7 @@ describe('multi-source read commands', () => {
   });
 
   it('resolves only selector dependencies and withholds a bare match when one source fails', async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex', 'claude'] });
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('good');
     const bad = fixturePath('missing');
@@ -1241,7 +1241,7 @@ describe('multi-source read commands', () => {
   );
 
   it('does not project an unrelated Codex user inventory failure into a Claude project query', async () => {
-    installNativeTestQualification({ platforms: ['claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['claude'] });
     const isolation = getCurrentSourceTestIsolation();
     await ensureProjectRepository();
     const good = fixturePath('filtered-status-inventory');
@@ -1283,7 +1283,7 @@ describe('multi-source read commands', () => {
   });
 
   it('does not project another plugin Codex residue failure into a Claude project query', async () => {
-    installNativeTestQualification({ platforms: ['claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['claude'] });
     const isolation = getCurrentSourceTestIsolation();
     await ensureProjectRepository();
     const sourceRoot = fixturePath('filtered-codex-residue');

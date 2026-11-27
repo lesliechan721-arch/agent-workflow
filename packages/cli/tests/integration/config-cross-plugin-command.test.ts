@@ -15,7 +15,7 @@ import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { runSafeCli } from '../helpers/cli-runtime.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -96,7 +96,7 @@ async function createNativeReferenceFixture(preApply = false) {
 }
 
 describe('cross-plugin public config apply', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery({ platforms: ['codex', 'claude'] }); });
 
   // Test Value Gate: applying a provider's common config discovers a dependent package without Intent
   // and leaves the identically named package from another source untouched.

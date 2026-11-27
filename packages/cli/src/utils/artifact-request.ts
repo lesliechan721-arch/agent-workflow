@@ -1,7 +1,7 @@
 import {
   getPluginConfigDependencyKeys,
   type ComponentKind,
-  type PlatformRenderContextV2,
+  type PlatformRenderContextV3,
   type PlatformTarget,
   type PluginConfigSchemaField,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -13,7 +13,7 @@ import { redactPluginScriptOutput } from './plugin-scripts.js';
 export function resolvePlatformComponentBatches(options: {
   manifest: NormalizedPluginManifest; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
   config: ResolvedArtifactRenderConfig;
-}): Array<Pick<PlatformRenderContextV2, 'allowedOutputKinds' | 'config'>> {
+}): Array<Pick<PlatformRenderContextV3, 'allowedOutputKinds' | 'config'>> {
   const { artifacts, platforms } = options.manifest;
   if (!artifacts || (platforms?.length && !platforms.includes(options.platform))
     || (artifacts.scopes && !artifacts.scopes.includes(options.renderScope))) return [];
@@ -42,7 +42,7 @@ export function selectPlatformRenderConfigKeys(options: {
 
 export function selectPlatformRenderConfig(options: {
   resolved: ResolvedArtifactRenderConfig; keys: readonly string[]; nonSensitive: boolean;
-}): PlatformRenderContextV2['config'] {
+}): PlatformRenderContextV3['config'] {
   const keys = new Set(selectPlatformRenderConfigKeys(options));
   const select = <T>(values: Record<string, T>): Record<string, T> => Object.fromEntries(
     Object.entries(values).filter(([key]) => keys.has(key)));

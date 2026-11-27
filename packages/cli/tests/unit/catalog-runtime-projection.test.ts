@@ -10,7 +10,7 @@ import {
 } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
+import { computeAwCapabilitySetDigest, readPluginManifest, resolvePluginRequirements } from '../../src/utils/manifest.js';
 import type { PluginMeta } from '../../src/types.js';
 
 const tempRoots: string[] = [];
@@ -143,6 +143,38 @@ describe('catalog runtime projection', () => {
       buildMode: 'staging',
       stagingRunner: outputRunner,
     })).rejects.toThrow('markdown-link target "nested.md"');
+  });
+
+  it.each(['template', 'runtime-file'] as const)('freezes Agent requirements introduced by a %s on one platform into every receipt', async (producer) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-materialized-agent-reference-'));
+    tempRoots.push(root);
+    const ref = '{{aw.agent:auditor}}';
+    const capability = 'aw.skill-agent-placeholder.v1';
+    const target = 'skills/demo/references/agent.md';
+    const plugin = await createPlugin({
+      root, name: 'agent-consumer', platforms: ['codex', 'generic'],
+      extensions: { agents: [{ name: 'auditor', prompt: 'Check.', description: 'Audit.' }] },
+      buildConfig: producer === 'template'
+        ? { templates: { include: [target], vars: { target: { codex: '', generic: ref } } },
+          fileRules: { codex: { include: [], exclude: [target] } } }
+        : { skillRuntimeFiles: [{ skill: 'demo', target: 'references/agent.md', platforms: ['generic'], source: './input.md' }] },
+      files: producer === 'template' ? { [target]: '{{target}}' } : { 'input.md': ref },
+    });
+    const sourceRequirements = await resolvePluginRequirements({ pluginRoot: plugin.rootDir, manifest: plugin.manifest, implementedCapabilities: [] });
+    expect(sourceRequirements.effective).not.toContain(capability);
+    const bundle = path.join(root, 'bundle');
+    await bundleLocalPlugin(plugin, bundle);
+    await expect(fs.readFile(path.join(bundle, 'generic', target), 'utf8')).resolves.toBe(ref);
+    const effective = (await fs.readJson(path.join(bundle, '.agents-plugin/plugin.json'))).requires.aw.capabilities;
+    expect(effective).toContain(capability);
+    for (const platform of ['codex', 'generic']) {
+      expect(await fs.readJson(path.join(bundle, platform, 'skills/demo/aw-plugin-requirements.json'))).toMatchObject({
+        requiredCapabilities: effective, digest: computeAwCapabilitySetDigest(effective),
+      });
+    }
+    if (producer === 'template') plugin.manifest.buildConfig!.templates!.vars!.target!.generic = '{{aw.agent:';
+    else await fs.writeFile(path.join(plugin.rootDir, 'input.md'), '{{aw.agent:');
+    await expect(bundleLocalPlugin(plugin, path.join(root, 'invalid'))).rejects.toThrow(/^agentReferenceInvalid/u);
   });
 
   it('propagates used Skill runtime export capabilities to the bundle, Catalog entry, and every Skill receipt', async () => {

@@ -6,7 +6,7 @@ import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 export type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 4 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 23
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 24
 
 // Metadata-only imports must not pay for schema compilation.
 let manifestValidator: ValidateFunction<PluginManifestSourceV4> | undefined
@@ -96,6 +96,14 @@ export type * from './types.js'
 export * from './managed-commands.js';
 export * from './native-tools.js';
 
+export * from './agent-placeholders.js'
+export * from './skill-agent-registry.js'
+export * from './skill-agent-source.js'
+export {
+  nativeComponentName, resolvePlatformAgentNamingMode, resolvePlatformAgentNaming,
+  resolveProjectedAgentName, resolveAgentInvocationName,
+  type PlatformAgentNaming, type PlatformAgentNamingMode,
+} from './platform-agent-naming.js'
 export * from './plugin-components.js'
 
 export * from './hook-handlers.js';

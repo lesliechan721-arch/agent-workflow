@@ -45,7 +45,7 @@ if (${needsRuntimeConfig} && !context.platformCapabilities.features['skill.runti
 if (!context.allowedOutputKinds.includes('skill')) {
   console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));
 } else if (missing.length) {
-  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'computed',kind:'skill',name:'computed-name',requiredFeatures:missing,reasonCode:'capability-unverified'}]}));
+  console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[{id:'computed',kind:'skill',name:'computed-name',requiredFeatures:missing,reasonCode:'interface-unsupported'}]}));
 } else {
   console.log(JSON.stringify({version:3,components:[{id:'computed',kind:'skill',name:'computed-name',content:{files:{
     'SKILL.md':{text:'---\\nname: computed-name\\ndescription: A computed author Skill.\\n---\\nRead references/reference.md.\\n'},
@@ -115,7 +115,7 @@ describe('v4 author profile consumers', () => {
     expect(result.exitCode).toBe(0);
     expect(result.receipt.skills).toEqual([]);
     expect(result.receipt.preparation?.flatMap((unit) => unit.unmet)).toContainEqual(expect.objectContaining({
-      id: 'computed', reasonCode: 'capability-unverified',
+      id: 'computed', reasonCode: 'interface-unsupported',
       requiredFeatures: [{ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }],
     }));
     expect(result.receipt.preparation?.every((unit) => unit.outputs.length === 0)).toBe(true);

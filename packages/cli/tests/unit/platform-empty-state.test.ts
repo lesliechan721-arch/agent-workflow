@@ -8,7 +8,6 @@ import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
 import type { PluginMeta } from '../../src/types.js';
-import type { DeploymentObservation } from '../../src/platforms/contracts.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('native intentional empty currentness', () => {
@@ -47,8 +46,8 @@ describe('native intentional empty currentness', () => {
     expect(await readPlatformDeliveryState({ input, env })).toBeUndefined();
   });
 
-  // Test Value Gate: a different entry or native inventory must not invalidate a package when the actual renderer inputs agree.
-  it('keeps observation and discovery metadata from invalidating a dynamic package', async () => {
+  // Test Value Gate: a different discovery entry or profile identity must not invalidate a package when the actual renderer inputs agree.
+  it('keeps discovery and profile metadata from invalidating a dynamic package', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const rootDir = path.join(isolation.layout.fixtureCwd, 'grok-input');
     const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
@@ -68,25 +67,14 @@ describe('native intentional empty currentness', () => {
         availability: 'available', version: '1.0.77', reasonCodes: [], entry: { kind: 'cli', executable: path.join(ctx.cwd, 'grok'),
           configRoot: path.join(isolation.env.HOME!, '.grok') } }] } });
     const binding = resolution.bindings[0]!;
-    const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent',
-      consumers: [], components: [], nativeIdentity: null, diagnostics: [], prerequisites: {
-        agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] },
-        nativeSources: { observation: 'complete', sources: [], overlaps: [], configurationEvidence: 'before-install' },
-      } };
     const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'input', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'grok', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
-    const profile = getQualifiedPlatformProfile('grok', { platform: 'linux', arch: 'x64' });
+    const profile = getQualifiedPlatformProfile('grok');
     const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding,
-      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
+      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, profile }) })) }));
     const before = await digest();
-    observation.prerequisites.nativeSources = { observation: 'complete', overlaps: [], configurationEvidence: 'new-native-copy-and-cwd',
-      sources: [{ name: 'input', version: '1.0.1', path: path.join(ctx.cwd, 'native'), scope: 'user', origin: 'native', enabled: true,
-        effectiveComponents: ['skills:input'] }] };
-    const fullObservation = structuredClone(observation);
-    expect(await digest()).toBe(before);
-    expect(observation).toEqual(fullObservation);
     profile.id = 'different-qualification-baseline';
     for (const { renderUnit } of units) {
       const first = renderUnit.consumers[0]!;
@@ -97,12 +85,11 @@ describe('native intentional empty currentness', () => {
     }
     expect(await digest()).toBe(before);
     for (const { renderUnit } of units) renderUnit.consumers.reverse();
-    observation.prerequisites.agentConsumers.configurationEvidence = 'different-local-observation';
     expect(await digest()).toBe(before);
     for (const unit of units) unit.config.values.enabled = true;
     expect(await digest()).not.toBe(before);
     for (const unit of units) unit.config.values.enabled = false;
-    profile.kinds.skill = { ...profile.kinds.skill, status: 'unverified', reasonCodes: ['capability-unverified'] };
+    profile.kinds.skill = { ...profile.kinds.skill, status: 'unsupported', reasonCodes: ['interface-unsupported'] };
     expect(await digest()).not.toBe(before);
   });
 
@@ -129,10 +116,8 @@ describe('native intentional empty currentness', () => {
       discovery: { platform: 'codex', availability: 'available', diagnostics: [], installations: [{ id: 'fixture-codex', product: 'cli',
         availability: 'available', version: '0.155.0', reasonCodes: [], entry: { kind: 'cli', executable: '/fixture/codex', configRoot: isolation.env.CODEX_HOME! } }] } });
     const binding = resolution.bindings[0]!;
-    const live: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent', consumers: [], components: [],
-      nativeIdentity: null, diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } };
     const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation: live, profile: getQualifiedPlatformProfile('codex') }),
+      capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'empty', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
@@ -143,7 +128,7 @@ describe('native intentional empty currentness', () => {
       recoveryCandidates: [], discovery: { platform: 'codex', availability: 'available', diagnostics: [], installations: binding.consumers } });
     const projectBinding = project.bindings[0]!;
     const projectUnits = await Promise.all(project.renderUnits.map(async (renderUnit) => ({ renderUnit,
-      capabilities: adapter.capabilities({ binding: projectBinding, renderUnit, observation: live, profile: getQualifiedPlatformProfile('codex') }),
+      capabilities: adapter.capabilities({ binding: projectBinding, renderUnit, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'empty', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
@@ -157,7 +142,7 @@ describe('native intentional empty currentness', () => {
     const changedScope = { ...state, binding: { ...state.binding, scope: { kind: 'project' as const, projectRoot: ctx.cwd } } };
     expect(await matchesPlatformEmptyState({ state: changedScope, env: ctx.env })).toBe(false);
     const changedCapabilities = structuredClone(units);
-    changedCapabilities[0]!.capabilities.kinds.skill = { status: 'unsupported', delivery: [], reasonCodes: ['policy-blocked'] };
+    changedCapabilities[0]!.capabilities.kinds.skill = { status: 'unsupported', delivery: [], reasonCodes: ['delivery-unavailable'] };
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units: changedCapabilities }), env: ctx.env })).toBe(false);
     const changedConfig = structuredClone(units);
     changedConfig[0]!.config.values.enabled = true;
@@ -186,6 +171,117 @@ describe('native intentional empty currentness', () => {
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units }), env: ctx.env })).toBe(false);
   });
 
+  // Codex user-rendered Skills depend on the complete User Agent view even though roles live in a supplement.
+  it('keeps the shared package digest independent of Project supplements while tracking Agent delivery inputs', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const rootDir = path.join(isolation.layout.fixtureCwd, 'agent-input');
+    const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
+    const plugin: PluginMeta = { rootDir, manifestPath, pluginId: 'local/agent-input', sourceId: 'local',
+      sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      manifest: { schemaVersion: 4, name: 'agent-input', version: '1.0.0', description: 'Agent input', platforms: ['codex'],
+        skills: './skills', requires: { aw: { capabilities: ['aw.skill-agent-placeholder.v1'] } },
+        extensions: { agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Review the changes.',
+          agentOverrides: { codex: { name: 'renamed-reviewer' } } }] },
+        config: { schemaVersion: 5, fields: { agentMode: { type: 'string', sensitive: true } }, platforms: {} },
+        marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } } };
+    await fs.outputJson(manifestPath, plugin.manifest);
+    await fs.outputFile(path.join(rootDir, 'skills/demo/SKILL.md'), '---\nname: demo\ndescription: Demo\n---\nSee the reference.\n');
+    const reference = path.join(rootDir, 'skills/demo/references/usage.md');
+    await fs.outputFile(reference, 'Use {{aw.agent:reviewer}}.\n', { mode: 0o755 });
+    const adapter = getAgentPluginAdapter('codex');
+    const ctx = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const discovery = { platform: 'codex' as const, availability: 'available' as const, diagnostics: [], installations: [
+      { id: 'fixture-codex', product: 'cli' as const, availability: 'available' as const, version: '0.167.0', reasonCodes: [],
+        entry: { kind: 'cli' as const, executable: '/fixture/codex', configRoot: isolation.env.CODEX_HOME! } },
+    ] };
+    const resolve = async (scope: 'user' | 'project') => {
+      const resolution = await adapter.resolve(ctx, { plugin: { sourceId: 'local', sourceIdentity: plugin.sourceIdentity!,
+        pluginId: plugin.pluginId!, version: '1.0.0' }, scope: scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: ctx.cwd },
+        operation: 'ensure', recoveryCandidates: [], discovery });
+      const binding = resolution.bindings[0]!;
+      const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({
+        renderUnit, capabilities: adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('codex') }),
+        config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'agent-input', sourceId: 'local',
+          sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
+      })));
+      return { plugin, binding, units };
+    };
+    const user = await resolve('user');
+    const project = await resolve('project');
+    const evidence = () => Promise.all([user, project].map((input) => createPlatformInputEvidence(input)));
+    const [userStatic, projectStatic] = await evidence();
+    const staticDigest = platformPackageInputDigest(userStatic!);
+    expect(platformPackageInputDigest(projectStatic!)).toBe(staticDigest);
+    const agent = plugin.manifest.extensions!.agents![0]!;
+    agent.agentOverrides!.codex!.name = 'another-reviewer';
+    const renamed = platformPackageInputDigest(await createPlatformInputEvidence(user));
+    expect(renamed).not.toBe(staticDigest);
+    agent.tools = [];
+    const unmet = platformPackageInputDigest(await createPlatformInputEvidence(user));
+    expect(unmet).not.toBe(renamed);
+    // The Skill is now a complete gap, but changed Agent delivery inputs must still invalidate its evidence.
+    agent.agentOverrides!.codex!.name = 'unavailable-reviewer';
+    expect(platformPackageInputDigest(await createPlatformInputEvidence(user))).not.toBe(unmet);
+    delete agent.tools;
+    await fs.writeFile(reference, 'Use {{aw.agent:missing}}.\n');
+    await expect(createPlatformInputEvidence(user)).rejects.toThrow('agentReferenceInvalid');
+    await fs.writeFile(reference, 'Use {{aw.agent:reviewer}}.\n');
+
+    // The reference namespace is only a concern when a Skill actually uses it.
+    const originalAgents = plugin.manifest.extensions!.agents!;
+    plugin.manifest.extensions!.agents = [...originalAgents,
+      { name: '审阅员', description: 'Review.', prompt: 'Read.', agentOverrides: { codex: { name: 'extra-reviewer' } } },
+    ];
+    const [userWithIndependent, projectWithIndependent] = await evidence();
+    expect(platformPackageInputDigest(projectWithIndependent!)).toBe(platformPackageInputDigest(userWithIndependent!));
+    plugin.manifest.extensions!.agents = [
+      { name: '审阅员', description: 'Review.', prompt: 'Read.', agentOverrides: { codex: { name: 'reviewer' } } },
+      { name: 'audit.role', description: 'Review.', prompt: 'Read.', agentOverrides: { codex: { name: 'audit-one' } } },
+      { name: 'audit-role', description: 'Review.', prompt: 'Read.', agentOverrides: { codex: { name: 'audit-two' } } },
+    ];
+    await fs.writeFile(reference, 'Independent Skill.\n');
+    await expect(createPlatformInputEvidence(user)).resolves.toMatchObject({ kind: 'aw-platform-input' });
+    plugin.manifest.extensions!.agents = plugin.manifest.extensions!.agents.slice(1);
+    await fs.writeFile(reference, 'Use {{aw.agent:audit-role}}.\n');
+    await expect(createPlatformInputEvidence(user)).rejects.toThrow(/agentReferenceInvalid: ambiguous Agent/u);
+    plugin.manifest.extensions!.agents = originalAgents;
+    await fs.writeFile(reference, 'Use {{aw.agent:reviewer}}.\n');
+
+    // Dynamic User Agent configuration participates in the shared package whether or not a User supplement exists.
+    plugin.manifest.artifacts = { configKeys: ['agentMode'] };
+    plugin.manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    await fs.outputJson(manifestPath, plugin.manifest);
+    await fs.outputFile(path.join(rootDir, 'render.mjs'), 'throw new Error("must not execute");\n');
+    const dynamicUser = await resolve('user');
+    const dynamicProject = await resolve('project');
+    for (const { units } of [dynamicUser, dynamicProject]) {
+      for (const unit of units) unit.config.values.agentMode = unit.renderUnit.renderScope.kind === 'user' ? 'user-agent' : 'project-agent';
+    }
+    const userOnly = await createPlatformInputEvidence(dynamicUser);
+    const projectOnly = await createPlatformInputEvidence(dynamicProject);
+    const packageDigest = platformPackageInputDigest(userOnly);
+    expect(platformPackageInputDigest(projectOnly)).toBe(packageDigest);
+    // Combine the shared physical unit with both activation-local supplements, as a joint preparation does.
+    const allUnits = [...new Map([...dynamicUser.units, ...dynamicProject.units].map((unit) => [unit.renderUnit.id, unit])).values()];
+    expect(allUnits).toHaveLength(3);
+    const both = async () => Promise.all([dynamicUser, dynamicProject].map((input) => createPlatformInputEvidence({
+      ...input, units: allUnits.filter(({ renderUnit }) => input.binding.renderUnitIds.includes(renderUnit.id)),
+    })));
+    for (const input of await both()) expect(platformPackageInputDigest(input)).toBe(packageDigest);
+    const projectSupplement = allUnits.find(({ renderUnit }) => renderUnit.renderScope.kind === 'project')!;
+    projectSupplement.config.values.agentMode = 'changed-project-agent';
+    projectSupplement.capabilities.kinds.agent = { status: 'unsupported', delivery: [], reasonCodes: ['interface-unsupported'] };
+    const [jointUser, jointProject] = await both();
+    expect(platformPackageInputDigest(jointUser!)).toBe(packageDigest);
+    expect(platformPackageInputDigest(jointProject!)).toBe(packageDigest);
+    expect(jointUser).toEqual(userOnly);
+    expect(jointProject!.units.find(({ output }) => output === 'supplement')!.inputDigest)
+      .not.toBe(projectOnly.units.find(({ output }) => output === 'supplement')!.inputDigest);
+    const sharedPackage = allUnits.find(({ renderUnit }) => renderUnit.output === 'package')!;
+    sharedPackage.config.values.agentMode = 'changed-user-agent';
+    for (const input of await both()) expect(platformPackageInputDigest(input)).not.toBe(packageDigest);
+  });
+
   // Test Value Gate: only capability facts that affect static delivery mark its inputs stale.
   it('tracks static resource bytes, command invocation, writer support and explicit cross-kind prerequisites', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -211,26 +307,22 @@ describe('native intentional empty currentness', () => {
         availability: 'available', version: '0.167.0', reasonCodes: [], entry: { kind: 'cli', executable: '/fixture/codex',
           configRoot: isolation.env.CODEX_HOME! } }] } });
     const binding = resolution.bindings[0]!;
-    const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent',
-      consumers: [], components: [], nativeIdentity: null, diagnostics: [], prerequisites: {
-        agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] },
-      } };
-    const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
+    const profile = getQualifiedPlatformProfile('codex');
     const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
     const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding, commandRoutes,
-      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
+      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, profile }) })) }));
     const before = await digest();
     // Runtime configuration changes the command in the delivered Skill even at the same version.
     plugin.manifest.command!.runtimeConfig = { keys: ['mode'] };
     expect(await digest()).not.toBe(before);
     delete plugin.manifest.command!.runtimeConfig;
     await fs.outputFile(path.join(rootDir, 'unrelated.txt'), 'surplus bundle data');
-    const modelInvocation = profile.skillInvocation!.features.find(({ feature }) => feature === 'skill.invocation.model')!;
+    const modelInvocation = profile.features['skill.invocation.model']!;
     modelInvocation.values = ['false'];
-    profile.kinds.agent = { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] };
+    profile.kinds.agent = { status: 'unsupported', reasonCodes: ['interface-unsupported'], delivery: [] };
     expect(await digest()).toBe(before);
     await fs.appendFile(skill, 'Changed Skill instructions.\n');
     const afterBody = await digest();
@@ -239,8 +331,8 @@ describe('native intentional empty currentness', () => {
     const afterAttachment = await digest();
     expect(afterAttachment).not.toBe(afterBody);
     modelInvocation.values = ['true'];
-    profile.kinds.skill = { ...profile.kinds.skill, status: 'unverified', reasonCodes: ['capability-unverified'] };
-    expect(await digest()).toBe(afterAttachment);
+    profile.kinds.skill = { ...profile.kinds.skill, status: 'unsupported', reasonCodes: ['interface-unsupported'] };
+    expect(await digest()).not.toBe(afterAttachment);
     profile.kinds.skill.delivery = [];
     expect(await digest()).not.toBe(afterAttachment);
 
