@@ -224,8 +224,7 @@ async function runCase() {
   }
   if (testName === 'rejects a published branch from a different Workspace identity without local or remote writes') {
     const { root: firstRoot, remote } = await stage('createWorkspace.first', () => createWorkspace('1.0.0'));
-    const firstPublication = await stage('plan.first', () => plan(firstRoot));
-    await stage('apply.first', () => apply(firstRoot, firstPublication));
+    await stage('publish.first', () => publishHistoryFixture({ root: firstRoot, remote }));
     const remoteRefsBefore = await stage('read refs', () => git(remote, ['show-ref']));
 
     const { root: secondRoot } = await stage('createWorkspace.second', () => createWorkspace('1.0.1', remote));
@@ -240,6 +239,27 @@ async function runCase() {
     await stage('verify no writes', async () => {
       assert.equal(await fs.pathExists(path.join(secondRoot, '.aw', 'publish', '1.0.1')), false);
       assert.equal(await git(remote, ['show-ref']), remoteRefsBefore);
+    });
+    return;
+  }
+  if (testName === 'leaves no formal version directory when plan creation fails before the final rename') {
+    const { root } = await stage('createWorkspace', () => createWorkspace());
+    await stage('plan.injected failure', () => assert.rejects(prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+      beforeFinalRename: async () => {
+        throw new Error('injected pre-rename failure');
+      },
+    }), /injected pre-rename failure/u));
+    await stage('verify absence', async () => {
+      assert.equal(await fs.pathExists(path.join(root, '.aw', 'publish', '1.0.0')), false);
+    });
+    await stage('plan.retry', async () => {
+      const publication = await plan(root);
+      assert.equal(publication.state, 'prepared');
+      assert.equal(publication.catalogVersion, '1.0.0');
     });
     return;
   }

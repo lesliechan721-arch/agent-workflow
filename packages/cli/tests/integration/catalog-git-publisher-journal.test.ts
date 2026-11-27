@@ -262,21 +262,8 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     }
   });
 
-  it('leaves no formal version directory when plan creation fails before the final rename', async () => {
-    const { root } = await createWorkspace();
-
-    await expect(prepareCatalogPublicationPlan({
-      workspaceRoot: root,
-      remote: 'origin',
-      branch: 'catalog/latest',
-      env: process.env,
-      beforeFinalRename: async () => {
-        throw new Error('injected pre-rename failure');
-      },
-    })).rejects.toThrow('injected pre-rename failure');
-    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.0.0')))
-      .resolves.toBe(false);
-    await expect(plan(root)).resolves.toMatchObject({ state: 'prepared', catalogVersion: '1.0.0' });
+  it('leaves no formal version directory when plan creation fails before the final rename', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
   });
 
   it('rechecks source cleanliness before the plan version directory becomes formal', async () => {

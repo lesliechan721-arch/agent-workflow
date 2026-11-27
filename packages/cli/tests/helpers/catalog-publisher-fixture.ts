@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,7 +21,7 @@ export const execFileAsync = promisify(execFile);
 
 const publisherTempBase = os.tmpdir();
 const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
-const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |rejects a published branch from a different Workspace identity|uses only the first-parent Catalog history|rejects stable Plugin identity reuse and downgrade after a deletion|reuses unchanged beta Plugin identity after deletion)/u;
+const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |rejects a published branch from a different Workspace identity|leaves no formal version directory when plan creation fails before the final rename|uses only the first-parent Catalog history|rejects stable Plugin identity reuse and downgrade after a deletion|reuses unchanged beta Plugin identity after deletion)/u;
 
 export function quietIo() {
   return { stdout: () => undefined, stderr: () => undefined };
@@ -82,9 +83,14 @@ export function createPublisherFixture() {
       roots.splice(0);
       throw error;
     }
-    const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
-    if (diagnostics) await diagnostics.stage('cleanup', cleanup);
-    else await cleanup();
+    if (diagnostics) {
+      // Windows can briefly hold directory handles after confirmed process-tree termination.
+      await diagnostics.stage('cleanup', () => Promise.all(roots.splice(0).map((root) =>
+        rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+      )));
+    } else {
+      await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+    }
   });
 
   async function isolatedPublisherCase(testName: string): Promise<void> {

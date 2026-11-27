@@ -197,7 +197,7 @@ jobs:
     timeout-minutes: 180
     env:
       AW_QUALIFICATION_PUBLIC_COMPONENTS: '1'
-      AW_QUALIFICATION_CONCURRENCY: ${{ inputs.qualification_concurrency != 'auto' && inputs.qualification_concurrency || '3' }}
+      AW_QUALIFICATION_CONCURRENCY: ${{ inputs.qualification_concurrency != 'auto' && inputs.qualification_concurrency || '2' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
