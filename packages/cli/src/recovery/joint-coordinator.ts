@@ -17,7 +17,7 @@ import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
-import { CatalogPreparationReadScope, catalogOperationBinding, catalogOperationBindingsMatch } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, catalogOperationBinding, catalogOperationBindingsMatch, selectCatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
@@ -924,13 +924,25 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
             demand.placements.filter((placement) => placement.scope === 'user' && placement.target === target)
               .map((placement) => placement.pluginId)])),
         } : snapshot.user;
+        const automatic = automaticRetirements.some((candidate) => candidate.pluginId === item.pluginId
+          && candidate.target === item.agent && candidate.scope === item.scope);
+        // The scoped child must remain cleanup: its declaration and dependency ordering
+        // are owned by the joint remove. Only its exact, current Active native target
+        // may use normal removal rather than outputs-only package preservation.
+        const activePlugin = original.plugins.find((plugin) => plugin.pluginId === item.pluginId);
+        const ordinaryNativeRemoval = command === 'uninstall' && item.agent !== 'generic'
+          && hasSharedUserPackage(item.agent) && targets.includes(item.agent) && ownsOutput(item)
+          && (explicitlyRemoves(item) || automatic) && !joint.providerRetirements.has(targetKey({ ...item, agent: item.agent }))
+          && activePlugin && original.catalogOperationContext
+          ? { target: { pluginId: item.pluginId, platform: item.agent, scope: item.scope },
+              catalog: selectCatalogOperationContext(original.catalogOperationContext, [activePlugin.sourceId!]) }
+          : undefined;
         const cleanup = await prepareScopedRecovery('cleanup', [item.pluginId], { ...options,
-          sharedReferenceView,
+          ordinaryNativeRemoval, sharedReferenceView,
           scope: item.scope, cwd: snapshot.context.projectRoot ?? options.cwd, targets: [item.agent], all: false,
           // Ordinary remove's force bypasses dependencies, never ownership checks.
           force: false, exactTargets: undefined, demandOverride: cleanupDemand }, runtime, { catalogReadScope });
-        if (automaticRetirements.some((candidate) => candidate.pluginId === item.pluginId
-          && candidate.target === item.agent && candidate.scope === item.scope)) {
+        if (automatic) {
           for (const target of cleanup.receipt.targetResults) {
             target.relation = 'dependency';
             target.requiredBy = previousDemand.placements.find((candidate) => candidate.pluginId === item.pluginId

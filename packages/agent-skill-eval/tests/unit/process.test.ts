@@ -1390,6 +1390,431 @@ describe('shared provider process behavior', () => {
     }
   })
 
+  // Test Value Gate: only an independently confirmed absent invalid ps row
+  // can avoid a violation. Real departures and failed confirmation remain
+  // failures even when the final cleanup snapshot is empty.
+  it.each([
+    { confirmation: 'absent' },
+    { confirmation: 'absent', anchor: 'sentinel', twoPlaceholders: true },
+    { confirmation: 'absent', liveCleanup: true },
+    { confirmation: 'persistent' },
+    { confirmation: 'present' },
+    { confirmation: 'replacement' },
+    { confirmation: 'malformed' },
+    { confirmation: 'anchor-missing' },
+    { confirmation: 'anchor-reused', anchor: 'sentinel' },
+    { confirmation: 'anchor-dead' },
+    { confirmation: 'query-error' },
+    { confirmation: 'deadline' },
+    { confirmation: 'departed' },
+    { confirmation: 'absent', initialViolation: 'zombie' },
+    { confirmation: 'absent', initialViolation: 'live' },
+    { confirmation: 'absent', initialViolation: 'other-live' },
+    { confirmation: 'absent', initialViolation: 'valid-PGID-X' },
+    { confirmation: 'absent', initialViolation: 'nonzero-PPID-X' },
+    { confirmation: 'absent', initialViolation: 'non-X' },
+    { confirmation: 'absent', initialViolation: 'darwin' },
+  ])('confirms a Linux ps dead-task placeholder: $confirmation / $anchor / $initialViolation / live=$liveCleanup', async ({
+    confirmation, anchor, initialViolation, twoPlaceholders, liveCleanup,
+  }) => {
+    vi.useFakeTimers()
+    const marker = 'private-process-marker'
+    const startTime = 'Fri Nov 13 08:00:01 2026'
+    const anchorPid = anchor === 'sentinel' ? 900_001 : process.pid
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime, marked: true }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime, marked: true }],
+      [102, { ppid: 100, pgid: 100, state: 'S', startTime, marked: true }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime, marked: false }],
+      [anchorPid, { ppid: 1, pgid: anchorPid, state: 'S', startTime, marked: anchor === 'sentinel' }],
+    ])
+    let phase = 'normal'
+    const confirmationTimeouts: number[] = []
+    const signals: number[] = []
+    const identityOutput = () => [...processes].map(([pid, entry]) =>
+      `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`).join('\n')
+    const dependencies = {
+      platform: initialViolation === 'darwin' ? 'darwin' as const : 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        if (args.some(arg => arg.includes('command='))) {
+          callback(null, renderMarkerScan(processes, marker))
+          return
+        }
+        const output = identityOutput()
+        if (phase === 'suspect') {
+          setTimeout(() => {
+            phase = 'confirmation'
+            processes.delete(100)
+            processes.delete(101)
+            if (!liveCleanup) processes.delete(102)
+            callback(null, output)
+          }, 100)
+        } else if (phase === 'confirmation') {
+          phase = 'cleanup'
+          confirmationTimeouts.push(options.timeout)
+          if (confirmation === 'deadline') return
+          let confirmed = output
+          if (confirmation === 'persistent') confirmed += `\n101 0 4294967295 X ${startTime}`
+          if (confirmation === 'present') confirmed += `\n101 1 100 S ${startTime}`
+          if (confirmation === 'replacement') confirmed += '\n101 1 200 S Fri Nov 13 09:00:00 2026'
+          if (confirmation === 'departed') confirmed += `\n101 1 101 R ${startTime}`
+          if (confirmation === 'malformed') confirmed += '\n101 1'
+          if (confirmation === 'anchor-missing') {
+            confirmed = confirmed.split('\n').filter(line => !line.startsWith(`${anchorPid} `)).join('\n')
+          }
+          if (confirmation === 'anchor-reused' || confirmation === 'anchor-dead') {
+            confirmed = confirmed.replace(`${anchorPid} 1 ${anchorPid} S ${startTime}`, confirmation === 'anchor-reused'
+              ? `${anchorPid} 1 ${anchorPid} S Fri Nov 13 09:00:00 2026`
+              : `${anchorPid} 0 4294967295 X ${startTime}`)
+          }
+          setTimeout(() => confirmation === 'query-error' ? callback(new Error('ps failed'), '') : callback(null, confirmed), 100)
+        } else callback(null, output)
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if (signal === 'SIGKILL') {
+          for (const [candidate, entry] of processes) {
+            if (candidate === pid || pid < 0 && entry.pgid === -pid) processes.delete(candidate)
+          }
+        }
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies, anchor === 'sentinel' ? {
+      marker, sentinel: { pid: anchorPid, startTime }, release: async () => undefined,
+    } : undefined)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      phase = 'suspect'
+      const placeholder = { ppid: 0, pgid: 4294967295, state: 'X' }
+      processes.set(101, { ...processes.get(101)!, ...placeholder })
+      if (twoPlaceholders) processes.set(102, { ...processes.get(102)!, ...placeholder })
+      if (initialViolation === 'zombie' || initialViolation === 'live') {
+        processes.set(101, { ...processes.get(101)!, ppid: 100, pgid: 101,
+          state: initialViolation === 'zombie' ? 'Z' : 'R' })
+      }
+      if (initialViolation === 'valid-PGID-X') processes.get(101)!.pgid = 101
+      if (initialViolation === 'nonzero-PPID-X') processes.get(101)!.ppid = 100
+      if (initialViolation === 'non-X') processes.get(101)!.state = 'Z'
+      if (initialViolation === 'other-live') {
+        processes.set(102, { ...processes.get(102)!, pgid: 102, state: 'R' })
+      }
+      await vi.advanceTimersByTimeAsync(350)
+      if (initialViolation) {
+        expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('left its initial process group') }))
+        expect(confirmationTimeouts).toEqual([])
+        expect(observation.diagnostics[0]?.affectedPids).toEqual([initialViolation === 'other-live' ? 102 : 101])
+      } else {
+        expect(onFailure).not.toHaveBeenCalled()
+        expect(confirmationTimeouts).toEqual([1900])
+      }
+      let settled = false
+      const terminationStartedAt = Date.now()
+      const completion = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(0)
+      if (!initialViolation) expect(settled).toBe(false)
+      await vi.runAllTimersAsync()
+      const error = await completion
+      if (initialViolation || confirmation === 'departed') {
+        expect(error?.message).toContain('left its initial process group')
+        expect(observation.diagnostics[0]?.reason).toBe('marked-process-group-changed')
+      } else if (confirmation !== 'absent') {
+        expect(error?.message).toContain('could not be confirmed absent')
+        expect(observation.diagnostics[0]).toMatchObject({
+          stage: 'identity-observation', reason: 'identity-lookup-failed', affectedPids: [101],
+          processes: expect.arrayContaining([expect.objectContaining({
+            pid: 101, state: 'X', ppid: 0, pgid: 4294967295, startTime, markerMatches: null,
+          })]),
+        })
+        if (confirmation === 'deadline') expect(Date.now() - terminationStartedAt).toBe(1900)
+      } else if (liveCleanup) {
+        expect(error?.message).toContain('all provider descendants must exit')
+      } else {
+        expect(error).toBeNull()
+        expect(observation.diagnostics).toEqual([])
+      }
+      expect(signals).not.toContain(101)
+      expect(signals).not.toContain(200)
+      expect(signals).not.toContain(-200)
+      expect(signals).not.toContain(anchorPid)
+      expect(processes.has(200)).toBe(true)
+      if (!liveCleanup) expect(signals).toEqual([])
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  // The marker scan reads the same ps identity fields as the faster sampler.
+  // Its transient exit placeholder needs the same independent absence proof.
+  it.each([
+    { outcome: 'absent' },
+    { outcome: 'absent', during: 'recheck' },
+    { outcome: 'absent', during: 'marked' },
+    { outcome: 'persistent' },
+    { outcome: 'replacement' },
+    { outcome: 'valid-departure' },
+    { outcome: 'other-departure' },
+    { outcome: 'newly-marked-departure' },
+    { outcome: 'newly-marked-missing-departure' },
+    { outcome: 'recheck-only-departure' },
+    { outcome: 'identity-departure-after-recheck' },
+    { outcome: 'reused-unmarked' },
+    { outcome: 'query-error' },
+    { outcome: 'query-error', during: 'recheck' },
+    { outcome: 'query-error', during: 'marked' },
+    { outcome: 'malformed' },
+    { outcome: 'dead-anchor' },
+    { outcome: 'deadline' },
+    { outcome: 'zombie' },
+    { outcome: 'zombie', during: 'recheck' },
+    { outcome: 'readable-missing-marker' },
+  ])('confirms a dead-task placeholder in a Linux marker scan: $outcome / $during', async ({ outcome, during }) => {
+    vi.useFakeTimers()
+    const marker = 'marker-a'
+    const start = 'Fri Nov 27 08:05:29 2026'
+    const observer = `${process.pid} 1 ${process.pid} S ${start}`
+    const root = `1010 1 1010 R ${start}`
+    const child = `1011 1010 1010 S ${start}`
+    const placeholder = outcome === 'zombie' ? `1011 1 1011 Z ${start}` : `1011 0 4294967295 X ${start}`
+    const marked = `node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+    const otherChild = `1012 1010 1010 S ${start}`
+    const markerRows = (row: string, command: string, includeOther = false) => `${observer} node\n${root} ${marked}\n${row} ${command}` +
+      (outcome === 'other-departure' || includeOther ? `\n${otherChild} ${marked}` : '')
+    let markerScans = 0
+    let phase: 'normal' | 'confirm' | 'exited' = 'normal'
+    const confirmationTimeouts: number[] = []
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (_command: string, args: string[], options: { timeout: number }, callback: (error: Error | null, stdout: string) => void) => {
+        if (args.some(arg => arg.includes('command='))) {
+          markerScans += 1
+          if (markerScans === 1) callback(null, markerRows(child, marked))
+          else if (markerScans === 2) {
+            phase = 'confirm'
+            callback(null, markerRows(during === 'recheck' ? child : placeholder,
+              during === 'marked' ? marked : outcome === 'readable-missing-marker' ? 'node PATH=/bin' : '[node] <defunct>',
+              outcome === 'newly-marked-departure' || outcome === 'newly-marked-missing-departure' || outcome === 'reused-unmarked'))
+          } else if (markerScans === 3 && during === 'recheck') {
+            callback(null, markerRows(placeholder, '[node] <defunct>'))
+          } else if (markerScans === 3 && outcome === 'other-departure') {
+            callback(null, `${observer} node\n1012 1 1012 Z ${start} [node] <defunct>`)
+          } else if (markerScans === 3 && (outcome === 'newly-marked-departure' || outcome === 'newly-marked-missing-departure' || outcome === 'recheck-only-departure')) {
+            callback(null, `${observer} node\n1012 1 1012 R ${start} ${outcome === 'newly-marked-missing-departure' ? 'node PATH=/bin' : marked}`)
+          } else if (markerScans === 3 && outcome === 'identity-departure-after-recheck') {
+            callback(null, `${observer} node\n${otherChild} ${marked}`)
+          } else if (markerScans === 3 && outcome === 'reused-unmarked') {
+            callback(null, `${observer} node\n1012 1 1012 R Fri Nov 27 08:05:30 2026 node PATH=/bin`)
+          } else callback(null, `${observer} node`)
+          return
+        }
+        if (phase === 'normal') {
+          callback(null, `${observer}\n${root}\n${child}`)
+        } else if (phase === 'confirm') {
+          phase = 'exited'
+          confirmationTimeouts.push(options.timeout)
+          if (outcome === 'deadline') return
+          let rows = observer
+          if (outcome === 'persistent') rows += `\n${placeholder}`
+          if (outcome === 'replacement') rows += '\n1011 1 300 R Fri Nov 27 08:05:30 2026'
+          if (outcome === 'valid-departure') rows += `\n1011 1 1011 Z ${start}`
+          if (outcome === 'identity-departure-after-recheck') rows += `\n1012 1 1012 R ${start}`
+          if (outcome === 'malformed') rows += '\n1011 1'
+          if (outcome === 'dead-anchor') rows = `${process.pid} 0 4294967295 X ${start}`
+          setTimeout(() => outcome === 'query-error' ? callback(new Error('ps failed'), '') : callback(null, rows), 100)
+        } else callback(null, observer)
+      },
+      kill: signals,
+    }
+    const observation = observeProcessTree(1010, marker, dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(1020)
+      const completion = terminateProcessTree(1010, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await completion
+      if (outcome === 'absent' || outcome === 'reused-unmarked') {
+        expect(error).toBeNull()
+        expect(observation.diagnostics).toEqual([])
+        expect(confirmationTimeouts).toHaveLength(1)
+        expect(confirmationTimeouts[0]).toBeLessThanOrEqual(2000)
+      } else if (outcome === 'valid-departure' || outcome === 'zombie' || outcome === 'other-departure' ||
+        outcome === 'newly-marked-departure' || outcome === 'newly-marked-missing-departure' ||
+        outcome === 'recheck-only-departure' || outcome === 'identity-departure-after-recheck') {
+        expect(error?.message).toContain('left its initial process group')
+      } else if (outcome === 'readable-missing-marker') {
+        expect(error?.message).toContain('lost its process marker')
+      } else {
+        expect(error).toBeInstanceOf(Error)
+      }
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['absent', 'persistent', 'real-departure'])('verifies a first Linux marker sample with a departing root: %s', async (outcome) => {
+    vi.useFakeTimers()
+    const start = 'Fri Nov 27 08:05:29 2026'
+    const observer = `${process.pid} 1 ${process.pid} S ${start}`
+    const root = outcome === 'real-departure' ? `1010 1 2000 R ${start}` : `1010 0 4294967295 X ${start}`
+    let markerScans = 0
+    let identityScans = 0
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => {
+        if (args.some(arg => arg.includes('command='))) {
+          callback(null, ++markerScans === 1 ? `${observer} node\n${root} node ${PROVIDER_PROCESS_MARKER_ENV}=a` : `${observer} node`)
+        } else {
+          identityScans += 1
+          callback(null, outcome === 'persistent' && identityScans === 2 ? `${observer}\n${root}` : observer)
+        }
+      },
+      kill: signals,
+    }
+    const observation = observeProcessTree(1010, 'a', dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      const result = terminateProcessTree(1010, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await result
+      if (outcome === 'absent') {
+        expect(error).toBeNull()
+        expect(observation.diagnostics).toEqual([])
+      } else if (outcome === 'persistent') {
+        expect(error?.message).toContain('could not be confirmed absent')
+      } else {
+        expect(observation.diagnostics[0]?.reason).toBe('root-process-group-changed')
+      }
+      expect(identityScans).toBe(outcome === 'real-departure' ? 1 : 2)
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  // Post-completion sampler ticks must not become unawaited deliveries. A
+  // shared sampler must still deliver a later violation to the other observer.
+  it.each([false, true])('cuts off new POSIX observation deliveries while cleanup waits (shared=%s)', async (shared) => {
+    vi.useFakeTimers()
+    const start = 'Fri Nov 27 08:05:29 2026'
+    const observer = `${process.pid} 1 ${process.pid} S ${start}`
+    const root = `1010 1 1010 R ${start}`
+    const child = `1011 1010 1010 S ${start}`
+    const otherRoot = `2010 1 2010 R ${start}`
+    const otherChild = `2011 2010 2010 S ${start}`
+    const initialRows = `${observer}\n${root}\n${child}\n${otherRoot}\n${otherChild}`
+    const initialMarkers = `${observer} node\n${root} node ${PROVIDER_PROCESS_MARKER_ENV}=a\n${child} node ${PROVIDER_PROCESS_MARKER_ENV}=a\n${otherRoot} node ${PROVIDER_PROCESS_MARKER_ENV}=b\n${otherChild} node ${PROVIDER_PROCESS_MARKER_ENV}=b`
+    let markerScans = 0
+    let postCutoffScans = 0
+    let closing = false
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => {
+        if (args.some(arg => arg.includes('command='))) {
+          if (++markerScans === 1) callback(null, initialMarkers)
+          else setTimeout(() => callback(null, `${observer} node\n${otherRoot} node ${PROVIDER_PROCESS_MARKER_ENV}=b`), 400)
+        } else if (!closing) callback(null, initialRows)
+        else {
+          postCutoffScans += 1
+          if (postCutoffScans === 1) callback(null, `${observer}\n1011 0 4294967295 X ${start}\n${otherRoot}\n2011 1 2011 R ${start}`)
+          else if (postCutoffScans === 2) setTimeout(() => callback(new Error('late confirmation failed'), ''), 500)
+          else callback(null, observer)
+        }
+      },
+      kill: signals,
+    }
+    const first = observeProcessTree(1010, 'a', dependencies)
+    const second = shared ? observeProcessTree(2010, 'b', dependencies) : undefined
+    try {
+      await vi.advanceTimersByTimeAsync(61)
+      closing = true
+      const completion = terminateProcessTree(1010, () => undefined, dependencies, {
+        observation: first, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.advanceTimersByTimeAsync(240)
+      expect(postCutoffScans).toBe(shared ? 1 : 0)
+      if (shared) expect(second!.diagnostics[0]).toMatchObject({ reason: 'marked-process-group-changed', affectedPids: [2011] })
+      await vi.advanceTimersByTimeAsync(161)
+      expect(await completion).toBeNull()
+      expect(first.diagnostics).toEqual([])
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      first.dispose()
+      second?.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps delivering periodic marker violations to another observer during the first cleanup', async () => {
+    vi.useFakeTimers()
+    const start = 'Fri Nov 27 08:05:29 2026'
+    const observer = `${process.pid} 1 ${process.pid} S ${start}`
+    const root = `1010 1 1010 R ${start}`
+    const otherRoot = `2010 1 2010 R ${start}`
+    let markerScans = 0
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => {
+        if (!args.some(arg => arg.includes('command='))) {
+          callback(null, `${observer}\n${root}\n${otherRoot}`)
+          return
+        }
+        if (++markerScans === 1) callback(null, `${observer} node\n${root} node ${PROVIDER_PROCESS_MARKER_ENV}=a\n${otherRoot} node ${PROVIDER_PROCESS_MARKER_ENV}=b`)
+        else if (markerScans === 2) setTimeout(() => callback(null, `${observer} node\n${otherRoot} node ${PROVIDER_PROCESS_MARKER_ENV}=b`), 1200)
+        else callback(null, `${observer} node\n${root} node PATH=/bin\n${otherRoot} node PATH=/bin`)
+      },
+      kill: signals,
+    }
+    const first = observeProcessTree(1010, 'a', dependencies)
+    const second = observeProcessTree(2010, 'b', dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(61)
+      const completion = terminateProcessTree(1010, () => undefined, dependencies, {
+        observation: first, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(markerScans).toBe(3)
+      expect(second.diagnostics[0]).toMatchObject({ reason: 'known-process-marker-missing', affectedPids: [2010] })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(await completion).toBeNull()
+      expect(first.diagnostics).toEqual([])
+      expect(signals).not.toHaveBeenCalled()
+    } finally {
+      first.dispose()
+      second.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('does not treat the provider root or a zombie child as a live completion descendant', async () => {
     const marker = 'marker-value'
     const processes = new Map([

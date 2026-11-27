@@ -23,6 +23,11 @@ on:
         type: choice
         default: all
         options: [all, windows-x64-and-macos-x64, windows-x64-and-arm64]
+      qualification_concurrency:
+        description: Override the per-job qualification pool for controlled diagnostics
+        type: choice
+        default: auto
+        options: [auto, '1', '2', '3']
 
 permissions:
   contents: read
@@ -99,6 +104,7 @@ jobs:
       RUN_HOST_CHECKS: ${{ (matrix.clients == 'all' || matrix.clients == 'codex,pi,claude') && '1' || '0' }}
       ANTIGRAVITY_PUBLIC_AW: ${{ (inputs.client == 'antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-public') && '1' || '0' }}
       AW_QUALIFICATION_PUBLIC_COMPONENTS: ${{ (inputs.component_matrix || github.event.label.name == 'native-qualification-components') && '1' || '0' }}
+      AW_QUALIFICATION_CONCURRENCY: ${{ inputs.qualification_concurrency != 'auto' && inputs.qualification_concurrency || (startsWith(matrix.runner, 'macos-') && '2' || '3') }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
@@ -162,6 +168,7 @@ jobs:
       RUN_HOST_CHECKS: ${{ (matrix.clients == 'all' || matrix.clients == 'codex,pi,claude') && '1' || '0' }}
       ANTIGRAVITY_PUBLIC_AW: ${{ (inputs.client == 'antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-public') && '1' || '0' }}
       AW_QUALIFICATION_PUBLIC_COMPONENTS: ${{ (inputs.component_matrix || github.event.label.name == 'native-qualification-components') && '1' || '0' }}
+      AW_QUALIFICATION_CONCURRENCY: ${{ inputs.qualification_concurrency != 'auto' && inputs.qualification_concurrency || '3' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
@@ -190,6 +197,7 @@ jobs:
     timeout-minutes: 180
     env:
       AW_QUALIFICATION_PUBLIC_COMPONENTS: '1'
+      AW_QUALIFICATION_CONCURRENCY: ${{ inputs.qualification_concurrency != 'auto' && inputs.qualification_concurrency || '3' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:

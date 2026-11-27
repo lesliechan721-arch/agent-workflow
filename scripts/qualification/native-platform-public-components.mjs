@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util';
 import { receiptDiagnostics, targetReceiptBlockers, nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { qualifyCatalog, qualifyProjectDependencies } from './native-platform-public-catalog.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
 import { prepareEnvironment, readManagedTrace, repoRoot, sha256, execute, assertCommand, clients } from './native-platform-runtime.mjs';
 import { prepareTemplateEnvironment, qualificationGroup } from './native-platform-qualification-group.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
@@ -122,9 +123,11 @@ function recordCommandFailure(report, failure) {
   else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
 }
 
+const componentCommandTimeoutMs = 180000;
+
 // Shared authoring and scope commands use the same receipt and process evidence
 // boundary. The result is data, not a callback into a suite's report.
-async function executeComponentCommand(executeAw, args, { command, platform, cwd, env, cliEntry = cli, trace = false }) {
+async function executeComponentCommand(executeAw, args, { command, platform, cwd, env, cliEntry = cli, trace = false, stageLog }) {
   let response;
   let value;
   let stage = 'execute';
@@ -132,7 +135,9 @@ async function executeComponentCommand(executeAw, args, { command, platform, cwd
     ...command, stage, error: kind, ...componentProcessEvidence(error, response), ...componentReceiptEvidence(receipt, command, platform),
   });
   try {
-    response = await executeAw(publicAwNodeLauncher(cliEntry, trace), [...args, '--json'], { cwd, env, timeoutMs: 180000 });
+    response = await executeAw(publicAwNodeLauncher(cliEntry, trace),
+      [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
+      { cwd, env, timeoutMs: componentCommandTimeoutMs });
     // A Windows Job failure can return 250 even after AW has printed a receipt.
     // Only AW's public exit codes carry command results in this suite.
     assert(awCommandCompleted(response), 'Public AW process did not complete');
@@ -816,6 +821,15 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
       const command = componentCommand(args, dependencies);
+      // Large remaining native batches must keep the real command deadline.
+      // On Hosted runs record its final fixed stages before the private home
+      // is cleaned, so a timeout can be distinguished from slow progress.
+      const observedBatch = ['cursor', 'copilot', 'claude'].includes(platform) && suite === 'candidate'
+        && command.command === 'plugin.install' && (command.pluginIds?.length ?? 0) > 3;
+      const batchStarted = observedBatch ? performance.now() : undefined;
+      const stageLog = observedBatch && process.env.GITHUB_ACTIONS === 'true'
+        && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+        ? path.join(root, 'candidate-batch-stages.jsonl') : undefined;
       const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && command.command === 'target.set';
       const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
       const installTrace = traceEntry && platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
@@ -836,13 +850,18 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
       let outcome;
       let failure;
       try {
-        outcome = await executeComponentCommand(executeAw, args, { command, platform, cwd, env: commandEnv, cliEntry, trace });
+        outcome = await executeComponentCommand(executeAw, args, { command, platform, cwd, env: commandEnv, cliEntry, trace, stageLog });
         failure = outcome.failure;
       } catch (error) {
         if (error instanceof ComponentCommandError) failure = error.failure;
         throw error;
       } finally {
         if (failure) recordCommandFailure(report, failure);
+        if (observedBatch) {
+          const elapsedMs = Math.round(performance.now() - batchStarted);
+          report.candidateBatchTiming = { pluginCount: command.pluginIds.length, timeoutMs: componentCommandTimeoutMs,
+            elapsedMs, ...(stageLog ? { awStages: await readPublicAwStages(stageLog, { retainTail: true }) } : {}) };
+        }
         if (discoveryTrace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
         if (traceMode && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(traceFile, traceMode);
       }

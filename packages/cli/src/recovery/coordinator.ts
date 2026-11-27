@@ -126,6 +126,8 @@ export interface RecoveryOptions {
   /** Preview-only exits which are independently checked by owned cleanup plans. */
   nativePlannedRetirements?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
   sharedReferenceView?: NativeSharedReferenceView;
+  /** Exact active native target authorized by a parent ordinary remove, not outputs-only cleanup. */
+  ordinaryNativeRemoval?: RebuildCommandRuntime['ordinaryNativeRemoval'];
 }
 interface NativeTarget {
   pluginId: string;
@@ -348,6 +350,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       preserveLegacyNativeSkills: plan.options.existingOnly === true,
       nativeActivationOnlyTargets: plan.options.nativeActivationOnlyTargets,
       nativePlannedRetirements: plan.options.nativePlannedRetirements,
+      ordinaryNativeRemoval: command === 'cleanup' ? plan.options.ordinaryNativeRemoval : undefined,
       ...(preview ? { nativeCliRunner: bindNativeCliRunnerSignal(
         runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), runtime.signal) } : {}),
       env: plan.options.env,

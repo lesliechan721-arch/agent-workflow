@@ -11,6 +11,7 @@ import { qualificationGroup } from './native-platform-qualification-group.mjs';
 import { qualifyPublicAw, preparePublicClientEntry } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
 
 const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|client[,client...]> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]'
   + `\nClients are ${Object.keys(clients).join(', ')}.`;
@@ -149,35 +150,6 @@ export function readPublicAwEnvelope(stdout, expectedStatus) {
   const value = JSON.parse(stdout);
   if (value?.schemaVersion !== 2 || value.status !== expectedStatus) throw new Error('public-aw-unexpected-envelope');
   return value;
-}
-
-// Project only fixed stage names and times from this fixture's own debug log.
-// A timeout can interrupt its final JSON line.
-export async function readSharedProviderStages(file) {
-  const records = [];
-  let handle;
-  try {
-    handle = await fs.open(file, 'r');
-    const limit = 256 * 1024;
-    const input = Buffer.alloc(limit + 1);
-    const { bytesRead } = await handle.read(input);
-    const text = input.toString('utf8', 0, Math.min(bytesRead, limit));
-    for (const line of text.split('\n').slice(0, -1)) {
-      const { time, event } = JSON.parse(line);
-      if (typeof time !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(time)
-        || !['performance:stage', 'rebuild:action'].includes(event?.type)) continue;
-      const { name, phase, durationMs } = event.data ?? {};
-      if (!['recovery.plan', 'recovery.lock.wait', 'recovery.locked.demand', 'recovery.locked.recheck',
-        'recovery.child.plan', 'recovery.child.execute', 'recovery.status', 'status.discovery',
-        'status.adapter.inspect', 'status.inventory', 'status.demand', 'target.build', 'inspect',
-        'native.write', 'artifacts.write', 'postcheck.inspect'].includes(name)
-        || !['start', 'success', 'failure'].includes(phase)) continue;
-      records.push({ time, name, phase, ...(Number.isSafeInteger(durationMs) && durationMs >= 0 ? { durationMs } : {}) });
-      if (records.length === 256) return { state: 'limited', records };
-    }
-    return { state: bytesRead > limit || !text.endsWith('\n') ? 'partial' : 'captured', records };
-  } catch { return { state: 'unavailable', records }; }
-  finally { await handle?.close().catch(() => {}); }
 }
 
 // Observe only this isolated fixture's generated marketplace entry, using
@@ -335,7 +307,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           const nativeManagedTrace = await readManagedTrace(traceFile);
           report.commands.push(redactScope({ aw: args, cwd, processFailure: error?.message,
             ...(mixedClients ? { jobTiming: jobTiming() } : {}),
-            ...(stageLog ? { jobTiming: jobTiming(), awStages: await readSharedProviderStages(stageLog) } : {}),
+            ...(stageLog ? { jobTiming: jobTiming(), awStages: await readPublicAwStages(stageLog) } : {}),
             ...(trace ? { nativeManagedTrace } : {}),
             ...(mixedInstall && nativeManagedTrace ? { nativeInstallIntervals: mixedNativeInstallIntervals(nativeManagedTrace) } : {}),
             ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}),
@@ -353,7 +325,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const nativeManagedTrace = trace ? await readManagedTrace(traceFile) : undefined;
         report.commands.push(redactScope({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
           ...(mixedClients ? { jobTiming: jobTiming() } : {}),
-          ...(stageLog ? { jobTiming: timing, awStages: await readSharedProviderStages(stageLog) } : {}),
+          ...(stageLog ? { jobTiming: timing, awStages: await readPublicAwStages(stageLog) } : {}),
           ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(trace ? { nativeManagedTrace } : {}),

@@ -28,6 +28,7 @@ const PROCESS_TREE_MARKER_INTERVAL_MS = 1_000;
 const PROCESS_TREE_TERMINATION_GRACE_MS = 250;
 const PROCESS_TREE_SETTLE_MS = 50;
 const PROCESS_TREE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const LINUX_PS_INVALID_PGID = 0xffff_ffff;
 const MARKER_SCAN_COLLECTION_MS = 2;
 const MARKER_SCAN_MIN_SHARED_BUDGET_MS = 20;
 
@@ -1184,6 +1185,18 @@ async function acceptPosixSnapshot(
   const darwin = state.platform === 'darwin';
   const snapshotDeadline = posixSnapshotDeadline(snapshot, state.platform, deadline);
   const markerConfirmationDeadline = confirmationDeadline(snapshotDeadline, posixCommandTimeout(state.platform));
+  const linuxPsGroupObservation = state.platform === 'linux' && stage === 'observation'
+    && !usesLinuxProcfs(state) && state.dependencies.enforceCooperativeProcessGroup === true;
+  const groupDepartures: GroupDepartureSample[] = [];
+  // Related identities sampled during this delivery only; never signal authority.
+  const groupRelatedEntries = new Map<number, ProcessEntry>();
+  let groupConfirmation: ProcessCommandResult<MarkerOutput> | undefined;
+  const retainGroupCandidates = (table: ReadonlyMap<number, ProcessEntry>, pids: number[], expectedPgid: number): number[] => {
+    if (!linuxPsGroupObservation) return pids;
+    const proven = pids.filter(pid => !isLinuxPsDeadTaskPlaceholder(table.get(pid)));
+    if (pids.length > 0 && proven.length === 0) groupDepartures.push({ table, pids, expectedPgid });
+    return proven;
+  };
   const fail = (error: Error, reason: string, affectedPids: number[] = [], evidence = snapshot): void => {
     const recordCleanup = stage !== 'observation' && usesLinuxProcfs(state);
     if (state.failure && !recordCleanup) return;
@@ -1209,12 +1222,9 @@ async function acceptPosixSnapshot(
   if (state.dependencies.enforceCooperativeProcessGroup === true) {
     const expectedPgid = state.rootPgidMode === 'owned' ? state.rootPgid
       : state.rootPgidMode === 'missing' ? state.pid : undefined;
-    const changed = expectedPgid === undefined ? [] : [state.root, ...state.descendants.values()].flatMap((known) => {
-      if (!known) return [];
-      const entry = snapshot.table.get(known.pid);
-      return entry?.startTime === known.startTime && !entry.state?.startsWith('Z')
-        && entry.pgid !== undefined && entry.pgid !== expectedPgid ? [known.pid] : [];
-    });
+    const changed = expectedPgid === undefined ? [] : retainGroupCandidates(snapshot.table,
+      identityGroupDepartures(state, snapshot.table, expectedPgid).filter(pid =>
+        linuxPsGroupObservation || !snapshot.table.get(pid)?.state?.startsWith('Z')), expectedPgid);
     if (changed.length > 0) {
       // A later confirmation may see a return or exit. Keep the departure
       // already established for a known identity before changing any row.
@@ -1273,23 +1283,31 @@ async function acceptPosixSnapshot(
     const anchor = state.lease?.sentinel ?? (observerEntry
       ? { pid: process.pid, startTime: observerEntry.startTime }
       : undefined);
-    const retainGroupDepartures = (table: ReadonlyMap<number, ProcessEntry>): void => {
-      if (state.platform !== 'linux' || stage !== 'observation'
-        || state.dependencies.enforceCooperativeProcessGroup !== true || state.rootPgidMode === 'shared') return;
-      const expectedPgid = state.rootPgid ?? state.pid;
-      const changed = [...originalEntries].flatMap(([pid, before]) => {
-        if (pid === state.lease?.sentinel.pid) return [];
+    const rememberGroupMarkers = (table: ReadonlyMap<number, ProcessEntry>, markers: ReadonlySet<number>): void => {
+      if (!linuxPsGroupObservation) return;
+      for (const pid of markers) {
         const entry = table.get(pid);
-        return entry?.startTime === before.startTime && !entry.state?.startsWith('Z')
-          && entry.pgid !== undefined && entry.pgid !== expectedPgid ? [pid] : [];
-      });
-      if (changed.length > 0) {
-        latchObservationFailure(state,
-          cleanupUnconfirmed('custom process contract violation: a marked process left its initial process group.'),
-          posixIdentityDiagnostic(state, table, 'marked-process-group-changed', changed));
+        if (pid !== state.lease?.sentinel.pid && entry) groupRelatedEntries.set(pid, entry);
       }
     };
+    const retainGroupDepartures = (table: ReadonlyMap<number, ProcessEntry>, markers?: ReadonlySet<number>): void => {
+      if (!linuxPsGroupObservation || state.rootPgidMode === 'shared') return;
+      const expectedPgid = state.rootPgid ?? state.pid;
+      // Retain same-lifetime departures from the full original/recheck tables,
+      // including positive markers on newly sampled processes. Do not adopt
+      // an unmarked replacement or merge unrelated recheck rows into cleanup.
+      if (markers) rememberGroupMarkers(table, markers);
+      const changed = identityGroupDepartures(state, table, expectedPgid, groupRelatedEntries);
+      const proven = retainGroupCandidates(table, changed, expectedPgid);
+      if (proven.length > 0) latchIdentityGroupDeparture(state, table, proven);
+    };
+    if (linuxPsGroupObservation) {
+      for (const [pid, entry] of originalEntries) {
+        if (pid !== state.lease?.sentinel.pid) groupRelatedEntries.set(pid, entry);
+      }
+    }
     retainGroupDepartures(snapshot.table);
+    rememberGroupMarkers(snapshot.table, snapshot.markerPids);
     const remaining = markerConfirmationDeadline - Date.now();
     snapshot.markerLookupAttempts += 1;
     const confirmation: ProcessCommandResult<MarkerOutput> = remaining > 0
@@ -1305,7 +1323,7 @@ async function acceptPosixSnapshot(
     if (darwin && Date.now() >= markerConfirmationDeadline) {
       return failMarkerLookup(commandFailure('deadline-exceeded'));
     }
-    retainGroupDepartures(confirmed.table);
+    retainGroupDepartures(confirmed.table, confirmedMarkers);
     if (strictProcfs) {
       // A recheck is tied to the original lifetime. Keep positive rows visible
       // for diagnostics, but only an independent scan can claim a replacement.
@@ -1361,6 +1379,7 @@ async function acceptPosixSnapshot(
         else if (usesLinuxProcfs(state)) identity = await queryLinuxMarkers(identityRemaining, new Set());
         else identity = await readPosixIdentityTable(state.dependencies.execFile ?? defaultExecFile, identityRemaining);
         if (identity.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(identity.query);
+        if (linuxPsGroupObservation) groupConfirmation = identity;
         const identityTable = typeof identity.output === 'string' ? parseCompletePosixIdentityTable(identity.output) : identity.output?.table;
         const anchorConfirmed = anchor !== undefined
           && confirmed.table.get(anchor.pid)?.startTime === anchor.startTime
@@ -1531,6 +1550,7 @@ async function acceptPosixSnapshot(
     const providerMarkerPids = [...snapshot.markerPids].filter(
       (pid) => pid !== state.lease?.sentinel.pid,
     );
+    let rootGroupUnconfirmed = false;
     if (state.rootPgidMode === undefined) {
       if (
         state.root?.pid === state.pid &&
@@ -1541,6 +1561,10 @@ async function acceptPosixSnapshot(
         if (rootEntry.pgid === state.pid) {
           state.rootPgid = rootEntry.pgid;
           state.rootPgidMode = 'owned';
+        } else if (linuxPsGroupObservation && isLinuxPsDeadTaskPlaceholder(rootEntry)) {
+          // A first sample can catch the root being reaped. Check the expected
+          // group below, but establish no group ownership from this row.
+          rootGroupUnconfirmed = true;
         } else {
           state.rootPgidMode = 'shared';
           if (state.dependencies.enforceCooperativeProcessGroup === true) {
@@ -1570,24 +1594,18 @@ async function acceptPosixSnapshot(
     }
     const expectedPgid = state.rootPgidMode === 'owned'
       ? state.rootPgid
-      : state.rootPgidMode === 'missing'
+      : state.rootPgidMode === 'missing' || rootGroupUnconfirmed
         ? state.pid
         : undefined;
-    if (
-      state.dependencies.enforceCooperativeProcessGroup === true &&
-      expectedPgid !== undefined &&
-      providerMarkerPids.some((pid) => {
+    if (state.dependencies.enforceCooperativeProcessGroup === true && expectedPgid !== undefined) {
+      const changed = retainGroupCandidates(snapshot.table, providerMarkerPids.filter(pid => {
         const entry = snapshot.table.get(pid);
         return entry?.pgid !== undefined && entry.pgid !== expectedPgid;
-      })
-    ) {
-      fail(
-        cleanupUnconfirmed(
-          'custom process contract violation: a marked process left its initial process group.',
-        ),
-        'marked-process-group-changed',
-        providerMarkerPids.filter((pid) => snapshot.table.get(pid)?.pgid !== expectedPgid),
-      );
+      }), expectedPgid);
+      if (changed.length > 0) {
+        fail(cleanupUnconfirmed('custom process contract violation: a marked process left its initial process group.'),
+          'marked-process-group-changed', changed);
+      }
     }
     if (strictProcfs) return true;
     const liveKnownIdentities = [state.root, ...state.descendants.values()].filter(
@@ -1631,6 +1649,29 @@ async function acceptPosixSnapshot(
         markerlessKnownPids.length > 0 ? 'known-process-marker-missing' : 'initial-group-marker-missing',
         [...new Set([...markerlessKnownPids, ...markerlessInitialGroupPids, ...markerlessConfirmedPids])],
       );
+    }
+  }
+  if (groupDepartures.length > 0 && !state.failure) {
+    // The marker rules above remain independent. Confirm the impossible PGID
+    // from the original/recheck rows with one complete fresh identity table;
+    // reuse a post-marker identity query if one was already necessary.
+    if (!groupConfirmation) {
+      const remaining = snapshotDeadline - Date.now();
+      groupConfirmation = remaining > 0
+        ? await readPosixIdentityTable(state.dependencies.execFile ?? defaultExecFile, remaining)
+        : { output: null, failure: commandFailure('deadline-exceeded') };
+      if (groupConfirmation.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(groupConfirmation.query);
+    }
+    const table = typeof groupConfirmation.output === 'string'
+      ? parseCompletePosixIdentityTable(groupConfirmation.output) : undefined;
+    const metadata = {
+      snapshotStartedAt: snapshot.snapshotStartedAt,
+      snapshotDeadline,
+      queries: snapshot.queries?.slice(0, 8),
+      ...(groupConfirmation.failure ? { lookupFailure: groupConfirmation.failure } : {}),
+    };
+    for (const sample of groupDepartures) {
+      settleLinuxPsGroupDeparture(state, sample, table, snapshotDeadline, metadata, groupRelatedEntries);
     }
   }
   return true;
@@ -1689,7 +1730,98 @@ function snapshotFromSampler(
   };
 }
 
-function deliverSamplerIdentity(sampler: PosixProcessSampler): void {
+function identityGroupDepartures(
+  state: ObservationState,
+  table: ReadonlyMap<number, ProcessEntry>,
+  expectedPgid: number,
+  relatedEntries?: ReadonlyMap<number, ProcessEntry>,
+): number[] {
+  const changed = new Set([state.root, ...state.descendants.values()].flatMap((identity) => {
+    if (!identity) return [];
+    const entry = table.get(identity.pid);
+    return entry?.startTime === identity.startTime &&
+      entry.pgid !== undefined && entry.pgid !== expectedPgid ? [identity.pid] : [];
+  }));
+  for (const [pid, before] of relatedEntries ?? []) {
+    const entry = table.get(pid);
+    if (entry?.startTime === before.startTime && entry.pgid !== undefined && entry.pgid !== expectedPgid) changed.add(pid);
+  }
+  return [...changed];
+}
+
+function latchIdentityGroupDeparture(
+  state: ObservationState,
+  table: ReadonlyMap<number, ProcessEntry>,
+  pids: number[],
+): void {
+  latchObservationFailure(
+    state,
+    cleanupUnconfirmed('custom process contract violation: a marked process left its initial process group.'),
+    posixIdentityDiagnostic(state, table, 'marked-process-group-changed', pids),
+  );
+}
+
+// procps can sample a task during reaping after the kernel has discarded
+// its group identity. UINT32_MAX is not evidence of a real process group.
+function isLinuxPsDeadTaskPlaceholder(entry: ProcessEntry | undefined): boolean {
+  return entry?.state === 'X' && entry.ppid === 0 && entry.pgid === LINUX_PS_INVALID_PGID;
+}
+
+interface GroupDepartureSample {
+  table: ReadonlyMap<number, ProcessEntry>;
+  expectedPgid: number;
+  pids: number[];
+}
+
+function settleLinuxPsGroupDeparture(
+  state: ObservationState,
+  { table, expectedPgid, pids }: GroupDepartureSample,
+  confirmed: ReadonlyMap<number, ProcessEntry> | undefined,
+  deadline: number,
+  metadata: Pick<ProcessTreeDiagnostic, 'snapshotStartedAt' | 'snapshotDeadline' | 'queries' | 'lookupFailure'>,
+  relatedEntries?: ReadonlyMap<number, ProcessEntry>,
+): void {
+  if (state.disposed || state.failure) return;
+  const anchorPid = state.lease?.sentinel.pid ?? process.pid;
+  const anchorBefore = table.get(anchorPid);
+  const anchorAfter = confirmed?.get(anchorPid);
+  const anchorStart = state.lease?.sentinel.startTime ?? anchorBefore?.startTime;
+  const liveAnchor = (entry: ProcessEntry | undefined): boolean =>
+    entry !== undefined && entry.startTime === anchorStart &&
+    /^[RSDTtIWP]$/u.test(entry.state ?? '') && entry.pgid !== undefined && entry.pgid !== LINUX_PS_INVALID_PGID;
+  const trusted = Date.now() < deadline && liveAnchor(anchorBefore) && liveAnchor(anchorAfter)
+    ? confirmed : undefined;
+  if (trusted) {
+    const changed = identityGroupDepartures(state, trusted, expectedPgid, relatedEntries);
+    // Some marker-recheck candidates are relevant before a positive marker has
+    // established them as known descendants. Preserve their sampled departure.
+    for (const pid of pids) {
+      const entry = trusted.get(pid);
+      if (entry && entry.startTime === table.get(pid)?.startTime && entry.pgid !== undefined && entry.pgid !== expectedPgid
+        && !changed.includes(pid)) changed.push(pid);
+    }
+    const proven = changed.filter(pid => !isLinuxPsDeadTaskPlaceholder(trusted.get(pid)));
+    if (proven.length > 0) {
+      latchIdentityGroupDeparture(state, trusted, proven);
+      return;
+    }
+    // A replacement or still-present task cannot prove that the original
+    // PID was absent. Do not adopt a new identity or authorize any signal.
+    if (!pids.some(pid => trusted.has(pid)) && changed.length === 0) return;
+  }
+  latchObservationFailure(
+    state,
+    cleanupUnconfirmed('POSIX process identity lookup failed: a disappearing process could not be confirmed absent.'),
+    {
+      ...posixIdentityDiagnostic(state, table, 'identity-lookup-failed', pids),
+      ...metadata,
+    },
+  );
+}
+
+async function deliverSamplerIdentity(sampler: PosixProcessSampler): Promise<void> {
+  const identityTable = sampler.identityTable;
+  const pending: Array<GroupDepartureSample & { state: ObservationState }> = [];
   for (const state of sampler.states) {
     if (state.disposed || state.finalSamplerQueries?.has(sampler.identityInFlight) === false) continue;
     if (sampler.identityFailure) {
@@ -1718,29 +1850,39 @@ function deliverSamplerIdentity(sampler: PosixProcessSampler): void {
         : state.rootPgidMode === 'missing'
           ? state.pid
           : undefined;
-      const identityTable = sampler.identityTable;
       if (state.dependencies.enforceCooperativeProcessGroup === true &&
         expectedPgid !== undefined && identityTable) {
-        const changedPids = [state.root, ...state.descendants.values()].flatMap((identity) => {
-          if (!identity) return [];
-          const entry = identityTable.get(identity.pid);
-          return entry?.startTime === identity.startTime &&
-            entry.pgid !== undefined && entry.pgid !== expectedPgid ? [identity.pid] : [];
-        });
+        const changedPids = identityGroupDepartures(state, identityTable, expectedPgid);
         if (changedPids.length > 0) {
-          latchObservationFailure(
-            state,
-            cleanupUnconfirmed(
-              'custom process contract violation: a marked process left its initial process group.',
-            ),
-            posixIdentityDiagnostic(state, identityTable, 'marked-process-group-changed', changedPids),
-          );
+          const proven = state.platform === 'linux' && !sampler.linuxMarker
+            ? changedPids.filter(pid => !isLinuxPsDeadTaskPlaceholder(identityTable.get(pid)))
+            : changedPids;
+          if (proven.length > 0) latchIdentityGroupDeparture(state, identityTable, proven);
+          else if (!state.failure) pending.push({ state, table: identityTable, expectedPgid, pids: changedPids });
         }
       }
       continue;
     }
     const snapshot = snapshotFromSampler(state, sampler);
     if (snapshot) acceptPosixSnapshot(state, snapshot, 'observation');
+  }
+  if (!identityTable || pending.length === 0) return;
+  // Share one independent, complete ps query, within the original identity
+  // deadline. Keep the delivery in flight until this confirmation has settled.
+  const originalQuery = sampler.identityQuery;
+  const deadline = originalQuery?.deadline ?? Date.now();
+  const remaining = deadline - Date.now();
+  const result: ProcessCommandResult = remaining > 0
+    ? await readPosixIdentityTable(sampler.execFile, remaining)
+    : { output: null, failure: commandFailure('deadline-exceeded') };
+  const confirmed = result.output === null ? undefined : parseCompletePosixIdentityTable(result.output);
+  for (const { state, ...sample } of pending) {
+    settleLinuxPsGroupDeparture(state, sample, confirmed, deadline, {
+      snapshotStartedAt: originalQuery?.startedAt,
+      snapshotDeadline: originalQuery?.deadline,
+      queries: [originalQuery, result.query].filter((query): query is ProcessQueryDiagnostic => query !== undefined),
+      ...(result.failure ? { lookupFailure: result.failure } : {}),
+    });
   }
 }
 
@@ -1784,7 +1926,7 @@ function scanSamplerIdentity(
       sampler.identityTable = result.output === null
         ? undefined
         : typeof result.output === 'string' ? parsePosixProcessTable(result.output) : result.output.table;
-      deliverSamplerIdentity(sampler);
+      return deliverSamplerIdentity(sampler);
     })
     .finally(() => {
       sampler.identityInFlight = undefined;
@@ -1830,13 +1972,14 @@ function scanSamplerMarkers(
 function schedulePosixSampler(sampler: PosixProcessSampler): void {
   if (sampler.timer) clearTimeout(sampler.timer);
   sampler.timer = undefined;
-  if (![...sampler.states].some(state => !state.finalSamplerQueries)) return;
+  const activeStates = [...sampler.states].filter(state => !state.finalSamplerQueries);
+  if (activeStates.length === 0) return;
   const now = Date.now();
   const identityDelay = Math.max(
     0,
     PROCESS_TREE_IDENTITY_INTERVAL_MS - (now - sampler.identityScannedAt),
   );
-  const markerDelay = [...sampler.states].some((state) => state.marker !== undefined)
+  const markerDelay = activeStates.some((state) => state.marker !== undefined)
     ? Math.max(0, PROCESS_TREE_MARKER_INTERVAL_MS - (now - sampler.markerScannedAt))
     : Number.POSITIVE_INFINITY;
   const delayMs = Math.min(identityDelay, markerDelay);
@@ -2345,8 +2488,9 @@ async function terminatePosixProcessTree(
   const deadline = Date.now() + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
   const sampler = state.sampler;
   const overlappingProcfsQuery = Boolean(sampler?.linuxMarker && (sampler.identityInFlight || sampler.markerInFlight));
-  if (sampler?.linuxMarker) {
-    // Only deliveries already in flight may finish during this cleanup stage.
+  if (sampler) {
+    // Freeze this observer's delivery set at the completion boundary. Other
+    // subscribers may keep sampling, but only these deliveries are drained.
     state.finalSamplerQueries = new Set(pendingObservations);
     schedulePosixSampler(sampler);
   }

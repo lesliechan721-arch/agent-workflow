@@ -192,7 +192,7 @@ CI 的 Linux Node 24 发布验证分为两个独立必要检查：
 
 手动运行选中 `component_matrix=true`，或给 PR 添加 `native-qualification-components` 标签，可在 `all` 的真实客户端资格中追加单组件、混合包和第一方安装检查。各检查使用独立临时 HOME 与本地 Catalog，断言安装回执、作用域、实际文件、无变化同步、更新、移除和重装。generic 还核对外来文件冲突及零产物，并在 Ubuntu x64 通过公开入口安装全部官方插件。全官方目录资格先取得固定版本的真实 `agent-browser` 原生程序，供 browser-use 的安装前检查在隔离 PATH 调用。Cursor 的固定发行包仅在 Ubuntu x64 运行。Pi 从 Git 原始字节提取冻结快照，先核对已发布清单的 SHA-256，确认候选 CLI 拒绝冻结的 beta.76 旧命令声明且未写入需求。已发布的 AW CLI beta.85 在隔离环境中建立旧安装，核对旧角色缺口与调度 Skill 依赖错误。随后在旧快照仍可用时撤销退役根插件的需求，切换到候选 Catalog 和 CLI，设置 Guide 的平台基线、同步 Guide 并安装两个新消费者；核对三个 Skill 的实际文件（候选不再交付原生 `subagent` 角色）。候选目录资格同时检查两套消费者的主会话 Instruction（generic 省略）及无专用原生角色。单独运行 frozen 套件时，`AW_QUALIFICATION_FROZEN_CLI_ROOT` 指向已安装的 beta.85 包目录。Antigravity 通过 `client=antigravity-user-public` 加同一开关，在专用的六宿主资格中检查两个作用域。也可选择单一客户端以单独复验。[公共组件资格](../../scripts/qualification/native-platform-public-components.mjs) · [工作流](../../.github/workflows/native-platform-qualification.yml)
 
-完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。两台 macOS 宿主合计四组作业。选择全部宿主时，另外的 `qualify-ubuntu-extras` 在 Ubuntu x64 独立承担 Cursor 和 generic 附加组件资格，同样只等待候选，不增加 macOS 作业。每组内部独立的资格操作共用并发池，macOS 默认 2 路、Linux 和 Windows 默认 3 路；通过环境变量 `AW_QUALIFICATION_CONCURRENCY` 指定 1–3，设为 1 可串行调试。合成矩阵按完整输入变体共用组级临时作者环境和真实构建的模板；每套件复制自己的快照。模板环境不依赖单个套件的临时 PATH 或报告，首个套件退出后更新构建仍可运行；模板命令失败的受控证据归入每个受影响的套件，独立变体仍继续。
+完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。两台 macOS 宿主合计四组作业。选择全部宿主时，另外的 `qualify-ubuntu-extras` 在 Ubuntu x64 独立承担 Cursor 和 generic 附加组件资格，同样只等待候选，不增加 macOS 作业。每组内部独立的资格操作共用并发池，macOS 默认 2 路、Linux 和 Windows 默认 3 路；通过环境变量 `AW_QUALIFICATION_CONCURRENCY` 指定 1–3，设为 1 可串行调试；手动触发可选择 `qualification_concurrency=1|2|3` 做固定候选对照，默认 auto 与 PR 标签仍采用上述原宿主默认值。合成矩阵按完整输入变体共用组级临时作者环境和真实构建的模板；每套件复制自己的快照。模板环境不依赖单个套件的临时 PATH 或报告，首个套件退出后更新构建仍可运行；模板命令失败的受控证据归入每个受影响的套件，独立变体仍继续。
 
 | 客户端 | 每台宿主的制品 | 宿主相关检查 |
 | --- | --- | --- |
@@ -255,7 +255,7 @@ Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_MANAGED_TRACE=1` 时，仅
 
 Windows Codex 的共享 User 提供者场景在 Project 安装依赖时记录原 60 秒时限、外层 Job 调用开始至返回、AW 正常退出时刻和最多 64 个系统 PowerShell 完成样本。资格脚本从该命令的私有 debug 日志最多读取 256 KiB，报告仅保留固定的准备、写入及状态阶段与时间。超时后在还原配置前另读已选原生入口的插件清单和项目公开 status，命令回执保留原超时。
 
-公开 AW 命令的原 stdout/stderr 预览仍受原长度限制；失败时先从完整 JSON 提取有限 target、receipt effect、diagnostic 和实际 native identity 摘要，再做同一脱敏与长度限制。无效 JSON 明确标记，不从截断预览猜测结果；摘要不改变命令退出码或场景失败。
+公开 AW 命令的原 stdout/stderr 预览仍受原长度限制；失败时先从完整 JSON 提取有限 target、receipt effect、diagnostic 和实际 native identity 摘要，再做同一脱敏与长度限制。无效 JSON 明确标记，不从截断预览猜测结果；摘要不改变命令退出码或场景失败。 Cursor/Copilot/Claude 候选剩余多插件批次另记录 `candidateBatchTiming` 的插件数、实际命令耗时及原 180 秒期限；启用 Hosted 托管调用取证时，从该批次私有 debug 日志最多读取首尾合计 256 KiB、保留最多 256 条固定阶段与时间，标明不完整或截断，不保留原始日志内容。成功与失败都记录，超时仍失败，额外取证不作为无插桩性能证明。
 
 在同一 Hosted 进程诊断开关下，Darwin 公开 AW 包装还记录既有 identity/marker `ps` 与内核启动参数补证的查询时序：只保留前8项和末16项、序号、固定查询类别、开始/回调时间、原 timeout、有限错误类别及有单位的封顶输出长度，附省略数。尚未回调保持 pending；不记录 argv、脚本、环境或 marker，不增加查询、重试、截止或宽限。成功和原异常均携带该独立字段，原首末失败诊断不被改写。这些插桩时序不是无插桩性能证明。同一开关也将原有查询计时用于 Darwin 的直接客户端与 RPC 包装，并在成功和失败的命令回执中保留；没有额外查询、重试或截止宽限。
 

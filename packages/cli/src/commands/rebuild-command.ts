@@ -47,6 +47,7 @@ import { resolveActiveCatalogGeneration, resolveActiveCatalogPluginShallow } fro
 import type { CatalogGenerationServiceRuntime } from '../utils/catalog-generation-service.js';
 import {
   CatalogPreparationReadScope,
+  catalogOperationBindingsMatch,
   resolveCatalogOperationContext,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
@@ -207,6 +208,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   onInstallTargetState?: (identity: Pick<RebuildTargetIdentity, 'pluginId' | 'scope'> & { platform: PlatformTarget },
     state: 'running' | 'completed') => void;
   nativePlannedRetirements?: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
+  /** A joint ordinary remove may authorize its exact Active native output child. */
+  ordinaryNativeRemoval?: { target: NativeExecutionInput['selectedTargets'][number]; catalog: CatalogOperationContext };
   nativeTargetExecution?: {
     produces?(identity: RebuildTargetIdentity): boolean;
     beforeApply(identity: RebuildTargetIdentity): Promise<CommandProducerResult[]>;
@@ -1525,7 +1528,22 @@ async function prepareOfflineNativeCleanup(options: {
   env: NodeJS.ProcessEnv;
   runtime?: RebuildCommandRuntime;
   retirementNativePlatforms?: readonly PlatformName[];
+  ordinaryNativeRemoval?: RebuildCommandRuntime['ordinaryNativeRemoval'];
 }): Promise<OfflineNativeCleanupPreparation> {
+  const removal = options.ordinaryNativeRemoval;
+  let activeRemovalSourceIdentity: string | undefined;
+  if (removal) {
+    const readScope = options.runtime?.catalogReadScope ?? new CatalogPreparationReadScope({ env: options.env, signal: options.runtime?.signal });
+    const current = await readScope.rebind(removal.catalog);
+    const { sourceId, pluginName } = parsePluginId(removal.target.pluginId);
+    const source = current.catalog.sources.find((entry) => entry.sourceId === sourceId)?.resolution;
+    if (!catalogOperationBindingsMatch(removal.catalog, current) || !source
+      || !source.manifest.entries.some((entry) => entry.name === pluginName)) {
+      throw new Error('operationReviewStale: Active Catalog binding changed before native removal.');
+    }
+    await CatalogPreparationReadScope.validateEntries(readScope, source);
+    activeRemovalSourceIdentity = source.sourceIdentity;
+  }
   const candidates = options.evidence.flatMap((target) => target.plan.actions.flatMap((action) =>
     action.recoveryCandidate && needsFrozenNativeRemoval(action.recoveryCandidate) ? [action.recoveryCandidate] : []));
   const context: RebuildExecutionContext = { ...options.runtime, env: options.env,
@@ -1545,9 +1563,14 @@ async function prepareOfflineNativeCleanup(options: {
     const plugin = createSyntheticPlugin(evidence.pluginName, options.env);
     plugin.sourceId = evidence.sourceId; plugin.sourceIdentity = evidence.sourceIdentity; plugin.pluginId = evidence.pluginId;
     try {
+      const ordinaryRemove = removal && evidence.pluginId === removal.target.pluginId
+        && evidence.platform === removal.target.platform && evidence.scope === removal.target.scope
+        && evidence.sourceIdentity === activeRemovalSourceIdentity;
       const target = await integration.buildTarget({ sourceId: evidence.sourceId, sourceIdentity: evidence.sourceIdentity,
         pluginId: evidence.pluginId, plugin, platform: evidence.platform, scope: evidence.scope, cwd: options.cwd,
-        command: 'cleanup', catalog: { rootDir: resolveAwHome(options.env), source: 'local' } });
+        // Select the adapter's remove operation only. The enclosing execution
+        // remains cleanup, using frozen live evidence and scoped ordering.
+        command: ordinaryRemove ? 'uninstall' : 'cleanup', catalog: { rootDir: resolveAwHome(options.env), source: 'local' } });
       targets.set(offlineCleanupKey(evidence), target);
       deploymentExclusions.push(...target.deploymentExclusions ?? []);
     } catch (error) {
@@ -3122,7 +3145,7 @@ async function runRebuildCommandInSession(
       && candidate.scope === target.scope)
       ?? intentOnlyOfflineCleanupEvidence(target));
     const nativePreparation = await prepareOfflineNativeCleanup({ evidence, cwd: options.commandOptions.cwd,
-      env: runtimeEnv, runtime: options.runtime });
+      env: runtimeEnv, runtime: options.runtime, ordinaryNativeRemoval: options.runtime?.ordinaryNativeRemoval });
     const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! },
       [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupMarketplaceIdentityWarnings(cleanupTargets), ...cleanupUnavailableWarnings],
       retainedPackageActions, nativePreparation);

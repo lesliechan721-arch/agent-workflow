@@ -7,7 +7,8 @@ import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, removeQualificationRoot,
-  readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
+  readPublicAwEnvelope, readQualificationCodexSources, observeQualification } from './native-platforms.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
 import { qualificationGroup, qualificationPool } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
@@ -65,9 +66,30 @@ test('retains only fixed shared-provider stages before an interrupted debug reco
   const row = (name) => JSON.stringify({ time, event: { type: 'performance:stage', message: 'private',
     data: { name, phase: 'success', durationMs: 12, detail: 'private' } } });
   await fs.writeFile(file, [row('recovery.child.plan'), row('private'), '{"partial"'].join('\n'));
-  assert.deepEqual(await readSharedProviderStages(file), { state: 'partial', records: [
+  assert.deepEqual(await readPublicAwStages(file), { state: 'partial', records: [
     { time, name: 'recovery.child.plan', phase: 'success', durationMs: 12 },
   ] });
+});
+
+// Test Value Gate: a timed-out batch can emit more than the bounded log window.
+// Preserve its final fixed progress without copying arbitrary debug content.
+test('retains the last fixed AW stages in a bounded batch debug log', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-batch-stage-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'stages');
+  const time = '2026-11-19T00:00:00.000Z';
+  const row = name => JSON.stringify({ time, event: { type: 'performance:stage',
+    message: 'private debug message', data: { name, phase: 'success', durationMs: 12, detail: 'private detail' } } });
+  const noise = JSON.stringify({ unrelated: 'private'.repeat(100) }) + '\n';
+  await fs.writeFile(file, row('recovery.plan') + '\n' + noise.repeat(500)
+    + row('recovery.child.execute') + '\n' + '{"partial"');
+  const evidence = await readPublicAwStages(file, { retainTail: true });
+  assert.equal(evidence.state, 'limited');
+  assert.deepEqual(evidence.records, [
+    { time, name: 'recovery.plan', phase: 'success', durationMs: 12 },
+    { time, name: 'recovery.child.execute', phase: 'success', durationMs: 12 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(evidence), /private|partial"/u);
 });
 
 // Test Value Gate: a runner using different runtime schema bytes cannot produce

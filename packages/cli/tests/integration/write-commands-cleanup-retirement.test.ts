@@ -1221,6 +1221,70 @@ describe('five namespaced write commands', () => {
     expect(removed.overallState, JSON.stringify(removed.rebuildResults)).toBe('succeeded');
   });
 
+  // Test Value Gate: an ordinary public remove of the last Claude consumer
+  // must unregister and remove the proven owned root and orphan dependency packages, not merely disable them.
+  it.each(['user', 'project'] as const)('removes the last active Claude package from the %s scope', async (scope) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const sourceRoot = path.join(cwd, 'ordinary-claude-remove');
+    const configureManifest = (manifest: PluginMeta['manifest']) => { manifest.platforms = ['claude']; };
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'demo', dependencies: ['leaf'], configureManifest }, { name: 'leaf', configureManifest },
+    ]);
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: config.digest, env });
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const installed = await installFixturePlugin(['team/demo'], { cwd, platform: 'claude', scope }, claude.runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const deployments = await Promise.all(['demo', 'leaf'].map((name) => nativeFixtureLayout(name, 'team', scope, 'claude')));
+    for (const deployment of deployments) {
+      expect(await fs.pathExists(deployment.packageRoot)).toBe(true);
+      expect((await fs.readJson(claude.installedPath)).plugins[deployment.nativeIdentity.registrationId!]).toHaveLength(1);
+    }
+
+    const result = await runPublicLifecycle('remove', ['team/demo'], { cwd, env, cliVersion: '1.0.0',
+      scope, context: scope, yes: true }, claude.runtime);
+    expect(result.status, JSON.stringify(result)).toBe('success');
+    for (const deployment of deployments) {
+      expect(await fs.pathExists(deployment.packageRoot), JSON.stringify(result)).toBe(false);
+      expect((await fs.readJson(claude.installedPath)).plugins[deployment.nativeIdentity.registrationId!]).toBeUndefined();
+    }
+  });
+
+  // Test Value Gate: the selected active removal still must preserve another
+  // scope's registration; an outputs-only request cannot gain its deletion authority.
+  it.each(['shared', 'outputs-only'] as const)('keeps the proven Claude package during %s removal', async (mode) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const sourceRoot = path.join(cwd, 'preserved-claude-remove');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo', configureManifest: manifest => { manifest.platforms = ['claude']; } }]);
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: config.digest, env });
+    const claude = await createClaudeNativeTestRuntime(isolation);
+    const scope = 'project' as const;
+    const location = { cwd, env, cliVersion: '1.0.0', scope, context: scope, yes: true as const };
+    if (mode === 'shared') {
+      const installed = await installFixturePlugin(['team/demo'], { cwd, platform: 'claude', scope: 'user' }, claude.runtime);
+      expect(installed.overallState).toBe('succeeded');
+    }
+    const installed = await installFixturePlugin(['team/demo'], { cwd, platform: 'claude', scope }, claude.runtime);
+    expect(installed.overallState).toBe('succeeded');
+    const deployment = await nativeFixtureLayout('demo', 'team', scope, 'claude');
+    const registration = deployment.nativeIdentity.registrationId!;
+    if (mode === 'outputs-only') {
+      const cleared = await runPublicLifecycle('remove', ['team/demo'], { ...location, only: 'requirements' }, claude.runtime);
+      expect(cleared.status).toBe('success');
+    }
+    const result = await runPublicLifecycle('remove', ['team/demo'], { ...location,
+      ...(mode === 'outputs-only' ? { only: 'outputs' as const, targets: ['claude'] } : {}) }, claude.runtime);
+    expect(result.status, JSON.stringify(result)).toBe('success');
+    expect(await fs.pathExists(deployment.packageRoot)).toBe(true);
+    const records = (await fs.readJson(claude.installedPath)).plugins[registration];
+    expect(records).toContainEqual(expect.objectContaining({ scope: mode === 'shared' ? 'user' : 'local' }));
+  });
+
   it('cleans live ownership after source config deletion while uninstall remains catalog dependent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unavailable-removal-source');
