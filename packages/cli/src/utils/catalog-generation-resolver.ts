@@ -28,7 +28,7 @@ import {
   type CatalogStoreEntry,
 } from './catalog-generation-store.js';
 import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
-import { validatePluginManifest } from './manifest.js';
+import { normalizeAwCapabilities, validatePluginManifest } from './manifest.js';
 import { validateCatalogManifestV7 } from './catalog-manifest-v7.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 import {
@@ -107,12 +107,57 @@ async function assertRegularFile(value: string, label: string): Promise<void> {
   }
 }
 
+/**
+ * Read only immutable store identity and the Catalog manifest. This is usable
+ * solely for a commit recheck after preparation has validated transport.
+ */
+async function readCatalogStoreManifestForCommit(options: {
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<Pick<CatalogStoreEntry, 'snapshotRoot' | 'metadata' | 'manifest'>> {
+  const location = resolveCatalogStoreLocation(options);
+  try {
+    await assertRegularDirectory(location.storeRootDir, 'Catalog store root');
+    await assertRegularDirectory(location.logicalIdentityDirectory, 'Catalog logical identity store');
+    await assertRegularDirectory(location.entryDir, 'Catalog store entry');
+    await assertRegularDirectory(location.snapshotRoot, 'Catalog snapshot');
+    const metadata = await readCatalogStoreMetadata(options);
+    if (await readCatalogSnapshotLogicalIdentity(location.snapshotRoot) !== metadata.logicalIdentity) {
+      throw new Error('Catalog snapshot logical identity does not match store metadata.');
+    }
+    const manifestPath = path.join(location.snapshotRoot, CURRENT_CATALOG_MANIFEST_FILE);
+    await assertRegularFile(manifestPath, 'Catalog manifest');
+    const manifestBytes = await fs.readFile(manifestPath);
+    const manifestDigest = `sha256:${crypto.createHash('sha256').update(manifestBytes).digest('hex')}`;
+    if (manifestDigest !== metadata.manifestDigest) {
+      throw new Error('Catalog manifest digest does not match store metadata.');
+    }
+    const manifest = validateCatalogManifestV7(JSON.parse(manifestBytes.toString('utf8').replace(/^\uFEFF/u, '')));
+    if (manifest.catalogVersion !== metadata.catalogVersion
+      || manifest.channel !== metadata.channel
+      || JSON.stringify(normalizeAwCapabilities(manifest.requires.aw.capabilities ?? []))
+        !== JSON.stringify(metadata.requiredAwCapabilities)) {
+      throw new Error('Catalog manifest does not match store metadata.');
+    }
+    return { snapshotRoot: location.snapshotRoot, metadata, manifest };
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationMetadataInvalid',
+      message: 'Catalog store manifest is damaged. Remove the damaged store entry and run aw source sync.',
+      cause: error,
+    });
+  }
+}
+
 async function resolveFromState(options: {
   source: CatalogSource;
   sourceIdentity: SourceIdentity;
   active?: CatalogGenerationActiveV1;
   env: NodeJS.ProcessEnv;
   requireCompatibility: boolean;
+  manifestOnlyForCommit?: boolean;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   reuseTransport?: boolean;
@@ -142,14 +187,16 @@ async function resolveFromState(options: {
     manifestDigest: options.active.manifestDigest,
     snapshotDigest: options.active.snapshotDigest,
   };
-  const entry = await readValidatedCatalogGenerationStoreEntry({
-    logicalIdentity: binding.logicalIdentity,
-    snapshotDigest: binding.snapshotDigest,
-    env: options.env,
-    validatedStoreEntries: options.validatedStoreEntries,
-    validatingStoreEntries: options.validatingStoreEntries,
-    preparationBinding: options.reuseTransport ? { ...binding, requestedRef: options.active.requestedRef } : undefined,
-  });
+  const entry = options.manifestOnlyForCommit
+    ? await readCatalogStoreManifestForCommit({ ...binding, env: options.env })
+    : await readValidatedCatalogGenerationStoreEntry({
+      logicalIdentity: binding.logicalIdentity,
+      snapshotDigest: binding.snapshotDigest,
+      env: options.env,
+      validatedStoreEntries: options.validatedStoreEntries,
+      validatingStoreEntries: options.validatingStoreEntries,
+      preparationBinding: options.reuseTransport ? { ...binding, requestedRef: options.active.requestedRef } : undefined,
+    });
   if (entry.metadata.manifestDigest !== options.active.manifestDigest) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
@@ -337,14 +384,18 @@ export function calculateCatalogGenerationSetDigest(
   })).digest('hex')}`;
 }
 
-export async function resolveCatalogGenerationSet(options: {
+interface ResolveCatalogGenerationSetOptions {
   sourceIds?: string[];
   env?: NodeJS.ProcessEnv;
   controlSnapshot?: CatalogGenerationControlSnapshot;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   reuseTransport?: boolean;
-} = {}): Promise<CatalogGenerationSet> {
+}
+
+async function resolveCatalogGenerationSources(
+  options: ResolveCatalogGenerationSetOptions, manifestOnlyForCommit = false,
+): Promise<{ control: CatalogGenerationControlSnapshot; sources: CatalogGenerationSetSource[] }> {
   const env = options.env ?? process.env;
   const control = options.controlSnapshot ?? await readCatalogGenerationControlSnapshot({ env });
   const requested = options.sourceIds ? new Set(options.sourceIds) : undefined;
@@ -366,11 +417,44 @@ export async function resolveCatalogGenerationSet(options: {
     active: control.generationState.sources[source.id]?.active,
     env,
     requireCompatibility: true,
+    manifestOnlyForCommit,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
     reuseTransport: options.reuseTransport,
   })));
   const sources = resolved.map(({ active: _active, ...source }) => source);
+  return { control, sources };
+}
+
+/** Read current source binding/manifest evidence before independently checking a commit closure. */
+export async function resolveCatalogManifestSourcesForCommit(options: {
+  sourceIds?: string[];
+  env?: NodeJS.ProcessEnv;
+  preparedSource: CatalogGenerationSetSource;
+}): Promise<CatalogGenerationSetSource[] | undefined> {
+  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env: options.env });
+  const prepared = options.preparedSource;
+  const configured = controlSnapshot.configSnapshot.config.sources.find((source) => source.id === prepared.sourceId);
+  const active = controlSnapshot.generationState.sources[prepared.sourceId]?.active;
+  // Valid control state can lose the prepared source or its Active pointer.
+  // Source update is config-only, so a legal rebind may also retain the old
+  // Active pointer until sync. Do not reinterpret unrelated identity or store
+  // inconsistencies as stale review.
+  if (!configured || !active) return undefined;
+  if (active.sourceIdentity === prepared.sourceIdentity
+    && active.sourceConfigFingerprint === prepared.sourceConfigFingerprint
+    && active.logicalIdentity === prepared.logicalIdentity
+    && active.snapshotDigest === prepared.snapshotDigest
+    && active.manifestDigest === prepared.manifestDigest
+    && active.resolvedCommit === prepared.resolvedCommit
+    && (controlSnapshot.sourceIdentities[configured.id] !== prepared.sourceIdentity
+      || calculateCatalogSourceConfigFingerprint(configured) !== prepared.sourceConfigFingerprint)) return undefined;
+  const { sources } = await resolveCatalogGenerationSources({ ...options, controlSnapshot }, true);
+  return sources;
+}
+
+export async function resolveCatalogGenerationSet(options: ResolveCatalogGenerationSetOptions = {}): Promise<CatalogGenerationSet> {
+  const { control, sources } = await resolveCatalogGenerationSources(options);
   const primarySourceId = control.configSnapshot.config.sources.find((source) => source.primary)!.id;
   return {
     configDigest: control.configSnapshot.digest,

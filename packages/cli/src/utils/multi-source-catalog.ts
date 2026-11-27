@@ -25,6 +25,7 @@ import {
 import {
   resolvePartialCatalogOperationContext,
   type CatalogOperationContext,
+  type CatalogPreparationReadScope,
 } from './catalog-operation-context.js';
 
 export interface ParsedPluginId {
@@ -52,6 +53,7 @@ export interface ResolveMultiSourceCatalogOptions {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   operationContext?: CatalogOperationContext;
+  catalogReadScope?: CatalogPreparationReadScope;
 }
 
 export type ResolveCatalogPluginOptions = Omit<ResolveMultiSourceCatalogOptions, 'sourceIds'> & {
@@ -352,7 +354,7 @@ async function resolveCatalogForConsumer(
     configSnapshot: snapshot,
     env,
     ...(options.signal ? { signal: options.signal } : {}),
-  });
+  }, options.catalogReadScope);
   return { resolution: context.catalog, immutable: true };
 }
 
@@ -399,6 +401,7 @@ export async function withResolvedCatalogPlugin<T>(
     ...(options.env ? { env: options.env } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.operationContext ? { operationContext: options.operationContext } : {}),
+    ...(options.catalogReadScope ? { catalogReadScope: options.catalogReadScope } : {}),
   };
   const resolvedCatalog = await resolveCatalogForConsumer({
     ...resolutionOptions,

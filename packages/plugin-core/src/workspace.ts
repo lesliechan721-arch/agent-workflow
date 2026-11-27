@@ -22,6 +22,7 @@ import {
   SOURCE_MANIFEST_PATH,
   createMarketplaceManifest,
   createMarketplaceManifestEntry,
+  ensurePluginName,
   normalizeCatalogManifestBase,
   normalizeCatalogMarketplaceIdentity,
   normalizeCatalogManifestEntries,
@@ -686,12 +687,23 @@ async function calculateEntryDigests(
   };
 }
 
-async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
+type CatalogEntryDigests = Pick<CatalogManifestV7Entry, 'artifactDigest' | 'manifestDigest' | 'contentDigest'>;
+
+async function calculateCatalogEntryDigests(pluginRoot: string,
+  observedFiles?: ReadonlyMap<string, CatalogDigestFile>): Promise<CatalogEntryDigests> {
   const bundleManifest = await readRegularJson(
     path.join(pluginRoot, SOURCE_MANIFEST_PATH),
-    `Catalog plugin ${JSON.stringify(plugin.manifest.name)} bundle manifest`,
+    `Catalog plugin ${JSON.stringify(path.basename(pluginRoot))} bundle manifest`,
   );
-  const digests = await calculateEntryDigests(pluginRoot);
+  const digests = await calculateEntryDigests(pluginRoot, observedFiles);
+  return {
+    ...digests,
+    manifestDigest: sha256(normalizeManifestDigestInput(bundleManifest as PluginMeta['manifest'])),
+  };
+}
+
+async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string, verifiedDigests?: CatalogEntryDigests) {
+  const { artifactDigest, manifestDigest, contentDigest } = verifiedDigests ?? await calculateCatalogEntryDigests(pluginRoot);
   return {
     ...createMarketplaceManifestEntry(plugin),
     version: plugin.manifest.version,
@@ -701,9 +713,9 @@ async function expectedCatalogEntry(plugin: PluginMeta, pluginRoot: string) {
         capabilities: normalizeAwCapabilities(plugin.manifest.requires?.aw.capabilities ?? []),
       },
     },
-    artifactDigest: digests.artifactDigest,
-    manifestDigest: sha256(normalizeManifestDigestInput(bundleManifest as PluginMeta['manifest'])),
-    contentDigest: digests.contentDigest,
+    artifactDigest,
+    manifestDigest,
+    contentDigest,
   };
 }
 
@@ -711,6 +723,8 @@ async function validateBundleRuntimeRequirementsReceipts(
   plugin: PluginMeta,
   pluginRoot: string,
 ): Promise<void> {
+  // The transport evidence may precede this complete check. Inspect the
+  // current inventory, including directories ignored by input-tree validation.
   const files = await listBundleFiles(pluginRoot);
   const expectedReceiptPaths = new Set(files.flatMap((relative) =>
     relative.split('/').length === 4 && isPlatformTarget(relative.split('/')[0])
@@ -1247,9 +1261,44 @@ async function assertGeneratedOutput(root: string, expected: Record<string, unkn
   }
 }
 
-async function digestDirectory(root: string, observedFiles?: Map<string, CatalogDigestFile>): Promise<string> {
+function createBoundedReader(width: number): <T>(read: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiters: Array<() => void> = [];
+  return async <T>(read: () => Promise<T>): Promise<T> => {
+    if (active === width) await new Promise<void>((resolve) => waiters.push(resolve));
+    else active++;
+    try { return await read(); } finally {
+      const next = waiters.shift();
+      if (next) next();
+      else active--;
+    }
+  };
+}
+
+async function readInBatches<T, R>(
+  items: readonly T[], width: number, read: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const values: R[] = [];
+  for (let offset = 0; offset < items.length; offset += width) {
+    // Preserve the first requested error and drain all started reads before
+    // returning, even when a later independent read fails first.
+    const results = await Promise.allSettled(items.slice(offset, offset + width).map(async (item) => read(item)));
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason;
+      values.push(result.value);
+    }
+  }
+  return values;
+}
+
+async function digestDirectory(
+  root: string, observedFiles?: Map<string, CatalogDigestFile>, ignoreGeneratedMarker = true,
+): Promise<string> {
   const entries: string[] = [];
   const batchWidth = 8;
+  // Bound I/O across independent subdirectories, not just siblings in one
+  // directory. Never hold a permit while waiting for a descendant.
+  const bounded = createBoundedReader(batchWidth);
   const inspect = async (filePath: string, relative: string) => {
     const stat = await fs.lstat(filePath);
     if (stat.isSymbolicLink()) throw new Error(`Generated output contains a symbolic link: ${relative}`);
@@ -1258,7 +1307,7 @@ async function digestDirectory(root: string, observedFiles?: Map<string, Catalog
 
     // Entry digests only need the bytes of JSON files with version normalization.
     const versioned = observedFiles && (
-      [...VERSIONED_CATALOG_MANIFEST_PATHS].some((manifest) => relative.endsWith(`/${manifest}`))
+      [...VERSIONED_CATALOG_MANIFEST_PATHS].some((manifest) => relative === manifest || relative.endsWith(`/${manifest}`))
       || path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME
     );
     const hash = crypto.createHash('sha256');
@@ -1277,43 +1326,51 @@ async function digestDirectory(root: string, observedFiles?: Map<string, Catalog
       stat, bytes: versioned ? bytes : undefined };
   };
 
-  const walk = async (directory: string): Promise<void> => {
-    const names = (await fs.readdir(directory)).sort();
+  type DigestTree = Array<Extract<Awaited<ReturnType<typeof inspect>>, { kind: 'file' }> | DigestTree>;
+  const walk = async (directory: string): Promise<DigestTree> => {
+    const names = (await bounded(() => fs.readdir(directory))).sort();
+    const children: DigestTree = [];
     for (let offset = 0; offset < names.length; offset += batchWidth) {
       const batch = names.slice(offset, offset + batchWidth).flatMap((name) => {
         const filePath = path.join(directory, name);
         const relative = path.relative(root, filePath).split(path.sep).join('/');
-        if (relative === GENERATED_OUTPUT_MARKER_FILENAME) return [];
-        return [inspect(filePath, relative)];
+        if (ignoreGeneratedMarker && relative === GENERATED_OUTPUT_MARKER_FILENAME) return [];
+        return [bounded(() => inspect(filePath, relative)).then(async (entry): Promise<DigestTree[number]> =>
+          entry.kind === 'directory' ? walk(entry.filePath) : entry)];
       });
-      // Settle every read before descending. Consume results in the traversal
-      // order so digest order and the first error on a static tree are stable.
+      // Drain all started subtrees before returning (including on error).
+      // Consume them in the original depth-first order, independently of the
+      // order in which their I/O finished.
       for (const result of await Promise.allSettled(batch)) {
         if (result.status === 'rejected') throw result.reason;
-        const entry = result.value;
-        if (entry.kind === 'directory') {
-          await walk(entry.filePath);
-          continue;
-        }
-        entries.push(`${entry.relative}\0${entry.digest}`);
-        observedFiles?.set(entry.filePath, {
-          digest: `sha256:${entry.digest}`,
-          stat: entry.stat,
-          ...(entry.bytes ? { bytes: entry.bytes } : {}),
-        });
+        children.push(result.value);
       }
     }
+    return children;
   };
-  await walk(root);
+  const record = (children: DigestTree): void => {
+    for (const entry of children) {
+      if (Array.isArray(entry)) {
+        record(entry);
+        continue;
+      }
+      entries.push(`${entry.relative}\0${entry.digest}`);
+      observedFiles?.set(entry.filePath, {
+        digest: `sha256:${entry.digest}`,
+        stat: entry.stat,
+        ...(entry.bytes ? { bytes: entry.bytes } : {}),
+      });
+    }
+  };
+  record(await walk(root));
   return `sha256:${crypto.createHash('sha256').update(entries.join('\n')).digest('hex')}`;
 }
 
 async function validateCatalogSnapshotTransportInternal(
   snapshotDirectory: string,
 ): Promise<{
-  rootDir: string;
-  manifest: CatalogManifestV7;
-  snapshotDigest: string;
+  validation: CatalogSnapshotValidationResult;
+  verifiedEntryDigests: Map<string, CatalogEntryDigests>;
 }> {
   const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot');
   const allowed = new Set([
@@ -1367,25 +1424,18 @@ async function validateCatalogSnapshotTransportInternal(
     claude: [],
     codex: [],
   };
+  const verifiedEntryDigests = new Map<string, CatalogEntryDigests>();
   for (const [index, name] of pluginNames.entries()) {
     const pluginRoot = path.join(rootDir, 'plugins', name);
     await assertDirectoryWithoutSymlinks(pluginRoot, `Catalog plugin ${JSON.stringify(name)}`);
     const entry = normalizedEntries[index]!;
-    const rawBundleManifest = await readRegularJson(
-      path.join(pluginRoot, SOURCE_MANIFEST_PATH),
-      `Catalog plugin ${JSON.stringify(name)} bundle manifest`,
-    );
-    const digests = await calculateEntryDigests(pluginRoot, observedFiles);
-    const expectedDigests = {
-      artifactDigest: digests.artifactDigest,
-      manifestDigest: sha256(normalizeManifestDigestInput(rawBundleManifest as PluginMeta['manifest'])),
-      contentDigest: digests.contentDigest,
-    };
+    const expectedDigests = await calculateCatalogEntryDigests(pluginRoot, observedFiles);
     for (const field of Object.keys(expectedDigests) as Array<keyof typeof expectedDigests>) {
       if (entry[field] !== expectedDigests[field]) {
         throw new Error(`Catalog entry ${field} for ${JSON.stringify(name)} does not match its plugin bundle.`);
       }
     }
+    verifiedEntryDigests.set(name, expectedDigests);
     for (const platform of ['claude', 'codex'] as const) {
       const platformManifest = path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json');
       const exists = await fs.pathExists(platformManifest);
@@ -1434,7 +1484,7 @@ async function validateCatalogSnapshotTransportInternal(
   if (!isDeepStrictEqual(normalizeMarketplaceOrder(claudeMarketplace), normalizeMarketplaceOrder(expectedClaude))) {
     throw new Error('Claude marketplace metadata or plugin inventory does not match the snapshot bundles.');
   }
-  return { rootDir, manifest, snapshotDigest };
+  return { validation: { rootDir, manifest, snapshotDigest }, verifiedEntryDigests };
 }
 
 function validateCatalogGeneratedOutputMarker(raw: unknown): {
@@ -1543,7 +1593,7 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
   manifest: CatalogManifestV7;
   snapshotDigest: string;
 }> {
-  return validateCatalogSnapshotTransportInternal(snapshotDirectory);
+  return (await validateCatalogSnapshotTransportInternal(snapshotDirectory)).validation;
 }
 
 type CatalogSnapshotValidationResult = {
@@ -1556,72 +1606,115 @@ type CatalogSnapshotValidationResult = {
 export async function readCatalogSnapshotTransport(snapshotDirectory: string): Promise<CatalogSnapshotValidationResult & {
   validateEntries(pluginNames?: readonly string[]): Promise<void>;
 }> {
-  const validation = await validateCatalogSnapshotTransport(snapshotDirectory);
+  const { validation, verifiedEntryDigests } = await validateCatalogSnapshotTransportInternal(snapshotDirectory);
+  const entriesByName = new Map(validation.manifest.entries.map((entry) => [entry.name, entry]));
+  const checkedPlugins = new Map<string, Promise<PluginMeta>>();
+  const entryWidth = 2;
+  // Concurrent requests for different entry sets share this scope-wide bound
+  // as well as the in-flight checks for entries they have in common.
+  const bounded = createBoundedReader(entryWidth);
   return {
     ...structuredClone(validation),
-    validateEntries: (pluginNames = validation.manifest.entries.map((entry) => entry.name)) =>
-      validateCatalogPluginEntriesComplete(validation, pluginNames),
+    async validateEntries(pluginNames: readonly string[] = validation.manifest.entries.map((entry) => entry.name)) {
+      const plugins = await readInBatches(pluginNames, entryWidth, async (name) => {
+        const entry = entriesByName.get(name);
+        if (!entry) throw new Error(`Catalog plugin ${JSON.stringify(name)} does not exist.`);
+        let checking = checkedPlugins.get(name);
+        if (!checking) {
+          checking = bounded(() => validateCatalogPluginEntryComplete(validation.rootDir, entry, verifiedEntryDigests.get(name)))
+            .catch((error) => {
+              checkedPlugins.delete(name);
+              throw error;
+            });
+          checkedPlugins.set(name, checking);
+        }
+        return checking;
+      });
+      // Entry evidence is reusable, but the caller's requested closure is not.
+      assertDependencyGraph(plugins);
+      await assertSourceConfigReferences(plugins);
+    },
   };
 }
 
-async function validateCatalogPluginEntriesComplete(
-  validation: CatalogSnapshotValidationResult,
-  pluginNames: readonly string[],
-): Promise<void> {
-  const entriesByName = new Map(validation.manifest.entries.map((entry) => [entry.name, entry]));
+/** Without prior transport evidence, validate the entry against its current disk bytes. */
+async function validateCatalogPluginEntryComplete(
+  rootDir: string,
+  entry: CatalogManifestV7Entry,
+  verifiedDigests?: CatalogEntryDigests,
+): Promise<PluginMeta> {
+  const pluginRoot = path.join(rootDir, 'plugins', entry.name);
+  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  await validateBundleRuntimeRequirementsReceipts(plugin, pluginRoot);
+  for (const platform of ['claude', 'codex'] as const) {
+    const platformManifestPath = path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json');
+    const exists = await fs.pathExists(platformManifestPath);
+    if (exists !== resolveSupportedPlatforms(plugin.manifest).has(platform)) {
+      throw new Error(`Catalog plugin ${JSON.stringify(entry.name)} has an inconsistent ${platform} bundle projection.`);
+    }
+    if (exists) {
+      const rawPlatformManifest = await readRegularJson(platformManifestPath, `${platform} plugin manifest`);
+      await validatePlatformManifestProjection(plugin, platform, rawPlatformManifest);
+    }
+  }
+  if (plugin.manifest.skills) {
+    const portable = [...resolveSupportedPlatforms(plugin.manifest)]
+      .filter((platform) => platform !== 'codex' && platform !== 'claude');
+    // With two independent entry checks per transport scope, at most four
+    // portable platform validations run at once.
+    await readInBatches(portable, 2, async (platform) => {
+      await validatePortableSkillDirectoriesRoot(path.join(pluginRoot, platform, 'skills'), { frontmatterProfile: 'claude-current' });
+    });
+  }
+  const expected = await expectedCatalogEntry(plugin, pluginRoot, verifiedDigests);
+  for (const field of Object.keys(expected) as Array<keyof typeof expected>) {
+    if (!isDeepStrictEqual(entry[field], expected[field])) {
+      throw new Error(`Catalog entry ${field} for ${JSON.stringify(entry.name)} does not match its plugin bundle.`);
+    }
+  }
+  return plugin;
+}
+
+/**
+ * Recheck selected entries against current disk bytes after transport validation.
+ * The caller must freshly verify the Catalog manifest's binding before passing
+ * its dependency closure; this deliberately does not validate other bundles.
+ */
+export async function validateCatalogPluginClosureComplete(
+  snapshotDirectory: string, entries: readonly CatalogManifestV7Entry[],
+): Promise<PluginMeta[]> {
+  const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot');
+  const pluginsRoot = path.join(rootDir, 'plugins');
+  await assertDirectoryWithoutSymlinks(pluginsRoot, 'Catalog plugins root');
   const plugins: PluginMeta[] = [];
-  for (const name of pluginNames) {
-    const entry = entriesByName.get(name);
-    if (!entry) throw new Error(`Catalog plugin ${JSON.stringify(name)} does not exist.`);
-    const pluginRoot = path.join(validation.rootDir, 'plugins', entry.name);
-    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    await validateBundleRuntimeRequirementsReceipts(plugin, pluginRoot);
-    for (const platform of ['claude', 'codex'] as const) {
-      const platformManifestPath = path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json');
-      const exists = await fs.pathExists(platformManifestPath);
-      if (exists !== resolveSupportedPlatforms(plugin.manifest).has(platform)) {
-        throw new Error(`Catalog plugin ${JSON.stringify(entry.name)} has an inconsistent ${platform} bundle projection.`);
-      }
-      if (exists) {
-        const rawPlatformManifest = await readRegularJson(platformManifestPath, `${platform} plugin manifest`);
-        await validatePlatformManifestProjection(plugin, platform, rawPlatformManifest);
-      }
-    }
-    if (plugin.manifest.skills) {
-      const supported = resolveSupportedPlatforms(plugin.manifest);
-      for (const platform of supported) {
-        if (platform === 'codex' || platform === 'claude') continue;
-        await validatePortableSkillDirectoriesRoot(path.join(pluginRoot, platform, 'skills'), { frontmatterProfile: 'claude-current' });
-      }
-    }
-    const expected = await expectedCatalogEntry(plugin, pluginRoot);
-    for (const field of Object.keys(expected) as Array<keyof typeof expected>) {
-      if (!isDeepStrictEqual(entry[field], expected[field])) {
-        throw new Error(`Catalog entry ${field} for ${JSON.stringify(entry.name)} does not match its plugin bundle.`);
-      }
-    }
-    plugins.push(plugin);
+  for (const entry of entries) {
+    const name = ensurePluginName(entry.name, 'Catalog plugin name');
+    const pluginRoot = path.join(pluginsRoot, name);
+    await assertDirectoryWithoutSymlinks(pluginRoot, `Catalog plugin ${JSON.stringify(name)}`);
+    const observedFiles = new Map<string, CatalogDigestFile>();
+    // Unlike the enclosing snapshot marker, every node of this bundle is bound.
+    await digestDirectory(pluginRoot, observedFiles, false);
+    const digests = await calculateCatalogEntryDigests(pluginRoot, observedFiles);
+    plugins.push(await validateCatalogPluginEntryComplete(rootDir, entry, digests));
   }
   assertDependencyGraph(plugins);
   await assertSourceConfigReferences(plugins);
+  return plugins;
 }
 
 export async function validateCatalogSnapshotPluginEntriesComplete(
   snapshotDirectory: string,
   pluginNames: readonly string[],
 ): Promise<CatalogSnapshotValidationResult> {
-  const validation = await validateCatalogSnapshotTransport(snapshotDirectory);
-  await validateCatalogPluginEntriesComplete(validation, pluginNames);
+  const { validateEntries, ...validation } = await readCatalogSnapshotTransport(snapshotDirectory);
+  await validateEntries(pluginNames);
   return validation;
 }
 
 export async function validateCatalogSnapshotComplete(
   snapshotDirectory: string,
 ): Promise<CatalogSnapshotValidationResult> {
-  const validation = await validateCatalogSnapshotTransport(snapshotDirectory);
-  await validateCatalogPluginEntriesComplete(
-    validation,
-    validation.manifest.entries.map((entry) => entry.name),
-  );
+  const { validateEntries, ...validation } = await readCatalogSnapshotTransport(snapshotDirectory);
+  await validateEntries();
   return validation;
 }

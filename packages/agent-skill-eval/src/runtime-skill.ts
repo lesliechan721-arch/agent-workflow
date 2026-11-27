@@ -40,6 +40,10 @@ function normalizedRegularFileMode(mode: number, platform: NodeJS.Platform): '10
   return platform !== 'win32' && (mode & 0o111) !== 0 ? '100755' : '100644'
 }
 
+function isProductionEntry(name: string, atSkillRoot: boolean): boolean {
+  return !alwaysIgnored.has(name) && !(atSkillRoot && authorOnlyRoots.has(name))
+}
+
 function comparePosixPaths(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
@@ -107,8 +111,7 @@ async function runtimeSkillFiles(
     const entries = await readdir(directory, { withFileTypes: true })
     entries.sort((left, right) => left.name.localeCompare(right.name))
     for (const entry of entries) {
-      if (filterSkillOnly && alwaysIgnored.has(entry.name)) continue
-      if (filterSkillOnly && relativeDirectory === '' && authorOnlyRoots.has(entry.name)) continue
+      if (filterSkillOnly && !isProductionEntry(entry.name, relativeDirectory === '')) continue
       const absolutePath = path.join(directory, entry.name)
       const relativePath = path.join(relativeDirectory, entry.name)
       if (entry.isSymbolicLink()) throw new Error(`Skill target cannot contain symlinks: ${relativePath}`)
@@ -143,6 +146,21 @@ export async function computeSkillDigest(
     ),
   )
   return digestProductionRecords(files)
+}
+
+/** Compute the production digest from a complete, already-checked regular
+ * directory observation in the same read window. Paths use '/' separators;
+ * mode is the physical file's stat mode, not a projected or default mode.
+ * This does not replace the caller's path and node-type validation.
+ */
+export function computeSkillDigestFromTree(
+  files: ReadonlyArray<{ relativePath: string; mode: number; bytes: Buffer }>,
+  options: RuntimeSkillDigestOptions = {},
+): Digest {
+  const platform = options.platform ?? process.platform
+  return digestProductionRecords(files
+    .filter((file) => file.relativePath.split('/').every((name, index) => isProductionEntry(name, index === 0)))
+    .map((file) => ({ ...file, mode: normalizedRegularFileMode(file.mode, platform) })))
 }
 
 function digestCapturedRuntimeSkill(files: CapturedRuntimeSkillFile[]): Digest {

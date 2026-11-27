@@ -150,7 +150,7 @@ AW 在运行脚本前由固定平台布局确定 render units。每单元按权�
 | Skill | configKeys 的非敏感键及非敏感校验依赖 | skill |
 | 非 Skill | 获准键，可包含敏感字段 | mcp、agent、hook、instruction |
 
-`allowedOutputKinds` 是单元布局分配的类别与批次类别的交集。交集为空不调用，否则每批最多一次，无输出也返回合法空数组。该字段限定脚本可返回的类别，具体组件能否交付还要经过下述映射判断。schema、values、sources、issues、changedConfigKeys 和历史身份同时裁剪，不通过其他字段把敏感信息带入 Skill 批次。changedConfigKeys 仅供优化，不能据此只返回变化项。配置、资源、renderer 权限或能力依据变化时重新准备完整集合，即使上次无组件。
+`allowedOutputKinds` 是单元布局分配的类别与批次类别的交集。交集为空不调用，否则每批最多一次，无输出也返回合法空数组。同一次准备窗口内，完全等价的 renderer 输入及执行环境可以共享一次运行结果，各消费者仍独立校验资源与组件；作者不能依赖每个消费者都单独启动 renderer。该字段限定脚本可返回的类别，具体组件能否交付还要经过下述映射判断。schema、values、sources、issues、changedConfigKeys 和历史身份同时裁剪，不通过其他字段把敏感信息带入 Skill 批次。changedConfigKeys 仅供优化，不能据此只返回变化项。配置、资源、renderer 权限或能力依据变化时重新准备完整集合，即使上次无组件。
 
 sourceDirs 是 bundle 内已验证相对目录；runtimeImports 使用既有具名 runtime export 与依赖来源合同。引用须经 realpath 和内容闭包校验；绝对路径、..、逃逸 symlink、未知 import 或闭包外文件均拒绝。资源入口不是输出位置。脚本使用隔离 HOME/USERPROFILE/AW_HOME/XDG 与受控进程收尾；这是输入隔离，不是 OS 沙箱。
 

@@ -375,11 +375,12 @@ describe('profile-aware value reference choices', () => {
   });
 
   it('keeps the source-save path available when a later common source edit affects a platform reference draft', async () => {
-    const { ui, controller, open, choose, stageSource, save, store } = await setup();
+    const { ui, controller, open, choose, stageSource, save, store, waitConfigReads } = await setup();
     await open('selected', 'codex');
     await choose('Same (A)');
     await stageSource('修改 A');
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('取消相关引用草稿'));
+    await waitConfigReads();
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('取消相关引用草稿'), { timeout: 5000 });
     await input(ui, 's');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(ui.lastFrame()).toContain('请先保存来源配置');

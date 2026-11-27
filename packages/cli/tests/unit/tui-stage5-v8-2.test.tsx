@@ -10,6 +10,7 @@ import type {
 } from '../../src/commands/catalog-store.js';
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { escape } from '../helpers/tui-console-app-input.js';
 import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 import {
   TuiController,
@@ -285,8 +286,7 @@ describe('TUI v8.2 stage 5', () => {
     expect(text).toContain('COMMIT-END');
     expect(text).toContain('requested ref');
     expect(text).toContain('resolved commit');
-    await input(instance, '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    await escape(instance);
     expect(value.snapshot.router.current.route.name).toBe('home');
     instance.unmount();
   });
@@ -606,8 +606,7 @@ describe('TUI v8.2 stage 5', () => {
       expect(technicalRules).toContain('非 Active 项保留 30 天');
       expect(technicalRules).toContain('foreign、符号链接、unsafe、损坏或未知项目');
       await input(instance, 'd');
-      await input(instance, '\u001B');
-      await new Promise((resolve) => setTimeout(resolve, 550));
+      await escape(instance);
       await waitForRoute(value, 'catalogStoreOverview');
 
       await focusAction(instance, '预览安全清理');
@@ -708,8 +707,7 @@ describe('plugin detail readable structured facts', () => {
     expect(expanded).toContain('更多操作');
     expect(expanded).not.toContain('上一页');
     expect(expanded).not.toContain('翻信息');
-    await input(instance, '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    await escape(instance);
     expect(value.snapshot.router.current.route.name).toBe('home');
     value.dispose();
   });

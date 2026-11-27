@@ -4,11 +4,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
+import { preparePublicClientEntry, preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
+import { qualifyRemainingPlugins } from './native-platform-public-catalog.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { componentReceiptEvidence, grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
+import { componentReceiptEvidence, grokTrustTargets, runComponentQualification, runComponentSuites } from './native-platform-public-components.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
+import { qualificationGroup } from './native-platform-qualification-group.mjs';
+import { executePublicAw } from './native-platform-public-process.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
 
 const publicResponse = (command, data) => ({
@@ -16,8 +21,17 @@ const publicResponse = (command, data) => ({
   stdout: JSON.stringify({ schemaVersion: 2, command, status: 'success', data, diagnostics: [] }),
 });
 
+// Each scenario below changes the external command response. Its many isolated
+// suites can share the same verified build, just as they do in a hosted group.
+async function componentScenarios(t) {
+  const group = await qualificationGroup();
+  t.after(() => group.finish());
+  return async (unit, dependencies) => (await runComponentSuites([unit], dependencies, group))[0];
+}
+
 // A process can fail before its first observation or return a timed-out Windows Job result.
 test('keeps the public command and actual scope when the process has no snapshots', async (t) => {
+  const runScenario = await componentScenarios(t);
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-source-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
   await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: [] }));
@@ -26,7 +40,7 @@ test('keeps the public command and actual scope when the process has no snapshot
   for (const outcome of ['timeout', 'preflight', 'signal', 'invalid-output', ...Object.keys(helperFailures)]) {
     const command = outcome === 'preflight' ? 'source.add' : 'target.set';
     const privateMessage = 'private fixture output that must stay out of the report';
-    const result = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+    const result = await runScenario({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args) {
         const called = args.slice(0, 2).join('.');
@@ -72,6 +86,7 @@ test('keeps the public command and actual scope when the process has no snapshot
 // A plausible payload from another command, or a failed receipt with exit 0,
 // must stop the qualification before its next command consumes the result.
 test('binds component receipts to the requested command and public status and exit code', async (t) => {
+  const runScenario = await componentScenarios(t);
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-receipt-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
   await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: ['agent-subagent', 'agent-explore', 'agent-advisor']
@@ -88,7 +103,7 @@ test('binds component receipts to the requested command and public status and ex
       diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] },
   ]) {
     const calls = [];
-    const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+    const report = await runScenario({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args, { env }) {
         const called = args.slice(0, 2).join('.');
@@ -115,6 +130,7 @@ test('binds component receipts to the requested command and public status and ex
 
 // Test Value Gate: published evidence must keep each independent Catalog failure and omit private command data.
 test('records separate, redacted failures from the public component Catalog report', async (t) => {
+  const runScenario = await componentScenarios(t);
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-catalog-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
   const roleNames = { 'agent-subagent': [], 'agent-explore': [], 'agent-advisor': [] };
@@ -129,6 +145,8 @@ test('records separate, redacted failures from the public component Catalog repo
     await fs.writeFile(path.join(folder, 'plugin.json'), JSON.stringify({ skills: 'skills' }));
   }
   const pluginId = name => `qualification-official/${name}`;
+  const sourceSkill = '---\nname: working-skill\ndescription: Working Skill\n---\n# Heading\n\nInstalled authored content\n';
+  const subject = { pluginId: pluginId('third-static'), target: 'generic', scope: 'project' };
   const targets = Object.entries(roleNames).map(([name, roles]) => ({ pluginId: pluginId(name), scope: 'project',
     target: 'generic', blockerCodes: [], deploymentReceipts: [], componentGaps: roles.map(role => ({ id: `agent:${role}`,
       kind: 'agent', name: role, providerPluginId: pluginId(name), reasonCode: 'interface-unsupported', requiredFeatures: ['agent'] })) }));
@@ -140,7 +158,7 @@ test('records separate, redacted failures from the public component Catalog repo
     processes: [...Array.from({ length: 40 }, (_, index) => ({ pid: 100 + index })), { ...affectedProcess, command: privateText }] };
   const last = { ...first, stage: 'cleanup', reason: 'process-marker-unreadable' };
 
-  const report = await runComponentQualification({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
+  const run = mode => runScenario({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
     executeCommand: async () => ({ exitCode: 0 }),
     async executeAw(_launcher, args, { env, cwd }) {
       const command = args.slice(0, 2).join('.');
@@ -157,7 +175,9 @@ test('records separate, redacted failures from the public component Catalog repo
           await fs.writeFile(path.join(directory, 'SKILL.md'), skill);
         }
       }
-      if (args[2] === pluginId('first-static')) {
+      if (args[2] !== pluginId('first-static')) return publicResponse(command, { targetResults: targets });
+      assert.deepEqual(args.slice(2, args.indexOf('--scope')), staticPlugins.map(pluginId));
+      if (mode === 'cleanup') {
         throw Object.assign(new Error(privateText), { name: 'ProviderProcessCleanupError', env: { credentials: privateText },
           result: { ...publicResponse(command, {}), exitCode: 1, stdout: JSON.stringify({
             schemaVersion: 2, command, status: 'failed', data: { raw: privateText }, diagnostics: [
@@ -174,27 +194,54 @@ test('records separate, redacted failures from the public component Catalog repo
             records: [{ pid: 43, result: 'present', raw: privateText }] },
         });
       }
-      if (args[2] === pluginId('second-static')) {
+      if (mode === 'process') {
         throw Object.assign(new Error(privateText), { processTreeDiagnostics: [{ stage: 'cleanup', rootPid: 74,
           reason: 'root-marker-missing', affectedPids: [74], processes: [{ pid: 74, command: privateText }] }] });
       }
-      if (args[2] === pluginId('third-static')) {
-        return { ...publicResponse(command, {}), exitCode: 3, stderr: privateText, stdout: JSON.stringify({
-          schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: { targetResults: [{
-            pluginId: pluginId('third-static'), target: 'generic', scope: 'project', execution: 'not-run',
-            blockerCodes: ['operationPlanStale', 'unsafeDiagnosticCode'], componentGaps: [{ raw: privateText }],
-          }] },
+      if (mode === 'planning') {
+        return { ...publicResponse(command, {}), exitCode: 3, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [
+            { code: 'deploymentPreferencesInvalid', severity: 'error', message: privateText },
+            { code: 'pluginUnavailable', severity: 'error', subject: { pluginId: pluginId('second-static') }, message: privateText },
+          ], data: {},
         }) };
       }
-      return publicResponse(command, { targetResults: targets });
+      const installed = path.join(cwd, '.agents', 'skills', 'working-skill');
+      await fs.mkdir(installed, { recursive: true });
+      await fs.writeFile(path.join(installed, 'SKILL.md'), mode === 'truncated' ? '# Heading\n'
+        : mode === 'corrupt' ? sourceSkill.replace('authored', 'altered') : sourceSkill);
+      return { ...publicResponse(command, {}), exitCode: 4, stderr: privateText, stdout: JSON.stringify({
+        schemaVersion: 2, command, status: 'partial', diagnostics: [
+          { code: 'nativeTrustRequired', severity: 'error', subject, message: privateText },
+          { code: 'nativeCliFailed', severity: 'error', subject: { ...subject, pluginId: pluginId('second-static'), scope: 'user' } },
+          { code: 'platformExecutionFailed', severity: 'error', subject: { ...subject, pluginId: pluginId('second-static'), target: 'pi' } },
+        ], data: { targetResults: [
+          { pluginId: pluginId('first-static'), target: 'generic', scope: 'project', execution: 'applied', blockerCodes: [] },
+          { pluginId: pluginId('third-static'), target: 'generic', scope: 'project', execution: 'not-run',
+            blockerCodes: ['requiredConfigMissing', 'unsafeDiagnosticCode'], componentGaps: [{ raw: privateText }] },
+        ] },
+      }) };
     },
   });
-  assert.equal(report.status, 'failed');
-  assert.match(report.reason, /Shipped plugin installation failed: first-static, second-static, third-static/u);
-  const [cleanup, later, blocked] = report.commandFailures;
-  assert.equal(report.commandFailures.length, 3);
-  assert.deepEqual([cleanup.command, cleanup.stage, cleanup.scope, cleanup.pluginIds, cleanup.error],
-    ['plugin.install', 'execute', 'project', [pluginId('first-static')], 'ProviderProcessCleanupError']);
+  const authored = path.join(catalog, 'first-static/generic/skills/working-skill');
+  await fs.mkdir(authored, { recursive: true });
+  await fs.writeFile(path.join(authored, 'SKILL.md'), sourceSkill);
+  const reports = [];
+  for (const mode of ['cleanup', 'process', 'planning', 'partial', 'truncated', 'corrupt']) reports.push(await run(mode));
+  const [cleanup, later, planning, partial] = reports.map(report => {
+    assert.equal(report.status, 'failed');
+    assert.equal(report.commandFailures.length, 1);
+    const [failure] = report.commandFailures;
+    assert.deepEqual(failure.pluginIds, staticPlugins.map(pluginId));
+    for (const privateValue of privateValues) assert(!JSON.stringify(report).includes(privateValue));
+    return failure;
+  });
+  for (const report of reports.slice(0, 3)) {
+    assert.match(report.reason, /Shipped plugin installation failed: first-static, second-static, third-static/u);
+    for (const name of staticPlugins) assert(report.catalog.plugins[name].error);
+  }
+  assert.deepEqual([cleanup.command, cleanup.stage, cleanup.scope, cleanup.error],
+    ['plugin.install', 'execute', 'project', 'ProviderProcessCleanupError']);
   assert.equal(cleanup.exitCode, 1);
   assert.deepEqual(cleanup.awReceipt, { status: 'failed', diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] });
   assert.deepEqual(cleanup.processDiagnostics.map(row => row.reason), [first.reason, last.reason]);
@@ -204,19 +251,141 @@ test('records separate, redacted failures from the public component Catalog repo
   assert.equal(cleanup.processNames[0].processName, 'grok');
   assert.equal(cleanup.markerRows[0].startupEnvironment.environmentBytes, 58);
   assert.equal(cleanup.markerIdentityConfirmations.records[0].result, 'present');
-  assert.deepEqual([later.command, later.stage, later.pluginIds, later.processDiagnostics[0].rootPid],
-    ['plugin.install', 'execute', [pluginId('second-static')], 74]);
+  assert.deepEqual([later.command, later.stage, later.processDiagnostics[0].rootPid], ['plugin.install', 'execute', 74]);
   assert.equal(later.awReceipt, undefined);
-  assert.deepEqual([blocked.command, blocked.stage, blocked.exitCode, blocked.awReceipt], ['plugin.install', 'command', 3,
-    { status: 'blocked', targets: [{ pluginId: pluginId('third-static'), target: 'generic', scope: 'project',
-      execution: 'not-run', blockerCodes: ['operationPlanStale'] }] }]);
-  const published = JSON.stringify(report);
-  for (const privateValue of privateValues) assert(!published.includes(privateValue));
+  assert.equal(planning.awReceipt.status, 'blocked');
+  const planningRows = reports[2].catalog.plugins;
+  assert.match(planningRows['first-static'].error, /missing or duplicate target .*deploymentPreferencesInvalid/u);
+  assert.match(planningRows['second-static'].error, /missing or duplicate target .*pluginUnavailable/u);
+  assert.match(planningRows['third-static'].error, /missing or duplicate target .*deploymentPreferencesInvalid/u);
+  const partialRows = reports[3].catalog.plugins;
+  assert.equal(partialRows['first-static'].skills[0].sha256, createHash('sha256').update(sourceSkill).digest('hex'));
+  assert.match(partialRows['second-static'].error, /missing or duplicate target \(partial\)$/u);
+  assert.match(partialRows['third-static'].error, /install target incomplete .*requiredConfigMissing.*nativeTrustRequired/u);
+  assert.deepEqual(partial.awReceipt.diagnostics, [{ code: 'nativeTrustRequired', severity: 'error', subject }]);
+  for (const report of reports.slice(4)) {
+    assert.match(report.catalog.plugins['first-static'].error, /installed Skill digest mismatch/iu);
+    assert.match(report.catalog.plugins['second-static'].error, /missing or duplicate target \(partial\)$/u);
+  }
+  assert.deepEqual(partial.awReceipt.targets.map(target => target.pluginId), [pluginId('first-static'), pluginId('third-static')]);
+});
+
+// The v2 receipt names the failed preApply hook on its provider and the unmet
+// dependency on each consumer. Only a diagnostic without a subject applies to the batch.
+test('keeps lifecycle blockers on their own candidate plugins after a provider failure', async () => {
+  const target = 'generic';
+  const scope = 'project';
+  const entries = ['provider', 'consumer', 'user-consumer', 'command-consumer', 'collision', 'unreported', 'unplanned'].map(name => ({ name }));
+  const subject = name => ({ pluginId: 'team/' + name, target, scope });
+  const rows = [
+    ['provider', 'failed', 'preApplyFailed'],
+    ['consumer', 'not-run', 'dependencyApplyFailed'],
+    ['user-consumer', 'not-run', 'userProviderNotSatisfied'],
+    ['command-consumer', 'not-run', 'commandPackageProviderNotSatisfied'],
+    ['collision', 'not-run', 'artifactCollision', 'crossScopeSkillCollision'],
+  ];
+  const targetResults = rows.map(([name, execution, ...blockerCodes]) => ({ ...subject(name), execution, blockerCodes,
+    observation: 'unknown', content: 'unknown', requiredBy: name === 'provider' ? ['team/consumer'] : [] }));
+  const diagnostics = rows.flatMap(([name, , ...codes]) => codes.map(code => ({
+    code, severity: 'error', subject: subject(name), message: 'private operation output',
+    detail: { reasonCode: 'unknownPrivateReason', path: '/private/catalog' },
+  })));
+  // The real public summary also repeats the provider's hook failure without a
+  // subject and names the provider on a copy of the consumer's dependency error.
+  diagnostics.unshift({ code: 'preApplyFailed', severity: 'error' },
+    { code: 'dependencyApplyFailed', severity: 'error', subject: { pluginId: 'team/provider' } });
+  diagnostics.push({ code: 'unknownPrivateCode', severity: 'error' },
+    { code: 'preApplyFailed', severity: 'error', subject: { ...subject('unreported'), sourceId: 'other' } },
+    ...Array.from({ length: 8 }, (_, index) => ({ code: 'operationReviewStale', severity: 'error',
+      detail: { reasonCode: 'sourceChanged', path: '/private/catalog/' + index } })),
+    { code: 'commandPackagePreparationFailed', severity: 'error', subject: subject('unplanned') });
+  targetResults[0].blockerCodes.push('unknownPrivateCode');
+  const value = { schemaVersion: 2, command: 'plugin.install', status: 'partial',
+    data: { targetResults, remainingTargets: rows.map(([name]) => subject(name)) }, diagnostics };
+  const ctx = { platform: target, scope, root: '/isolated', result: async () => ({ exitCode: 4, value }) };
+  const report = { catalog: { plugins: {} } };
+  await assert.rejects(qualifyRemainingPlugins(ctx, report, undefined, 'team', entries), /Shipped plugin installation failed/u);
+  for (const [name, , ...codes] of rows) {
+    assert.equal(report.catalog.plugins[name].error, `team/${name}: install target incomplete (partial, ${codes.join(', ')})`);
+  }
+  assert.equal(report.catalog.plugins.unreported.error, 'team/unreported: missing or duplicate target (partial, operationReviewStale)');
+  assert.equal(report.catalog.plugins.unplanned.error, 'team/unplanned: missing or duplicate target (partial, commandPackagePreparationFailed)');
+  const evidence = componentReceiptEvidence(value, { command: value.command, scope, pluginIds: entries.map(({ name }) => subject(name).pluginId) }, target);
+  assert.deepEqual(evidence.awReceipt.targets[0].blockerCodes, ['preApplyFailed']);
+  assert.doesNotMatch(JSON.stringify([report, evidence]), /private operation output|unknownPrivate|\/private\/catalog/u);
+});
+
+test('keeps fixed native install blockers and does not guess a batch reason for a redacted target', async () => {
+  // These fixed codes originate in the native installation precheck and
+  // artifact renderer; unknown backend codes can contain private text.
+  for (const [platform, code] of [
+    ['claude', 'externalOwnershipPresent'],
+    ['codex', 'componentSensitiveConfigExposed'],
+    ['codex', 'sourceChanged'],
+    ['claude', 'legacyStateUnsupported'],
+    ['codex', 'catalogSourceConflict'],
+  ]) {
+    const scope = 'project';
+    const entries = ['blocked', 'redacted', 'unplanned-redacted', 'unreported'].map(name => ({ name }));
+    const subject = name => ({ pluginId: 'team/' + name, target: platform, scope });
+    const privateCode = 'unknownPrivateCode';
+    const targetResults = [
+      { ...subject('blocked'), execution: 'not-run', blockerCodes: [code] },
+      { ...subject('redacted'), execution: 'failed', blockerCodes: [privateCode] },
+    ];
+    const diagnostic = (name, diagnosticCode) => ({ code: diagnosticCode, severity: 'error',
+      subject: subject(name), message: 'private operation output', detail: { path: '/private/catalog' } });
+    const value = { schemaVersion: 2, command: 'plugin.install', status: 'partial',
+      data: { targetResults, remainingTargets: entries.map(({ name }) => subject(name)) },
+      diagnostics: [
+        diagnostic('blocked', code),
+        diagnostic('redacted', privateCode),
+        diagnostic('unplanned-redacted', privateCode),
+        { code: 'operationReviewStale', severity: 'error' },
+      ] };
+    const ctx = { platform, scope, root: '/isolated', result: async () => ({ exitCode: 4, value }) };
+    const report = { catalog: { plugins: {} } };
+    await assert.rejects(qualifyRemainingPlugins(ctx, report, undefined, 'team', entries), /Shipped plugin installation failed/u);
+    assert.equal(report.catalog.plugins.blocked.error, `team/blocked: install target incomplete (partial, ${code})`);
+    assert.equal(report.catalog.plugins.redacted.error, 'team/redacted: install target incomplete (partial, unrecognized blocker (redacted))');
+    assert.equal(report.catalog.plugins['unplanned-redacted'].error, 'team/unplanned-redacted: missing or duplicate target (partial, unrecognized blocker (redacted))');
+    assert.equal(report.catalog.plugins.unreported.error, 'team/unreported: missing or duplicate target (partial, operationReviewStale)');
+    const evidence = componentReceiptEvidence(value, { command: value.command, scope,
+      pluginIds: entries.map(({ name }) => subject(name).pluginId) }, platform);
+    assert.deepEqual(evidence.awReceipt.targets.map(row => row.blockerCodes), [[code], []]);
+    assert.doesNotMatch(JSON.stringify([report, evidence]), /private operation output|unknownPrivateCode|\/private\/catalog/u);
+  }
+});
+
+test('keeps fixed install and sync blockers when planning produces no targets', async () => {
+  const platform = 'generic';
+  const scope = 'project';
+  const entries = ['first', 'second'].map(name => ({ name }));
+  const pluginIds = entries.map(({ name }) => 'team/' + name);
+  for (const [command, code] of [
+    ['plugin.install', 'projectConfigIgnored'],
+    ['plugin.sync', 'syncPluginNotDesired'],
+  ]) {
+    const diagnostic = { code, severity: 'error' };
+    const value = { schemaVersion: 2, command, status: 'blocked', data: { targetResults: [] },
+      diagnostics: [{ ...diagnostic, message: 'private operation output', detail: { path: '/private/catalog' } }] };
+    const evidence = componentReceiptEvidence(value, { command, scope, pluginIds }, platform);
+    assert.deepEqual(evidence.awReceipt, { status: 'blocked', diagnostics: [diagnostic] });
+    if (command === 'plugin.install') {
+      const ctx = { platform, scope, root: '/isolated', result: async () => ({ exitCode: 3, value }) };
+      const report = { catalog: { plugins: {} } };
+      await assert.rejects(qualifyRemainingPlugins(ctx, report, undefined, 'team', entries), /Shipped plugin installation failed/u);
+      for (const { name } of entries) {
+        assert.equal(report.catalog.plugins[name].error, `team/${name}: missing or duplicate target (blocked, ${code})`);
+      }
+    }
+  }
 });
 
 // The failed installation must own its bounded native command evidence even
 // when a later status read succeeds or trace output is unavailable.
 test('scopes the Codex candidate native trace to the failing Project install', async (t) => {
+  const runScenario = await componentScenarios(t);
   const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-codex-test-'));
   t.after(() => fs.rm(catalog, { recursive: true, force: true }));
   const pluginIds = ['agent-subagent', 'agent-explore', 'agent-advisor'].map(name => `qualification-official/${name}`);
@@ -230,7 +399,7 @@ test('scopes the Codex candidate native trace to the failing Project install', a
   for (const traced of [true, false]) {
     let traceFile;
     let statusCalls = 0;
-    const report = await runComponentQualification({ platform: 'codex', scope: 'project', suite: 'candidate', catalog,
+    const report = await runScenario({ platform: 'codex', scope: 'project', suite: 'candidate', catalog,
       clientPath: process.env.PATH, traceEntry: process.execPath }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args, { env }) {
@@ -281,6 +450,267 @@ test('scopes the Codex candidate native trace to the failing Project install', a
   }
 });
 
+// A scope edits its own catalog; platform and pair fixtures must never gain
+// another variant's plugins or inherit another scope's changes.
+test('copies the correct component fixture into every independent scope', async () => {
+  const native = ['hook-only', 'mixed-components', 'single-agent', 'single-hook', 'single-instruction', 'single-mcp', 'single-skill'];
+  const cases = [
+    ['codex', 'user', 'matrix', native], ['pi', 'project', 'matrix', native],
+    ['generic', 'project', 'matrix', [...native, 'without-skills']],
+    ['pi', 'user', 'pi-pair', ['single-agent', 'single-instruction']],
+    ['grok', 'project', 'grok-hook-pair', ['single-agent', 'single-hook']],
+    ['grok', 'project', 'grok-rule-pair', ['single-agent', 'single-instruction']],
+    ['grok', 'project', 'grok-user-hook-pair', ['single-agent', 'single-hook']],
+  ];
+  const inputs = cases.map(([platform, scope, suite]) => ({ platform, scope, suite, clientPath: process.env.PATH }));
+  const builtByHome = new Map();
+  const catalogs = new Map();
+  const outcomes = await runComponentSuites(inputs, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { cwd, env }) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: args[2], installations: [] }] });
+      if (command === 'dev.plugin.create') {
+        const folder = path.join(cwd, 'plugins', args[3], '.agents-plugin');
+        await fs.mkdir(folder, { recursive: true });
+        await fs.writeFile(path.join(folder, 'plugin.json'), '{}');
+      }
+      if (command === 'dev.catalog.build') {
+        const plugins = (await fs.readdir(path.join(cwd, 'plugins'))).sort();
+        builtByHome.set(env.AW_HOME, plugins);
+        const directory = path.join(cwd, '.aw', 'catalog');
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(path.join(directory, 'plugins.json'), JSON.stringify(plugins));
+      }
+      if (command === 'source.add') {
+        const directory = args[args.indexOf('--path') + 1];
+        const plugins = JSON.parse(await fs.readFile(path.join(directory, 'plugins.json')));
+        await fs.writeFile(path.join(directory, 'scope-owned'), '', { flag: 'wx' });
+        catalogs.set(env.AW_HOME, { plugins, directory });
+        return { ...publicResponse(command, {}), exitCode: 3, stdout: JSON.stringify({
+          schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: {},
+        }) };
+      }
+      return publicResponse(command, {});
+    },
+  });
+  assert.equal(builtByHome.size, 6);
+  assert.equal(catalogs.size, cases.length);
+  for (const authorHome of builtByHome.keys()) assert(!catalogs.has(authorHome));
+  const expected = cases.map(([, , , plugins]) => plugins.join('/')).sort();
+  assert.deepEqual([...catalogs.values()].map(({ plugins }) => plugins.join('/')).sort(), expected);
+  assert.deepEqual(outcomes.map(({ platform, scope, suite }) => [platform, scope, suite]), cases.map(row => row.slice(0, 3)));
+  assert(outcomes.every(row => row.status === 'failed' && row.commandFailures.at(-1).command === 'source.add'));
+  assert.equal(new Set(outcomes.map(row => row.candidateSha256)).size, 1);
+  for (const { directory } of catalogs.values()) await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+});
+
+// The authoring tests stop before applying/removing the new revision. Supply
+// the unrelated generic install/status observations up to that boundary.
+function genericMatrixCommands() {
+  const kinds = ['skill', 'agent', 'mcp', 'hook', 'instruction'];
+  const installed = new Map();
+  return async (command, args, { env, cwd }) => {
+    if (command === 'target.set') return publicResponse(command, { availability: [{ id: args[2], installations: [] }] });
+    if (!installed.has(env.AW_HOME)) installed.set(env.AW_HOME, new Map());
+    const targets = installed.get(env.AW_HOME);
+    if (command === 'plugin.install') {
+      const pluginId = args[2];
+      const name = pluginId.split('/')[1];
+      const scope = args[args.indexOf('--scope') + 1];
+      const components = name === 'mixed-components' ? kinds : name === 'without-skills' ? kinds.slice(1)
+        : [name === 'hook-only' ? 'hook' : name.replace('single-', '')];
+      const hasSkill = components.includes('skill');
+      if (hasSkill) {
+        const skill = name + '-skill';
+        const directory = path.join(scope === 'user' ? env.HOME : cwd, '.agents/skills', skill);
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(path.join(directory, 'SKILL.md'), 'qualification-skill-revision-1' + (name === 'mixed-components' ? ' portable edition' : ''));
+        await fs.writeFile(path.join(directory, '.agent-workflows-owner.json'), JSON.stringify({ pluginId, skill, owner: 'agent-workflows', scope }));
+      }
+      const target = { pluginId, target: 'generic', scope, blockerCodes: [], installedComponentCount: Number(hasSkill),
+        satisfaction: hasSkill ? 'installed' : 'not-applicable', deploymentReceipts: [],
+        componentGaps: components.filter(kind => kind !== 'skill').map(kind => ({ kind, providerPluginId: pluginId,
+          id: kind + ':sample-' + kind, reasonCode: 'interface-unsupported', requiredFeatures: [kind] })) };
+      targets.set(pluginId, target);
+      return publicResponse(command, { targetResults: [target], remainingTargets: [] });
+    }
+    if (command === 'plugin.status') return publicResponse(command,
+      { targetResults: [...targets.values()], inSync: true, allSatisfied: true, counts: { pending: 0 } });
+    if (command === 'plugin.sync') return publicResponse(command, { remainingTargets: [], changes: { outputs: 'none' } });
+    assert.equal(command, 'source.add');
+    return publicResponse(command, {});
+  };
+}
+
+// A suite that published the first revision can finish before another suite
+// publishes the update. Both builds must use real AW, independent of that suite.
+test('builds a shared matrix update after the first suite has been cleaned', async t => {
+  const group = await qualificationGroup();
+  t.after(() => group.finish());
+  const first = { platform: 'generic', scope: 'user' };
+  const second = { platform: 'generic', scope: 'project' };
+  const prefix = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-matrix-client-'));
+  t.after(() => fs.rm(prefix, { recursive: true, force: true }));
+  if (process.platform === 'win32') {
+    // Windows callers supply an acquired prefix that may be removed on completion.
+    first.clientPath = [prefix, process.env.PATH ?? process.env.Path].join(path.delimiter);
+  }
+  let firstRoot;
+  let revision;
+  let builds = 0;
+  const successfulBuilds = [];
+  const authorHomes = new Set();
+  const stopped = command => ({ ...publicResponse(command, {}), exitCode: 3,
+    stdout: JSON.stringify({ schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: {} }) });
+  const scopeCommands = genericMatrixCommands();
+  const dependencies = {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(launcher, args, options) {
+      const { env, cwd } = options;
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      if (command === 'target.set' && !firstRoot) firstRoot = path.dirname(env.HOME);
+      if (command === 'dev.catalog.build') {
+        builds++;
+        authorHomes.add(env.AW_HOME);
+        if (builds === 2) {
+          await assert.rejects(fs.stat(firstRoot), { code: 'ENOENT' });
+          assert(!env.PATH.split(path.delimiter).some(entry => entry.startsWith(firstRoot) || entry === prefix));
+          const { stdout } = await promisify(execFile)('node', ['-p', 'process.execPath'], { cwd, env });
+          assert.equal(await fs.realpath(stdout.trim()), await fs.realpath(process.execPath));
+        }
+      }
+      if (command === 'source.add' && path.dirname(env.HOME) === firstRoot) return stopped(command);
+      if (command === 'source.sync') {
+        const manifest = JSON.parse(await fs.readFile(path.join(path.dirname(env.HOME), 'catalog/catalog-manifest.json'), 'utf8'));
+        revision = manifest.entries.find(entry => entry.name === 'mixed-components')?.version;
+        return stopped(command);
+      }
+      if (!command.startsWith('dev.')) return scopeCommands(command, args, options);
+      const result = await executePublicAw(launcher, args, options);
+      if (command === 'dev.catalog.build' && result.exitCode === 0) successfulBuilds.push(builds);
+      return result;
+    },
+  };
+  const [initial] = await runComponentSuites([first], dependencies, group);
+  assert.equal(initial.commandFailures?.at(-1)?.command, 'source.add', initial.reason);
+  await assert.rejects(fs.stat(firstRoot), { code: 'ENOENT' });
+  await fs.rm(prefix, { recursive: true, force: true });
+  const [later] = await runComponentSuites([second], dependencies, group);
+  assert.equal(later.commandFailures?.at(-1)?.command, 'source.sync', later.reason);
+  assert.deepEqual(successfulBuilds, [1, 2]);
+  assert.equal(revision, '0.1.2');
+  assert.equal(authorHomes.size, 1);
+  assert.equal(initial.candidateSha256, later.candidateSha256);
+});
+
+// A failed shared build is an authoring failure for every consumer of that
+// variant, not just the first suite that happens to start the work.
+test('attributes a failed shared matrix build to every waiting suite without publishing raw data', async () => {
+  const secret = 'private_authoring_failure';
+  const shared = [
+    { platform: 'codex', scope: 'user' }, { platform: 'pi', scope: 'project' }, { platform: 'codex', scope: 'project' },
+  ];
+  const independent = { platform: 'generic', scope: 'project' };
+  let failedBuilds = 0;
+  let independentCopies = 0;
+  const outcomes = await runComponentSuites([...shared, independent].map(unit => ({ ...unit, clientPath: process.env.PATH })), {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { cwd }) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: args[2], installations: [] }] });
+      if (command === 'dev.plugin.create') {
+        const directory = path.join(cwd, 'plugins', args[3], '.agents-plugin');
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(path.join(directory, 'plugin.json'), '{}');
+      }
+      if (command === 'dev.catalog.build') {
+        const plugins = await fs.readdir(path.join(cwd, 'plugins'));
+        if (!plugins.includes('without-skills')) {
+          failedBuilds++;
+          return { ...publicResponse(command, {}), exitCode: 1, stderr: secret,
+            stdout: JSON.stringify({ schemaVersion: 2, command, status: 'failed', data: { private: secret },
+              diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error', message: secret }, { code: secret }] }) };
+        }
+        await fs.mkdir(path.join(cwd, '.aw/catalog'), { recursive: true });
+        await fs.writeFile(path.join(cwd, '.aw/catalog/success'), 'independent template');
+      }
+      if (command === 'source.add') {
+        const catalog = args[args.indexOf('--path') + 1];
+        assert.equal(await fs.readFile(path.join(catalog, 'success'), 'utf8'), 'independent template');
+        independentCopies++;
+        return { ...publicResponse(command, {}), exitCode: 3,
+          stdout: JSON.stringify({ schemaVersion: 2, command, status: 'blocked', diagnostics: [], data: {} }) };
+      }
+      return publicResponse(command, {});
+    },
+  });
+  assert.equal(failedBuilds, 1);
+  assert.equal(independentCopies, 1);
+  const reports = outcomes.slice(0, shared.length);
+  for (const report of reports) {
+    assert.equal(report.status, 'failed');
+    assert.deepEqual(report.commandFailures, [{ command: 'dev.catalog.build', stage: 'command', error: 'public-aw-failed',
+      exitCode: 1, terminationReason: 'complete', awReceipt: { status: 'failed',
+        diagnostics: [{ code: 'processCleanupUnconfirmed', severity: 'error' }] } }]);
+    assert.equal(report.reason, 'dev.catalog.build failed (exit 1)');
+  }
+  assert.equal(outcomes.at(-1).commandFailures.at(-1).command, 'source.add');
+  assert(!JSON.stringify(outcomes).includes(secret));
+});
+
+// A failed revision-2 build is shared independently of revision 1. A process
+// failure with a receipt must retain the same filtered evidence in each report.
+test('attributes a failed shared matrix update to every waiting suite', async () => {
+  const secret = 'private_authoring_update';
+  const scopeCommands = genericMatrixCommands();
+  let initialBuilds = 0;
+  let updateBuilds = 0;
+  const copies = [];
+  const outcomes = await runComponentSuites(['user', 'project'].map(scope => ({ platform: 'generic', scope })), {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, options) {
+      const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
+      const { cwd } = options;
+      if (command === 'dev.plugin.create') {
+        const directory = path.join(cwd, 'plugins', args[3], '.agents-plugin');
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(path.join(directory, 'plugin.json'), '{}');
+      }
+      if (command === 'dev.catalog.build') {
+        const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'plugins/mixed-components/.agents-plugin/plugin.json'), 'utf8'));
+        if (manifest.version === '0.1.2') {
+          updateBuilds++;
+          throw Object.assign(new Error(secret), { result: { exitCode: 250, terminationReason: 'complete', stderr: secret,
+            stdout: JSON.stringify({ schemaVersion: 2, command, status: 'failed', data: { raw: secret },
+              diagnostics: [{ code: 'processCleanupUnconfirmed', message: secret }] }) } });
+        }
+        initialBuilds++;
+        await fs.mkdir(path.join(cwd, '.aw/catalog'), { recursive: true });
+        await fs.writeFile(path.join(cwd, '.aw/catalog/revision'), manifest.version);
+      }
+      if (command === 'source.add') {
+        const catalog = args[args.indexOf('--path') + 1];
+        assert.equal(await fs.readFile(path.join(catalog, 'revision'), 'utf8'), '0.1.1');
+        copies.push(catalog);
+      }
+      if (command.startsWith('dev.')) return publicResponse(command, {});
+      return scopeCommands(command, args, options);
+    },
+  });
+  assert.equal(initialBuilds, 1);
+  assert.equal(updateBuilds, 1);
+  assert.equal(new Set(copies).size, 2);
+  for (const report of outcomes) {
+    assert.equal(report.status, 'failed');
+    assert.equal(report.reason, 'dev.catalog.build execute failed (process-failed)');
+    assert.deepEqual(report.commandFailures, [{ command: 'dev.catalog.build', stage: 'execute', error: 'process-failed',
+      exitCode: 250, terminationReason: 'complete', awReceipt: { status: 'failed', diagnostics: [{ code: 'processCleanupUnconfirmed' }] } }]);
+  }
+  assert(!JSON.stringify(outcomes).includes(secret));
+  for (const catalog of copies) await assert.rejects(fs.stat(catalog), { code: 'ENOENT' });
+});
+
 // Adjacent independent installs must keep separate native evidence, including
 // when AW returns partial and the next install fails outside the AW process.
 test('keeps Windows Codex Project matrix traces attached to the right installs', async () => {
@@ -294,6 +724,7 @@ test('keeps Windows Codex Project matrix traces attached to the right installs',
       const command = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
       if (command !== 'plugin.install') assert.equal(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE, undefined);
       if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'codex', installations: [] }] });
+      if (command === 'dev.catalog.build') await fs.mkdir(path.join(cwd, '.aw/catalog'), { recursive: true });
       if (command === 'dev.plugin.create') {
         const folder = path.join(cwd, 'plugins', 'single-skill', '.agents-plugin');
         await fs.mkdir(folder, { recursive: true });
@@ -351,14 +782,15 @@ test('keeps Windows Codex Project matrix traces attached to the right installs',
 
 // A blocked target preference is just one AW command. Its evidence must
 // distinguish missing samples from a started native check without other targets.
-test('retains Grok target selection evidence with or without a Windows command trace', async () => {
+test('retains Grok target selection evidence with or without a Windows command trace', async t => {
+  const runScenario = await componentScenarios(t);
   const sentinel = 'private_grok_discovery_payload';
   const sample = { category: 'grok-version', elapsedMs: 5010, threw: true, exitCode: 124, timedOut: true, reason: 'timeout' };
   for (const traceState of ['captured', 'not-created', 'disabled']) {
     const traced = traceState === 'captured';
     const traceEnabled = traceState !== 'disabled';
     const calls = [];
-    const report = await runComponentQualification({ platform: 'grok', scope: 'user', suite: 'matrix',
+    const report = await runScenario({ platform: 'grok', scope: 'user', suite: 'matrix',
       clientPath: process.env.PATH, ...(traceEnabled ? { traceEntry: process.execPath } : {}) }, {
       executeCommand: async () => ({ exitCode: 0 }),
       async executeAw(_launcher, args, { env }) {
@@ -500,6 +932,25 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
   assert.deepEqual(ctx.env.PATH.split(path.delimiter), [clientBin, path.dirname(process.execPath),
     '/usr/bin', '/bin', '/usr/sbin', '/sbin']);
   assert.equal(await fs.realpath(path.join(clientBin, 'claude')), entry);
+});
+
+// Acquisition publishes once before scopes are dispatched. Neither scope needs
+// to reopen the original native executable to materialize a second launcher.
+test('uses the prepared acquisition entry for concurrent public scopes', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-prepared-client-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const original = path.join(root, 'original');
+  const clientBin = path.join(root, 'tool');
+  await fs.writeFile(original, 'complete-client-bytes');
+  const preparedClient = await preparePublicClientEntry({ clientBin, platform: 'claude', launcher: { executable: original, prefix: [] } });
+  const scopes = await Promise.all(['user', 'project'].map(async scope => {
+    const project = await fs.mkdtemp(path.join(root, scope));
+    const env = await prepareEnvironment(project);
+    const entry = await preparePublicClientPath({ root: project, platform: 'claude', project, env, preparedClient });
+    return { entry, bytes: await fs.readFile(entry, 'utf8'), env };
+  }));
+  assert(scopes.every(item => item.entry === preparedClient.entry && item.bytes === 'complete-client-bytes'));
+  assert.notEqual(scopes[0].env.AW_HOME, scopes[1].env.AW_HOME);
 });
 
 // Test Value Gate: batch discovery must preserve both acquisition prefixes,

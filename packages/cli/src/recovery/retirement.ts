@@ -4,7 +4,7 @@ import type { CliPrompt } from '../commands/runtime.js';
 import { operationPlanNativeToolChanges, type OperationPlan } from '../commands/operation-plan.js';
 import {
   executeRemovedPluginOutputCleanup, inspectRemovedPluginCleanup,
-  type RebuildCommandRuntime, type RemovedPluginCleanupTarget,
+  type RebuildCommandRuntime, type RemovedPluginCleanupTarget, type RemovedPluginCleanupPreparation,
 } from '../commands/rebuild-command.js';
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { inventoryCatalogSourceReferences, type CatalogSourceReferenceInventory } from '../utils/catalog-source-references.js';
@@ -136,7 +136,8 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
   return receipt;
 }
 
-export async function prepareRetire(options: RetireOptions, runtime: RebuildCommandRuntime = {}): Promise<RetirePlan> {
+export async function prepareRetire(options: RetireOptions, runtime: RebuildCommandRuntime = {},
+  preparation?: RemovedPluginCleanupPreparation): Promise<RetirePlan> {
   options.signal?.throwIfAborted();
   const ownsPreparedResults = runtime.preparedArtifactRenderResults === undefined;
   const preparedResults = runtime.preparedArtifactRenderResults ?? new Map();
@@ -168,7 +169,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     const removed = await inspectRemovedPluginCleanup({ pluginId: options.selector, scope: options.scope,
       inventory, cwd: context.executionCwd, env: context.env,
       nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal),
-      codexManager: runtime.codexManager });
+      codexManager: runtime.codexManager, preparation });
     options.signal?.throwIfAborted();
     if (!removed) blockers.push(diagnostic('removedPluginActiveUnavailable',
       '需要健康的本地 Active 和插件缺席证据，才能停用已移除插件。'));
@@ -238,7 +239,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     const preview = removed ? await executeRemovedPluginOutputCleanup({ target: removed,
       selectedTargets: targetResults.flatMap((target) => target.delivery?.kind === 'native' && !target.blockers.length
         ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []),
-      context, runtime: { ...runtime, previewOperationPlan: true,
+      context, preparation, runtime: { ...runtime, previewOperationPlan: true,
         nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal) },
     }) : undefined;
     options.signal?.throwIfAborted();

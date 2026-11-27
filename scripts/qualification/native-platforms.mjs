@@ -5,9 +5,10 @@ import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
+  acquireClient, readManagedTrace, renderPackage, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
-import { qualifyPublicAw } from './native-platform-public-aw.mjs';
+import { qualificationGroup } from './native-platform-qualification-group.mjs';
+import { qualifyPublicAw, preparePublicClientEntry } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
 
@@ -205,22 +206,25 @@ export async function readQualificationCodexSources(home) {
 }
 
 export async function runScope(platform, scope, launcher, options = {}) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
+  let root;
+  const runUnit = options.group?.runUnit ?? (action => action());
   const mixedClients = options.mixedClients;
   const report = { scope, product: 'cli', input: mixedClients ? 'public-aw-mixed-native-cli' : options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate',
     status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
   const privateClientPaths = mixedClients ? [...mixedClients.values()].map(({ installRoot }) => installRoot) : options.clientBin;
   const redactScope = value => redact(value, root, privateClientPaths);
   try {
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
     const env = await prepareEnvironment(root);
     const project = path.join(root, 'project');
     const neutral = path.join(root, 'neutral');
     const marketplace = path.join(root, 'source');
     await fs.mkdir(project);
-    assertCommand(await execute({ executable: 'git', prefix: [] },
-      ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
+    await runUnit(async () => assertCommand(await execute({ executable: 'git', prefix: [] },
+      ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env })));
     await fs.mkdir(neutral);
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
+      preparedClient: options.preparedClient, group: options.group,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       recordCommand(command) { report.commands.push(redactScope(command)); },
@@ -409,25 +413,26 @@ export async function runScope(platform, scope, launcher, options = {}) {
           : ctx.check('aw-candidate-refresh-projection', () => renderPackage(ctx, revision));
       },
     };
-    if (mixedClients) await qualifyMixedPublicAw(ctx, mixedClients);
+    if (mixedClients) await runUnit(() => qualifyMixedPublicAw(ctx, mixedClients));
     else {
-      await ctx.check('client-version', async () => {
+      await runUnit(() => ctx.check('client-version', async () => {
         const result = await ctx.command(['--version']);
         const actual = versionFrom(result.stdout);
         if (actual !== fixedClientVersion(platform)) throw new Error('client-version-mismatch');
         return { version: actual };
-      });
+      }));
       if (options.publicAw) {
+        if (options.publicClientError) throw options.publicClientError;
         await qualifyPublicAw(ctx, { components: process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1' });
         for (const id of requiredPublicChecks(platform, scope)) {
           if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
         }
       }
-      else {
+      else await runUnit(async () => {
         const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
         if (platform === 'opencode') ctx.initialProjection = initialProjection;
         await qualifyClient(ctx);
-      }
+      });
     }
     report.status = 'passed';
   } catch (error) {
@@ -435,7 +440,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     report.reason = redactScope(error?.message ?? 'qualification-failed');
     report.remaining = 'not-run-after-incomplete-scenario';
   } finally {
-    try { await removeQualificationRoot(root); report.cleanup = 'completed'; }
+    try { if (root) await removeQualificationRoot(root); report.cleanup = 'completed'; }
     catch (error) {
       report.cleanup = 'failed'; report.status = 'failed';
       report.cleanupError = redactScope({ code: error?.code, syscall: error?.syscall, path: error?.path });
@@ -510,25 +515,35 @@ export async function run(options, acquire = acquireClient) {
     uncoveredReasons: { cursor: 'separate-fixed-interface-probe',
       antigravity: 'public-user-scope-runs-through-dedicated-qualification' },
   };
+  let group;
   try {
-    report.candidate = await verifyCandidate(options.candidate);
+    group = await qualificationGroup({ manifest: options.candidate });
+    report.candidate = group.candidate;
     report.processManagement = await processManagementInfo();
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
-    for (const platform of selectedPlatforms) {
+    await Promise.all(selectedPlatforms.map(async platform => {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
       report.clients.push(result);
       if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
         || process.platform === 'win32' && process.arch === 'arm64')) {
-        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; continue;
+        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; return;
       }
       let installRoot;
       try {
         let launcher;
         let clientBin;
+        let preparedClient;
+        let publicClientError;
         if (options.install) {
-          installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
-          const acquired = await acquire(platform, installRoot);
+          const acquired = await group.runUnit(async () => {
+            installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
+            return acquire(platform, installRoot);
+          });
           launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
+          if (options['public-aw']) {
+            try { preparedClient = await group.runUnit(() => preparePublicClientEntry({ root: installRoot, launcher, platform, clientBin })); }
+            catch (error) { publicClientError = error; }
+          }
           if (mixedPublicAwRequested && mixedNativePlatforms.includes(platform)) {
             mixedClients.set(platform, { ...acquired, installRoot, result });
           }
@@ -537,11 +552,14 @@ export async function run(options, acquire = acquireClient) {
           launcher = { executable: entry, prefix: [] };
           result.acquisition = { method: 'provided-executable', entrySha256: sha256(await fs.readFile(entry)) };
         }
-        for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
-        if (options['public-aw']) {
-          result.publicAw = [];
-          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
-        }
+        const scopesToRun = ['user', 'project'];
+        const [direct, publicAw] = await Promise.all([
+          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group }))),
+          options['public-aw'] && Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher,
+            { publicAw: true, clientBin, preparedClient, publicClientError, group }))),
+        ]);
+        result.scopes = direct;
+        if (publicAw) result.publicAw = publicAw;
         const scopes = [...result.scopes, ...(result.publicAw ?? [])];
         result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));
       } catch (error) {
@@ -550,14 +568,14 @@ export async function run(options, acquire = acquireClient) {
       } finally {
         if (installRoot && !mixedClients.has(platform)) await cleanupClientAcquisition(installRoot, result);
       }
-    }
+    }));
     if (mixedPublicAwRequested) {
       const platforms = mixedNativePlatforms.map((platform) => ({ platform, version: fixedClientVersion(platform) }));
       const unavailable = mixedNativePlatforms.filter((platform) => !mixedClients.has(platform));
       report.mixedPublicAw = unavailable.length
         ? { platforms, status: 'failed', scope: 'user', checks: [], reason: 'mixed-native-clients-unavailable', unavailable }
         : { platforms, ...await runScope(mixedNativePlatforms[0], 'user', mixedClients.get(mixedNativePlatforms[0]).launcher,
-          { publicAw: true, mixedClients }) };
+          { publicAw: true, mixedClients, group }) };
     }
     report.status = aggregateQualificationStatus([...report.clients.map(client => client.status),
       ...(mixedPublicAwRequested ? [report.mixedPublicAw.status] : [])]);
@@ -567,6 +585,13 @@ export async function run(options, acquire = acquireClient) {
     for (const { installRoot, result } of mixedClients.values()) {
       await cleanupClientAcquisition(installRoot, result);
       if (result.acquisitionCleanup === 'failed') report.status = 'failed';
+    }
+    if (group) {
+      try { await group.finish(); }
+      catch (error) {
+        report.status = 'failed';
+        report.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'candidate-final-verification-failed';
+      }
     }
   }
   await fs.mkdir(path.dirname(path.resolve(options.report)), { recursive: true });

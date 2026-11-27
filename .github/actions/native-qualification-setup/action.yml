@@ -1,0 +1,81 @@
+name: Prepare qualification candidate
+description: Restore the exact qualification candidate and host prerequisites without rebuilding.
+inputs:
+  clients:
+    description: Fixed npm clients to acquire (empty disables the download cache).
+    default: ''
+  components:
+    description: Prepare the fixed agent-browser prerequisite for component suites.
+    default: '0'
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.33.0
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: pnpm
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+    - uses: actions/download-artifact@v4
+      with:
+        name: native-qualification-candidate
+        path: ${{ runner.temp }}/native-candidate
+    - name: Restore the same candidate without rebuilding
+      shell: bash
+      run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
+    - uses: actions/download-artifact@v8
+      if: runner.os == 'Windows'
+      with:
+        name: windows-job-qualified
+        path: .native/windows-job-candidate
+    - name: Prepare the qualified Windows helper in its normal optional package
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        node --input-type=module - <<'JS'
+        import { readCandidate } from './native-tools/windows-job/candidate.mjs';
+        import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
+        import { prepareWindowsJobSourceTestEnvironment } from './native-tools/windows-job/test-environment.mjs';
+        const root = '.native/windows-job-candidate';
+        await assertWindowsJobCandidateEvidence(await readCandidate(root));
+        await prepareWindowsJobSourceTestEnvironment({ root });
+        JS
+    - name: Verify Windows process setup and timeout handling
+      if: runner.os == 'Windows'
+      shell: bash
+      run: pnpm test:qualification:native-platforms:harness
+    - name: Prepare the browser-use plugin's real preApply prerequisite
+      if: inputs.components == '1'
+      shell: bash
+      run: |
+        npm install --prefix "$RUNNER_TEMP/native-browser-tool" --ignore-scripts --no-audit --no-fund agent-browser@0.38.1
+        node scripts/qualification/native-platform-public-browser.mjs "$RUNNER_TEMP/native-browser-tool" "$RUNNER_TEMP/native-browser-bin"
+    - name: Compute the fixed-client download cache identity
+      if: inputs.clients != ''
+      id: client-cache
+      shell: bash
+      env:
+        SELECTED_CLIENTS: ${{ inputs.clients }}
+      run: |
+        node --input-type=module - <<'JS'
+        import { appendFileSync } from 'node:fs';
+        import path from 'node:path';
+        import { clients, sha256 } from './scripts/qualification/native-platform-runtime.mjs';
+        const manifest = Object.values(clients).map(({ package: name, version }) => [name, version]);
+        const group = process.env.SELECTED_CLIENTS.replaceAll(',', '-');
+        appendFileSync(process.env.GITHUB_OUTPUT, `versions=${sha256(JSON.stringify(manifest))}\ngroup=${group}\n`);
+        appendFileSync(process.env.GITHUB_ENV, `AW_QUALIFICATION_NPM_CACHE=${path.join(process.env.RUNNER_TEMP, 'native-client-npm-cache')}\n`);
+        JS
+    - name: Cache npm content downloads for fixed clients
+      if: inputs.clients != ''
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/native-client-npm-cache/_cacache
+        # Disjoint client groups need separate writable keys so the first
+        # group to finish does not prevent saving the other group's cache.
+        key: native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.versions }}-${{ steps.client-cache.outputs.group }}
+        restore-keys: |
+          native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.versions }}-

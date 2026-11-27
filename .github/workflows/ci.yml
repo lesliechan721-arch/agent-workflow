@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '4' }}
     steps:
       - name: Configure test diagnostics
         shell: bash
@@ -59,9 +59,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  release-verification:
-    name: Linux x64 / Node 24 / release verification
-    needs: native-windows-job
+  release-delivery:
+    name: Linux x64 / Node 24 / release delivery
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -83,10 +82,35 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Delivery builds the strict Catalog and dist contracts once. Source tests
-      # and types run in linux-tests; beta requires both jobs to pass.
+      # and types run in linux-tests; beta also requires native evidence.
       - run: pnpm release:verify:delivery
       - run: pnpm test:perf:gate
       - run: pnpm test:smoke:cli:after-delivery
+      - run: pnpm test:smoke:bootstrap:catalog
+      - run: pnpm release:verify:publish
+      - name: Save failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-release-delivery
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release-native-evidence:
+    name: Linux x64 / Node 24 / release native evidence
+    needs: native-windows-job
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - uses: actions/download-artifact@v8
         with:
           name: windows-job-qualified
@@ -98,18 +122,6 @@ jobs:
           import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
           await assertWindowsJobCandidateEvidence(await readCandidate('.native/windows-job-candidate'));
           JS
-      - run: pnpm test:smoke:bootstrap:catalog
-      - run: pnpm release:verify:publish
-      - name: Save failed test diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-diagnostics-release-verification
-          path: |
-            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
-            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
-          if-no-files-found: ignore
-          retention-days: 7
 
   plugin-tests:
     name: ${{ matrix.name }}
@@ -155,7 +167,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || matrix.os == 'darwin' && '2' || '1') }}
       EXPECTED_OS: ${{ matrix.os }}
       EXPECTED_ARCH: ${{ matrix.arch }}
       TEST_SHARD: ${{ matrix.shard }}
@@ -310,7 +322,7 @@ jobs:
     uses: ./.github/workflows/windows-job.yml
 
   beta:
-    needs: [linux-tests, release-verification, plugin-tests, platform, native-windows-job]
+    needs: [linux-tests, release-delivery, release-native-evidence, plugin-tests, platform, native-windows-job]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.RELEASE_APP_ID != ''
     uses: ./.github/workflows/beta.yml
     with:

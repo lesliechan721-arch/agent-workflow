@@ -14,7 +14,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
-import { focusAction } from '../helpers/tui-console-app-input.js';
+import { escape, focusAction } from '../helpers/tui-console-app-input.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({ status: vi.fn() }));
@@ -29,9 +29,11 @@ async function turn(): Promise<void> {
 }
 async function keys(ui: ReturnType<typeof render>, ...values: string[]): Promise<void> {
   for (const value of values) {
-    ui.stdin.write(value);
-    await turn();
-    if (value === '\u001b') await new Promise((resolve) => setTimeout(resolve, 80));
+    if (value === esc) await escape(ui);
+    else {
+      ui.stdin.write(value);
+      await turn();
+    }
   }
 }
 const down = '\u001b[B';
@@ -42,17 +44,26 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }, with
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-source');
   const probeModePath = path.join(isolation.layout.fixtureCwd, 'probe-mode');
+  const probeStartedPath = path.join(isolation.layout.fixtureCwd, 'suggestions-started');
+  const probeReleasePath = path.join(isolation.layout.fixtureCwd, 'release-suggestions');
   if (withSuggestions) {
     await fs.outputFile(probeModePath, fieldKey === 'suggested' ? 'slow' : 'ok');
     await fs.outputFile(path.join(sourceRoot, 'plugins', 'arrays', 'scripts', 'suggestions.mjs'), `
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 const request = JSON.parse(readFileSync(0, 'utf8'));
 const mode = readFileSync(join(request.cwd, 'probe-mode'), 'utf8');
-if (mode === 'slow') await delay(8000);
-if (mode === 'invalid') {
-  while (!existsSync(join(request.cwd, 'release-suggestions'))) await delay(10);
+if (mode === 'slow' || mode === 'invalid') {
+  writeFileSync(join(request.cwd, 'suggestions-started'), mode);
+  const release = join(request.cwd, 'release-suggestions');
+  // The real runner normally cancels or releases this subprocess sooner.
+  // A deadline also bounds the fixture if the test host stops unexpectedly.
+  const deadline = Math.min(request.deadlineAt ?? Infinity, Date.now() + 10000);
+  while (!existsSync(release)) {
+    if (Date.now() >= deadline) throw new Error('Suggestion fixture was not released');
+    await delay(10);
+  }
 }
 const id = request.dependencyValues.id ?? 'top';
 const provider = request.providerConfigValues.providers?.[0]?.id ?? 'unknown';
@@ -146,14 +157,15 @@ console.log(JSON.stringify(mode === 'offline'
   const captured: OperationIntent[] = [];
   const prepare = dependencies.prepareReviewEvidence!;
   dependencies.prepareReviewEvidence = async (intent, ...args) => { captured.push(intent); return prepare(intent, ...args); };
-  const probeRuns: Array<{ path: (string | number)[]; signal?: AbortSignal }> = [];
+  const probeRuns: Array<{ path: (string | number)[]; signal?: AbortSignal; completion: Promise<unknown> }> = [];
   const getSuggestions = dependencies.getConfigSuggestions;
   if (withSuggestions && getSuggestions) {
     dependencies.getConfigSuggestions = (lookup, run, signal) => getSuggestions(lookup, (prepared) => run({
       ...prepared,
       run: (runSignal) => {
-        probeRuns.push({ path: lookup.fieldPath, signal: runSignal });
-        return prepared.run(runSignal);
+        const completion = prepared.run(runSignal);
+        probeRuns.push({ path: lookup.fieldPath, signal: runSignal, completion });
+        return completion;
       },
     }), signal);
   }
@@ -206,7 +218,7 @@ console.log(JSON.stringify(mode === 'offline'
     }, { spaces: 2 });
   };
   await record(`list-${fieldKey}`);
-  return { ui, controller, dependencies, captured, isolation, store, record, probeRuns, probeModePath };
+  return { ui, controller, dependencies, captured, isolation, store, record, probeRuns, probeModePath, probeStartedPath, probeReleasePath };
 }
 
 describe('array editor with real config runtime', () => {
@@ -265,16 +277,18 @@ describe('array editor with real config runtime', () => {
   });
 
   it('keeps manual input available during slow suggestions and aborts when the field closes', async () => {
-    const { ui, controller, dependencies, probeRuns, probeModePath, store } = await setup('suggested', { columns: 70, rows: 20 }, true);
+    const { ui, controller, dependencies, probeRuns, probeModePath, probeStartedPath, store } = await setup('suggested', { columns: 70, rows: 20 }, true);
     await vi.waitFor(() => {
       expect(probeRuns).toHaveLength(1);
       expect(ui.lastFrame()).toContain('正在获取动态建议');
     });
+    await vi.waitFor(() => expect(fs.readFile(probeStartedPath, 'utf8')).resolves.toBe('slow'), { timeout: 5000 });
     expect(ui.lastFrame()).toContain('自定义');
     expect(ui.lastFrame()).not.toContain('Static model');
     await keys(ui, '\r', 'manual-r', '\r');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'));
     expect(probeRuns[0]!.signal?.aborted).toBe(true);
+    await vi.waitFor(() => expect(probeRuns[0]!.completion).rejects.toMatchObject({ name: 'AbortError' }), { timeout: 5000 });
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     await keys(ui, 's');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
@@ -309,7 +323,7 @@ describe('array editor with real config runtime', () => {
   });
 
   it('uses live sibling and unsaved provider values and refreshes cached suggestions', async () => {
-    const { ui, controller, probeRuns, probeModePath, store } = await setup('workers', { columns: 80, rows: 24 }, true);
+    const { ui, controller, probeRuns, probeModePath, probeStartedPath, probeReleasePath, store } = await setup('workers', { columns: 80, rows: 24 }, true);
     const openArray = async (fieldKey: string, value: string) => {
       controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey, editor: 'array' });
       await vi.waitFor(() => expect(ui.lastFrame()).toContain(`01  ${value}`));
@@ -351,7 +365,8 @@ describe('array editor with real config runtime', () => {
     await keys(ui, '\r', '\r', 'r');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('正在获取动态建议'));
     expect(ui.lastFrame()).not.toContain('Static model');
-    await fs.ensureFile(path.join(path.dirname(probeModePath), 'release-suggestions'));
+    await vi.waitFor(() => expect(fs.readFile(probeStartedPath, 'utf8')).resolves.toBe('invalid'), { timeout: 5000 });
+    await fs.ensureFile(probeReleasePath);
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('没有动态建议'), { timeout: 5000 });
     await focusAction(ui, 'Static model');
     expect(ui.lastFrame()).toMatch(/› [○●◆] Static model/u);

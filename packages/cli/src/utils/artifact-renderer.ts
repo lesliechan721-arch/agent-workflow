@@ -161,11 +161,18 @@ export interface PreparedArtifactRendererResult {
   timedOut: boolean;
 }
 
+/** One preparation window. Share a child only among callers with the same cancellation and runner. */
+export type PreparedArtifactRenderResults = Map<string, {
+  signal?: AbortSignal;
+  runner?: PluginProcessRunner;
+  promise: Promise<PluginProcessResult>;
+}>;
+
 /** One process boundary for all surfaces. Surface owners validate their response schema. */
 export async function runPreparedArtifactRenderer(options: {
   plugin: PluginMeta; context: unknown; sensitiveValues: readonly string[]; cwd: string;
   event?: ArtifactRenderEvent; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
-  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
+  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: PreparedArtifactRenderResults;
 }): Promise<PreparedArtifactRendererResult> {
   options.signal?.throwIfAborted();
   if (!isRecord(options.context) || (options.context.scope !== 'user' && options.context.scope !== 'project')) {
@@ -173,31 +180,53 @@ export async function runPreparedArtifactRenderer(options: {
   }
   const target = await resolveArtifactRendererTarget(options.plugin);
   if (target.noOp) throw new Error(`Plugin "${options.plugin.manifest.name}" does not declare scripts.artifacts.render.`);
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
-  const isolatedHomes = { awHome: path.join(tempDir, 'aw-home'), codexHome: path.join(tempDir, 'codex-home'), claudeHome: path.join(tempDir, 'claude-home') };
-  try {
-    const contextPath = path.join(tempDir, 'context.json');
-    await fs.writeJson(contextPath, options.context, { spaces: 2 });
-    await fs.chmod(contextPath, 0o600).catch(() => undefined);
-    await preparePluginScriptDirectories(tempDir);
-    if (process.platform === 'win32') await prepareWindowsJobHelper();
-    for (const location of Object.values(isolatedHomes)) await fs.ensureDir(location);
-    const commandEnv = options.commandEnv ?? process.env;
-    const surface = options.context.surface;
-    const platform = typeof options.context.platform === 'string' ? options.context.platform as PlatformTarget : undefined;
-    const env = buildPluginScriptSpawnEnv({ commandEnv, contextPath, tempDir, isolatedHomes,
-      plugin: options.plugin.manifest, event: options.event ?? 'materialize',
-      platform, scope: options.context.scope, bundleRoot: target.bundleRoot! });
-    env.AW_PLUGIN_SURFACE = typeof surface === 'string' ? surface : 'managed-commands';
-    const invocation = buildNodeScriptInvocation({ entryPath: target.entryPath!, cwd: options.cwd, env, args: target.entry!.args });
-    const timeoutMs = resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs });
-    const preparationKey = options.preparedResults ? artifactValueDigest({ context: options.context,
-      manifestDigest: target.manifestDigest, rendererDigest: target.rendererDigest, cwd: options.cwd,
-      commandEnv, scriptTimeoutMs: options.scriptTimeoutMs }) : undefined;
-    const runOptions = { timeoutMs, maxStdoutBytes: ARTIFACT_RENDERER_MAX_STDOUT_BYTES, ...(options.signal ? { signal: options.signal } : {}) };
-    const result = (preparationKey ? options.preparedResults?.get(preparationKey) : undefined)
-      ?? await (options.runner ? options.runner.run(invocation, runOptions)
+  const context = options.context;
+  const scope = options.context.scope;
+  const commandEnv = { ...(options.commandEnv ?? process.env) };
+  const timeoutMs = resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs });
+  const invocationFor = (tempDir: string) => {
+    const isolatedHomes = { awHome: path.join(tempDir, 'aw-home'), codexHome: path.join(tempDir, 'codex-home'),
+      claudeHome: path.join(tempDir, 'claude-home') };
+    const platform = typeof context.platform === 'string' ? context.platform as PlatformTarget : undefined;
+    const env = buildPluginScriptSpawnEnv({ commandEnv, contextPath: path.join(tempDir, 'context.json'),
+      tempDir, isolatedHomes, plugin: options.plugin.manifest, event: options.event ?? 'materialize',
+      platform, scope, bundleRoot: target.bundleRoot! });
+    env.AW_PLUGIN_SURFACE = typeof context.surface === 'string' ? context.surface : 'managed-commands';
+    return { isolatedHomes, invocation: buildNodeScriptInvocation({ entryPath: target.entryPath!, cwd: options.cwd,
+      env, args: target.entry!.args }) };
+  };
+  // Bind the actual child environment, not the caller's unused HOME/AW_HOME/etc.
+  // Private paths are per invocation and never eligible output resources.
+  const preparationKey = options.preparedResults ? artifactValueDigest({
+    context, manifestDigest: target.manifestDigest, rendererDigest: target.rendererDigest,
+    sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+    invocation: invocationFor(path.join(os.tmpdir(), 'aw-plugin-artifact-render-request')).invocation,
+    timeoutMs, sensitiveValues: options.sensitiveValues,
+  }) : undefined;
+  const run = async (): Promise<PluginProcessResult> => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
+    try {
+      const { isolatedHomes, invocation } = invocationFor(tempDir);
+      const contextPath = invocation.env.AW_PLUGIN_CONTEXT!;
+      await fs.writeJson(contextPath, context, { spaces: 2 });
+      await fs.chmod(contextPath, 0o600).catch(() => undefined);
+      await preparePluginScriptDirectories(tempDir);
+      if (process.platform === 'win32') await prepareWindowsJobHelper();
+      for (const location of Object.values(isolatedHomes)) await fs.ensureDir(location);
+      options.signal?.throwIfAborted();
+      const runOptions = { timeoutMs, maxStdoutBytes: ARTIFACT_RENDERER_MAX_STDOUT_BYTES,
+        ...(options.signal ? { signal: options.signal } : {}) };
+      return await (options.runner ? options.runner.run(invocation, runOptions)
         : defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues: options.sensitiveValues }));
+    } finally { await fs.remove(tempDir); }
+  };
+  const existing = preparationKey ? options.preparedResults!.get(preparationKey) : undefined;
+  const shared = existing && existing.signal === options.signal && existing.runner === options.runner;
+  const pending = shared ? existing : { signal: options.signal, runner: options.runner, promise: run() };
+  if (preparationKey && !existing) options.preparedResults!.set(preparationKey, pending);
+  try {
+    const result = await pending.promise;
+    options.signal?.throwIfAborted();
     const summary = (text: string): string => summarizePluginScriptOutput(text, options.sensitiveValues) || '<empty>';
     const stdout = summary(result.stdout);
     const stderr = summary(result.stderr);
@@ -210,9 +239,11 @@ export async function runPreparedArtifactRenderer(options: {
     assertNoSensitiveConfigValues(value, options.sensitiveValues,
       'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.');
     // This cache is scoped to one operation. Every consumer still validates its surface and resources.
-    if (preparationKey) options.preparedResults!.set(preparationKey, result);
     return { value, target, exitCode: result.exitCode, signal: result.signal, stdout, stderr, timedOut: result.timedOut };
   } catch (error) {
+    if (preparationKey && options.preparedResults!.get(preparationKey) === pending) {
+      options.preparedResults!.delete(preparationKey);
+    }
     const message = error instanceof Error ? error.message : String(error);
     const redacted = redactPluginScriptOutput(message, options.sensitiveValues);
     if (redacted === message) throw error;
@@ -220,7 +251,7 @@ export async function runPreparedArtifactRenderer(options: {
     if (error instanceof Error) failure.name = error.name;
     const diagnostic = readSafeOperationError(error);
     throw diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
-  } finally { await fs.remove(tempDir); }
+  }
 }
 
 export interface PlatformComponentPreparationEvidence {
@@ -245,7 +276,7 @@ export async function preparePlatformComponents(options: {
   staticResourceRoot?: string; previousComponents?: PlatformRenderContextV2['previousComponents'];
   hasInstructionAgentRecipients?: boolean;
   changedConfigKeys?: string[]; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
-  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
+  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: PreparedArtifactRenderResults;
 }): Promise<PreparedPlatformComponents> {
   options.signal?.throwIfAborted();
   if (options.capabilities.platform !== options.platform || options.capabilities.scope !== options.renderScope

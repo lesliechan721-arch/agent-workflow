@@ -22,6 +22,7 @@ export { canonicalJson, computeCaseCorpusDigest } from './corpus-digest.js'
 export {
   computeCanonicalDirectoryDigest,
   computeSkillDigest,
+  computeSkillDigestFromTree,
   createRuntimeSkillSnapshot,
 } from './runtime-skill.js'
 export type { RuntimeSkillDigestOptions } from './runtime-skill.js'

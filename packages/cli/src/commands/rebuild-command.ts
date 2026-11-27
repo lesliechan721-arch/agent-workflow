@@ -2339,6 +2339,12 @@ export async function inspectRemovedPluginConfig(options: {
   return inspection;
 }
 
+/** Borrowed only by a retired plugin's initial, read-only Review. */
+export interface RemovedPluginCleanupPreparation {
+  catalogReadScope: CatalogPreparationReadScope;
+  catalogOperationContext: CatalogOperationContext;
+}
+
 export async function inspectRemovedPluginCleanup(options: {
   pluginId: string;
   scope: Scope;
@@ -2347,12 +2353,17 @@ export async function inspectRemovedPluginCleanup(options: {
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
   codexManager?: CodexManager;
+  preparation?: RemovedPluginCleanupPreparation;
 }): Promise<RemovedPluginCleanupTarget | null> {
   const parsed = parsePluginId(options.pluginId);
   if (!parsed.sourceId) return null;
   let generation: Awaited<ReturnType<typeof resolveActiveCatalogGeneration>>;
   try {
-    generation = await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
+    const previous = options.preparation?.catalogOperationContext.catalog.sources
+      .find((source) => source.sourceId === parsed.sourceId)?.resolution;
+    generation = previous && options.preparation
+      ? (await options.preparation.catalogReadScope.resolveActiveGeneration(parsed.sourceId, previous)).active
+      : await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
   } catch {
     return null;
   }
@@ -2427,6 +2438,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
   selectedTargets: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
   context: ScopeContext;
   runtime?: RebuildCommandRuntime;
+  preparation?: RemovedPluginCleanupPreparation;
 }): Promise<RebuildCommandResult> {
   const selected = options.selectedTargets.filter((target) =>
     target.pluginId === options.target.pluginId && target.scope === options.context.scope);
@@ -2470,6 +2482,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
     env: options.context.env,
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     codexManager: options.runtime?.codexManager,
+    preparation: options.runtime?.previewOperationPlan ? options.preparation : undefined,
   });
   if (!current || current.sourceIdentity !== options.target.sourceIdentity
     || current.projectionFingerprint !== options.target.projectionFingerprint

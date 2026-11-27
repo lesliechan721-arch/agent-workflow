@@ -78,7 +78,36 @@ export async function validatePortableSkillDirectory(
   }
   const skillKey = path.basename(rootDir);
   validatePortableSkillName(skillKey, 'portable Skill directory name');
-  const files = await collectFiles(rootDir);
+  return validatePortableSkillFiles(skillKey, await collectFiles(rootDir), options);
+}
+
+/** Reuse a complete regular-tree observation whose root and node types have
+ * already been checked in this read window. Preserve the directory validator's
+ * author-only filtering and reserved marker check (even for an empty directory).
+ */
+export function validateCapturedPortableSkillDirectory(
+  rootDir: string,
+  captured: { files: ReadonlyArray<{ relativePath: string; bytes: Buffer }>; directories: readonly string[] },
+  options: { frontmatterProfile?: SkillFrontmatterProfile } = {},
+): PortableSkillTree {
+  const skillKey = path.basename(rootDir);
+  validatePortableSkillName(skillKey, 'portable Skill directory name');
+  if (captured.directories.includes(SKILL_OWNER_MARKER)
+    || captured.files.some((file) => file.relativePath === SKILL_OWNER_MARKER)) {
+    throw new Error(`Skill source tree 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
+  }
+  const files: Record<string, Buffer> = {};
+  for (const { relativePath, bytes } of captured.files) {
+    if (!isSkillAuthorOnlyPath(relativePath)) files[relativePath] = bytes;
+  }
+  return validatePortableSkillFiles(skillKey, files, options);
+}
+
+function validatePortableSkillFiles(
+  skillKey: string,
+  files: Record<string, Buffer>,
+  options: { frontmatterProfile?: SkillFrontmatterProfile },
+): PortableSkillTree {
   const skillFile = files[SKILL_FILE_PATH];
   if (!skillFile || skillFile.toString('utf8').trim() === '') {
     throw new Error(`Skill component "${skillKey}" 缺少 SKILL.md 内容。`);

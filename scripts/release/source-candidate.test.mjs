@@ -170,7 +170,8 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
   const requiredJobs = [
     'Linux x64 / Node 22 / unit', 'Linux x64 / Node 22 / integration',
     'Linux x64 / Node 24 / unit', 'Linux x64 / Node 24 / integration',
-    'Linux x64 / Node 24 / release verification',
+    'Linux x64 / Node 24 / release delivery',
+    'Linux x64 / Node 24 / release native evidence',
     'Linux x64 / Node 24 / plugins',
     'macOS arm64 / Node 24 / plugins',
     'Windows x64 / Node 24 / plugins 1 of 3',
@@ -197,6 +198,12 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     'inspect', '--product', 'cli', '--tag', candidate.tag,
   ], { ...options, ...overrides });
   assert.equal((await inspect()).reuse_main_ci, 'true');
+  const legacyJobs = jobs.filter((job) => !['Linux x64 / Node 24 / release delivery', 'Linux x64 / Node 24 / release native evidence'].includes(job.name));
+  legacyJobs.push({ name: 'Linux x64 / Node 24 / release verification', status: 'completed', conclusion: 'success' });
+  assert.equal(await canReuseMainCi(candidate, {
+    ...options, githubRequest: async (endpoint) => endpoint.includes('/jobs')
+      ? { json: async () => ({ jobs: legacyJobs }) } : options.githubRequest(endpoint),
+  }), false, 'Legacy main CI evidence must require full release verification.');
   assert.equal(await canReuseMainCi({ ...candidate, channel: 'stable' }, options), false);
   assert.equal(await canReuseMainCi(candidate, {
     ...options, env: { ...options.env, GITHUB_EVENT_NAME: 'workflow_dispatch' },

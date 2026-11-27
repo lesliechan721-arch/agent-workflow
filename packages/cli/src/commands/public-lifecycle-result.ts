@@ -519,9 +519,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       { kind: 'manual', message: `Check the current ${receipt.unconfirmedSavedState === 'intent' ? 'requirements' : 'target policy'} before preparing the original request again.` });
     } else if (isInstallConfigBlocked(receipt)) {
       result.nextActions.push({ kind: 'manual', message: 'Retry the original plugin install request after resolving the configuration diagnostics.' });
-    } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
+    } else if ((receipt.command === 'sync' || receipt.command === 'install' || receipt.rebuildsRequestedRoots)
+      && isRecoveryReviewStaleBeforeExecution(receipt)) {
       result.nextActions.push({ kind: 'manual',
-        message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
+        message: `Review the original plugin ${receipt.command === 'reinstall' ? 'sync --rebuild' : receipt.command} request again with the same plugins, context, scope, targets and options.` });
     } else if (command === 'plugin.remove') {
       result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
       for (const target of receipt.targetResults) {

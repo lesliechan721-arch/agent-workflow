@@ -15,7 +15,7 @@ import { resolveDeployments } from '../platforms/layout.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { projectPlatform, projectSkillDocument } from '../platforms/projection.js';
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
-import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig, type PreparedArtifactRenderResults } from '../utils/artifact-renderer.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
 import { finalizePlatformSkillProducers } from '../utils/component-command-preparation.js';
 import { getAuthoringPlatformCapabilities } from './platform-profile.js';
@@ -106,6 +106,7 @@ export async function materializeProfilePluginComponents(options: {
   portable?: boolean;
   kinds?: readonly ComponentKind[];
   config?: ResolvedArtifactRenderConfig;
+  preparedResults?: PreparedArtifactRenderResults;
   commandRecord?: Parameters<typeof finalizePlatformSkillProducers>[0]['commandRecord'];
   signal?: AbortSignal;
   scriptTimeoutMs?: number;

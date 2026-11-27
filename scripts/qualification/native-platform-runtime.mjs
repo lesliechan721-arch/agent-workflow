@@ -192,10 +192,9 @@ export function getOpenCodeDistribution(parent, host = process) {
   return { packageName, version: clients.opencode.version, entry: `bin/opencode${host.platform === 'win32' ? '.exe' : ''}` };
 }
 
-async function readInstallTiming(root) {
+async function readInstallTiming(directory) {
   const phases = ['npm', 'command:install', 'idealTree', 'reify', 'reify:loadTrees', 'reify:unpack', 'reify:build'];
   try {
-    const directory = path.join(root, 'npm-cache', '_logs');
     const name = (await fs.readdir(directory)).filter(name => name.endsWith('-timing.json')).sort().at(-1);
     if (!name) return { state: 'missing' };
     const file = path.join(directory, name);
@@ -217,6 +216,12 @@ async function readInstallTiming(root) {
 // Download diagnostics use only fixed phase names and numbers, never raw npm logs.
 export async function installClientPackage(client, root, npm, runCommand = promisify(execFile)) {
   const prefix = path.join(root, 'tool');
+  // Only npm content downloads may be shared between acquisitions. Keep npm's
+  // timing logs private so concurrent installs cannot read each other's logs.
+  const env = isolatedEnvironment(root, true);
+  if (process.env.AW_QUALIFICATION_NPM_CACHE) env.npm_config_cache = process.env.AW_QUALIFICATION_NPM_CACHE;
+  const logsDirectory = path.join(root, 'npm-logs');
+  env.npm_config_logs_dir = logsDirectory;
   const timeoutMs = 180_000;
   const startedAt = Date.now();
   const started = performance.now();
@@ -226,7 +231,7 @@ export async function installClientPackage(client, root, npm, runCommand = promi
   try {
     await runCommand(npm.executable, [...npm.prefix, 'install', '--prefix', prefix, '--no-audit', '--no-fund',
     '--ignore-scripts', '--timing', '--package-lock=true', `${client.package}@${client.version}`], {
-      cwd: root, env: isolatedEnvironment(root, true), timeout: timeoutMs,
+      cwd: root, env, timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024, encoding: 'utf8', killSignal: 'SIGKILL', windowsHide: true,
     });
   }
@@ -240,11 +245,11 @@ export async function installClientPackage(client, root, npm, runCommand = promi
     Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(elapsed),
       status: 'failed', deadlineReached: elapsed >= timeoutMs });
     error.evidence = { exitCode: cause.code, signal: cause.signal, killed: cause.killed, stderr,
-      download: { ...download, npmTiming: await readInstallTiming(root) } };
+      download: { ...download, npmTiming: await readInstallTiming(logsDirectory) } };
     throw error;
   }
   Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(performance.now() - started), status: 'completed' });
-  return { ...download, npmTiming: await readInstallTiming(root) };
+  return { ...download, npmTiming: await readInstallTiming(logsDirectory) };
 }
 
 export async function acquireClient(platform, root) {
@@ -333,6 +338,10 @@ export async function writeCandidate(output, sourceSha, root = repoRoot) {
   await fs.writeFile(output, JSON.stringify({ schemaVersion: 1, sourceSha, files }, null, 2) + '\n');
 }
 
+export function candidateArtifactSha256(files) {
+  return sha256(JSON.stringify(Object.entries(files).filter(([name]) => name.startsWith('packages/'))));
+}
+
 export async function verifyCandidate(file, root = repoRoot) {
   const bytes = await fs.readFile(file);
   const manifest = JSON.parse(bytes);
@@ -340,7 +349,7 @@ export async function verifyCandidate(file, root = repoRoot) {
   const files = await candidateFiles(root);
   if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error('candidate-content-mismatch');
   if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== manifest.sourceSha) throw new Error('candidate-source-mismatch');
-  return { sourceSha: manifest.sourceSha, manifestSha256: sha256(bytes), files: Object.keys(files).length };
+  return { sourceSha: manifest.sourceSha, manifestSha256: sha256(bytes), artifactSha256: candidateArtifactSha256(files), files: Object.keys(files).length };
 }
 
 export async function renderPackage(ctx, revision) {

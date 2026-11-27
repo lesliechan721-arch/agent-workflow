@@ -81,6 +81,63 @@ afterEach(async () => {
 });
 
 describe('portable materializer', () => {
+  // Test Value Gate: actual process starts count once per equivalent request even
+  // when independent materializations own their own final Skill trees.
+  it('reuses equal dependency render requests while isolating effective config and sensitive batches', async () => {
+    const root = await tempRoot('aw-portable-render-reuse-');
+    const provider = await pluginFixture(root, {
+      ...baseManifest('provider'), skills: undefined,
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      artifacts: { configKeys: ['mode', 'token'] },
+      config: { schemaVersion: 5, fields: { mode: { type: 'string', default: 'initial' },
+        token: { type: 'string', sensitive: true } } },
+    });
+    const consumer = await pluginFixture(root, { ...baseManifest('consumer'), dependencies: ['provider'] });
+    await writeSkill(consumer.rootDir, 'consumer');
+    const calls = path.join(root, 'calls.jsonl');
+    await fs.outputFile(path.join(provider.rootDir, 'render.mjs'), `import fs from 'node:fs';
+const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+const skill = c.allowedOutputKinds.includes('skill');
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({skill, mode: c.config.values.mode, hasToken: Object.hasOwn(c.config.values, 'token'), tokenRevision: c.config.values.token?.slice(-1) ?? null}) + '\\n');
+console.log(JSON.stringify({version:3,components:skill ? [{id:'owned',kind:'skill',name:'owned',content:{files:{
+  'SKILL.md':{text:'---\\nname: owned\\ndescription: Provider fixture.\\n---\\n'+c.config.values.mode+'\\n'},
+  'README.md':{text:'Provider fixture.\\n'}
+}}}] : [], omitted:[], unmet:[]}));
+`);
+    const env = { ...process.env, AW_HOME: path.join(root, 'home') };
+    const configure = (mode: string, token: string) => writePluginConfigStore({
+      sourceId: provider.sourceId, sourceIdentity: provider.sourceIdentity,
+      pluginName: provider.manifest.name, scope: 'user', cwd: root, env, values: { mode, token },
+    });
+    await configure('first', 'fixture-private-token-a');
+    const options = { platform: 'generic' as const, scope: 'user' as const, cwd: root, env,
+      inputMode: 'bundle' as const, plugins: [provider, consumer], includeComponentGaps: true, preparedResults: new Map() };
+    const callsRead = async () => (await fs.readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const results: Awaited<ReturnType<typeof materializePortableSkills>>[] = [];
+    try {
+      const [first, second] = await Promise.all([provider, consumer].map((plugin) =>
+        materializePortableSkills({ ...options, pluginId: plugin.pluginId! }).then((result) => { results.push(result); return result; })));
+      expect(await callsRead()).toEqual([{ skill: true, mode: 'first', hasToken: false, tokenRevision: null }, { skill: false, mode: 'first', hasToken: true, tokenRevision: 'a' }]);
+      expect(first.candidates.find(({ name }) => name === 'owned')).toMatchObject({ relation: 'requested' });
+      expect(second.candidates.find(({ name }) => name === 'owned')).toMatchObject({ relation: 'direct' });
+      await first.cleanup();
+      await expect(fs.readFile(path.join(second.rootDir, 'skills/owned/SKILL.md'), 'utf8')).resolves.toContain('first');
+      await configure('second', 'fixture-private-token-b');
+      const changed = await materializePortableSkills({ ...options, pluginId: provider.pluginId! });
+      results.push(changed);
+      expect((await callsRead()).slice(2)).toEqual([
+        { skill: true, mode: 'second', hasToken: false, tokenRevision: null }, { skill: false, mode: 'second', hasToken: true, tokenRevision: 'b' },
+      ]);
+      await expect(fs.readFile(path.join(changed.rootDir, 'skills/owned/SKILL.md'), 'utf8')).resolves.toContain('second');
+      await configure('second', 'fixture-private-token-c');
+      const changedSecret = await materializePortableSkills({ ...options, pluginId: provider.pluginId! });
+      results.push(changedSecret);
+      expect((await callsRead()).slice(4)).toEqual([
+        { skill: true, mode: 'second', hasToken: false, tokenRevision: null }, { skill: false, mode: 'second', hasToken: true, tokenRevision: 'c' },
+      ]);
+    } finally { await Promise.all(results.map((result) => result.cleanup())); }
+  });
+
   it.each(['codex', 'opencode', 'claude', 'generic'] as const)('keeps the %s manual policy and ordinary sibling within strict export', async (platform) => {
     const root = await tempRoot('aw-portable-invocation-');
     const plugin = await pluginFixture(root, { ...baseManifest('invocation-policy-regression'), platforms: [platform] });

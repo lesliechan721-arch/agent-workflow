@@ -8,6 +8,7 @@ import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, removeQualificationRoot,
   readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
+import { qualificationGroup, qualificationPool } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
@@ -26,6 +27,35 @@ import './native-platform-public-state.test.mjs';
 import './native-platform-opencode.test.mjs';
 import './native-platform-opencode-public.test.mjs';
 import './native-platform-codex-behavior.test.mjs';
+
+// A failed unit must release its slot, even when a sibling has not finished.
+test('bounds active qualification units and drains independent work after a failure', async () => {
+  for (const limit of [1, 2]) {
+    const runUnit = qualificationPool(limit);
+    const started = [];
+    const cleaned = [];
+    const first = Promise.withResolvers();
+    const full = Promise.withResolvers();
+    let active = 0;
+    const units = [0, 1, 2].map(id => runUnit(async () => {
+      started.push(id);
+      assert(++active <= limit);
+      if (active === limit) full.resolve();
+      try {
+        if (id === 0) await first.promise;
+        if (id === 1) throw new Error('fixture-failure');
+        return id;
+      } finally { active--; cleaned.push(id); }
+    }));
+    const results = Promise.allSettled(units);
+    await full.promise;
+    first.resolve();
+    const outcomes = await results;
+    assert.deepEqual(started, [0, 1, 2]);
+    assert.deepEqual(cleaned.sort(), [0, 1, 2]);
+    assert.deepEqual(outcomes.map(outcome => outcome.value ?? outcome.reason.message), [0, 'fixture-failure', 2]);
+  }
+});
 
 test('retains only fixed shared-provider stages before an interrupted debug record', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-stage-test-'));
@@ -55,7 +85,13 @@ test('binds actual runtime schema bytes to the candidate', async t => {
   await fs.writeFile(schema, '{"type":"object"}\n');
   await writeCandidate(manifest, sourceSha, root);
   assert.equal((await verifyCandidate(manifest, root)).sourceSha, sourceSha);
+  const group = await qualificationGroup({ manifest, candidateRoot: root });
+  const standalone = await qualificationGroup({ candidateRoot: root });
+  await fs.writeFile(path.join(root, 'scripts/qualification/harness.mjs'), 'changed harness');
+  await assert.rejects(standalone.finish(), /candidate-content-mismatch/u);
+  await fs.unlink(path.join(root, 'scripts/qualification/harness.mjs'));
   await fs.writeFile(schema, '{"type":"string"}\n');
+  await assert.rejects(group.finish(), /candidate-content-mismatch/u);
   await assert.rejects(verifyCandidate(manifest, root), /candidate-content-mismatch/u);
 });
 
@@ -226,13 +262,15 @@ test('qualifies the selected group with the same candidate and scope requirement
   const acquire = async (platform, installRoot) => {
     acquired.push({ platform, installRoot });
     if (platform !== 'pi') throw new Error('client-install-failed');
-    return { launcher: { executable: process.execPath, prefix: [client] }, binDirectory: root };
+    const entry = path.join(installRoot, 'client.mjs');
+    await fs.copyFile(client, entry);
+    return { launcher: { executable: process.execPath, prefix: [entry] }, binDirectory: installRoot };
   };
 
   const report = await run(options('codex,pi,claude', '--mixed-native-aw'), acquire);
   assert.equal(report.candidate?.sourceSha, sourceSha);
   assert.deepEqual(report.clients.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
-  assert.deepEqual(acquired.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.deepEqual(acquired.map(({ platform }) => platform).sort(), ['claude', 'codex', 'pi']);
   assert.equal(report.status, 'failed');
   assert.equal(report.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), true);
   assert.equal(report.boundary.modelRequests, 'loopback qualification fixtures only');
@@ -250,7 +288,7 @@ test('qualifies the selected group with the same candidate and scope requirement
   assert.deepEqual(second.clients.map(({ platform, status }) => [platform, status]), [
     ['copilot', 'failed'], ['grok', grokUnavailable ? 'excluded' : 'failed'], ['opencode', 'failed'],
   ]);
-  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
+  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform).sort(), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
   assert.equal(second.status, 'failed');
   assert.equal(second.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), false);
   assert.equal(second.boundary.modelRequests, 'loopback qualification fixtures only');

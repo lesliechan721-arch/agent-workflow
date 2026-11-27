@@ -1,0 +1,65 @@
+name: Qualify native clients on this host
+description: Run the selected real clients and host checks against the restored candidate.
+inputs:
+  runner-label:
+    description: The selected GitHub runner label.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/native-qualification-setup
+      with:
+        clients: ${{ env.QUALIFICATION_CLIENT != 'antigravity-user' && env.QUALIFICATION_CLIENT || '' }}
+        components: ${{ env.AW_QUALIFICATION_PUBLIC_COMPONENTS }}
+    - name: Restore the frozen first-party Catalog for the Pi comparison
+      if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', env.QUALIFICATION_CLIENT), ',pi,')
+      uses: actions/checkout@v6
+      with:
+        ref: 2d866d18bc396dcbc57647b491a9878ef8fc52ee
+        path: .qualification-frozen-revision
+        persist-credentials: false
+    - name: Install the historical AW CLI for the frozen Pi baseline
+      if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', env.QUALIFICATION_CLIENT), ',pi,')
+      shell: bash
+      run: npm install --prefix "$RUNNER_TEMP/frozen-aw" --ignore-scripts --no-audit --no-fund @lesliechan721/aw@0.1.0-beta.85
+    - name: Extract the published Catalog without checkout line-ending conversion
+      if: env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && contains(format(',{0},', env.QUALIFICATION_CLIENT), ',pi,')
+      shell: bash
+      run: |
+        mkdir .qualification-frozen
+        git -C .qualification-frozen-revision -c core.autocrlf=false -c core.eol=lf archive --format=tar HEAD | tar -xf - -C .qualification-frozen
+        node --input-type=module - <<'JS'
+        import assert from 'node:assert/strict';
+        import { createHash } from 'node:crypto';
+        import { readFileSync } from 'node:fs';
+        const manifest = readFileSync('.qualification-frozen/catalog-manifest.json');
+        assert.equal(createHash('sha256').update(manifest).digest('hex'), '95b7be92ed40dc2068227c29459963bcb0170446e10646bc650d08a45c9e6b1f');
+        JS
+    - name: Verify real clients and public AW status in credential-free temporary environments
+      if: env.QUALIFICATION_CLIENT != 'antigravity-user'
+      shell: bash
+      env:
+        AW_QUALIFICATION_FROZEN_CLI_ROOT: ${{ runner.temp }}/frozen-aw/node_modules/@lesliechan721/aw
+      run: |
+        args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json")
+        if [[ "$RUN_HOST_CHECKS" == '1' && ( "$RUNNER_OS" == 'Linux' || "$RUNNER_OS" == 'Windows' ) ]]; then
+          args+=(--mixed-native-aw)
+        fi
+        node scripts/qualification/native-platforms.mjs "${args[@]}"
+    - name: Verify the Antigravity User harness on this host
+      if: env.QUALIFICATION_CLIENT == 'antigravity-user'
+      shell: bash
+      run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-management.test.mjs scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
+    - name: Verify fixed Antigravity User management and explicitly requested public AW status
+      if: env.QUALIFICATION_CLIENT == 'antigravity-user'
+      shell: bash
+      run: |
+        args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-results/report.json")
+        if [[ "$ANTIGRAVITY_PUBLIC_AW" == '1' ]]; then args+=(--public-aw); fi
+        node scripts/qualification/native-platform-antigravity-user.mjs "${args[@]}"
+    - name: Verify generic delivery, empty results and foreign content in both scopes
+      if: ${{ !cancelled() && env.AW_QUALIFICATION_PUBLIC_COMPONENTS == '1' && env.RUN_HOST_CHECKS == '1' && inputs.runner-label != 'ubuntu-24.04' }}
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/native-results"
+        node scripts/qualification/native-platform-public-components.mjs --target generic --report "$RUNNER_TEMP/native-results/generic-components.json"

@@ -27,17 +27,17 @@
 
 CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux Node 22 兼容验证）：
 
-- **Linux Node 22/24 普通测试**：按 Node 版本和 unit/integration 分为四个独立 runner：
-  - **Unit 入口**：运行三个 package 的单元测试、`test:workers`，随后运行 `test:types`。
+- **Linux Node 22/24 普通测试**：按 Node 版本和 unit/integration 分为四个独立 runner，每个默认最多 4 workers：
+  - **Unit 入口**：保留前置 `pnpm build`（部分真实作者验证单测依赖已构建的 Core 导出和 CLI dist 合同），然后运行 package 单元测试、`test:workers`，随后运行 `test:types`。
   - **Integration 入口**：运行普通 integration 与串行 `process-lifecycle`。
 - **macOS arm64 普通测试**：普通 integration 按历史耗时分为两个独立 runner，每片默认最多 2 workers；分片 2 随后串行运行 integration 中的 `process-lifecycle` 测试。
-- **Linux 插件环境**：Linux 插件测试执行独立的构建，并将构建出的 CLI 严格配置到 `PATH` 中。
-- **矩阵复合 Action**：插件测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。
-- **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 1 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release verification 执行；集成测试 job 不再串行等待打包测试。macOS 与 Windows 的 pack job 另行缓存 npm 的 `_cacache` 下载数据，并显式向 smoke 传入该缓存目录；安装 prefix 仍每次新建，不缓存已安装产物。
+- **Linux 插件环境**：Linux 插件测试执行一次正式构建，并将构建出的 CLI 严格配置到 `PATH` 中；随后通过 `pnpm plugin:test:built` 运行已有 runner，不重复编译。
+- **矩阵复合 Action**：普通 CI 和 release candidate 的插件矩阵均调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64（默认 3 workers）、macOS arm64（默认 2 workers）和 Windows x64（显式 1 worker）。普通测试及非 Windows 插件测试的默认并发可由仓库变量 `AW_TEST_WORKERS` 覆盖；显式参数与串行约束优先。
+- **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 1 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release delivery 执行；集成测试 job 不再串行等待打包测试。macOS 与 Windows 的 pack job 另行缓存 npm 的 `_cacache` 下载数据，并显式向 smoke 传入该缓存目录；安装 prefix 仍每次新建，不缓存已安装产物。
 
 ### 2.2 Windows 独立测试分片与长时任务（CI1）
 
-为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套完全独立的 Runner、分片算法与超时配置：
+为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套独立的 Runner、分片算法与超时配置。六个 job 都用固定 Go 工具链独立准备本次源码候选，不等待 `native-windows-job`。原生构建采用隔离临时 Go 缓存，`setup-go` 的 `cache` 保持 `false`，有真实净收益证据时再调整。
 
 #### 2.2.1 Windows 普通集成测试三路分片（Vitest Runner）
 
@@ -63,7 +63,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 
 Windows 三片与 macOS 两片使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
 
-`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。观察到持续失衡或重测试发生变化时，从成功 CI 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。这些值用于相对分配，不是性能门槛或 wall-clock 保证。
+`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。重测试拆分后暂缺新 CI 样本时，可按同一次本机实际文件耗时的相对份额分配原文件的历史权重；`splitEstimates` 明确记录这种估计的来源，下次取得成功托管运行的文件级样本时重新刷新，不将它当作该平台实测耗时。观察到持续失衡或重测试发生变化时，从 3–5 次成功 CI 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。从仓库根目录运行 `node packages/cli/scripts/refresh-integration-durations.mjs --help` 查看参数，可输入多个成功的 `--run` ID 或完整 job 日志目录 `--log-dir`；先查看预计分片分布与未测文件，再加 `--write` 更新表。脚本按实际发现集保留有多次测量的文件，以各 job 相对共同文件中位耗时的比例校正机型速度，再取多次样本的中位数。未测或完全跳过的文件继续使用已有 fallback。表中的值用于相对分配，不是性能门槛或 wall-clock 保证。
 
 macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`，使用上述命令并将分片参数改为 `<index>/2`。Windows 分片 3 和 macOS 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
 
@@ -77,12 +77,12 @@ CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32` 或 `darwin`；本地未设
 - **复合 Action**：调用 `.github/actions/plugin-tests/action.yml`。
 - **执行命令**：
   ```bash
-  pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --test-shard-profile windows-ci --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
+  pnpm plugin:test:built --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --test-shard-profile windows-ci --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
   ```
 - **分片分配算法**：
-  默认 `--test-shard` 由 Node 按测试文件相对路径的字母顺序排序后轮流分配，不拆分单个文件。Windows CI 显式使用 `--test-shard-profile windows-ci`，按历史耗时对少量插件的三个 Node 片做置换；同一插件的所有目标平台与 native/portable backend 使用同一映射。该 profile 只接受 `--all` 和 `<index>/3`，无效组合在准备插件前失败。
-  映射及来源 run 位于 `packages/cli/scripts/test-plugin-scripts.ts` 的 `WINDOWS_CI_NODE_TEST_SHARDS`；未列入的插件保持原片号。新增或重命名文件仍由 Node 自动纳入三片覆盖，不依赖文件 allowlist。`AW_PLUGIN_TEST` 的 `shard` 表示 CI 片号，`nodeShard` 表示 profile 生效后的 Node 片号；默认模式不增加后者。
-  更新映射时按每个插件、每个目标的完整 runner 耗时测算，不能把共享 fixture 中的叶子测试位置当成入口文件。真实 runner 回归检查各片并集、互斥、平台与 backend 完整性和失败传播；所有三个 CI 分片均属于发布前的必要检查项。
+  默认 `--test-shard` 沿用 Node 的文件相对路径排序、轮流分配规则，由测试入口先分片，再划分目标平台无关和平台相关批次，不拆分单个文件。Windows CI 显式使用 `--test-shard-profile windows-ci`，按历史耗时对少量插件的三个 Node 片做置换；同一插件的所有目标平台与 native/portable backend 使用同一映射。该 profile 只接受 `--all` 和 `<index>/3`，无效组合在准备插件前失败。
+  映射及来源 run 位于 `packages/cli/scripts/test-plugin-scripts.ts` 的 `WINDOWS_CI_NODE_TEST_SHARDS`；未列入的插件保持原片号。新增或重命名文件仍由 runner 自动纳入三片覆盖，不依赖文件 allowlist。`AW_PLUGIN_TEST` 的 `shard` 表示 CI 片号，`nodeShard` 表示 profile 生效后的 Node 片号；默认模式不增加后者。
+  更新映射时按完整真实 runner 的每插件、每目标耗时测算，依据入口文件的 dequeue 间隔计算目标平台无关去重的预期收益，并计入分片 1 的 pack smoke 耗时；不能把共享 fixture 中的叶子测试位置当成入口文件。映射注释中的预估不是端到端壁钟。目标平台无关声明、运行时隔离及保留原生后端的规则见[测试指南](testing.md#插件测试与-native-mode)。真实 runner 回归检查各片并集、互斥、平台与 backend 完整性和失败传播；所有三个 CI 分片均属于发布前的必要检查项。
 - **分片 1 附加任务**：分片 1 额外承接真实文件占用与跨卷移动资格测试。
 - **分片 1 打包任务**：插件测试完成后运行 Windows x64 的 `pnpm test:smoke:pack:cli`，保留当前 source-candidate helper 和 native context。
 - **作业超时与诊断**：
@@ -108,16 +108,23 @@ CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32` 或 `darwin`；本地未设
 
 ### 3.2 检查清单同步与 API 容错
 
-- **Job 名称硬性同步**：CI job 名称发生变更时，**必须同步更新 `scripts/release/actions-inspection.mjs` 中的必要检查列表**。两者名称若未同步，系统因无法确认全部检查均已成功而安全回退至完整验证。
+- **Job 名称硬性同步**：CI job 名称发生变更时，**必须同步更新 `scripts/release/actions-inspection.mjs` 中的必要检查列表**和 `scripts/release/source-candidate.test.mjs` 中对应的验证。发布检查要求 `Linux x64 / Node 24 / release delivery` 和 `Linux x64 / Node 24 / release native evidence` 两项成功。缺少任一项（包括只有旧 `release verification` 的 main CI 证据）均安全回退至完整验证。
 - **历史快照 Transport 校验**：自动 Beta 比较 Catalog 时，当前候选执行完整校验；历史基线快照只执行 transport 校验（检查快照布局、摘要与 marketplace 投影），不按当前插件合同重新校验旧插件。历史快照无法读取或完整性校验失败时，按生产内容有变化选择新版本。
 
 ---
 
 ## 4. 发布候选验证与跨平台 Smoke
 
-Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及两架构资格成功，再运行 `release:verify:delivery`、`test:perf:gate`、`test:smoke:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`：
+CI 的 Linux Node 24 发布验证分为两个独立必要检查：
 
-- **单次正式构建**：`delivery` 负责一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。
+- **release delivery**：无需等待 Windows Job，按顺序执行 `release:verify:delivery`、`test:perf:gate`、`test:smoke:cli:after-delivery`、`test:smoke:bootstrap:catalog` 和 `release:verify:publish`。`delivery` 负责一次正式 strict Catalog build、dist contract 和 build smoke，后续步骤复用该构建，保留完整 Git 历史及失败诊断。CLI 的 fetch smoke 已包含 Catalog publish smoke。
+- **release native evidence**：只等待 `native-windows-job` 成功；下载本次的 `windows-job-qualified`，使用 `readCandidate` 与 `assertWindowsJobCandidateEvidence` 校验候选、可复现报告及真实 Windows x64、arm64 资格证据，不重新 build。
+- 自动 Beta 必须等待上述两项、原生候选工作流与其余普通 CI 检查全部成功。
+
+`windows-job.yml` 在 Linux candidate job 中构建固定工具链候选及可复现报告，并另行构建 Eval dist 和 agent-subagent 的命令运行时。后者通过独立 `windows-job-qualification-runtime` 制品交给两架构资格 runner；它们检出候选的精确源码 SHA、保留 `pnpm install --frozen-lockfile`、固定 Go 版本校验和 `go test ./...`，无需再执行全量 `pnpm build`。`windows-job-qualified` 只合并原 `windows-job-candidate` 和两架构资格报告，辅助运行时绝不进入正式发布制品。
+
+正式发布候选的验证仍保留以下门禁：
+
 - **跨平台 Smoke 消费同一候选**：六种 OS/CPU（Linux x64、Linux arm64、macOS x64、macOS arm64、Windows x64、Windows arm64）的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一恢复包，绝不重新编译源码。
 - **安装入口版本校验**：通过已安装的 `aw` shim 执行 `--version --json`，核验输出协议版本、`command: version`、`status: success` 和 `data.version` 与候选包版本一致；不解析默认英文文本。
 - **Fake 边界**：fake native runner 的 Catalog smoke 仅用于确定性参数接线测试，**绝不能冒充真实 Codex/Claude 已通过 qualification**。任一门禁未通过就不准许发布。
@@ -137,7 +144,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 - **构建生成物（`dist/` 与 `packages/cli/plugins-dist/`）**：
   - 这两个目录是工程构建产物，已在 `.gitignore` 中明确忽略，**绝对禁止手工修改，也绝对禁止提交到 Git 源码中**。
-  - CI 在运行测试与验证前，通过 `pnpm build` 命令清理并重新生成这些目录。
+  - 普通 CI 在运行测试与验证前，通过 `pnpm build` 命令清理并重新生成这些目录。只消费原生证据的 `release native evidence` 不需要 build；Windows Job 资格恢复上文规定的专用运行时制品。
 - **Check-Only 纳管源码合同测试与准确命令**：
   - 项目中由脚本生成的 TypeScript 类型定义、JSON Schema 与交付规范属于纳管源码（如 `packages/plugin-core/scripts/generate-manifest-types.mjs` 生成的 manifest 类型）。
   - 这些文件必须通过 Check-Only 模式验证，确保提交的源码类型与生成器定义严格一致。
@@ -160,7 +167,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 ### 5.3 CI 诊断目录与脱敏收集
 
-- Windows Job 的 x64/arm64 资格报告在资格步骤成功或失败后均上传，且上传先于 arm64 临时卷卸载。跨卷结果读取与导出使用独立错误码，日志只记录退出码、受限状态与错误码、正文匹配和消费结果，不保存原始 stdout/stderr、正文或路径。
+- Windows Job 的 x64/arm64 资格报告在资格步骤成功或失败后均上传，且上传先于 arm64 临时卷卸载。arm64 准备临时固定卷时复制工作树而不复制 `.git`；卸载与删除 VHDX 使用有界退避重试，最终未成功仍使资格作业失败。跨卷结果读取与导出使用独立错误码，日志只记录退出码、受限状态与错误码、正文匹配和消费结果，不保存原始 stdout/stderr、正文或路径。
 
 - CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。
 - 测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
@@ -179,20 +186,21 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 [`native-platform-qualification.yml`](../../.github/workflows/native-platform-qualification.yml) 是独立手动工作流，不属于普通 PR 更新、自动 Beta 或发布通过门禁。可在 Actions 选择一个固定客户端或 `all`；首次工作流尚未进入默认分支时，也可手动给 PR 添加 `native-qualification` 标签运行全部客户端。只有本次添加该标签才触发，普通 PR 更新不触发；`native-qualification-copilot` 标签在相同六环境中只验证 Copilot，用于定向修复验证，不代表其他客户端重验。重跑使用 Actions 的 rerun 或重新添加对应标签。
 
-运行客户端资格矩阵时，每次都在自己的 runner 上构建 Windows helper，验证 x64 和 arm64，再上传供本次运行使用的制品。同一分支的全客户端验证和 Antigravity 专项可以同时执行这些步骤。候选制品和 Windows helper 的前置作业结束后，Linux、macOS、Windows 的 x64/arm64 在各自的托管 runner 上独立验证同一候选。所有选中的宿主均可并行，实际启动时间取决于 GitHub runner 可用量。各宿主的失败互不取消。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。手动运行可用 `hosts=windows-x64-and-macos-x64` 选择 Windows x64 和 macOS x64，或用 `hosts=windows-x64-and-arm64` 复测两种 Windows 架构。默认 `all` 与原有 PR 标签按各自原矩阵执行。
+运行客户端资格矩阵时，每次都在自己的 runner 上构建 Windows helper，验证 x64 和 arm64，再上传供本次运行使用的制品。同一分支的全客户端验证和 Antigravity 专项可以同时执行这些步骤。候选制品就绪后，`qualify-posix` 中选中的 Linux、macOS 宿主立即具备启动条件，不等待 Windows helper；`qualify-windows` 还必须等待本次 Windows helper 资格作业结束并校验其制品。两组恢复同一候选，使用共享 composite action 执行宿主检查。实际启动时间取决于 GitHub runner 可用量；各宿主的失败互不取消，不取消同一分支的其他运行。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。手动运行可用 `hosts=windows-x64-and-macos-x64` 选择 Windows x64 和 macOS x64，或用 `hosts=windows-x64-and-arm64` 复测两种 Windows 架构。默认 `all` 与原有 PR 标签按各自原矩阵执行。
 
 常规 CI 和资格候选都检查本次构建的完整官方 Catalog，覆盖九个目标的 User、Project 范围，分别核对静态 Skill 以及 `agent-subagent`、`agent-explore`、`agent-advisor` 三个动态插件的 Skill 与主会话 Instruction（均无原生角色；Codex Project 仍验证其作用域下无 `agent` 补足产物）。该检查以固定的 CLI 发现数据驱动生产 renderer 和组件准备；git-toolkit 的额外投影和 generic 公开安装读取正文与调用字段。Claude、Pi、OpenCode 的已安装 Skill 调用行为由各自的真实探针验证。[Catalog 检查](../../scripts/qualification/shipped-catalog-user.mjs) · [调用实测](../../scripts/qualification/evidence/native-manual-skill-invocation-2026-11-20.json)
 
 手动运行选中 `component_matrix=true`，或给 PR 添加 `native-qualification-components` 标签，可在 `all` 的真实客户端资格中追加单组件、混合包和第一方安装检查。各检查使用独立临时 HOME 与本地 Catalog，断言安装回执、作用域、实际文件、无变化同步、更新、移除和重装。generic 还核对外来文件冲突及零产物，并在 Ubuntu x64 通过公开入口安装全部官方插件。全官方目录资格先取得固定版本的真实 `agent-browser` 原生程序，供 browser-use 的安装前检查在隔离 PATH 调用。Cursor 的固定发行包仅在 Ubuntu x64 运行。Pi 从 Git 原始字节提取冻结快照，先核对已发布清单的 SHA-256，确认候选 CLI 拒绝冻结的 beta.76 旧命令声明且未写入需求。已发布的 AW CLI beta.85 在隔离环境中建立旧安装，核对旧角色缺口与调度 Skill 依赖错误。随后在旧快照仍可用时撤销退役根插件的需求，切换到候选 Catalog 和 CLI，设置 Guide 的平台基线、同步 Guide 并安装两个新消费者；核对三个 Skill 的实际文件（候选不再交付原生 `subagent` 角色）。候选目录资格同时检查两套消费者的主会话 Instruction（generic 省略）及无专用原生角色。单独运行 frozen 套件时，`AW_QUALIFICATION_FROZEN_CLI_ROOT` 指向已安装的 beta.85 包目录。Antigravity 通过 `client=antigravity-user-public` 加同一开关，在专用的六宿主资格中检查两个作用域。也可选择单一客户端以单独复验。[公共组件资格](../../scripts/qualification/native-platform-public-components.mjs) · [工作流](../../.github/workflows/native-platform-qualification.yml)
 
-完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。核对一台宿主时，从同一次 Actions 运行下载两份制品，分别查看各自的 `report.json` 和对应作业结果。
+完整组件资格（`all` 加 `component_matrix=true`，或标签 `native-qualification-components`）在每台选中宿主上并行运行两组。每组使用同一次构建的候选，独立完成所选客户端的安装、验证和清理。两台 macOS 宿主合计四组作业。选择全部宿主时，另外的 `qualify-ubuntu-extras` 在 Ubuntu x64 独立承担 Cursor 和 generic 附加组件资格，同样只等待候选，不增加 macOS 作业。每组内部独立的资格操作共用并发池，macOS 默认 2 路、Linux 和 Windows 默认 3 路；通过环境变量 `AW_QUALIFICATION_CONCURRENCY` 指定 1–3，设为 1 可串行调试。合成矩阵按完整输入变体共用组级临时作者环境和真实构建的模板；每套件复制自己的快照。模板环境不依赖单个套件的临时 PATH 或报告，首个套件退出后更新构建仍可运行；模板命令失败的受控证据归入每个受影响的套件，独立变体仍继续。
 
 | 客户端 | 每台宿主的制品 | 宿主相关检查 |
 | --- | --- | --- |
-| Codex、Pi、Claude | `native-qualification-<runner>` | 每台都跑 generic。Linux 和 Windows 另验 Claude + Pi 混合安装。Ubuntu x64 另验 generic 官方插件、项目继承和 Cursor 组件，并单独上传接口观察。 |
+| Codex、Pi、Claude | `native-qualification-<runner>` | 除 Ubuntu x64 外，其他宿主保留本机 generic 组件矩阵。Linux 和 Windows 另验 Claude + Pi 混合安装。Ubuntu x64 单独上传接口观察。 |
 | Copilot、Grok、OpenCode | `native-qualification-<runner>-copilot-grok-opencode` | Grok 在缺少固定发行包的 macOS x64、Windows arm64 记录为 `excluded` |
+| Ubuntu x64 Cursor、generic 附加检查 | `native-qualification-ubuntu-24.04-cursor-generic` | 独立作业输出 `generic-components.json`、`generic-shipped.json`、`generic-project-inheritance.json`、`cursor-components.json`。仅完整组件资格且包含 Ubuntu x64 时运行。 |
 
-每台宿主的两组作业都通过，才完成该宿主的完整组件资格。只选一个客户端或关闭组件矩阵时，每台宿主仍使用一个 `native-qualification-<runner>` 制品。接口专项保留自己的报告。
+从同一次 Actions 运行读取每台宿主两组的 `report.json`、对应作业结果。Ubuntu x64 的完整组件资格还要求独立附加作业通过、四份组件报告齐全；该作业不生成主客户端 `report.json`，直接查看组件报告与步骤结果。各组报告在成功或失败后均上传，失败不取消其他组；只有实际成功的必需单元才构成通过。只选一个客户端或关闭组件矩阵时，每台宿主仍使用一个 `native-qualification-<runner>` 制品。接口观察仍由原 Ubuntu x64 客户端组单独上传，接口专项保留自己的报告。
 
 Linux 的公开 CLI 生命周期和组件资格在启动受管插件脚本时，把本次外层 AW 的标记传给脚本的隔离环境。脚本 runner 同时生成自己的标记并管理自己的进程组。若调用已经带有另一份外层标记，资格工具会在启动前报错。组件报告用 `pluginScriptSupervision` 记录这项测试条件。观察器逐次检查标记和退出情况，当前归属无法确认时保留失败。[资格预加载器](../../scripts/qualification/native-platform-public-plugin-marker.mjs)
 
@@ -233,7 +241,7 @@ gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=antigra
 
 资格报告格式保持 schema 2。直接 Native 报告使用 `management-content-scope-v1`。启用公开 AW 场景后，`public-status-and-native-scope-v2` 要求 v2 公开状态在适用场景中与原生登记、有效启用、实际消费字节和作用域一致。Project 在外部目录禁用或不可见，User 在两处全局可见。普通 Skill 发现和加载单列 `observations`。必测场景的证据缺失、命令失败、进程审计失败或清理失败会使对应单元无法通过。报告标明候选源码、宿主、真实客户端版本、产品面、scope 和未覆盖场景。旧报告保留原判据与来源。
 
-候选 job 正式构建一次，运行资格执行器测试，记录源 SHA、全部 dist、Core 运行时 schema 和资格脚本文件摘要。各系统恢复同一候选的 JavaScript 和 Core schema 并校验字节，不重新编译。Windows Job helper 由同一源 SHA 的既有 `windows-job.yml` 独立构建，完成固定工具链重建和两架构真实资格后，再从 `windows-job-qualified` 恢复。Windows runner 校验该候选及资格证据，使用现有 source test preparation 将适用 EXE 放入正常 optional 平台包，并先运行资格 harness；客户端报告记录实际 helper 字节摘要。客户端包名、精确版本和官方来源集中在 [`native-platform-runtime.mjs`](../../scripts/qualification/native-platform-runtime.mjs)；通过公共 npm 在临时前缀安装，禁用安装脚本，记录 lock 摘要和 package integrity，不使用浮动 latest。Codex、Claude 和 OpenCode 直接选择固定官方 optional 平台包的原生入口，校验包身份、精确版本并记录实际 binary 摘要；不运行复制 binary 的 postinstall，也不通过替换进程的 Node wrapper。Grok 在 macOS x64、Windows arm64 没有官方分发，明确标为 `excluded`、不计应验单元；不能称该平台通过。其他获取失败或依赖安装脚本的入口仍报告未验证/失败，不静默改用其他版本。 Copilot 固定版的本地插件与 Skill 命令显式使用 `COPILOT_OFFLINE=true`、`COPILOT_AUTO_UPDATE=false`，禁用网络和自动更新入口；该路径仍会查询客户端认证存储，不能将离线配置视为跳过认证读取。真实 Copilot 资格与追加取证使用全新无凭据 Hosted 环境。仅 Copilot Darwin 管理命令复用普通 CLI 的 observed marker/identity 观察：允许独立进程组，仍要求标记、PID/启动身份、原截止、确认清理及正常完成前已归属后代退出；该模式不是 Provider 评级或 OS 隔离证明。OpenCode 2.0.0 的隔离本地插件与 scope 查询在 POSIX 复用同一限定 observed 合同；Windows 保留实际 Job 合同，不照搬 POSIX 的模式声明。Antigravity 1.3.4 的 Linux x64 Hosted `agents` 清单查询按显式批准采用同一普通 observed 观察，保留原30秒截止、随机标记与PID/启动身份、正常完成前后代退出和确认清理；仅用于无凭据临时环境的清单观察，不认证、不发 prompt、不调用模型，不作为 Provider 或 OS 隔离评级。其余 Antigravity 管理命令及其他 Native 客户端与真正 Provider 的原合同保持。命令回执保存实际 containment、grading 与后代清理声明，旧严格合同下的离组失败保留原来源。
+候选 job 正式构建一次，运行资格执行器测试，记录源 SHA、全部 dist、Core 运行时 schema 和资格脚本文件摘要。各系统恢复同一候选的 JavaScript 和 Core schema 并校验字节，不重新编译。Windows Job helper 由同一源 SHA 的既有 `windows-job.yml` 独立构建，完成固定工具链重建和两架构真实资格后，再从 `windows-job-qualified` 恢复。Windows runner 校验该候选及资格证据，使用现有 source test preparation 将适用 EXE 放入正常 optional 平台包，并先运行资格 harness；客户端报告记录实际 helper 字节摘要。客户端包名、精确版本和官方来源集中在 [`native-platform-runtime.mjs`](../../scripts/qualification/native-platform-runtime.mjs)；通过公共 npm 在临时前缀安装，禁用安装脚本，记录 lock 摘要和 package integrity，不使用浮动 latest。Hosted npm 客户端下载通过 `AW_QUALIFICATION_NPM_CACHE` 复用缓存根：只保存和恢复 npm 的 `_cacache` 下载内容，key 包含 runner OS、CPU 和固定客户端包名/版本清单摘要；不同客户端组分别保存，允许恢复同一清单的兼容下载内容。每次仍在新的临时前缀安装并记录实际入口摘要，不缓存已安装包、binary 或日志。每次下载使用独立的 `npm_config_logs_dir`，timing 只读本次日志；该缓存不传入客户端运行环境，也不改变 Antigravity、Cursor 等归档下载路径。Codex、Claude 和 OpenCode 直接选择固定官方 optional 平台包的原生入口，校验包身份、精确版本并记录实际 binary 摘要；不运行复制 binary 的 postinstall，也不通过替换进程的 Node wrapper。Grok 在 macOS x64、Windows arm64 没有官方分发，明确标为 `excluded`、不计应验单元；不能称该平台通过。其他获取失败或依赖安装脚本的入口仍报告未验证/失败，不静默改用其他版本。 Copilot 固定版的本地插件与 Skill 命令显式使用 `COPILOT_OFFLINE=true`、`COPILOT_AUTO_UPDATE=false`，禁用网络和自动更新入口；该路径仍会查询客户端认证存储，不能将离线配置视为跳过认证读取。真实 Copilot 资格与追加取证使用全新无凭据 Hosted 环境。仅 Copilot Darwin 管理命令复用普通 CLI 的 observed marker/identity 观察：允许独立进程组，仍要求标记、PID/启动身份、原截止、确认清理及正常完成前已归属后代退出；该模式不是 Provider 评级或 OS 隔离证明。OpenCode 2.0.0 的隔离本地插件与 scope 查询在 POSIX 复用同一限定 observed 合同；Windows 保留实际 Job 合同，不照搬 POSIX 的模式声明。Antigravity 1.3.4 的 Linux x64 Hosted `agents` 清单查询按显式批准采用同一普通 observed 观察，保留原30秒截止、随机标记与PID/启动身份、正常完成前后代退出和确认清理；仅用于无凭据临时环境的清单观察，不认证、不发 prompt、不调用模型，不作为 Provider 或 OS 隔离评级。其余 Antigravity 管理命令及其他 Native 客户端与真正 Provider 的原合同保持。命令回执保存实际 containment、grading 与后代清理声明，旧严格合同下的离组失败保留原来源。
 
 Linux 上，资格工具启动候选 AW CLI 时，从哨兵预检、运行期轮询到各阶段清理均使用独立的 `/proc` 观察，核对 PID、启动身份和标记。直接启动第三方客户端时使用对应客户端的观察路径。
 

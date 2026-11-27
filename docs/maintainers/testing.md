@@ -2,13 +2,13 @@
 
 本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为与架构边界见[维护者指南](README.md)与相关架构说明；单插件作者合同见[Plugin Manifest 与配置声明合同](../reference/manifest-and-config.md)，Catalog 聚合与发布合同见[外部 Catalog 参考合同](../reference/catalog.md)。CI 矩阵与发布验证见 [CI 说明](ci.md) 与 [发布流程](release.md)。具体插件专属测试与平台运行边界（如 Agent Subagent 的 Windows 分片与超时细节）参见各插件维护文档（如 [Agent Subagent 运行时验证](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md#插件专属测试与-windows-原生验证边界)）。
 
-`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试。CLI 作者与发布集成测试还会调用已构建的作者工具，全新 checkout 先运行 `pnpm build`；`pnpm test:unit` 不要求预先生成 `dist/`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试。CLI 作者验证的部分 unit 测试会通过真实 Node 子进程调用作者脚本，读取已构建的 Core 导出以及 CLI 的 manifest、能力和物化等 dist 模块；仅构建 Core 不足。发布集成测试也调用已构建工具。因此全新 checkout 运行完整 `pnpm test:unit` 或 `pnpm test:integration` 前先运行 `pnpm build`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
 默认多项目按资源顺序运行：pure、filesystem-isolated 和 integration 默认使用最多 2 workers，process-lifecycle 使用 `forks`、1 worker 且关闭 file parallelism。Performance 和 smoke 各使用 1 worker；performance gate 先完成 process-lifecycle 自测，再运行业务性能预算。
 
-本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界，并验证 [CI 集成测试分片](ci.md#普通集成测试的耗时分配)的完整性与互斥性。
+本地和 CI 可以设置 `AW_TEST_WORKERS` 调整普通 Vitest 与插件 Node test 的文件并发。未设置或空值保留入口默认值；合法值是十进制正安全整数，例如 `1`、`2`、`4`。`0`、负数、小数、百分比、空白和非数字会在准备或启动测试前失败。普通 Vitest 的默认上限为 2，最小 worker 为 1；插件 Node test 未设置时保留 Node runner 的默认并发。`pnpm test:workers` 使用真实 Vitest 子进程验证这些边界，并验证 [CI 集成测试分片](ci.md#普通集成测试的耗时分配)的完整性与互斥性；耗时表刷新测试同时覆盖多轮速度归一、缺失测量、不完整或重复分片日志的拒绝。
 
-定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。
+定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。 CLI authoring 的 dist contract 仍由固定串行 runner 在交付验证中执行；单个用例内部仅对具备独立 fixture 路径的子进程组使用最多 4 个并发任务，并在清理 fixture 前等待全部任务结束。
 
 `pnpm test:perf:gate` 隔离通用 worker 环境值；性能测量固定 1 worker，被测 fast lane 固定 2 workers。普通 `pnpm test:unit:fast` 使用 `AW_TEST_WORKERS`，性能门禁中的同一 fast lane 使用固定基线。
 
@@ -88,13 +88,16 @@ Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当
 
 ## 插件测试与 Native Mode
 
-通用插件测试入口为 `pnpm plugin:test <plugin>`（单插件）或 `pnpm plugin:test --all`（全部插件）。
+通用插件测试入口为 `pnpm plugin:test <plugin>`（单插件）或 `pnpm plugin:test --all`（全部插件）。 已完成正式 build 后可使用 `pnpm plugin:test:built` 及相同参数直接运行已有产物，不重复编译；日常入口仍先编译。
+
+- **目标平台与原生后端是两条独立轴**：未声明的文件按所选目标平台全部执行（默认 `codex`、`claude`，受 staging manifest 支持平台约束）。只有确认不消费目标平台上下文或投影差异的文件，才能在源码插件的 `.agents-plugin/test-platform-agnostic.json` 中列出，例如 `["scripts/runtime.test.mjs"]`。清单为已声明 Node 测试入口的精确插件相对路径数组（使用正斜杠、不带 `./`），不允许 glob；无清单或未列出的新文件仍全平台执行。错列或已删除的路径失败。独立批次只执行一次，不生成或注入目标平台上下文；实际读取 `process.env.AW_PLUGIN_CONTEXT` 或 `process.env.AW_PLUGIN_PLATFORM` 会使对应文件失败，即使捕获错误或试图使用默认值。独立子进程自己提供的测试环境不受此读取限制。日志使用 `platform: "target-platform-agnostic"`。
+- **原生后端不得随目标平台去重**：对 Windows `preferred` 且就绪的原生工具，适用的 native 与 portable 两组都必须运行，目标平台无关批次仍执行两组；`required` 继续要求本次真实 native 工具。此声明只供源端测试 runner 使用，不改变发布 manifest 或运行时合同。
 
 - **进度与心跳**：插件入口实时输出 `AW_PLUGIN_TEST` 进度，包含插件、目标平台、文件、用例开始/结果、耗时及诊断；运行中每 30 秒输出心跳。进度事件在输出前脱敏。
 - **环境透传限制**：测试入口只将明确为 `1` 的 `AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS` 传给子测试；该例外不开放其它宿主变量或长时资格开关。
 - **脱敏格式与完整保护**：敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。
 - **单文件与排除参数互斥**：`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
-- **分片覆盖要求**：非法分片参数在准备插件前拒绝。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。CI 专用 `--test-shard-profile windows-ci` 的适用范围、映射和更新规则见 [CI 插件分片](ci.md#222-windows-插件测试三路分片node-file-shard)。
+- **分片覆盖要求**：非法分片参数在准备插件前拒绝。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。先以完整入口集合排序分片，再按目标平台无关声明划分批次；同一文件的各目标平台和后端永远在同一片。 各批次保留分片与分类前的测试入口依赖闭包（单文件/排除参数仍在其前筛选），只执行当批文件，以免丢失其他入口引入的动态复用测试资源。CI 专用 `--test-shard-profile windows-ci` 的适用范围、映射和更新规则见 [CI 插件分片](ci.md#222-windows-插件测试三路分片node-file-shard)。
 - **命令包测试**：Node 测试可经 `command.sourceDir` 中的模块使用声明所需的 AW reader，测试 runner 在隔离 bundle 中注入这些模块。测试已安装的运行配置时，用独立的命令包 revision fixture 提供快照与归属记录。
 - **Native Mode 与 Context 准备**：
   `plugin:test` 的 `--native-mode` 为 `fixture|installed|source-candidate`，默认 `fixture`。Windows fixture 和 source-candidate 必须显式传 `--native-context <JSON>`；`installed` 使用 Eval 的正常已安装依赖解析。测试入口不从 PATH、旧 AW cache 或仓库 EXE 自动发现工具，也不构建或下载。维护者使用 `node native-tools/windows-job/test-environment.mjs --candidate <directory> --context-file <file>` 从本次候选生成 context；此输入只服务测试，不构成生产路径覆盖能力。普通 build/test 不要求 Go 或真实 EXE。

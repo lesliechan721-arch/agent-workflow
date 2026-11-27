@@ -8,7 +8,7 @@ import { createCommandExecutionContext, type CommandExecutionContextInput } from
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
 import { resolveWorkContext } from '../intent/work-context.js';
-import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
@@ -104,7 +104,8 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const location = { cwd: work.projectRoot ?? options.cwd, env: context.env };
     const [status, preferences, declarations] = await Promise.all([
       readRecoveryStatus({ ...location, context: work.context, cliVersion: options.cliVersion, nativeCliRunner: context.nativeCliRunner,
-        observeNative: options.observeNative, plugins, targets: filters, debugLogger: context.debugLogger }),
+        observeNative: options.observeNative, plugins, targets: filters, debugLogger: context.debugLogger, signal: context.signal,
+        catalogReadScope: new CatalogPreparationReadScope({ env: context.env, signal: context.signal }) }),
       observePreferences({ ...location, scope: 'user' }),
       Promise.all(work.scopes.map(async (scope) => { const observation = await observeIntent({ ...location, scope }); return { scope, state: observation.state,
         roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId) : observation.state === 'absent' ? [] : null }; })),

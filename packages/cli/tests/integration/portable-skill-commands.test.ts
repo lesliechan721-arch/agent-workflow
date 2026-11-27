@@ -3,12 +3,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '../../src/index.js';
-import { setPortableCommandTestHooksForTests } from '../../src/portable/commands.js';
+import { materializePortableSkillsToDirectory, setPortableCommandTestHooksForTests } from '../../src/portable/commands.js';
 import { createCatalogManifestV7, createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { readCatalogGenerationState, resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
 import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -18,6 +20,8 @@ async function configurePortableCatalog(options: {
   targetCapabilities?: string[];
   dependencyCapability?: string;
   dependencySkill?: boolean;
+  unrelatedPlugin?: boolean;
+  configurable?: boolean;
 } = {}): Promise<{
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -30,20 +34,23 @@ async function configurePortableCatalog(options: {
     manifest.platforms = ['generic'];
     manifest.skills = './skills';
     manifest.extensions = undefined;
+    if (options.configurable) manifest.config = { fields: { tone: { type: 'string', default: 'first' } } };
   };
-  if (options.dependencyCapability || options.dependencySkill) {
+  const hasDependency = Boolean(options.dependencyCapability || options.dependencySkill);
+  if (hasDependency || options.unrelatedPlugin) {
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       {
         name: 'portable',
-        dependencies: ['future'],
+        ...(hasDependency ? { dependencies: ['future'] } : {}),
         requiredCapabilities: options.targetCapabilities,
         configureManifest,
       },
-      {
+      ...(hasDependency ? [{
         name: 'future',
         requiredCapabilities: options.dependencyCapability ? [options.dependencyCapability] : [],
         configureManifest,
-      },
+      }] : []),
+      ...(options.unrelatedPlugin ? [{ name: 'unrelated', configureManifest }] : []),
     ]);
   } else {
     await createCatalogSnapshotFixture(
@@ -74,9 +81,11 @@ async function configurePortableCatalog(options: {
   };
   await writeSkills('portable', ['alpha', 'beta']);
   if (options.dependencySkill) await writeSkills('future', ['dependency-skill']);
-  const pluginNames = options.dependencyCapability || options.dependencySkill
-    ? ['future', 'portable']
-    : ['portable'];
+  const pluginNames = [
+    ...(hasDependency ? ['future'] : []),
+    'portable',
+    ...(options.unrelatedPlugin ? ['unrelated'] : []),
+  ];
   const entries = await Promise.all(pluginNames.map(async (name) => {
     const root = path.join(sourceRoot, 'plugins', name);
     return createCatalogManifestV7Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
@@ -385,5 +394,179 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(1);
     await expect(fs.pathExists(target)).resolves.toBe(false);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.changed-source-output.aw-stage-'));
+  });
+
+  it('reports stale review and preserves old output when the healthy Active no longer contains the selected plugin', async () => {
+    const fixture = await configurePortableCatalog({ unrelatedPlugin: true });
+    const target = path.join(fixture.cwd, 'removed-plugin-output');
+    const exportArgs = ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'];
+    const firstIo = createCapturedCliIo();
+    expect(await runCli(exportArgs, { cwd: fixture.cwd, env: fixture.env, io: firstIo.io })).toBe(0);
+    const oldMarker = await fs.readFile(path.join(target, '.aw-materialization.json'), 'utf8');
+    const oldBinding = await fs.readFile(path.join(target, 'aw-source-binding.json'), 'utf8');
+    const oldSkill = await fs.readFile(path.join(target, 'skills', 'beta', 'SKILL.md'), 'utf8');
+    const originalActive = (await readCatalogGenerationState(fixture.env)).sources.local!.active!;
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        await fs.remove(fixture.pluginRoot);
+        const manifestPath = path.join(fixture.sourceRoot, 'catalog-manifest.json');
+        const manifest = await fs.readJson(manifestPath);
+        manifest.catalogVersion = '1.0.1';
+        manifest.entries = manifest.entries.filter((entry: { name: string }) => entry.name !== 'portable');
+        await fs.writeJson(manifestPath, manifest);
+        await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env: fixture.env, impactConfirmed: true });
+      },
+    });
+    const secondIo = createCapturedCliIo();
+    expect(await runCli([...exportArgs, '--skill', 'alpha'], {
+      cwd: fixture.cwd, env: fixture.env, io: secondIo.io,
+    }), secondIo.readStdout()).toBe(3);
+    expect(JSON.parse(secondIo.readStdout())).toMatchObject({ diagnostics: [{ code: 'reviewStale' }] });
+    const active = (await readCatalogGenerationState(fixture.env)).sources.local!.active!;
+    expect(active.snapshotDigest).not.toBe(originalActive.snapshotDigest);
+    expect(await fs.readFile(path.join(target, '.aw-materialization.json'), 'utf8')).toBe(oldMarker);
+    expect(await fs.readFile(path.join(target, 'aw-source-binding.json'), 'utf8')).toBe(oldBinding);
+    expect(await fs.readFile(path.join(target, 'skills', 'beta', 'SKILL.md'), 'utf8')).toBe(oldSkill);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.removed-plugin-output.aw-stage-'));
+  });
+
+  it.each(['remove', 'remove-readd', 'rebind'])('reports stale review when a prepared qualified source is legally changed (%s)', async (change) => {
+    const fixture = await configurePortableCatalog();
+    const teamRoot = path.join(fixture.cwd, 'team-source');
+    await fs.copy(fixture.sourceRoot, teamRoot);
+    const runJson = async (args: string[], expectedCode: number) => {
+      const io = createCapturedCliIo();
+      expect(await runCli([...args, '--json'], { cwd: fixture.cwd, env: fixture.env, io: io.io }), io.readStdout()).toBe(expectedCode);
+      return JSON.parse(io.readStdout());
+    };
+    await runJson(['source', 'add', 'team', '--path', teamRoot], 0);
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: fixture.env });
+    const target = path.join(fixture.cwd, 'changed-qualified-source-output');
+    const exportArgs = ['dev', 'skill', 'export', '--platform', 'generic', 'team/portable', '--scope', 'project', '--out', target];
+    await runJson(exportArgs, 0);
+    const outputFiles = ['.aw-materialization.json', 'aw-source-binding.json', 'skills/beta/SKILL.md'];
+    const previous = await Promise.all(outputFiles.map((file) => fs.readFile(path.join(target, file), 'utf8')));
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        if (change !== 'rebind') {
+          await runJson(['source', 'remove', 'team', '--yes'], 0);
+          if (change === 'remove-readd') await runJson(['source', 'add', 'team', '--path', teamRoot], 0);
+        } else {
+          const reboundRoot = path.join(fixture.cwd, 'rebound-team-source');
+          await fs.copy(teamRoot, reboundRoot);
+          await runJson(['source', 'update', 'team', '--path', reboundRoot, '--yes'], 0);
+        }
+      },
+    });
+    expect(await runJson([...exportArgs, '--skill', 'alpha'], 3)).toMatchObject({ diagnostics: [{ code: 'reviewStale' }] });
+    expect(await Promise.all(outputFiles.map((file) => fs.readFile(path.join(target, file), 'utf8')))).toEqual(previous);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.changed-qualified-source-output.aw-stage-'));
+    setPortableCommandTestHooksForTests(undefined);
+    // Starting from the changed source is still a preparation failure, not a stale review.
+    expect(await runJson([...exportArgs, '--skill', 'alpha'], 1)).toMatchObject({ diagnostics: [{ code: 'portableMaterializeFailed' }] });
+  });
+
+  it.each([
+    { damage: 'invalid control', code: 'catalogGenerationStateInvalid' },
+    { damage: 'inconsistent Active digest', code: 'catalogGenerationIdentityMismatch' },
+  ])('preserves the original generation diagnosis for $damage at commit', async ({ damage, code }) => {
+    const fixture = await configurePortableCatalog();
+    const target = path.join(fixture.cwd, 'damaged-control-output');
+    const statePath = resolveCatalogGenerationStatePath(fixture.env);
+    const state = await readCatalogGenerationState(fixture.env);
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        if (damage === 'invalid control') {
+          await fs.writeFile(statePath, 'invalid JSON');
+        } else {
+          state.sources.local!.active!.manifestDigest = `sha256:${'0'.repeat(64)}`;
+          await fs.writeJson(statePath, state);
+        }
+      },
+    });
+    await expect(materializePortableSkillsToDirectory({
+      selector: 'local/portable', platform: 'generic', scope: 'project', out: target,
+      cwd: fixture.cwd, env: fixture.env, cliVersion: '1.0.0',
+    })).rejects.toMatchObject({ code });
+    await expect(fs.pathExists(target)).resolves.toBe(false);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.damaged-control-output.aw-stage-'));
+  });
+
+  it.each([false, true])('does not publish a staged output after a dependency changes (read scope: %s)', async (scoped) => {
+    const fixture = await configurePortableCatalog({ dependencySkill: true });
+    const target = path.join(fixture.cwd, 'changed-dependency-output');
+    const active = (await readCatalogGenerationState(fixture.env)).sources.local!.active!;
+    const location = resolveCatalogStoreLocation({ ...active, env: fixture.env });
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => fs.appendFile(
+        path.join(location.snapshotRoot, 'plugins', 'future', 'README.md'), '\nchanged while staged\n'),
+    });
+    if (scoped) {
+      const readScope = new CatalogPreparationReadScope({ env: fixture.env });
+      const catalogOperationContext = await readScope.resolve({ sourceIds: ['local'] }, true);
+      await expect(materializePortableSkillsToDirectory({
+        selector: 'local/portable', platform: 'generic', scope: 'project', out: target,
+        cwd: fixture.cwd, env: fixture.env, cliVersion: '1.0.0', catalogOperationContext,
+      }, readScope)).rejects.toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+    } else {
+      const io = createCapturedCliIo();
+      expect(await runCli(
+        ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
+        { cwd: fixture.cwd, env: fixture.env, io: io.io },
+      )).toBe(1);
+    }
+    await expect(fs.pathExists(target)).resolves.toBe(false);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.changed-dependency-output.aw-stage-'));
+  });
+
+  it('rejects a staged output when effective plugin configuration changes', async () => {
+    const fixture = await configurePortableCatalog({ configurable: true });
+    const target = path.join(fixture.cwd, 'changed-config-output');
+    const active = (await readCatalogGenerationState(fixture.env)).sources.local!.active!;
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        await writePluginConfigStore({
+          sourceId: 'local', sourceIdentity: active.sourceIdentity, logicalIdentity: active.logicalIdentity,
+          pluginName: 'portable', scope: 'user', cwd: fixture.cwd, env: fixture.env, values: { tone: 'second' },
+        });
+      },
+    });
+    await expect(materializePortableSkillsToDirectory({
+      selector: 'local/portable', platform: 'generic', scope: 'project', out: target,
+      cwd: fixture.cwd, env: fixture.env, cliVersion: '1.0.0',
+    })).rejects.toMatchObject({ code: 'reviewStale' });
+    await expect(fs.pathExists(target)).resolves.toBe(false);
+    expect(await fs.readdir(fixture.cwd)).not.toContainEqual(expect.stringContaining('.changed-config-output.aw-stage-'));
+  });
+
+  it('does not revalidate an unrelated plugin at commit, but the next read window rejects its damage', async () => {
+    const fixture = await configurePortableCatalog({ unrelatedPlugin: true });
+    const target = path.join(fixture.cwd, 'unrelated-change-output');
+    const active = (await readCatalogGenerationState(fixture.env)).sources.local!.active!;
+    const location = resolveCatalogStoreLocation({ ...active, env: fixture.env });
+    const unrelatedRoot = path.join(location.snapshotRoot, 'plugins', 'unrelated');
+    const unrelatedReadme = path.join(unrelatedRoot, 'README.md');
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        await fs.appendFile(unrelatedReadme, '\nchanged while staged\n');
+        vi.spyOn(fs, 'readFile');
+        vi.spyOn(fs, 'readdir');
+      },
+    });
+    const io = createCapturedCliIo();
+    expect(await runCli(
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: io.io },
+    ), io.readStdout()).toBe(0);
+    await expect(fs.readFile(path.join(target, 'skills', 'alpha', 'SKILL.md'), 'utf8')).resolves.toContain('Body.');
+    expect(vi.mocked(fs.readFile).mock.calls.filter(([file]) => file === unrelatedReadme)).toHaveLength(0);
+    expect(vi.mocked(fs.readdir).mock.calls.filter(([file]) => file === unrelatedRoot)).toHaveLength(0);
+    const nextScope = new CatalogPreparationReadScope({ env: fixture.env });
+    await expect(nextScope.resolve({ sourceIds: ['local'] }, true)).rejects.toMatchObject({
+      code: 'catalogGenerationMetadataInvalid',
+    });
+    expect(vi.mocked(fs.readFile).mock.calls.filter(([file]) => file === unrelatedReadme).length).toBeGreaterThan(0);
+    expect(vi.mocked(fs.readdir).mock.calls.filter(([file]) => file === unrelatedRoot).length).toBeGreaterThan(0);
   });
 });

@@ -243,7 +243,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || matrix.os == 'darwin' && '2' || '1') }}
       EXPECTED_OS: ${{ matrix.os }}
       EXPECTED_ARCH: ${{ matrix.arch }}
       TEST_SHARD: ${{ matrix.shard }}

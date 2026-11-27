@@ -27,6 +27,7 @@ import {
 import {
   chooseConfigSave,
   chooseConfigProfile,
+  escape,
   focusAction,
   input,
   nextTurn,
@@ -996,9 +997,7 @@ describe('ConsoleAppV4', () => {
     expect(screens).not.toContain('C12');
 
     if (leaveResult === '\u001B') {
-      instance.stdin.write(leaveResult);
-      await new Promise((resolve) => setTimeout(resolve, 550));
-      await nextTurn(2);
+      await escape(instance);
     } else {
       await input(instance, leaveResult);
     }

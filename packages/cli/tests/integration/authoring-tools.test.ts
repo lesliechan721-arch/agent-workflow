@@ -16,14 +16,7 @@ import { nativeToolFixture } from '../helpers/native-tools.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
-
-async function waitForAll(tasks: readonly Promise<unknown>[]): Promise<void> {
-  const results = await Promise.allSettled(tasks);
-  const firstRejection = results.find((result) => result.status === 'rejected');
-  if (firstRejection?.status === 'rejected') {
-    throw firstRejection.reason;
-  }
-}
+const authoringBatchConcurrency = 4;
 
 async function mapWithConcurrency<T>(
   values: readonly T[],
@@ -47,6 +40,20 @@ async function mapWithConcurrency<T>(
   await Promise.all(workers);
   failures.sort((left, right) => left.index - right.index);
   if (failures[0]) throw failures[0].reason;
+}
+
+// Keep Vitest's global test context serial. Only run child validators against
+// independent copies of a fixed fixture, and let every child settle before
+// afterEach removes the enclosing temp directory.
+async function validateFixtureVariants(
+  pluginDir: string,
+  variants: Record<string, (pluginDir: string) => Promise<void>>,
+): Promise<void> {
+  await mapWithConcurrency(Object.entries(variants), authoringBatchConcurrency, async ([name, validate]) => {
+    const variantDir = path.join(path.dirname(pluginDir), 'variants', name, path.basename(pluginDir));
+    await fs.copy(pluginDir, variantDir);
+    await validate(variantDir);
+  });
 }
 
 function repoRoot(): string {
@@ -1245,7 +1252,7 @@ describe('authoring tools', () => {
       'skill-target-file',
       'skill-target-directory',
     ] as const;
-    await mapWithConcurrency(cases, 2, async (pathCase) => {
+    await mapWithConcurrency(cases, authoringBatchConcurrency, async (pathCase) => {
       const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-add-skill-${pathCase}-`));
       tempDirs.push(tempRoot);
       const workspaceRoot = path.join(tempRoot, 'workspace');
@@ -3163,43 +3170,46 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
     const validManifest = await fs.readJson(manifestPath);
-    for (const artifacts of [
-      { configKeys: [], targets: [] },
-      { configKeys: ['enableInstruction'], scopes: ['workspace'] },
-      { configKeys: ['missingConfigKey'] },
-    ]) {
-      await fs.writeJson(manifestPath, { ...validManifest, artifacts }, { spaces: 2 });
-      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-        stdout: expect.stringMatching(/additional properties|allowed values|unknown config key/u),
-      });
+    const variants: Record<string, (pluginDir: string) => Promise<void>> = {};
+    for (const [name, artifacts] of Object.entries({
+      targets: { configKeys: [], targets: [] },
+      scopes: { configKeys: ['enableInstruction'], scopes: ['workspace'] },
+      'config-key': { configKeys: ['missingConfigKey'] },
+    })) {
+      variants[name] = async (variant) => {
+        await fs.writeJson(path.join(variant, '.agents-plugin/plugin.json'), { ...validManifest, artifacts }, { spaces: 2 });
+        await expect(runValidatePlugin(variant)).rejects.toMatchObject({
+          stdout: expect.stringMatching(/additional properties|allowed values|unknown config key/u),
+        });
+      };
     }
     const component = { id: 'computed', kind: 'skill', name: 'computed', content: { files: {
       'SKILL.md': { text: '---\nname: computed\ndescription: Computed Skill.\n---\nRead the result.\n' },
       'README.md': { text: '# Computed\n' },
     } } };
-    await fs.writeJson(manifestPath, { ...validManifest, platforms: ['generic'],
-      artifacts: { configKeys: [] } }, { spaces: 2 });
-    const rendererPath = path.join(pluginDir, 'scripts', 'render-artifacts.mjs');
-    const writePlan = (plan: unknown) => fs.writeFile(rendererPath,
-      `process.stdout.write(JSON.stringify(${JSON.stringify(plan)}));\n`);
-    await writePlan({ version: 3, components: [component], omitted: [], unmet: [] });
-    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-    for (const [plan, diagnostic] of [
-      [{ version: 2, artifacts: [] }, /version|component plan/u],
-      [{ version: 3, components: [component, component], omitted: [], unmet: [] }, /duplicate component ID/u],
-      [{ version: 3, components: [{ ...component, id: 'outside', name: '../outside' }], omitted: [], unmet: [] }, /name|path/u],
-      [{ version: 3, components: [component], omitted: [{ id: 'computed', kind: 'skill', reason: 'config-disabled' }], unmet: [] }, /duplicate component ID/u],
+    const validPlan = { version: 3, components: [component], omitted: [], unmet: [] };
+    for (const [name, plan, diagnostic] of [
+      ['valid-plan', validPlan, null],
+      ['old-version', { version: 2, artifacts: [] }, /version|component plan/u],
+      ['duplicate-id', { version: 3, components: [component, component], omitted: [], unmet: [] }, /duplicate component ID/u],
+      ['outside-name', { version: 3, components: [{ ...component, id: 'outside', name: '../outside' }], omitted: [], unmet: [] }, /name|path/u],
+      ['duplicate-omitted', { version: 3, components: [component], omitted: [{ id: 'computed', kind: 'skill', reason: 'config-disabled' }], unmet: [] }, /duplicate component ID/u],
+      // The same dynamic identity is legal in separate fixed profile requests.
+      ['fixed-profile-identity', validPlan, null],
     ] as const) {
-      await writePlan(plan);
-      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringMatching(diagnostic) });
+      variants[name] = async (variant) => {
+        await fs.writeJson(path.join(variant, '.agents-plugin/plugin.json'), { ...validManifest, platforms: ['generic'],
+          artifacts: { configKeys: [] } }, { spaces: 2 });
+        await fs.writeFile(path.join(variant, 'scripts/render-artifacts.mjs'),
+          `process.stdout.write(JSON.stringify(${JSON.stringify(plan)}));\n`);
+        if (diagnostic) {
+          await expect(runValidatePlugin(variant)).rejects.toMatchObject({ stdout: expect.stringMatching(diagnostic) });
+        } else {
+          await expect(runValidatePlugin(variant)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+        }
+      };
     }
-    // The same dynamic identity is legal in separate fixed profile requests.
-    await writePlan({ version: 3, components: [component], omitted: [], unmet: [] });
-    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
+    await validateFixtureVariants(pluginDir, variants);
   });
 
   it('keeps author validation aligned with Catalog build across native and portable runtime surfaces', async () => {
@@ -3347,7 +3357,7 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir,['--json'])).resolves.toMatchObject({stdout:expect.stringContaining('"ok": true')});
     const scenarios=['portable-root-file','literal-runtime-text','literal-provider-runtime-text','unresolved-declared-template','missing-provider',
       'missing-export','import-collision','invalid-platform-selector','uppercase-skill-key','wrong-skill-name'] as const;
-    await mapWithConcurrency(scenarios,2,async scenario=>{
+    await mapWithConcurrency(scenarios,authoringBatchConcurrency,async scenario=>{
       const root=path.join(tempRoot,'scenarios',scenario);
       await runGit(tempRoot,['clone','--shared',tempRoot,root]);
       const target=path.join(root,'plugins','portable-authoring');
@@ -3672,48 +3682,54 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const { pluginDir } = await writeDynamicArtifactPlugin(tempRoot);
     await ensureFixtureReadmes(pluginDir);
-    const pluginReadme = path.join(pluginDir, 'README.md');
-    const skillReadme = path.join(
-      pluginDir,
-      'skills',
-      'dynamic-authoring-test',
-      'README.md',
-    );
-    const runDirect = () => execFileAsync('node', [validatePluginScriptPath(), pluginDir], {
+    const runDirect = (pluginDir: string) => execFileAsync('node', [validatePluginScriptPath(), pluginDir], {
       cwd: repoRoot(),
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     });
-
-    await fs.remove(pluginReadme);
-    await expect(runDirect()).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin root README.md is required'),
-    });
-    await fs.writeFile(pluginReadme, '\n', 'utf8');
-    await expect(runDirect()).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin root README.md must not be empty'),
-    });
-    await fs.writeFile(pluginReadme, '# Dynamic Authoring Test\n', 'utf8');
-    await fs.remove(skillReadme);
-    await expect(runDirect()).rejects.toMatchObject({
-      stdout: expect.stringContaining('skills/dynamic-authoring-test/README.md is required'),
-    });
-    await fs.writeFile(skillReadme, '\n', 'utf8');
-    await expect(runDirect()).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'skills/dynamic-authoring-test/README.md must not be empty',
-      ),
-    });
-    await fs.writeFile(skillReadme, '# Dynamic Skill\n', 'utf8');
-    await expect(runDirect()).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    const pluginReadme = 'README.md';
+    const skillReadme = 'skills/dynamic-authoring-test/README.md';
+    await validateFixtureVariants(pluginDir, {
+      'missing-plugin-readme': async (variant) => {
+        await fs.remove(path.join(variant, pluginReadme));
+        await expect(runDirect(variant)).rejects.toMatchObject({
+          stdout: expect.stringContaining('Plugin root README.md is required'),
+        });
+      },
+      'empty-plugin-readme': async (variant) => {
+        await fs.writeFile(path.join(variant, pluginReadme), '\n', 'utf8');
+        await expect(runDirect(variant)).rejects.toMatchObject({
+          stdout: expect.stringContaining('Plugin root README.md must not be empty'),
+        });
+      },
+      'missing-skill-readme': async (variant) => {
+        await fs.writeFile(path.join(variant, pluginReadme), '# Dynamic Authoring Test\n', 'utf8');
+        await fs.remove(path.join(variant, skillReadme));
+        await expect(runDirect(variant)).rejects.toMatchObject({
+          stdout: expect.stringContaining('skills/dynamic-authoring-test/README.md is required'),
+        });
+      },
+      'empty-skill-readme': async (variant) => {
+        await fs.writeFile(path.join(variant, pluginReadme), '# Dynamic Authoring Test\n', 'utf8');
+        await fs.writeFile(path.join(variant, skillReadme), '\n', 'utf8');
+        await expect(runDirect(variant)).rejects.toMatchObject({
+          stdout: expect.stringContaining('skills/dynamic-authoring-test/README.md must not be empty'),
+        });
+      },
+      'valid-readmes': async (variant) => {
+        await fs.writeFile(path.join(variant, pluginReadme), '# Dynamic Authoring Test\n', 'utf8');
+        await fs.writeFile(path.join(variant, skillReadme), '# Dynamic Skill\n', 'utf8');
+        await expect(runDirect(variant)).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      },
     });
   });
 
   it('validate_plugin.mjs validates fixed profiles and dynamic resource closure', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
     tempDirs.push(tempRoot);
-    for (const platforms of [null, [], ['claude']] as const) {
+    await mapWithConcurrency([null, [], ['claude']] as const, authoringBatchConcurrency, async (platforms) => {
       const fixture = await writeDynamicArtifactPlugin(path.join(tempRoot, `platforms-${JSON.stringify(platforms)}`),
         { platforms: platforms === null ? null : [...platforms] });
       if (platforms === null) {
@@ -3724,7 +3740,7 @@ describe('authoring tools', () => {
       await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       });
-    }
+    });
     const manifest = createBaseManifest('resource-closure', { platforms: ['generic'],
       artifacts: { configKeys: [], sourceDirs: ['./templates'] },
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
@@ -3746,7 +3762,7 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
     const variants = ['duplicate-source','noncanonical-reference','missing-skill','path-collision',
       'missing-skill-entry','author-only-output','runtime-evals-source','symlink-source','duplicate-owner','wrong-skill-name'] as const;
-    await mapWithConcurrency(variants, 2, async (variant) => {
+    await mapWithConcurrency(variants, authoringBatchConcurrency, async (variant) => {
       const root = path.join(tempRoot, 'variants', variant, 'resource-closure');
       await fs.copy(fixture.pluginDir, root);
       const input = structuredClone(manifest) as typeof manifest & { artifacts: {configKeys:string[];sourceDirs:string[]} };
@@ -3936,7 +3952,7 @@ describe('authoring tools', () => {
         stdout: expect.stringContaining('[missing-policy]'),
       })),
     ];
-    await mapWithConcurrency(roleValidations, 2, (validation) => validation());
+    await mapWithConcurrency(roleValidations, authoringBatchConcurrency, (validation) => validation());
   });
 
   it('validate_plugin.mjs accepts native hooks and rejects hook contract mistakes', async () => {
@@ -4184,7 +4200,7 @@ describe('authoring tools', () => {
       },
     ];
 
-    await mapWithConcurrency(cases, 2, async (testCase) => {
+    await mapWithConcurrency(cases, authoringBatchConcurrency, async (testCase) => {
       const { pluginDir } = await writeSourcePlugin(
         tempRoot,
         testCase.name,
@@ -4233,11 +4249,11 @@ describe('authoring tools', () => {
   it('validate_plugin.mjs rejects removed slashCommands for every explicit platform profile', async () => {
     const root=await fs.mkdtemp(path.join(os.tmpdir(),'aw-removed-slash-platforms-'));
     tempDirs.push(root);
-    for(const platforms of [['codex'],['claude'],['generic'],['codex','claude']]){
+    await mapWithConcurrency([['codex'],['claude'],['generic'],['codex','claude']], authoringBatchConcurrency, async (platforms) => {
       const fixture=await writeSlashCommandPlugin(path.join(root,platforms.join('-')),{name:'removed-command',platforms,
         commandContent:'---\ndescription: Historical command.\n---\nUse $ARGUMENTS.\n'});
       await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({stdout:expect.stringContaining('additional properties')});
-    }
+    });
   });
 
   it('validate_plugin.mjs preserves removed command bytes while rejecting the declaration', async () => {
@@ -4285,166 +4301,174 @@ describe('authoring tools', () => {
     );
 
     const scriptPath = validatePluginScriptPath();
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('openai.yaml not found'),
-    });
+    await validateFixtureVariants(pluginDir, {
+      'missing-metadata': async (pluginDir) => {
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('openai.yaml not found'),
+        });
+      },
+      'invocation-type': async (pluginDir) => {
+        await fs.outputFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+          [
+            'policy:',
+            '  allow_implicit_invocation: "false"',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('allow_implicit_invocation must be a boolean'),
+        });
+      },
+      'metadata-shape': async (pluginDir) => {
+        const overlongCodexText = 'x'.repeat(65);
+        await fs.outputFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+          [
+            'interface:',
+            '  display_name: "   "',
+            `  short_description: "${overlongCodexText}"`,
+            '  default_prompt: ""',
+            '  icon_small: "../icon.png"',
+            '  icon_large: "./images/icon.png"',
+            '  brand_color: "3B82F6"',
+            'dependencies:',
+            '  tools:',
+            '    - description: "Missing tool identifiers"',
+            '      transport: "websocket"',
+            'policy:',
+            '  allow_implicit_invocation: false',
+          ].join('\n'),
+          'utf8',
+        );
+        let invalidOpenAiYamlStdout = '';
+        try {
+          await execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+        } catch (error) {
+          invalidOpenAiYamlStdout = (error as { stdout?: string }).stdout ?? '';
+        }
+        expect(invalidOpenAiYamlStdout).toContain('interface.display_name [invalid-string]');
+        expect(invalidOpenAiYamlStdout).toContain('interface.short_description [string-too-long]');
+        expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt [invalid-string]');
+        expect(invalidOpenAiYamlStdout).toContain('interface.icon_small [invalid-asset-path]');
+        expect(invalidOpenAiYamlStdout).toContain('interface.icon_large [invalid-asset-path]');
+        expect(invalidOpenAiYamlStdout).toContain('interface.brand_color [invalid-brand-color]');
+        expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type [invalid-string]');
+        expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value [invalid-string]');
+        expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport [invalid-transport]');
+      },
+      'default-prompt': async (pluginDir) => {
+        await fs.outputFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+          [
+            'interface:',
+            '  default_prompt: "Use this skill to validate metadata."',
+            'policy:',
+            '  allow_implicit_invocation: false',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('interface.default_prompt [default-prompt-skill-reference]'),
+        });
+      },
+      'short-description': async (pluginDir) => {
+        await fs.outputFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+          [
+            'interface:',
+            '  short_description: "Too short"',
+            '  default_prompt: "Use $metadata-test to validate metadata."',
+            'policy:',
+            '  allow_implicit_invocation: false',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('interface.short_description [string-too-short]'),
+        });
+      },
+      'invalid-yaml': async (pluginDir) => {
+        await fs.outputFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+          [
+            'policy:',
+            '  allow_implicit_invocation: false',
+          ].join('\n'),
+          'utf8',
+        );
+        await fs.writeFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
+          [
+            '---',
+            'name: metadata-test',
+            'description: "unterminated',
+            '---',
+            '',
+            '# Metadata Test',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('[invalid-yaml]'),
+        });
 
-    await fs.ensureDir(path.join(pluginDir, 'skills', 'metadata-test', 'agents'));
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
-      [
-        'policy:',
-        '  allow_implicit_invocation: "false"',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('allow_implicit_invocation must be a boolean'),
-    });
-
-    const overlongCodexText = 'x'.repeat(65);
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
-      [
-        'interface:',
-        '  display_name: "   "',
-        `  short_description: "${overlongCodexText}"`,
-        '  default_prompt: ""',
-        '  icon_small: "../icon.png"',
-        '  icon_large: "./images/icon.png"',
-        '  brand_color: "3B82F6"',
-        'dependencies:',
-        '  tools:',
-        '    - description: "Missing tool identifiers"',
-        '      transport: "websocket"',
-        'policy:',
-        '  allow_implicit_invocation: false',
-      ].join('\n'),
-      'utf8',
-    );
-    let invalidOpenAiYamlStdout = '';
-    try {
-      await execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch (error) {
-      invalidOpenAiYamlStdout = (error as { stdout?: string }).stdout ?? '';
-    }
-    expect(invalidOpenAiYamlStdout).toContain('interface.display_name [invalid-string]');
-    expect(invalidOpenAiYamlStdout).toContain('interface.short_description [string-too-long]');
-    expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt [invalid-string]');
-    expect(invalidOpenAiYamlStdout).toContain('interface.icon_small [invalid-asset-path]');
-    expect(invalidOpenAiYamlStdout).toContain('interface.icon_large [invalid-asset-path]');
-    expect(invalidOpenAiYamlStdout).toContain('interface.brand_color [invalid-brand-color]');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type [invalid-string]');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value [invalid-string]');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport [invalid-transport]');
-
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
-      [
-        'interface:',
-        '  default_prompt: "Use this skill to validate metadata."',
-        'policy:',
-        '  allow_implicit_invocation: false',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('interface.default_prompt [default-prompt-skill-reference]'),
-    });
-
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
-      [
-        'interface:',
-        '  short_description: "Too short"',
-        '  default_prompt: "Use $metadata-test to validate metadata."',
-        'policy:',
-        '  allow_implicit_invocation: false',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('interface.short_description [string-too-short]'),
-    });
-
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
-      [
-        'policy:',
-        '  allow_implicit_invocation: false',
-      ].join('\n'),
-      'utf8',
-    );
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
-      [
-        '---',
-        'name: metadata-test',
-        'description: "unterminated',
-        '---',
-        '',
-        '# Metadata Test',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('[invalid-yaml]'),
-    });
-
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
-      [
-        '---',
-        'name: metadata-test',
-        'description: Check "repo" state: produce report',
-        '---',
-        '',
-        '# Metadata Test',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('[invalid-yaml]'),
+        await fs.writeFile(
+          path.join(pluginDir, 'skills', 'metadata-test', 'SKILL.md'),
+          [
+            '---',
+            'name: metadata-test',
+            'description: Check "repo" state: produce report',
+            '---',
+            '',
+            '# Metadata Test',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('[invalid-yaml]'),
+        });
+      },
     });
   });
 
@@ -4844,422 +4868,449 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
     await ensureFixtureReadmes(pluginDir);
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate frontmatter handling.',
-        'when_to_use: false',
-        'when_to_uses: Typo must remain unknown.',
-        'license: false',
-        'compatibility: []',
-        'user-invocable: "sometimes"',
-        'disable-model-invocation: false',
-        'metadata:',
-        '  short-description: false',
-        'allowed-tools:',
-        '  - Bash(git status *)',
-        '  - false',
-        'shell: zsh',
-        '---',
-        '',
-        '# Frontmatter Test',
-      ].join('\n'),
-      'utf8',
-    );
-
     const scriptPath = validatePluginScriptPath();
-    let invalidFrontmatterStdout = '';
-    try {
-      await execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch (error) {
-      invalidFrontmatterStdout = (error as { stdout?: string }).stdout ?? '';
-    }
-    expect(invalidFrontmatterStdout).toContain(
-      '[known-field-invalid-type-value] field "when_to_use"',
-    );
-    expect(invalidFrontmatterStdout).toContain('[unknown-field] field "when_to_uses"');
-    expect(invalidFrontmatterStdout).toContain(
-      'SKILL.md#license [known-field-invalid-type-value]',
-    );
-    expect(invalidFrontmatterStdout).toContain(
-      'SKILL.md#compatibility [known-field-invalid-type-value]',
-    );
-    expect(invalidFrontmatterStdout).toContain(
-      '[known-field-invalid-type-value] field "user-invocable"',
-    );
-    expect(invalidFrontmatterStdout).toContain(
-      'SKILL.md#metadata.short-description [known-field-invalid-type-value]',
-    );
-    expect(invalidFrontmatterStdout).toContain(
-      '[known-field-invalid-type-value] field "allowed-tools"',
-    );
-    expect(invalidFrontmatterStdout).toContain(
-      '[known-field-invalid-type-value] field "shell" must be one of "bash", "powershell"',
-    );
+    const makeCodexOnly = async (pluginDir: string) => {
+      const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+      const codexOnlyManifest = await fs.readJson(manifestPath);
+      codexOnlyManifest.platforms = ['codex'];
+      await fs.writeJson(manifestPath, codexOnlyManifest, { spaces: 2 });
+    };
+    await validateFixtureVariants(pluginDir, {
+      'invalid-fields': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate frontmatter handling.',
+            'when_to_use: false',
+            'when_to_uses: Typo must remain unknown.',
+            'license: false',
+            'compatibility: []',
+            'user-invocable: "sometimes"',
+            'disable-model-invocation: false',
+            'metadata:',
+            '  short-description: false',
+            'allowed-tools:',
+            '  - Bash(git status *)',
+            '  - false',
+            'shell: zsh',
+            '---',
+            '',
+            '# Frontmatter Test',
+          ].join('\n'),
+          'utf8',
+        );
 
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate frontmatter handling.',
-        'when_to_use: Use for Claude Code frontmatter validation.',
-        'argument-hint: "[path]"',
-        'arguments:',
-        '  - path',
-        'version: 0.1.0',
-        'user-invocable: "true"',
-        'disable-model-invocation: "false"',
-        'model: sonnet',
-        'effort: high',
-        'context: fork',
-        'agent: Explore',
-        'hooks: {}',
-        'paths:',
-        '  - packages/cli/**',
-        'metadata:',
-        '  short-description: Frontmatter validation',
-        'allowed-tools:',
-        '  - Bash(git status *)',
-        '  - Read',
-        'shell: PowerShell',
-        '---',
-        '',
-        '# Frontmatter Test',
-      ].join('\n'),
-      'utf8',
-    );
+        let invalidFrontmatterStdout = '';
+        try {
+          await execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+        } catch (error) {
+          invalidFrontmatterStdout = (error as { stdout?: string }).stdout ?? '';
+        }
+        expect(invalidFrontmatterStdout).toContain(
+          '[known-field-invalid-type-value] field "when_to_use"',
+        );
+        expect(invalidFrontmatterStdout).toContain('[unknown-field] field "when_to_uses"');
+        expect(invalidFrontmatterStdout).toContain(
+          'SKILL.md#license [known-field-invalid-type-value]',
+        );
+        expect(invalidFrontmatterStdout).toContain(
+          'SKILL.md#compatibility [known-field-invalid-type-value]',
+        );
+        expect(invalidFrontmatterStdout).toContain(
+          '[known-field-invalid-type-value] field "user-invocable"',
+        );
+        expect(invalidFrontmatterStdout).toContain(
+          'SKILL.md#metadata.short-description [known-field-invalid-type-value]',
+        );
+        expect(invalidFrontmatterStdout).toContain(
+          '[known-field-invalid-type-value] field "allowed-tools"',
+        );
+        expect(invalidFrontmatterStdout).toContain(
+          '[known-field-invalid-type-value] field "shell" must be one of "bash", "powershell"',
+        );
+      },
+      'supported-fields': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate frontmatter handling.',
+            'when_to_use: Use for Claude Code frontmatter validation.',
+            'argument-hint: "[path]"',
+            'arguments:',
+            '  - path',
+            'version: 0.1.0',
+            'user-invocable: "true"',
+            'disable-model-invocation: "false"',
+            'model: sonnet',
+            'effort: high',
+            'context: fork',
+            'agent: Explore',
+            'hooks: {}',
+            'paths:',
+            '  - packages/cli/**',
+            'metadata:',
+            '  short-description: Frontmatter validation',
+            'allowed-tools:',
+            '  - Bash(git status *)',
+            '  - Read',
+            'shell: PowerShell',
+            '---',
+            '',
+            '# Frontmatter Test',
+          ].join('\n'),
+          'utf8',
+        );
 
-    const result = await execFileAsync('node', [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    expect(result.stdout).toContain('[PASS] All checks passed.');
-
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate current Claude Code frontmatter.',
-        'metadata:',
-        '  owner:',
-        '    team: agent-workflows',
-        '  priority: 1',
-        'user-invocable: "YES"',
-        'context: fork',
-        'background: ON',
-        'disallowed-tools: Bash(rm *)',
-        '---',
-        '',
-        '# Current Claude Frontmatter',
-      ].join('\n'),
-      'utf8',
-    );
-    const currentSource=await execFileAsync('node',[scriptPath,pluginDir],{
-      cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
-    });
-    expect(currentSource.stdout).toContain('[PASS] All checks passed.');
-    expect(currentSource.stdout).toContain('component unmet');
-    expect(currentSource.stdout).toContain('skill.background');
-    let minimumProfileStdout = '';
-    try {
-      await execFileAsync('node', [scriptPath, pluginDir, '--claude-skill-profile', 'minimum'], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch (error) {
-      minimumProfileStdout = (error as { stdout?: string }).stdout ?? '';
-    }
-    expect(minimumProfileStdout).toContain(
-      '[known-field-not-supported-by-target-version] field "background"',
-    );
-    expect(minimumProfileStdout).toContain('Claude Code 2.1.218');
-    expect(minimumProfileStdout).toContain(
-      '[known-field-not-supported-by-target-version] field "disallowed-tools"',
-    );
-
-    const profileManifestPath=path.join(pluginDir,'.agents-plugin/plugin.json');
-    const profileManifest=await fs.readJson(profileManifestPath);
-    await fs.writeJson(profileManifestPath,{...profileManifest,buildConfig:{templates:{include:['skills/**/*.md'],vars:{}}}});
-    await expect(execFileAsync('node',[scriptPath,pluginDir,'--claude-skill-profile','minimum'],{
-      cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
-    })).rejects.toMatchObject({stdout:expect.stringContaining('[known-field-not-supported-by-target-version] field "background"')});
-    await fs.writeJson(profileManifestPath,{...profileManifest,platforms:['codex']});
-    await expect(execFileAsync('node',[scriptPath,pluginDir,'--claude-skill-profile','minimum'],{
-      cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
-    })).resolves.toMatchObject({stdout:expect.stringContaining('[PASS] All checks passed.')});
-    await fs.writeJson(profileManifestPath,profileManifest);
-
-    await expect(
-      execFileAsync(
-        'node',
-        [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
-        {
+        const result = await execFileAsync('node', [scriptPath, pluginDir], {
           cwd: repoRoot(),
           env: process.env,
           maxBuffer: 10 * 1024 * 1024,
-        },
-      ),
-    ).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+        });
+        expect(result.stdout).toContain('[PASS] All checks passed.');
+      },
+      'claude-profiles': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate current Claude Code frontmatter.',
+            'metadata:',
+            '  owner:',
+            '    team: agent-workflows',
+            '  priority: 1',
+            'user-invocable: "YES"',
+            'context: fork',
+            'background: ON',
+            'disallowed-tools: Bash(rm *)',
+            '---',
+            '',
+            '# Current Claude Frontmatter',
+          ].join('\n'),
+          'utf8',
+        );
+        const currentSource=await execFileAsync('node',[scriptPath,pluginDir],{
+          cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
+        });
+        expect(currentSource.stdout).toContain('[PASS] All checks passed.');
+        expect(currentSource.stdout).toContain('component unmet');
+        expect(currentSource.stdout).toContain('skill.background');
+        let minimumProfileStdout = '';
+        try {
+          await execFileAsync('node', [scriptPath, pluginDir, '--claude-skill-profile', 'minimum'], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+        } catch (error) {
+          minimumProfileStdout = (error as { stdout?: string }).stdout ?? '';
+        }
+        expect(minimumProfileStdout).toContain(
+          '[known-field-not-supported-by-target-version] field "background"',
+        );
+        expect(minimumProfileStdout).toContain('Claude Code 2.1.218');
+        expect(minimumProfileStdout).toContain(
+          '[known-field-not-supported-by-target-version] field "disallowed-tools"',
+        );
 
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate related current Claude Code fields.',
-        'background: true',
-        '---',
-        '',
-        '# Related Current Claude Frontmatter',
-      ].join('\n'),
-      'utf8',
-    );
-    let relatedFieldStdout = '';
-    try {
-      await execFileAsync(
-        'node',
-        [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
-        {
-          cwd: repoRoot(),
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      );
-    } catch (error) {
-      relatedFieldStdout = (error as { stdout?: string }).stdout ?? '';
-    }
-    expect(relatedFieldStdout).toContain(
-      '[known-field-requires-related-field] field "background" requires "context"="fork"',
-    );
+        const profileManifestPath=path.join(pluginDir,'.agents-plugin/plugin.json');
+        const profileManifest=await fs.readJson(profileManifestPath);
+        await fs.writeJson(profileManifestPath,{...profileManifest,buildConfig:{templates:{include:['skills/**/*.md'],vars:{}}}});
+        await expect(execFileAsync('node',[scriptPath,pluginDir,'--claude-skill-profile','minimum'],{
+          cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
+        })).rejects.toMatchObject({stdout:expect.stringContaining('[known-field-not-supported-by-target-version] field "background"')});
+        await fs.writeJson(profileManifestPath,{...profileManifest,platforms:['codex']});
+        await expect(execFileAsync('node',[scriptPath,pluginDir,'--claude-skill-profile','minimum'],{
+          cwd:repoRoot(),env:process.env,maxBuffer:10*1024*1024,
+        })).resolves.toMatchObject({stdout:expect.stringContaining('[PASS] All checks passed.')});
+        await fs.writeJson(profileManifestPath,profileManifest);
 
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate frontmatter handling.',
-        'user-invocable: true',
-        'disable-model-invocation: false',
-        'allowed-tools:',
-        '  - Bash(git status *)',
-        '  - Read',
-        'shell: PowerShell',
-        '---',
-        '',
-        '# Frontmatter Test',
-      ].join('\n'),
-      'utf8',
-    );
+        await expect(
+          execFileAsync(
+            'node',
+            [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
+            {
+              cwd: repoRoot(),
+              env: process.env,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+          ),
+        ).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+      },
+      'related-fields': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate related current Claude Code fields.',
+            'background: true',
+            '---',
+            '',
+            '# Related Current Claude Frontmatter',
+          ].join('\n'),
+          'utf8',
+        );
+        let relatedFieldStdout = '';
+        try {
+          await execFileAsync(
+            'node',
+            [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
+            {
+              cwd: repoRoot(),
+              env: process.env,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+          );
+        } catch (error) {
+          relatedFieldStdout = (error as { stdout?: string }).stdout ?? '';
+        }
+        expect(relatedFieldStdout).toContain(
+          '[known-field-requires-related-field] field "background" requires "context"="fork"',
+        );
+      },
+      'strict-extension': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate frontmatter handling.',
+            'user-invocable: true',
+            'disable-model-invocation: false',
+            'allowed-tools:',
+            '  - Bash(git status *)',
+            '  - Read',
+            'shell: PowerShell',
+            '---',
+            '',
+            '# Frontmatter Test',
+          ].join('\n'),
+          'utf8',
+        );
 
-    let strictExtensionStdout = '';
-    try {
-      await execFileAsync('node', [scriptPath, pluginDir, '--strict-agent-skills', '--claude-skill-profile', 'current'], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch (error) {
-      strictExtensionStdout = (error as { stdout?: string }).stdout ?? '';
-    }
-    expect(strictExtensionStdout).toContain(
-      '[portable-profile-platform-extension] field "user-invocable"',
-    );
-    expect(strictExtensionStdout).toContain(
-      '[portable-profile-platform-extension] field "disable-model-invocation"',
-    );
-    expect(strictExtensionStdout).toContain(
-      '[portable-profile-platform-extension] field "shell"',
-    );
-    expect(strictExtensionStdout).toContain(
-      '[known-field-invalid-type-value] field "allowed-tools"',
-    );
+        let strictExtensionStdout = '';
+        try {
+          await execFileAsync('node', [scriptPath, pluginDir, '--strict-agent-skills', '--claude-skill-profile', 'current'], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+        } catch (error) {
+          strictExtensionStdout = (error as { stdout?: string }).stdout ?? '';
+        }
+        expect(strictExtensionStdout).toContain(
+          '[portable-profile-platform-extension] field "user-invocable"',
+        );
+        expect(strictExtensionStdout).toContain(
+          '[portable-profile-platform-extension] field "disable-model-invocation"',
+        );
+        expect(strictExtensionStdout).toContain(
+          '[portable-profile-platform-extension] field "shell"',
+        );
+        expect(strictExtensionStdout).toContain(
+          '[known-field-invalid-type-value] field "allowed-tools"',
+        );
 
-    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
-    const codexOnlyManifest = await fs.readJson(manifestPath);
-    codexOnlyManifest.platforms = ['codex'];
-    await fs.writeJson(manifestPath, codexOnlyManifest, { spaces: 2 });
+        await makeCodexOnly(pluginDir);
 
-    const codexSource = await execFileAsync('node', [scriptPath, pluginDir], {
-      cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024,
+        const codexSource = await execFileAsync('node', [scriptPath, pluginDir], {
+          cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024,
+        });
+        expect(codexSource.stdout).toContain('[PASS] All checks passed.');
+        expect(codexSource.stdout).toContain('component unmet');
+      },
+      'portable-fields': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await makeCodexOnly(pluginDir);
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            'description: Validate portable Agent Skills frontmatter.',
+            'license: Apache-2.0',
+            'compatibility: Requires Node.js 20+.',
+            'metadata:',
+            '  owner: agent-workflows',
+            'allowed-tools: Read Grep Glob',
+            '---',
+            '',
+            '# Frontmatter Test',
+          ].join('\n'),
+          'utf8',
+        );
+
+        const portableResult = await execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+        );
+        expect(JSON.parse(portableResult.stdout)).toMatchObject({
+          ok: true,
+          profile: 'agent-skills-portable-core',
+          pluginDirectory: pluginDir,
+          errors: [],
+        });
+      },
+      'line-endings': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await makeCodexOnly(pluginDir);
+        await fs.writeFile(
+          skillMdPath,
+          '---\r\nname: frontmatter-test\r\ndescription: Validate CRLF frontmatter.\r\n---\r\n\r\n# CRLF\r\n',
+          'utf8',
+        );
+        await expect(execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
+        )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+
+        await fs.writeFile(
+          skillMdPath,
+          '---\nname: frontmatter-test\ndescription: Validate EOF closing frontmatter.\n---',
+          'utf8',
+        );
+        await expect(execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
+        )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+      },
+      'unicode': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await makeCodexOnly(pluginDir);
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            `description: ${JSON.stringify('😀'.repeat(600))}`,
+            `compatibility: ${JSON.stringify('🧪'.repeat(300))}`,
+            '---',
+            '',
+            '# Unicode Length Test',
+          ].join('\n'),
+          'utf8',
+        );
+        const unicodeResult = await execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+        );
+        expect(JSON.parse(unicodeResult.stdout)).toMatchObject({
+          ok: true,
+          errors: [],
+        });
+
+        await fs.writeFile(
+          skillMdPath,
+          [
+            '---',
+            'name: frontmatter-test',
+            `description: ${JSON.stringify('😀'.repeat(1025))}`,
+            `compatibility: ${JSON.stringify('🧪'.repeat(501))}`,
+            '---',
+            '',
+            '# Unicode Limit Test',
+          ].join('\n'),
+          'utf8',
+        );
+        let unicodeLimitReport: { errors: string[] } | null = null;
+        try {
+          await execFileAsync(
+            'node',
+            [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+            {
+              cwd: repoRoot(),
+              env: process.env,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+          );
+        } catch (error) {
+          unicodeLimitReport = JSON.parse((error as { stdout?: string }).stdout ?? '{}');
+        }
+        expect(unicodeLimitReport?.errors.join('\n')).toContain(
+          'SKILL.md#description [string-too-long]',
+        );
+        expect(unicodeLimitReport?.errors.join('\n')).toContain(
+          'SKILL.md#compatibility [string-too-long]',
+        );
+      },
+      'line-count': async (pluginDir) => {
+        const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+        await makeCodexOnly(pluginDir);
+        const lineBoundarySkill = [
+          '---',
+          'name: frontmatter-test',
+          'description: Validate the SKILL.md line-count recommendation.',
+          '---',
+          '',
+          '# Line Count Test',
+        ];
+        while (lineBoundarySkill.length < 500) {
+          lineBoundarySkill.push(`Instruction ${lineBoundarySkill.length}`);
+        }
+        await fs.writeFile(skillMdPath, `${lineBoundarySkill.join('\n')}\n`, 'utf8');
+        const lineBoundaryResult = await execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+        );
+        const lineBoundaryReport = JSON.parse(lineBoundaryResult.stdout);
+        expect(lineBoundaryReport.ok).toBe(true);
+        expect(lineBoundaryReport.warnings).toContain(
+          'skills/frontmatter-test/SKILL.md has 500 lines; Agent Skills recommends keeping SKILL.md under 500 lines',
+        );
+
+        await fs.writeFile(
+          skillMdPath,
+          `${lineBoundarySkill.slice(0, 499).join('\n')}\n`,
+          'utf8',
+        );
+        const underLineBoundaryResult = await execFileAsync(
+          'node',
+          [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+          {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+        );
+        expect(
+          JSON.parse(underLineBoundaryResult.stdout).warnings.some(
+            (warning: string) => warning.includes('skills/frontmatter-test/SKILL.md has'),
+          ),
+        ).toBe(false);
+      },
     });
-    expect(codexSource.stdout).toContain('[PASS] All checks passed.');
-    expect(codexSource.stdout).toContain('component unmet');
-
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        'description: Validate portable Agent Skills frontmatter.',
-        'license: Apache-2.0',
-        'compatibility: Requires Node.js 20+.',
-        'metadata:',
-        '  owner: agent-workflows',
-        'allowed-tools: Read Grep Glob',
-        '---',
-        '',
-        '# Frontmatter Test',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const portableResult = await execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-    expect(JSON.parse(portableResult.stdout)).toMatchObject({
-      ok: true,
-      profile: 'agent-skills-portable-core',
-      pluginDirectory: pluginDir,
-      errors: [],
-    });
-
-    await fs.writeFile(
-      skillMdPath,
-      '---\r\nname: frontmatter-test\r\ndescription: Validate CRLF frontmatter.\r\n---\r\n\r\n# CRLF\r\n',
-      'utf8',
-    );
-    await expect(execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
-    )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
-
-    await fs.writeFile(
-      skillMdPath,
-      '---\nname: frontmatter-test\ndescription: Validate EOF closing frontmatter.\n---',
-      'utf8',
-    );
-    await expect(execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
-    )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
-
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        `description: ${JSON.stringify('😀'.repeat(600))}`,
-        `compatibility: ${JSON.stringify('🧪'.repeat(300))}`,
-        '---',
-        '',
-        '# Unicode Length Test',
-      ].join('\n'),
-      'utf8',
-    );
-    const unicodeResult = await execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-    expect(JSON.parse(unicodeResult.stdout)).toMatchObject({
-      ok: true,
-      errors: [],
-    });
-
-    await fs.writeFile(
-      skillMdPath,
-      [
-        '---',
-        'name: frontmatter-test',
-        `description: ${JSON.stringify('😀'.repeat(1025))}`,
-        `compatibility: ${JSON.stringify('🧪'.repeat(501))}`,
-        '---',
-        '',
-        '# Unicode Limit Test',
-      ].join('\n'),
-      'utf8',
-    );
-    let unicodeLimitReport: { errors: string[] } | null = null;
-    try {
-      await execFileAsync(
-        'node',
-        [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-        {
-          cwd: repoRoot(),
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      );
-    } catch (error) {
-      unicodeLimitReport = JSON.parse((error as { stdout?: string }).stdout ?? '{}');
-    }
-    expect(unicodeLimitReport?.errors.join('\n')).toContain(
-      'SKILL.md#description [string-too-long]',
-    );
-    expect(unicodeLimitReport?.errors.join('\n')).toContain(
-      'SKILL.md#compatibility [string-too-long]',
-    );
-
-    const lineBoundarySkill = [
-      '---',
-      'name: frontmatter-test',
-      'description: Validate the SKILL.md line-count recommendation.',
-      '---',
-      '',
-      '# Line Count Test',
-    ];
-    while (lineBoundarySkill.length < 500) {
-      lineBoundarySkill.push(`Instruction ${lineBoundarySkill.length}`);
-    }
-    await fs.writeFile(skillMdPath, `${lineBoundarySkill.join('\n')}\n`, 'utf8');
-    const lineBoundaryResult = await execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-    const lineBoundaryReport = JSON.parse(lineBoundaryResult.stdout);
-    expect(lineBoundaryReport.ok).toBe(true);
-    expect(lineBoundaryReport.warnings).toContain(
-      'skills/frontmatter-test/SKILL.md has 500 lines; Agent Skills recommends keeping SKILL.md under 500 lines',
-    );
-
-    await fs.writeFile(
-      skillMdPath,
-      `${lineBoundarySkill.slice(0, 499).join('\n')}\n`,
-      'utf8',
-    );
-    const underLineBoundaryResult = await execFileAsync(
-      'node',
-      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
-      {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-    expect(
-      JSON.parse(underLineBoundaryResult.stdout).warnings.some(
-        (warning: string) => warning.includes('skills/frontmatter-test/SKILL.md has'),
-      ),
-    ).toBe(false);
 
     const helpResult = await execFileAsync('node', [scriptPath, '--help'], {
       cwd: repoRoot(),

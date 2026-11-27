@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertCommand, execute, hostInfo, prepareEnvironment, processManagementInfo, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
+import { assertCommand, execute, hostInfo, prepareEnvironment, processManagementInfo, renderPackage, sha256 } from './native-platform-runtime.mjs';
+import { qualificationGroup } from './native-platform-qualification-group.mjs';
 import { redact, requiredPublicChecks, runScope } from './native-platforms.mjs';
 import { acquireAntigravityDistribution, getAntigravityDistribution } from './native-platform-antigravity-distributions.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
@@ -186,7 +187,7 @@ export async function qualifyAntigravityUserScopes(client, launcher, context, op
   client.publicAw = [];
   if (client.status !== 'passed') return;
   const publicScope = await runPublicScope('antigravity', 'user', launcher,
-    { publicAw: true, clientBin: path.join(context.root, 'public-client-bin') });
+    { publicAw: true, clientBin: path.join(context.root, 'public-client-bin'), ...(options.group && { group: options.group }) });
   client.publicAw.push(publicScope);
   if (publicScope.status !== 'passed' || publicScope.cleanup !== 'completed' || scopeProcessFailed(publicScope)) {
     client.status = 'failed';
@@ -212,10 +213,12 @@ export async function runAntigravityUserQualification(options, {
       uncovered: ['project', 'agents', 'other-kinds', 'model-adoption', 'desktop',
         ...(publicAwRequested ? ['manual-command-visibility-in-session', 'automatic-candidate-in-session'] : ['invocation-controls', 'public-aw'])] }, clients: [client] };
   let root;
+  let group;
   try {
     if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('hosted-runner-required');
     getAntigravityDistribution();
-    report.candidate = await verifyCandidate(options.candidate, candidateRoot);
+    group = await qualificationGroup({ manifest: options.candidate, candidateRoot });
+    report.candidate = group.candidate;
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
     report.processManagement = await processManagementInfo();
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-antigravity-user-')));
@@ -238,12 +241,16 @@ export async function runAntigravityUserQualification(options, {
     assertCommand(setup);
     projectSetup.status = 'passed';
     await qualifyAntigravityUserScopes(client, acquired.launcher, { root, project, neutral, env, executable: acquired.entry.path },
-      { publicAw: publicAwRequested });
+      { publicAw: publicAwRequested, group });
   } catch (error) {
     client.status = 'failed'; client.reason = error?.code ?? error?.message ?? 'user-qualification-failed';
     if (error?.evidence) client.acquisition = error.evidence;
     if (error?.extractionFailure) client.extractionFailure = error.extractionFailure;
   } finally {
+    if (group) {
+      try { await group.finish(); }
+      catch (error) { client.status = 'failed'; client.reason = error.code ?? error.message; }
+    }
     if (root) {
       try { await fs.rm(root, { recursive: true, force: true }); client.cleanup = 'completed'; }
       catch (error) { client.status = 'failed'; client.cleanup = 'failed'; client.cleanupError = error?.code ?? 'cleanup-failed'; }

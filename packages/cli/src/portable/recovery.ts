@@ -4,16 +4,17 @@ import { isPortablePlatformTarget, PORTABLE_PLATFORM_TARGETS, type ComponentUnme
 import { getPlatformFeatureRegistry, isSkillInvocationFeature, type FeatureRequirement } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
-import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
 import { PluginConfigDiagnosticError } from '../utils/plugin-config-diagnostics.js';
 import { mapInstallReads, type InstallAdmission } from '../recovery/install-concurrency.js';
 import type { ScopeContext } from '../intent/scope-context.js';
-import { parsePortableSkillFrontmatter, validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
+import { parsePortableSkillFrontmatter, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { skillInvocationWarning } from '../utils/skill-invocation-warning.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
+import type { PreparedArtifactRenderResults } from '../utils/artifact-renderer.js';
 import { materializePortableSkillsToDirectory } from './commands.js';
 import { resolvePortableCatalogBindingInput } from './materializer.js';
 import { assertPortablePath, portableJsonDigest, readHistoricalPortableMaterialization } from './historical-materialization.js';
@@ -202,7 +203,8 @@ async function observeUnpreparedOwnedTargets(options: {
 }
 
 async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMaterialize: boolean,
-  catalogReadScope?: CatalogPreparationReadScope, generations?: Map<string, Promise<void>>): Promise<PortablePreparation> {
+  catalogReadScope?: CatalogPreparationReadScope, generations?: Map<string, Promise<void>>,
+  preparedResults?: PreparedArtifactRenderResults): Promise<PortablePreparation> {
   rawOptions.signal?.throwIfAborted();
   const options = { ...rawOptions, agents: selectedAgents(rawOptions.agents), env: rawOptions.context.env };
   const layout = portableRecoveryLayout(options.context);
@@ -242,7 +244,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         let publication = generations?.get(generation);
         if (!publication) {
           publication = materializePortableSkillsToDirectory({ ...options, platform: agent, cwd: layout.cwd,
-            out: generation, allowEmpty: true, allowUnmet: true }, catalogReadScope).then(() => {});
+            out: generation, allowEmpty: true, allowUnmet: true, preparedResults }, catalogReadScope).then(() => {});
           generations?.set(generation, publication);
         }
         await publication;
@@ -285,7 +287,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       const invocationWarnings = new Map<string, RecoveryDiagnostic>();
       for (const candidate of candidates) {
         const source = path.join(generation, 'skills', candidate.name);
-        const tree = await validatePortableSkillDirectory(source);
+        const tree = materialized.validateSkillDirectory(candidate.name);
         const { metadata } = parsePortableSkillFrontmatter(tree.files['SKILL.md']!.toString('utf8'));
         if (metadata && typeof metadata === 'object') {
           const requested = Object.entries(metadata).flatMap(([feature, value]): FeatureRequirement[] => {
@@ -375,8 +377,9 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
 }
 
 export async function preparePortableRecovery(options: PortableRecoveryOptions,
-  catalogReadScope?: CatalogPreparationReadScope, generations?: Map<string, Promise<void>>): Promise<PortablePreparation> {
-  return collectPreparation(options, true, catalogReadScope, generations);
+  catalogReadScope?: CatalogPreparationReadScope, generations?: Map<string, Promise<void>>,
+  preparedResults?: PreparedArtifactRenderResults): Promise<PortablePreparation> {
+  return collectPreparation(options, true, catalogReadScope, generations, preparedResults);
 }
 export async function inspectPortableRecovery(options: PortableRecoveryOptions,
   catalogReadScope?: CatalogPreparationReadScope): Promise<PortablePreparation> {
@@ -503,7 +506,8 @@ export async function executePortableRecovery(options: {
     const read = async (): Promise<RecoveryDiagnostic | undefined> => {
       if (options.checkPrewrite) return options.checkPrewrite();
       const current = cleanup ? await preparePortableCleanup(prepared.cleanupOptions!)
-        : await collectPreparation({ ...prepared.options, signal, catalogOperationContext: undefined }, false);
+        : await collectPreparation({ ...prepared.options, signal, catalogOperationContext: undefined }, false,
+            new CatalogPreparationReadScope({ env: prepared.options.context.env, signal }));
       if (!await portableReviewMatches(prepared, current, progress.completed)) {
         return { code: 'operationReviewStale', message: 'Portable review inputs changed.' };
       }

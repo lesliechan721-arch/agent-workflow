@@ -4,6 +4,7 @@ try {
   const report = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
   const cell = (value) => String(value ?? '').replace(/[|\r\n<>]/gu, ' ').slice(0, 500);
   const lines = ['## Native qualification', '', `Core result: **${cell(report.status)}**`,
+    ...(report.reason ? [`Reason: ${cell(report.reason)}`] : []),
     `Acceptance policy: ${cell(report.acceptancePolicy?.id ?? 'legacy schema 1 policy')}`,
     `Candidate source: ${cell(report.candidate?.sourceSha ?? 'unverified')}`,
     `Host: ${cell(report.environment?.platform)} ${cell(report.environment?.arch)}`, '',

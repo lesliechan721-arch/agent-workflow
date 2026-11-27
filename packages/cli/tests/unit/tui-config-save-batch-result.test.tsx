@@ -16,7 +16,7 @@ import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { ConfigApplyInterruptedError } from '../../src/utils/plugin-config-write.js';
 import { skillInvocationWarning } from '../../src/utils/skill-invocation-warning.js';
 
-import { chooseConfigProfile, chooseConfigSave, openConfigSave } from '../helpers/tui-console-app-input.js';
+import { chooseConfigProfile, chooseConfigSave, openConfigSave, escape } from '../helpers/tui-console-app-input.js';
 
 afterEach(() => cleanup());
 
@@ -103,12 +103,6 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
     instance.stdin.write(value);
     await nextTurn(2);
   }
-}
-
-async function escape(instance: ReturnType<typeof render>): Promise<void> {
-  instance.stdin.write('\u001b');
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  await nextTurn(2);
 }
 
 describe('TUI config save batch result', () => {
