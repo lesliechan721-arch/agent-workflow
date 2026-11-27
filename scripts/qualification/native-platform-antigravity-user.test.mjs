@@ -166,7 +166,7 @@ test('records one requested public User scope after the direct User scenario pas
 });
 
 test('cannot hide incomplete public checks, cleanup or process failures behind direct success', async t => {
-  for (const patch of [{ status: 'unverified', reason: 'production-profile-unverified' }, { cleanup: 'failed' },
+  for (const patch of [{ status: 'unverified', reason: 'production-profile-unsupported' }, { cleanup: 'failed' },
     { commands: [{ exitCode: 0, processFailure: 'cleanup-unconfirmed' }] },
     { commands: [{ exitCode: 0, terminationReason: 'timeout', timedOut: true }] }]) await t.test(JSON.stringify(patch), async subtest => {
     const context = await fixture(subtest); const fake = nativeFixture(context); const client = { scopes: [], status: 'failed' };
@@ -187,10 +187,9 @@ test('retains Hosted User and actual production profile gates before public writ
     await assert.rejects(qualifyPublicAw({ platform: 'antigravity', scope, defer }), /antigravity-public-aw-limited-to-hosted-user/u);
   }
   process.env.GITHUB_ACTIONS = 'true';
-  const { getQualifiedPlatformProfile, getQualifiedKindsForScope } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
+  const { getQualifiedPlatformProfile } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
   const profile = getQualifiedPlatformProfile('antigravity');
-  const qualified = getQualifiedKindsForScope(profile, 'user').skill.status === 'supported'
-    && profile.qualifiedConsumers?.skill?.some(consumer => consumer.product === 'cli' && consumer.version === '1.3.4');
+  assert.equal(profile.kinds.skill.status, 'supported');
   const executable = path.join(context.root, `antigravity${process.platform === 'win32' ? '.exe' : ''}`);
   await fs.writeFile(executable, 'controlled acquired entry');
   const calls = [];
@@ -203,9 +202,8 @@ test('retains Hosted User and actual production profile gates before public writ
       return { data: { availability: [{ id: 'antigravity', availability: 'available', installations: [{ product: 'cli', version: '1.3.5',
         entry: { kind: 'cli', executable } }] }] } };
     } };
-  await assert.rejects(qualifyPublicAw(ctx), qualified ? /must discover the acquired fixed-version antigravity client/u : /public-aw-production-skill-profile-unverified/u);
-  assert.equal(calls.length, qualified ? 1 : 0);
-  if (!qualified) await assert.rejects(fs.stat(ctx.clientBin), { code: 'ENOENT' });
+  await assert.rejects(qualifyPublicAw(ctx), /must discover the acquired fixed-version antigravity client/u);
+  assert.equal(calls.length, 1);
 });
 
 test('fails candidate verification before acquisition or any client execution', async t => {

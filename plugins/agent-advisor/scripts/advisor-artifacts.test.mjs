@@ -20,10 +20,14 @@ const configured = {
 };
 
 function context(platform, scope, values, allowedOutputKinds = ['skill', 'agent', 'mcp', 'hook', 'instruction']) {
+  const agentNamingMode = ['opencode', 'generic'].includes(platform) ? 'unsupported' : platform === 'claude' ? 'host-plugin' : 'aw-prefix';
+  const filePrefix = agentNamingMode === 'aw-prefix' ? 'aw-fixture-agent-advisor-' : '';
   return {
-    schemaVersion: 2, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
+    schemaVersion: 3, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
     resources: ['./shared', `./skills/${skillName}`].map((name) => ({ kind: 'bundle', name, root: path.join(root, name) })),
-    platformCapabilities: { schemaVersion: 2, platform, scope },
+    plugin: { pluginId: 'fixture/agent-advisor' },
+    agentNaming: { mode: agentNamingMode, filePrefix, invocationPrefix: agentNamingMode === 'host-plugin' ? 'agent-advisor:' : filePrefix },
+    platformCapabilities: { schemaVersion: 3, platform, scope, agentNamingMode },
     config: { values },
   };
 }

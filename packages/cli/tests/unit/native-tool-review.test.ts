@@ -11,13 +11,13 @@ import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { buildRebuildReceiptJson } from '../../src/output/command-receipt.js';
 import type { CatalogResolution } from '../../src/types.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 
 // Test Value Gate: actual producer preparation must expose added, changed and removed native execution
 // authority through installation Review and the public receipt, even when the protocol is unchanged.
 describe('native producer Review and receipt', () => {
   it('shows added, changed and removed native requirements for the shared command package', async () => {
-    installNativeTestQualification({ platforms: ['opencode'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['opencode'] });
     const isolated = await createIsolatedTestEnv();
     const sessions: Map<string, import('../../src/utils/plugin-scripts.js').PluginProcessResult>[] = [];
     try {

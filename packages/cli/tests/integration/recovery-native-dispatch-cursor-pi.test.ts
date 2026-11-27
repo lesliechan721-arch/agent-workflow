@@ -245,8 +245,16 @@ describe('Cursor and Pi native recovery', () => {
     const bin = path.join(cwd, 'bin');
     const env = { ...isolation.env, PATH: bin };
     await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'fixture entry', { mode: 0o755 });
+    const skill = { id: 'review-guide', name: 'review-guide', kind: 'skill', requires: [{ feature: 'component.kind.agent' }],
+      content: { files: { 'SKILL.md': { text: '---\nname: review-guide\ndescription: Use the installed reviewer.\n---\nReview the work.\n' },
+        'README.md': { text: 'Use the reviewer.' } } } };
+    await fs.outputFile(path.join(source, 'plugins/roles/render.mjs'), `import fs from 'node:fs';
+const { allowedOutputKinds } = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('skill') ? [${JSON.stringify(skill)}] : [],omitted:[],unmet:[]}));`);
     await createCatalogSnapshotFixture(source, 'roles', [], 'Pi roles.', (manifest) => {
       manifest.platforms = ['pi'];
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
       manifest.extensions = { agents: [{ name: 'reviewer', description: 'Review the work.', prompt: 'Check the work.' }] };
     });
     const config = await readCatalogSourcesConfigSnapshot(env);
@@ -279,12 +287,13 @@ describe('Cursor and Pi native recovery', () => {
       const result = await runCliEntry(['plugin', ...args, '--context', 'user', '--json'], { cwd, env, nativeCliRunner, interactive: false });
       return { exitCode: result.exitCode, value: result.parseJsonStdout<CommandResult>() };
     };
-    const role = { target: 'pi', scope: 'user', satisfaction: 'installed', installedComponentCount: 1,
-      installedComponentIds: ['agent:reviewer'] };
+    const role = { target: 'pi', scope: 'user', satisfaction: 'installed', installedComponentCount: 2,
+      installedComponentIds: expect.arrayContaining(['agent:reviewer', 'review-guide']) };
     const notice = (reasonCode: string) => expect.objectContaining({ code: 'piAgentConsumerUnavailable', severity: 'warning', detail: { reasonCode } });
     const install = await aw('install', 'local/roles', '--scope', 'user', '--yes');
     expect(install, JSON.stringify(install)).toMatchObject({ exitCode: 0, value: { diagnostics: expect.arrayContaining([notice('piAgentConsumerMissing')]),
       data: { remainingTargets: [], targetResults: [role] } } });
+    expect(await fs.readFile(path.join(packageRoot, 'skills/review-guide/SKILL.md'), 'utf8')).toContain('Review the work.');
     const agentRoot = path.join(packageRoot, 'agents');
     const [agentFile] = await fs.readdir(agentRoot);
     const rolePath = path.join(agentRoot, agentFile!);
@@ -306,6 +315,14 @@ describe('Cursor and Pi native recovery', () => {
     expect(await assertStatus()).toContainEqual(notice('piAgentConsumerDisabled'));
     await fs.outputJson(settings, { packages: [registration, extension] });
     expect((await assertStatus()).map(({ code }) => code)).not.toContain('piAgentConsumerUnavailable');
+    const extensionSettings = path.join(root, 'subagents.json');
+    await fs.outputJson(extensionSettings, { packageAgents: false });
+    expect(await assertStatus()).toContainEqual(notice('piAgentPackageAccessDenied'));
+    await fs.writeFile(extensionSettings, '{');
+    const unreadable = await assertStatus();
+    expect(unreadable.map(({ code }) => code)).toContain('piConfigurationUnconfirmed');
+    expect(unreadable).toContainEqual(notice('piConfigurationUnconfirmed'));
+    await fs.writeJson(extensionSettings, {});
     const sync = await aw('sync', 'local/roles', '--yes');
     expect(sync, JSON.stringify(sync)).toMatchObject({ exitCode: 0, value: { data: { remainingTargets: [], changes: { outputs: 'none' } } } });
     expect(installs).toBe(1);

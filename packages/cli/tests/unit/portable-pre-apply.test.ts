@@ -76,18 +76,7 @@ async function fixture(platforms: FixtureTarget[], dependency = false, options: 
   };
   const runtime = () => {
     const context = { ...createCommandExecutionContext({ env, nativeCliRunner }), platformRebuildSession: undefined as PlatformRebuildSession | undefined };
-    // Synthetic qualification only; use the real discovery, package projection and lifecycle.
-    context.platformRebuildSession = new PlatformRebuildSession(context, (platform) => {
-      const adapter = getAgentPluginAdapter(platform);
-      if (platform === 'antigravity') return adapter;
-      return { ...adapter, capabilities: (input) => {
-        const profile = structuredClone(input.profile);
-        delete profile.qualifiedConsumers;
-        delete profile.qualificationEvidence;
-        profile.kinds.skill = { ...profile.kinds.skill, status: 'supported', reasonCodes: [] };
-        return adapter.capabilities({ ...input, profile });
-      } };
-    });
+    context.platformRebuildSession = new PlatformRebuildSession(context);
     sessions.push(context.platformRebuildSession);
     return context;
   };
@@ -202,21 +191,11 @@ describe('Native and generic preApply execution', () => {
     if (platform === 'generic') {
       expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
     } else {
-      const cursorCliQualified = (process.platform === 'darwin' && process.arch === 'arm64')
-        || (process.platform === 'linux' && process.arch === 'x64');
-      const ready = platform === 'antigravity' || platform === 'pi' || platform === 'opencode'
-        || (platform === 'cursor' && cursorCliQualified);
-      if (ready) {
-        expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
-        expect(status.value).toMatchObject({ command: 'plugin.status', status: 'success', data: {
-          context: 'project', counts: { ready: 1, blocked: 0, unconfirmed: 0, pending: 0 },
-          allSatisfied: true, inSync: true,
-        } });
-      } else {
-        // Test-only write qualification does not change the read-only profile.
-        expect([3, 4], JSON.stringify(status.value)).toContain(status.exitCode);
-        expect(status.value).toMatchObject({ command: 'plugin.status', data: { context: 'project', counts: { ready: 0 } } });
-      }
+      expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
+      expect(status.value).toMatchObject({ command: 'plugin.status', status: 'success', data: {
+        context: 'project', counts: { ready: 1, blocked: 0, unconfirmed: 0, pending: 0 },
+        allSatisfied: true, inSync: true,
+      } });
       expect(status.value.data.inventory).toContainEqual(expect.objectContaining({ pluginId: 'team/demo',
         targetResults: expect.arrayContaining([expect.objectContaining({ target: platform, scope: 'project',
           execution: 'not-run', deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
@@ -244,8 +223,8 @@ describe('Native and generic preApply execution', () => {
         }));
       } else if (platform === 'opencode') {
         expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationRequired', severity: 'warning' }));
-      } else if (status.value.diagnostics.length) {
-        expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
+      } else {
+        expect(status.value.diagnostics).toEqual([]);
       }
     }
     expect(await f.events()).toHaveLength(1);

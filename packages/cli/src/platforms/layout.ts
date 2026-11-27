@@ -151,6 +151,20 @@ export async function getDeploymentLayout(ctx: ReadContext, binding: DeploymentB
       kinds = ['skill'];
       break;
   }
+  if (ctx.confirmedCatalogRetirement && marketplaceRoot) {
+    // Check declared paths before canonicalization could follow a substituted
+    // package, activation or supplement directory into another scope.
+    await assertSafeFileMutationPath({ filePath: path.join(packageRoot, SKILL_OWNER_MARKER),
+      allowedRoot: awRoot, label: 'Native retirement package' });
+    if (scope.kind === 'project' && activationPath === hostRoot) throw new Error('nativeRetirementScopeAlias');
+    const configName = binding.platform === 'codex' ? 'config.toml' : scope.kind === 'project' ? 'settings.local.json' : 'settings.json';
+    await assertSafeFileMutationPath({ filePath: path.join(activationPath, configName),
+      allowedRoot: scope.kind === 'project' ? scope.projectRoot : hostRoot, label: 'Native retirement configuration' });
+    if (supplementRoot) {
+      await assertSafeFileMutationPath({ filePath: path.join(supplementRoot, SKILL_OWNER_MARKER),
+        allowedRoot: scope.kind === 'project' ? scope.projectRoot : hostRoot, label: 'Native retirement supplement' });
+    }
+  }
   // Keep the declared Project path. A symlink introduced in the plugin slot
   // is a collision for the directory owner reader.
   if (!isAntigravityProjectDirectory(binding)) {

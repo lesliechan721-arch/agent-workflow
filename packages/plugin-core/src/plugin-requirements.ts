@@ -11,6 +11,8 @@ import {
   type RegisteredAwCapabilityId,
 } from './aw-capabilities.js'
 import { resolvePlatformHookDefinitions } from './hooks-contract.js'
+import { scanSkillCollectionAgentReferences } from './skill-agent-source.js'
+import { SKILL_AGENT_PLACEHOLDER_CAPABILITY } from './agent-placeholders.js'
 import { parseManagedCommandPlaceholders } from './managed-commands.js'
 import { resolveSupportedNativePlatforms, resolveSupportedPlatforms, isPortablePlatformTarget } from './platform-support.js'
 import type { NormalizedPluginManifest, PluginConfigSchemaField, PluginManifestSource } from './types.js'
@@ -108,7 +110,7 @@ export function deriveAwCapabilitiesFromManifest(
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if (manifest.scripts?.config?.suggestions) capabilities.push('aw.plugin-config-suggestions.v2')
-  if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v2')
+  if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v3')
   if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
   return normalizeAwCapabilities(capabilities)
@@ -261,10 +263,17 @@ function manifestExecutableCommands(
   return [...commands].sort().map(scanAwCommand)
 }
 
-export async function scanPluginAwCliRequirements(options: {
+interface PluginRequirementScanOptions {
   pluginRoot: string
   manifest: PluginManifestSource | NormalizedPluginManifest
-}): Promise<{ detected: AwCapabilityId[]; observations: PluginRequirementObservation[] }> {
+}
+
+export async function scanPluginAwCliRequirements(options: PluginRequirementScanOptions): Promise<{ detected: AwCapabilityId[]; observations: PluginRequirementObservation[] }> {
+  return scanPluginAwCliRequirementsWithMainFiles(options)
+}
+
+async function scanPluginAwCliRequirementsWithMainFiles(options: PluginRequirementScanOptions,
+  skillMains?: Map<string, string>): Promise<{ detected: AwCapabilityId[]; observations: PluginRequirementObservation[] }> {
   const observations: PluginRequirementObservation[] = []
   const observationKeys = new Set<string>()
   const detected: AwCapabilityId[] = []
@@ -332,15 +341,12 @@ export async function scanPluginAwCliRequirements(options: {
   for (const scanned of manifestExecutableCommands(options.manifest)) {
     record('.agents-plugin/plugin.json', 'manifest-executable', scanned)
   }
-  const skillCollections = new Set([
-    options.manifest.skills,
-  ].filter((value): value is "./skills" => value !== undefined))
-  const skillFiles = (await Promise.all(
-    [...skillCollections].map((value) => actualSkillMainFiles(options.pluginRoot, value)),
-  )).flat()
-  for (const file of [...new Set(skillFiles)].sort()) {
-    const relativePath = path.relative(options.pluginRoot, file).split(path.sep).join('/')
-    const content = await fs.readFile(file, 'utf8')
+  if (!skillMains) {
+    const files = options.manifest.skills ? await actualSkillMainFiles(options.pluginRoot, options.manifest.skills) : []
+    skillMains = new Map(await Promise.all(files.map(async (file) =>
+      [path.relative(options.pluginRoot, file).split(path.sep).join('/'), await fs.readFile(file, 'utf8')] as const)))
+  }
+  for (const [relativePath, content] of [...skillMains.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     if (parseManagedCommandPlaceholders(content).length > 0) {
       if (!options.manifest.command) throw new Error(`Invalid ${relativePath}: {{aw.command}} requires a command declaration.`)
       detected.push('aw.managed-commands.v2')
@@ -367,8 +373,16 @@ export async function resolvePluginRequirements(options: {
     options.manifest.requires?.aw.capabilities ?? [],
     'requires.aw.capabilities',
   )
-  const derived = deriveAwCapabilitiesFromManifest(options.manifest)
-  const scan = await scanPluginAwCliRequirements(options)
+  // The static Agent scan visits every runtime Markdown file. Reuse the main
+  // documents for the existing command-requirement scan rather than rereading them.
+  const skillMains = new Map<string, string>()
+  const agentReferences = options.manifest.skills ? await scanSkillCollectionAgentReferences(options.pluginRoot,
+    (file, text) => skillMains.set(file, text)) : undefined
+  const derived = normalizeAwCapabilities([
+    ...deriveAwCapabilitiesFromManifest(options.manifest),
+    ...(agentReferences?.size ? [SKILL_AGENT_PLACEHOLDER_CAPABILITY] : []),
+  ])
+  const scan = await scanPluginAwCliRequirementsWithMainFiles(options, skillMains)
   const effective = normalizeAwCapabilities([...declared, ...derived])
   const implemented = new Set(normalizeAwCapabilities(options.implementedCapabilities))
   return {

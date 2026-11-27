@@ -28,17 +28,19 @@ import { observePreferences, writePreferences } from '../../src/intent/deploymen
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { intentOnlyOfflineCleanupEvidence } from '../../src/commands/offline-cleanup-evidence.js';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 import { readManagedCommandPackageView, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 
-function removedEvidence() {
+function removedEvidence(platforms: Array<'codex' | 'claude' | 'opencode' | 'cursor' | 'antigravity' | 'grok'> = []) {
   return { pluginId: 'local/demo', pluginName: 'demo', sourceId: 'local',
     sourceIdentity: 'sha256:source', logicalIdentity: 'sha256:logical', snapshotDigest: 'sha256:snapshot',
-    marketplaceRoot: '/tmp/marketplace', nativeOwnershipVerified: false,
-    projectionOwnershipVerified: false, claudeNativeCleanupBlocked: false, nativeState: 'absent',
-    nativeObservationFingerprint: 'native', marketplaceEvidenceFingerprint: 'market',
-    projectionFingerprint: 'projection', projectionPresent: false, activationScopes: [],
-    configTargets: [], evidence: [], blockers: [] };
+    confirmedCatalogRetirement: true, nativePlatforms: platforms, marketplaceNames: {},
+    projectionFingerprint: 'projection',
+    configTargets: [], evidence: platforms.map((platform) => intentOnlyOfflineCleanupEvidence({
+      pluginId: 'local/demo', pluginName: 'demo', sourceId: 'local', sourceIdentity: 'sha256:source',
+      platform, scope: 'user',
+    })), blockers: [] };
 }
 function location() {
   const isolation = getCurrentSourceTestIsolation();
@@ -140,7 +142,7 @@ describe('retire strong state and residue', () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
     const physicalPath = path.join(options.env.HOME!, '.agents', 'skills', 'demo');
-    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.inspect.mockImplementation(async () => removedEvidence(['codex']));
     backend.portable.mockResolvedValue({ state: 'present', blockers: [], targets: [
       { skill: 'demo', agent: 'generic', physicalPath },
     ] });
@@ -267,7 +269,7 @@ describe('retire strong state and residue', () => {
   it('does not turn retained shared Native content into a verified absence', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
-    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.inspect.mockImplementation(async () => removedEvidence(['codex']));
     backend.execute.mockResolvedValue({ overallState: 'partial', rebuildResults: [],
       targetResults: [{ target: { pluginId: 'local/demo', pluginName: 'demo',
         platform: 'codex', scope: 'user' }, action: 'keep', state: 'completed' }],
@@ -289,7 +291,7 @@ describe('retire strong state and residue', () => {
   it.each(['opencode', 'cursor', 'antigravity', 'grok'] as const)('completes %s directory retirement without inventing disabled activation', async (platform) => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
-    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.inspect.mockImplementation(async () => removedEvidence([platform]));
     const after = { physicalKey: 'directory-package', package: 'absent', registration: 'not-applicable', ownership: 'absent',
       components: [], nativeIdentity: null, diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } },
       consumers: [{ productId: 'cli', activationKey: 'directory', activation: 'unknown', load: 'unknown' }] };
@@ -313,7 +315,7 @@ describe('retire strong state and residue', () => {
   it('attributes a partial Native retirement only to the target that retained output', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
-    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    backend.inspect.mockImplementation(async () => removedEvidence(['codex', 'claude']));
     backend.execute.mockResolvedValue({ overallState: 'partial',
       rebuildResults: [
         { status: 'succeeded', command: 'cleanup', target: { pluginId: 'local/demo', pluginName: 'demo',

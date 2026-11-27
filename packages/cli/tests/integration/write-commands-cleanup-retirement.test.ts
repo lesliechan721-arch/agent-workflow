@@ -1,8 +1,9 @@
 import { writeIntentFixture, readIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { createNativeTestExecution, getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { realpath } from 'node:fs/promises';
+import { promises as nodeFs } from 'node:fs';
 import { render } from 'ink-testing-library';
 import { runRecovery } from '../../src/recovery/coordinator.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
@@ -15,7 +16,8 @@ import { createEmptyPreferences, observePreferences, resolvePreferencesPath, wri
 import { observeIntent, removeRoot } from '../../src/intent/intent-store.js';
 import { portableJsonDigest } from '../../src/portable/historical-materialization.js';
 import { observePortableSkill, portableOwnedTreeDigest, publishPortableSkill } from '../../src/portable/writer.js';
-import { runRebuildCommand } from '../../src/commands/rebuild-command.js';
+import { executeRemovedPluginOutputCleanup, inspectRemovedPluginCleanup, runRebuildCommand, type RemovedPluginCleanupPreparation } from '../../src/commands/rebuild-command.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
 import { statusCommandV8 } from '../../src/commands/status-v6.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -43,9 +45,10 @@ import {
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
-import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
+import { validateCatalogSnapshotComplete, validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
@@ -114,7 +117,7 @@ async function writeEmptyAgentProbeRenderer(options: { pluginRoot: string; count
 describe('five namespaced write commands', () => {
   let defaultNativeRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
@@ -1331,19 +1334,16 @@ describe('five namespaced write commands', () => {
       selector: 'official/demo', targets: ['codex'], yes: true,
     }, runtime);
     expect(retired).toMatchObject({ kind: 'aw-recovery', command: 'intent:retire',
-      declarationChanged: true, configChanged: false });
+      ok: true, declarationChanged: true, configChanged: false });
     const config = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins[await nativeRegistrationId("demo", "official")]?.enabled).toBe(false);
+    expect(config.snapshot.plugins[await nativeRegistrationId("demo", "official")]).toBeUndefined();
     expect((await readFixtureRequirements({ scope: 'user', cwd: options.cwd,
       env: isolation.env })).roots).toEqual([]);
     const after = await statusCommandV8({
       ...options, plugins: ['demo'], env: isolation.env,
     });
-    expect(after.payload.errors).toEqual([]);
-    expect(after.payload.targets).toEqual([expect.objectContaining({
-      pluginId: 'official/demo', state: 'blocked',
-      reasons: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginCleanupRequired' })]),
-    })]);
+    expect(after.payload.errors).toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
+    expect(after.payload.targets).toEqual([]);
     const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1353,10 +1353,207 @@ describe('five namespaced write commands', () => {
     await controller.load();
     expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId),
       JSON.stringify({ retired, scopedInventories: controller.snapshot.scopedInventories }))
-      .toContain('official/demo');
+      .not.toContain('official/demo');
     expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })
       .map((plugin) => plugin.pluginId)).not.toContain('official/demo');
     controller.dispose();
+  });
+
+  // Test Value Gate: Active can change even when deployment ownership and
+  // absence of the selected plugin are unchanged. Both write entrances must
+  // reject the now-stale authorized retirement without removing any output.
+  it('rechecks the frozen Active snapshot at both retirement execution entrances', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout } = isolation;
+    const cwd = layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'retirement-active-stale');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const scope = 'user' as const;
+    await expect(installFixturePlugin(['team/demo'], { cwd, scope, platform: 'codex' }, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env });
+    const options = { scope, cwd, env, selector: 'team/demo', targets: ['codex'] };
+    const review = await prepareRetire(options, runtime);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope });
+    const outputReview = await inspectRemovedPluginCleanup({
+      scope, cwd, env, inventory, pluginId: 'team/demo', nativeCliRunner: runtime.nativeCliRunner,
+    });
+    expect(outputReview).not.toBeNull();
+    expect(outputReview?.snapshotDigest).toBe(active.snapshotDigest);
+    const packagePath = (await nativeFixtureLayout('demo', 'team', scope, 'codex')).packageRoot;
+    const beforePackage = await snapshotRegularTree(packagePath);
+    const beforeIntent = await observeIntent({ cwd, env, scope });
+    const configPath = path.join(env.CODEX_HOME!, 'config.toml');
+    const beforeConfig = await fs.readFile(configPath);
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }, { name: 'newly-added' }]);
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+    const next = await resolveActiveCatalogGeneration({ sourceId: 'team', env });
+    expect(next.snapshotDigest).not.toBe(active.snapshotDigest);
+    expect(next.manifest.entries.map((entry) => entry.name)).not.toContain('demo');
+    const stale = await executeRetire(review, { yes: true });
+    expect(stale.blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewStale' }));
+    const context = await createScopeContext({ cwd, env, scope });
+    try {
+      await expect(executeRemovedPluginOutputCleanup({
+        target: outputReview!, context, selectedTargets: [{ pluginId: 'team/demo', platform: 'codex', scope }],
+        runtime,
+      })).rejects.toThrow('operationReviewStale');
+    } finally {
+      await context.dispose();
+    }
+    expect(await observeIntent({ cwd, env, scope })).toEqual(beforeIntent);
+    expect(await fs.readFile(configPath)).toEqual(beforeConfig);
+    expect(await snapshotRegularTree(packagePath)).toEqual(beforePackage);
+    expect(runtime.installed.has(await nativeRegistrationId('demo'))).toBe(true);
+  });
+
+  // Test Value Gate: a valid transport digest is not enough to authorize
+  // retirement. The shared inspector must reject incomplete bundle semantics,
+  // while both execution entrances preserve the previously reviewed outputs.
+  it('rejects retirement when a transport-valid Active disagrees with its bundle', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const sourceRoot = path.join(cwd, 'retirement-incomplete-active');
+    const remaining = [{ name: 'leaf' }, { name: 'root', dependencies: ['leaf'] }];
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, ...remaining]);
+    const initial = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const scope = 'user' as const;
+    await expect(installFixturePlugin(['team/demo'], { cwd, scope, platform: 'codex' }, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, remaining);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+    const options = { scope, cwd, env, selector: 'team/demo', targets: ['codex'] };
+    const inspect = async (preparation?: RemovedPluginCleanupPreparation) => inspectRemovedPluginCleanup({ scope, cwd, env,
+      inventory: await inventoryCatalogSourceReferences({ cwd, env, scope }),
+      pluginId: 'team/demo', nativeCliRunner: runtime.nativeCliRunner, preparation });
+    const review = await prepareRetire(options, runtime);
+    expect(review.receipt.blockers).toEqual([]);
+    const outputReview = await inspect();
+    expect(outputReview?.confirmedCatalogRetirement).toBe(true);
+    const catalogReadScope = new CatalogPreparationReadScope({ env });
+    const preparation = { catalogReadScope, catalogOperationContext: await catalogReadScope.resolve({}) };
+    await expect(inspect(preparation)).resolves.toMatchObject({
+      confirmedCatalogRetirement: true, snapshotDigest: outputReview!.snapshotDigest,
+    });
+
+    const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    catalogManifest.entries.find((entry: { name: string }) => entry.name === 'root').dependencies = [];
+    await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env });
+    await expect(validateCatalogSnapshotTransport(active.snapshotPath)).resolves.toMatchObject({ snapshotDigest: active.snapshotDigest });
+    await expect(validateCatalogSnapshotComplete(active.snapshotPath)).rejects.toThrow(/dependencies.*does not match its plugin bundle/u);
+    expect(active.manifest.entries.map((entry) => entry.name)).not.toContain('demo');
+    const deployment = await nativeFixtureLayout('demo', 'team', scope, 'codex');
+    const before = {
+      intent: await observeIntent({ cwd, env, scope }),
+      package: await snapshotRegularTree(deployment.packageRoot),
+      manifest: await fs.readFile(path.join(deployment.marketplaceRoot!, '.agents', 'plugins', 'marketplace.json')),
+      config: await fs.readFile(path.join(env.CODEX_HOME!, 'config.toml')),
+    };
+    expect(await inspect()).toBeNull();
+    // A changed Active must not inherit the previous generation's Complete evidence.
+    expect(await inspect(preparation)).toBeNull();
+    // Reusing a current Transport read must still establish Complete semantics.
+    const currentReadScope = new CatalogPreparationReadScope({ env });
+    expect(await inspect({ catalogReadScope: currentReadScope,
+      catalogOperationContext: await currentReadScope.resolve({}) })).toBeNull();
+    const blocked = await runRetire({ ...options, yes: true }, runtime);
+    expect(blocked).toMatchObject({ ok: false, declarationChanged: false, outputsMayHaveChanged: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'removedPluginActiveUnavailable' })]) });
+    const stale = await executeRetire(review, { yes: true });
+    expect(stale.blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewStale' }));
+    const context = await createScopeContext({ cwd, env, scope });
+    try {
+      await expect(executeRemovedPluginOutputCleanup({ target: outputReview!, context,
+        selectedTargets: [{ pluginId: 'team/demo', platform: 'codex', scope }], runtime }))
+        .rejects.toThrow('operationReviewStale');
+    } finally {
+      await context.dispose();
+    }
+    expect(await observeIntent({ cwd, env, scope })).toEqual(before.intent);
+    expect(await snapshotRegularTree(deployment.packageRoot)).toEqual(before.package);
+    expect(await fs.readFile(path.join(deployment.marketplaceRoot!, '.agents', 'plugins', 'marketplace.json'))).toEqual(before.manifest);
+    expect(await fs.readFile(path.join(env.CODEX_HOME!, 'config.toml'))).toEqual(before.config);
+    expect(runtime.installed.has(deployment.nativeIdentity.registrationId!)).toBe(true);
+  });
+
+  // Test Value Gate: the lock covers a multi-selector public remove, so each
+  // reviewed plugin must survive legitimate changes to sibling entries while
+  // changes to its own current deployment still invalidate the Review.
+  it('retires two same-source selectors in one public remove but rejects changes to the reviewed target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout: { fixtureCwd: cwd } } = isolation;
+    const sourceRoot = path.join(cwd, 'retirement-same-source-batch');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'second' }, { name: 'other' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const scope = 'user' as const;
+    await expect(installFixturePlugin(['team/demo', 'team/second', 'team/other'], { cwd, scope, platform: 'codex' }, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    for (const name of ['demo', 'second']) await fs.remove(path.join(sourceRoot, 'plugins', name));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+    const demo = await nativeFixtureLayout('demo', 'team', scope, 'codex');
+    const second = await nativeFixtureLayout('second', 'team', scope, 'codex');
+    const other = await nativeFixtureLayout('other', 'team', scope, 'codex');
+    const manifestPath = path.join(demo.marketplaceRoot!, '.agents', 'plugins', 'marketplace.json');
+    const manifestBefore = await fs.readFile(manifestPath);
+    const sibling = (await fs.readJson(manifestPath)).plugins.find((entry: { name: string }) => entry.name === 'other');
+    expect(sibling).toBeDefined();
+    const beforeIntent = await observeIntent({ cwd, env, scope });
+    const beforeSecond = await snapshotRegularTree(second.packageRoot);
+    const beforeOther = await snapshotRegularTree(other.packageRoot);
+    const review = await prepareRetire({ scope, cwd, env, selector: 'team/second', targets: ['codex'] }, runtime);
+    expect(review.receipt.blockers).toEqual([]);
+    const manifest = await fs.readJson(manifestPath);
+    const entry = manifest.plugins.find((candidate: { name: string }) => candidate.name === 'second');
+    expect(entry).toBeDefined();
+    entry.description = 'Changed target marketplace entry after Review.';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const changedManifest = await fs.readFile(manifestPath);
+    const stale = await executeRetire(review, { yes: true });
+    expect(stale).toMatchObject({ ok: false, declarationChanged: false, outputsMayHaveChanged: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+    expect(await observeIntent({ cwd, env, scope })).toEqual(beforeIntent);
+    expect(await fs.readFile(manifestPath)).toEqual(changedManifest);
+    expect(await snapshotRegularTree(second.packageRoot)).toEqual(beforeSecond);
+    expect(runtime.installed.has(second.nativeIdentity.registrationId!)).toBe(true);
+    await fs.outputFile(manifestPath, manifestBefore);
+
+    const result = await runPublicLifecycle('remove', ['team/demo', 'team/second'], {
+      cwd, env, cliVersion: '1.0.0', scope, context: 'user', yes: true,
+    }, runtime);
+    expect(result.status, JSON.stringify(result)).toBe('success');
+    expect(result.data).toMatchObject({ remainingTargets: [], targetResults: expect.arrayContaining(
+      ['team/demo', 'team/second'].map((pluginId) => expect.objectContaining({ pluginId, scope, target: 'codex',
+        deploymentReceipts: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+          package: 'absent', registration: 'absent',
+        }) })]),
+      })),
+    ) });
+    expect(await readFixtureRequirements({ cwd, env, scope })).toMatchObject({ roots: [{ pluginId: 'team/other' }] });
+    for (const deployment of [demo, second]) {
+      expect(await fs.pathExists(deployment.packageRoot)).toBe(false);
+      expect(runtime.installed.has(deployment.nativeIdentity.registrationId!)).toBe(false);
+    }
+    expect((await fs.readJson(manifestPath)).plugins).toEqual([sibling]);
+    expect(await snapshotRegularTree(other.packageRoot)).toEqual(beforeOther);
+    expect(runtime.installed.has(other.nativeIdentity.registrationId!)).toBe(true);
   });
 
   it('reviews both scopes and deletes only the removed plugin settings and Intent', async () => {
@@ -1558,18 +1755,20 @@ describe('five namespaced write commands', () => {
       selector: 'official/demo', targets: ['codex'], yes: true };
     const failed = await runRetire(retireOptions, runtime);
     expect(failed.ok, JSON.stringify(failed)).toBe(false);
-    expect(failed.targetResults[0]?.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'sharedNativePreserved' }),
-    ]));
+    expect(failed.remainingTargets).toContainEqual(expect.objectContaining({
+      pluginId: 'official/demo', agent: 'codex', scope: 'user',
+    }));
+    expect(failed.recoveryActions).toContain('aw plugin remove official/demo --scope user');
     expect(runtime.installed.has(await nativeRegistrationId("demo", "official"))).toBe(true);
     expect(await fs.pathExists((await nativeFixtureLayout("demo", "official", "project", "codex")).packageRoot))
       .toBe(true);
     runtime.nativeCliRunner.mockImplementation(workingRunner);
     const recovered = await runRetire(retireOptions, runtime);
-    expect(recovered.command).toBe('intent:retire');
-    expect(runtime.installed.has(await nativeRegistrationId("demo", "official"))).toBe(true);
+    expect(recovered).toMatchObject({ command: 'intent:retire', ok: true, remainingTargets: [] });
+    expect(runtime.installed.has(await nativeRegistrationId("demo", "official"))).toBe(false);
     expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins[await nativeRegistrationId("demo", "official")]?.enabled).toBe(false);
+      .snapshot.plugins[await nativeRegistrationId("demo", "official")]).toBeUndefined();
+    expect(await fs.pathExists((await nativeFixtureLayout("demo", "official", "user", "codex")).packageRoot)).toBe(false);
     expect((await readFixtureRequirements({ scope: 'user', cwd: selected.cwd, env: isolation.env })).roots)
       .toEqual([]);
   });
@@ -1676,13 +1875,15 @@ describe('five namespaced write commands', () => {
     expect(runtime.installed.has(await nativeRegistrationId("demo", "official"))).toBe(true);
     runtime.nativeCliRunner.mockImplementation(workingRunner);
     const recovered = await runRetire(retireOptions, runtime);
-    expect(recovered.command).toBe('intent:retire');
+    expect(recovered).toMatchObject({ command: 'intent:retire', ok: true, remainingTargets: [] });
     expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins[await nativeRegistrationId("demo", "official")]?.enabled).toBe(false);
-    expect(await fs.pathExists(projection)).toBe(true);
+      .snapshot.plugins[await nativeRegistrationId("demo", "official")]).toBeUndefined();
+    expect(await fs.pathExists(projection)).toBe(false);
   });
 
-  it('retires removed Claude demand one scope at a time and preserves the shared package', async () => {
+  // Test Value Gate: when the local unregister commits before a failed User
+  // unregister, the receipt must retain partial output changes and a retry path.
+  it.each([false, true])('retires removed Claude demand across scopes and preserves unrelated plugins (User uninstall initially fails=%s)', async (failUserUninstall) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-claude-source');
     const definitions = ['demo', 'other'].map((name) => ({
@@ -1719,27 +1920,49 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
-    const projectRetired = await runRetire({ scope: 'project', cwd, env: isolation.env,
-      selector: 'official/demo', targets: ['claude'], yes: true }, runtime);
-    expect(projectRetired.declarationChanged).toBe(true);
+    const selectedNativeId = await nativeRegistrationId('demo', 'official', 'claude');
+    const retireOptions = { scope: 'project' as const, cwd, env: isolation.env,
+      selector: 'official/demo', targets: ['claude'], yes: true };
+    if (failUserUninstall) {
+      const workingRunner = nativeCliRunner.getMockImplementation()!;
+      nativeCliRunner.mockImplementation(async (invocation) => {
+        const args = invocation.args;
+        if (isClaudeInvocation(invocation) && args.includes('uninstall') && args.includes(selectedNativeId)
+          && args[args.indexOf('--scope') + 1] === 'user') {
+          return { exitCode: 1, stdout: '', stderr: 'Simulated User uninstall failure.' };
+        }
+        return workingRunner(invocation);
+      });
+      const failed = await runRetire(retireOptions, runtime);
+      const records = (await fs.readJson(installedPath)).plugins[selectedNativeId];
+      expect(records).toEqual([expect.objectContaining({ scope: 'user' })]);
+      expect(await fs.pathExists((await nativeFixtureLayout('demo', 'official', 'project', 'claude')).packageRoot)).toBe(true);
+      expect(failed).toMatchObject({ ok: false, outputsMayHaveChanged: true,
+        targetResults: [expect.objectContaining({ agent: 'claude', execution: 'partial' })],
+        recoveryActions: expect.arrayContaining(['aw plugin remove official/demo --scope project']),
+      });
+      nativeCliRunner.mockImplementation(workingRunner);
+    }
+    const projectRetired = await runRetire(retireOptions, runtime);
+    expect(projectRetired).toMatchObject({ declarationChanged: !failUserUninstall, ok: true });
     expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
       .toContainEqual(expect.objectContaining({ pluginId: 'official/demo' }));
     const userRetired = await runRetire({ scope: 'user', cwd, env: isolation.env,
       selector: 'official/demo', targets: ['claude'], yes: true }, runtime);
-    expect(userRetired.declarationChanged).toBe(true);
+    expect(userRetired).toMatchObject({ declarationChanged: true, ok: true });
     expect((await readFixtureRequirements({ scope: 'project', cwd, env: isolation.env })).roots).toEqual([]);
     expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
       .toEqual([expect.objectContaining({ pluginId: 'official/other' })]);
-    const selectedNativeId = await nativeRegistrationId('demo', 'official', 'claude');
     const uninstallScopes = nativeCliRunner.mock.calls.filter(([invocation]) => {
       const args = invocation.args.slice(invocation.args.indexOf('plugin'));
       return isClaudeInvocation(invocation) && args[0] === 'plugin'
         && args[1] === 'uninstall' && args[2] === selectedNativeId;
     })
       .map(([invocation]) => invocation.args[invocation.args.indexOf('--scope') + 1]);
-    expect(uninstallScopes).toEqual([]);
+    expect(uninstallScopes).toEqual(failUserUninstall ? ['local', 'user', 'user'] : ['local', 'user']);
     const after = await fs.readJson(installedPath) as { plugins: Record<string, unknown[]> };
-    expect(after.plugins[await nativeRegistrationId("demo", "official", "claude")]).toEqual(before.plugins[await nativeRegistrationId("demo", "official", "claude")]);
+    expect(after.plugins[await nativeRegistrationId("demo", "official", "claude")]).toBeUndefined();
+    expect(await fs.pathExists((await nativeFixtureLayout("demo", "official", "project", "claude")).packageRoot)).toBe(false);
     expect(after.plugins[await nativeRegistrationId("other", "official", "claude")]).toEqual([expect.objectContaining({ scope: 'user' })]);
     expect((await fs.readJson(path.join(claudeHome, 'settings.json'))).enabledPlugins)
       .toMatchObject({ [await nativeRegistrationId("other", "official", "claude")]: true });
@@ -1835,9 +2058,8 @@ describe('five namespaced write commands', () => {
       await expect(fs.readFile(settingsPath)).resolves.toEqual(nativeSettingsBefore);
       expect(retired.ok, JSON.stringify(retired)).toBe(false);
       expect(retired.targetResults).toContainEqual(expect.objectContaining({
-        pluginId: 'official/demo', agent: 'claude', scope: 'user', execution: 'not-run', observation: 'unknown',
+        pluginId: 'official/demo', agent: 'claude', scope: 'user', observation: 'unknown',
         blockers: expect.arrayContaining([
-          expect.objectContaining({ code: 'sharedNativePreserved' }),
           expect.objectContaining({ code: 'deploymentOwnershipUnconfirmed' }),
         ]),
         deploymentReceipts: expect.arrayContaining([expect.objectContaining({
@@ -1850,20 +2072,22 @@ describe('five namespaced write commands', () => {
       expect(retired.ok, JSON.stringify(retired)).toBe(false);
       expect(retired.targetResults).toContainEqual(expect.objectContaining({
         pluginId: 'official/demo', agent: 'claude', scope: 'user', execution: 'failed', observation: 'unknown',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'nativeRetireFailed' })]),
-        backend: expect.arrayContaining([expect.objectContaining({
-          target: { pluginId: 'official/demo', platform: 'claude', scope: 'user' },
-          action: 'cleanup', state: 'failed', errorCode: 'stateInventoryResidual',
-          residual: [path.join('[catalog-source]', 'plugins', 'known_marketplaces.json')],
+        blockers: expect.arrayContaining([
+          expect.objectContaining({ code: 'nativeRetireFailed' }),
+          expect.objectContaining({ code: 'deploymentOwnershipUnconfirmed' }),
+          expect.objectContaining({ code: 'nativeObservationUnknown' }),
+        ]),
+        deploymentReceipts: expect.arrayContaining([expect.objectContaining({
+          after: expect.objectContaining({ ownership: 'unknown' }),
         })]),
       }));
       expect(retired.remainingTargets).toContainEqual(expect.objectContaining({ pluginId: 'official/demo', agent: 'claude', scope: 'user' }));
-      expect(retired.recoveryActions).toContain('aw plugin remove official/demo --only outputs --scope user --target claude');
+      expect(retired.recoveryActions).toContain('aw plugin remove official/demo --scope user');
       await expect(fs.readFile(path.join(claudeHome, 'plugins', 'known_marketplaces.json'), 'utf8')).resolves.toBe('{bad json');
     }
   });
 
-  it('preserves project activation when the canonical native registration is missing', async () => {
+  it('cleans a proven orphan package and its disabled project activation when native registration is absent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-unbound-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -1899,21 +2123,20 @@ describe('five namespaced write commands', () => {
     });
     const result = await runRetire({ scope: 'project', cwd, env: isolation.env,
       selector: 'official/demo', targets: ['codex'], yes: true }, runtime);
-    expect(result.ok, JSON.stringify(result)).toBe(false);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.targetResults).toContainEqual(expect.objectContaining({
-      pluginId: 'official/demo', agent: 'codex', scope: 'project', observation: 'unknown',
-      blockers: expect.arrayContaining([expect.objectContaining({ code: 'sharedNativePreserved' })]),
+      pluginId: 'official/demo', agent: 'codex', scope: 'project',
       deploymentReceipts: expect.arrayContaining([expect.objectContaining({
-        after: expect.objectContaining({ package: 'present', registration: 'absent', ownership: 'aw' }),
+        after: expect.objectContaining({ package: 'absent', registration: 'absent' }),
       })]),
     }));
-    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[await nativeRegistrationId("demo", "official")]?.enabled)
-      .toBe(false);
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[await nativeRegistrationId("demo", "official")])
+      .toBeUndefined();
     expect(await fs.pathExists((await nativeFixtureLayout("demo", "official", "project", "codex")).packageRoot))
-      .toBe(true);
+      .toBe(false);
   });
 
-  it('does not delete shared marketplace projection when its remove operation would fail', async () => {
+  it('retains a shared package and its retirement retry when package deletion fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-projection-retry-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
@@ -1927,13 +2150,11 @@ describe('five namespaced write commands', () => {
     });
     const runtime = await createCodexNativeTestRuntime(isolation);
     const cwd = isolation.layout.fixtureCwd;
-    await expect(installFixturePlugin(['official/demo'], {
+    await expect(installFixturePlugin(['official/demo', 'official/other'], {
       cwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const marketplaceRoot = (await nativeFixtureLayout("demo", "official", "project", "codex")).marketplaceRoot!;
     const projection = path.join(marketplaceRoot, 'plugins', 'demo');
-    await fs.remove(path.join(projection, '.agents-plugin'));
-    await fs.remove(path.join(projection, '.codex-plugin'));
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
     await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
     await syncCatalogSourceGeneration({
@@ -1941,25 +2162,42 @@ describe('five namespaced write commands', () => {
     });
     const options = { scope: 'user' as const, cwd, env: isolation.env,
       selector: 'official/demo', targets: ['codex'], yes: true };
-    const removeOriginal = fs.remove.bind(fs);
+    const manifestPath = path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json');
+    const sibling = (await fs.readJson(manifestPath)).plugins.find((entry: { name: string }) => entry.name === 'other');
+    expect(sibling).toBeDefined();
+    const siblingRoot = path.join(marketplaceRoot, 'plugins', 'other');
+    const siblingBefore = await snapshotRegularTree(siblingRoot);
+    const packageBefore = await snapshotRegularTree(projection);
+    const renameOriginal = nodeFs.rename.bind(nodeFs);
     let projectionRemoveAttempted = false;
-    const remove = vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
+    const rename = vi.spyOn(nodeFs, 'rename').mockImplementation(async (candidate, destination) => {
       if (path.resolve(String(candidate)) === path.resolve(projection)) {
         projectionRemoveAttempted = true;
         throw new Error('simulated projection delete failure');
       }
-      return removeOriginal(candidate);
+      return renameOriginal(candidate, destination);
     });
-    const first = await runRetire(options, runtime).finally(() => remove.mockRestore());
-    expect(projectionRemoveAttempted).toBe(false);
+    const first = await runRetire(options, runtime).finally(() => rename.mockRestore());
+    expect(projectionRemoveAttempted).toBe(true);
+    expect(first.ok).toBe(false);
+    expect(first.recoveryActions).toContain('aw plugin remove official/demo --scope user');
     expect(first.declarationChanged).toBe(true);
-    const manifestPath = path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json');
-    const manifestBefore = await fs.readFile(manifestPath);
-    expect(await fs.pathExists(projection)).toBe(true);
-    const second = await runRetire(options, runtime);
-    expect(second.declarationChanged).toBe(false);
-    await expect(fs.readFile(manifestPath)).resolves.toEqual(manifestBefore);
-    expect(await fs.pathExists(projection)).toBe(true);
+    expect(await snapshotRegularTree(projection)).toEqual(packageBefore);
+    expect((await fs.readJson(manifestPath)).plugins).toContainEqual(sibling);
+    expect(await snapshotRegularTree(siblingRoot)).toEqual(siblingBefore);
+    // The exact marketplace entry may have been removed before the package
+    // deletion failed. Recovery must work through the advertised ordinary
+    // remove command, without requiring the old manifest to be restored.
+    const second = await runPublicLifecycle('remove', ['official/demo'], {
+      cwd, env: isolation.env, cliVersion: '1.0.0', scope: 'user', context: 'user', yes: true,
+    }, runtime);
+    expect(second.status, JSON.stringify(second)).toBe('success');
+    expect(second.data).toMatchObject({ remainingTargets: [] });
+    expect((await fs.readJson(manifestPath)).plugins.some((entry: { name: string }) => entry.name === 'demo')).toBe(false);
+    expect((await fs.readJson(manifestPath)).plugins).toEqual([sibling]);
+    expect(await snapshotRegularTree(siblingRoot)).toEqual(siblingBefore);
+    expect(runtime.installed.has(await nativeRegistrationId('other', 'official'))).toBe(true);
+    expect(await fs.pathExists(projection)).toBe(false);
   });
 
   it('preserves a foreign tree behind a symlinked marketplace plugins ancestor', async () => {
@@ -1991,14 +2229,21 @@ describe('five namespaced write commands', () => {
     await fs.symlink(foreignRoot, pluginsRoot, 'dir');
     const foreignFile = path.join(foreignRoot, 'demo', 'preserve.txt');
     await fs.outputFile(foreignFile, 'foreign content\n');
+    const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
+    const configBefore = await fs.readFile(configPath);
     const cleaned = await cleanupWriteCommand(['official/demo'], {
       cwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime);
     expect(cleaned.overallState, JSON.stringify(cleaned)).toBe('failed');
     expect(cleaned.targetResults).toContainEqual(expect.objectContaining({
       target: expect.objectContaining({ pluginId: 'official/demo', platform: 'codex', scope: 'user' }),
-      errorCode: 'stateInventoryResidual', message: expect.stringContaining('Native namespace path contains a symbolic link.'),
+      errorCode: 'stateInventoryResidual',
     }));
+    expect(cleaned.warnings).toContainEqual(expect.stringContaining('Native namespace path contains a symbolic link.'));
+    expect(cleaned.recoveryDiagnostics).toContainEqual(expect.objectContaining({
+      detail: expect.objectContaining({ reasonCode: 'nativeNamespaceUnsafe', path: pluginsRoot }),
+    }));
+    expect(await fs.readFile(configPath)).toEqual(configBefore);
     expect((await fs.lstat(pluginsRoot)).isSymbolicLink()).toBe(true);
     expect(await fs.readFile(foreignFile, 'utf8')).toBe('foreign content\n');
     const result = await runRetire({ scope: 'user', cwd, env: isolation.env,
@@ -2480,7 +2725,7 @@ describe('five namespaced write commands', () => {
   }, 30_000);
 
   it.each(['user', 'project'] as const)(
-    'retires only the selected Codex activation for %s scope and retains shared native state',
+    'retires confirmed Codex package and selected scope activation for %s scope while retaining foreign registrations',
     async (scope) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `offline-native-${scope}-source`);
@@ -2532,10 +2777,8 @@ describe('five namespaced write commands', () => {
         isolation.env.CODEX_HOME!, 'plugins', 'cache', (await nativeFixtureLayout("demo", "team")).marketplaceName!, 'demo', '1.0.0',
         'skills', 'demo-skill', 'SKILL.md',
       );
-      const [payloadBefore, cacheBefore] = await Promise.all([
-        fs.readFile(payloadSkill),
-        fs.readFile(cacheSkill),
-      ]);
+      expect(await fs.pathExists(payloadSkill)).toBe(true);
+      expect(await fs.pathExists(cacheSkill)).toBe(true);
       await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
       await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
       await syncCatalogSourceGeneration({
@@ -2551,24 +2794,14 @@ describe('five namespaced write commands', () => {
       expect(retired.configChanged).toBe(false);
       const activationConfig = await readCodexConfigFile(activationConfigPath);
       const selectedId = await nativeRegistrationId('demo', 'team');
-      if (scope === 'user') expect(activationConfig.snapshot.plugins[selectedId]?.enabled).toBe(false);
-      else {
-        const userConfig = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
-        expect(userConfig.snapshot.plugins[selectedId]?.enabled).toBe(false);
-        expect(activationConfig.snapshot.plugins[selectedId]?.enabled ?? userConfig.snapshot.plugins[selectedId]?.enabled).toBe(false);
-        const listed = await runtime.nativeCliRunner({ command: 'codex',
-          args: ['plugin', 'list', '--marketplace', (await nativeFixtureLayout('demo')).marketplaceName!, '--json'],
-          cwd: isolation.layout.fixtureCwd, env: isolation.env, agentKind: 'codex' });
-        expect(listed.exitCode).toBe(0);
-        expect(JSON.parse(listed.stdout).installed).toContainEqual(expect.objectContaining({ pluginId: selectedId, enabled: false }));
-      }
+      expect(retired.ok, JSON.stringify(retired)).toBe(true);
+      expect(activationConfig.snapshot.plugins[selectedId]).toBeUndefined();
       expect(activationConfig.snapshot.plugins['foreign@outside']?.enabled).toBe(true);
       expect(activationConfig.snapshot.plugins['demo@outside']?.enabled).toBe(true);
-      expect(await fs.pathExists(payloadSkill), JSON.stringify(retired)).toBe(true);
-      await expect(fs.readFile(payloadSkill)).resolves.toEqual(payloadBefore);
-      await expect(fs.readFile(cacheSkill)).resolves.toEqual(cacheBefore);
+      expect(await fs.pathExists(payloadSkill), JSON.stringify(retired)).toBe(false);
+      expect(await fs.pathExists(cacheSkill)).toBe(false);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
-      expect(runtime.installed.has(await nativeRegistrationId("demo", "team"))).toBe(true);
+      expect(runtime.installed.has(await nativeRegistrationId("demo", "team"))).toBe(false);
       await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({ roots: [] });
       if (scope === 'user') {
         await expect(readCodexConfigFile(
@@ -2580,6 +2813,66 @@ describe('five namespaced write commands', () => {
     },
     30_000,
   );
+
+  // Test Value Gate: preview / offline cleanup / force must all consume the
+  // same canonical identity when a healthy Active no longer lists the plugin,
+  // without obtaining retirement's shared package deletion authority.
+  it.each(['codex', 'claude'] as const)('recognizes the installed %s marketplace in offline preview and both cleanup modes', async (platform) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout } = isolation;
+    const cwd = layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'canonical-offline-cleanup-source');
+    const definitions = ['demo', 'other'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => { manifest.platforms = [platform]; },
+    }));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const initial = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env });
+    const codex = platform === 'codex' ? await createCodexNativeTestRuntime(isolation) : undefined;
+    const claude = platform === 'claude' ? await createClaudeNativeTestRuntime(isolation) : undefined;
+    const runtime = codex ?? claude!.runtime;
+    const options = { cwd, platform, scope: 'user' as const };
+    await expect(installFixturePlugin(['team/demo'], options, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const deployment = await nativeFixtureLayout('demo', 'team', 'user', platform);
+    const { packageRoot } = deployment;
+    const manifestPath = path.join(deployment.marketplaceRoot!, ...(platform === 'codex'
+      ? ['.agents', 'plugins', 'marketplace.json'] : ['.claude-plugin', 'marketplace.json']));
+    const registrationId = deployment.nativeIdentity.registrationId!;
+    const packageBefore = await snapshotRegularTree(packageRoot);
+    const manifestBefore = await fs.readFile(manifestPath);
+    const registrationBefore = claude ? await fs.readFile(claude.installedPath) : undefined;
+    const intentBefore = await observeIntent({ cwd, env, scope: 'user' });
+    await createNativeDependencyCatalog(sourceRoot, [definitions[1]!]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env, impactConfirmed: true });
+
+    for (const force of [true, false]) {
+      const preview = await cleanupWriteCommand(['team/demo'], { ...options, force }, {
+        ...runtime, previewOperationPlan: true,
+      });
+      expect(preview.overallState, JSON.stringify(preview)).toBe('succeeded');
+      expect(preview.warnings).not.toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+      expect(await snapshotRegularTree(packageRoot)).toEqual(packageBefore);
+      expect(await fs.readFile(manifestPath)).toEqual(manifestBefore);
+      const result = await cleanupWriteCommand(['team/demo'], { ...options, force }, runtime);
+      expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
+      expect(result.warnings).not.toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+      expect(result.rebuildResults.flatMap((entry) => entry.residual)).not.toContain('nativeMarketplaceIdentityUnresolved');
+      expect(await snapshotRegularTree(packageRoot)).toEqual(packageBefore);
+      expect(await fs.readFile(manifestPath)).toEqual(manifestBefore);
+      if (claude) expect(await fs.readFile(claude.installedPath)).toEqual(registrationBefore);
+      if (codex) expect(codex.installed.has(registrationId)).toBe(true);
+      expect(await observeIntent({ cwd, env, scope: 'user' })).toEqual(intentBefore);
+    }
+    if (claude) expect((await fs.readJson(path.join(claude.claudeHome, 'settings.json'))).enabledPlugins?.[registrationId]).toBe(false);
+    if (codex) expect((await readCodexConfigFile(path.join(env.CODEX_HOME!, 'config.toml'))).snapshot.plugins[registrationId]?.enabled).not.toBe(true);
+    const retired = await runRetire({ cwd, env, scope: 'user', selector: 'team/demo', targets: [platform], yes: true }, runtime);
+    expect(retired.ok, JSON.stringify(retired)).toBe(true);
+    expect(await fs.pathExists(packageRoot)).toBe(false);
+    expect((await fs.readJson(manifestPath)).plugins.some((entry: { name: string }) => entry.name === 'demo')).toBe(false);
+  });
 
   it.each([false, true])(
     'cleans an exact offline Codex extension without changing Intent when native identity is ambiguous (force=%s)',
@@ -2676,6 +2969,98 @@ describe('five namespaced write commands', () => {
     },
     30_000,
   );
+
+  // A raw unbound activation is a diagnostic clue even without any owned
+  // package or supplement. Neither offline mode can use it as deletion authority.
+  it.each([{ declared: false, keepMarketplace: true }, { declared: true, keepMarketplace: false }])(
+    'reports a lone unbound activation with declared=$declared and empty marketplace=$keepMarketplace', async ({ declared, keepMarketplace }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const { env } = isolation;
+      const cwd = isolation.layout.fixtureCwd;
+      const runtime = await createCodexNativeTestRuntime(isolation);
+      const configPath = path.join(env.CODEX_HOME!, 'config.toml');
+      const config = '[plugins."demo@outside"]\nenabled = true\n';
+      await fs.outputFile(configPath, config);
+      if (declared) await writeIntentFixture({ cwd, env, scope: 'user' }, {
+        roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+      });
+      if (keepMarketplace) {
+        const sourceIdentity = `sha256:${'a'.repeat(64)}`;
+        const layout = await nativeFixtureLayout('demo', 'team', 'user', 'codex', sourceIdentity);
+        await fs.outputJson(path.join(layout.marketplaceRoot!, 'config.json'), {
+          schemaVersion: 2, sourceId: 'team', sourceIdentity, marketplaceName: layout.marketplaceName,
+        });
+        await fs.outputJson(path.join(layout.marketplaceRoot!, '.agents/plugins/marketplace.json'), {
+          name: layout.marketplaceName, plugins: [],
+        });
+      }
+      const intent = await observeIntent({ cwd, env, scope: 'user' });
+      runtime.nativeCliRunner.mockClear();
+      for (const force of [false, true]) {
+        const options = { cwd, platform: 'codex' as const, scope: 'user' as const, force };
+        const preview = await cleanupWriteCommand(['team/demo'], options, { ...runtime, previewOperationPlan: true });
+        expect(preview.warnings).toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+        expect(preview.operationPlan?.warnings).toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+        const result = await cleanupWriteCommand(['team/demo'], options, {
+          ...runtime, expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+        });
+        expect(result.warnings).toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+        expect(result.rebuildResults.flatMap((entry) => entry.residual)).toContain('nativeMarketplaceIdentityUnresolved');
+        expect(await fs.readFile(configPath, 'utf8')).toBe(config);
+        expect(await observeIntent({ cwd, env, scope: 'user' })).toEqual(intent);
+      }
+      expect(runtime.nativeCliRunner).not.toHaveBeenCalled();
+    },
+  );
+
+  // Test Value Gate: a canonical same-name registration belonging to another
+  // source must neither invent a cleanup target nor contaminate an owned cleanup.
+  it.each([false, true])('cleans only the selected source when another source has the same native plugin name (force=%s)', async (force) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { env, layout } = isolation;
+    const cwd = layout.fixtureCwd;
+    const sourceRoot = path.join(cwd, 'same-name-source-a');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const initial = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'source-a', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const options = { cwd, platform: 'codex' as const, scope: 'user' as const, force };
+    await expect(installFixturePlugin(['source-a/demo'], options, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const sourceA = await nativeFixtureLayout('demo', 'source-a', 'user', 'codex');
+    const configPath = path.join(env.CODEX_HOME!, 'config.toml');
+    const configBefore = await fs.readFile(configPath);
+    const packageBefore = await snapshotRegularTree(sourceA.packageRoot);
+    const intentBefore = await observeIntent({ cwd, env, scope: 'user' });
+    runtime.nativeCliRunner.mockClear();
+    for (const previewOperationPlan of [true, false]) {
+      const result = await cleanupWriteCommand(['source-b/demo'], options, { ...runtime, previewOperationPlan });
+      expect(result).toMatchObject({ overallState: 'succeeded', targetResults: [], rebuildResults: [] });
+      expect(result.warnings).not.toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+    }
+
+    const sourceIdentity = `sha256:${'b'.repeat(64)}`;
+    const sourceB = await nativeFixtureLayout('demo', 'source-b', 'user', 'codex', sourceIdentity);
+    const rolePath = path.join(sourceB.supplementRoot!, 'aw-source-b-demo-role.toml');
+    await writeOwnedTextFile({ path: rolePath, allowedRoot: sourceB.supplementRoot!,
+      content: 'name = "role"\ndescription = "Owned role"\ndeveloper_instructions = "Review changes."\n',
+      identity: { owner: 'agent-workflows', sourceId: 'source-b', sourceIdentity, pluginId: 'source-b/demo', plugin: 'demo',
+        platform: 'codex', scope: 'user', artifactKey: path.basename(rolePath),
+        physicalKey: sourceB.renderUnits.find((unit) => unit.output === 'supplement')!.physicalKey } });
+    const preview = await cleanupWriteCommand(['source-b/demo'], options, { ...runtime, previewOperationPlan: true });
+    expect(preview.warnings).not.toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+    expect(await fs.pathExists(rolePath)).toBe(true);
+    const cleaned = await cleanupWriteCommand(['source-b/demo'], options, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(cleaned.warnings).not.toContainEqual(expect.stringContaining('nativeMarketplaceIdentityUnresolved'));
+    expect(cleaned.rebuildResults.flatMap((entry) => entry.residual)).not.toContain('nativeMarketplaceIdentityUnresolved');
+    expect(await fs.pathExists(rolePath)).toBe(false);
+    expect(await fs.readFile(configPath)).toEqual(configBefore);
+    expect(await snapshotRegularTree(sourceA.packageRoot)).toEqual(packageBefore);
+    expect(await observeIntent({ cwd, env, scope: 'user' })).toEqual(intentBefore);
+    expect(runtime.installed.has(sourceA.nativeIdentity.registrationId!)).toBe(true);
+    expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) => invocation.args.includes('remove'))).toBe(false);
+  });
 
   it('returns idempotent success for a source-deleted target with no live match', async () => {
       const isolation = await configureCatalog();

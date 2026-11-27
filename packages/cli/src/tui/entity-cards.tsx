@@ -173,7 +173,7 @@ function pluginFacts(subject: PluginDetailSubject, width: number) {
   if (subject.description) addFields(lines, sections, 'description', width, [muted(subject.description)]);
   if (!subject.definitionAvailable) {
     addFields(lines, sections, 'definition', width,
-      [statusCell('目录定义当前不可用', 'warning', '!')]);
+      [statusCell(subject.plugin?.retirementCandidate ? '插件已下架 · 可清理' : '目录定义当前不可用', 'warning', '!')]);
   }
   const badges = (['user', 'project'] as const).flatMap((scope) => {
     const declared = subject.declarations[scope].state === 'declared';
@@ -236,6 +236,11 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
   const lines: CardLine[] = [];
   const sections: CardSection[] = [];
   addIdentityOverflow(lines, sections, subject, width);
+  if (root.retirementCandidate) {
+    addFields(lines, sections, 'retirement', width, [statusCell('插件已下架 · 可清理', 'warning', '!')]);
+  } else if (root.sourceUnavailable && (!root.sourceState || root.sourceState === 'ready')) {
+    addFields(lines, sections, 'sourceState', width, [statusCell('插件来源不可用', 'warning', '!')]);
+  }
   if (root.agentResults) {
     const declared = root.section === 'declared';
     const pending = root.agentResults.length > 0 && root.agentResults.every((target) =>

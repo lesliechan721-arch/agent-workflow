@@ -5,7 +5,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { runCli } from '../../src/index.js';
 import { resolvePortableCatalogBindingInput } from '../../src/portable/materializer.js';
@@ -114,7 +114,7 @@ describe('Portable writer through real Catalog and renderer', () => {
 
   // Test Value Gate: two mixed-install children encountering the same cold generation must share both renderer batches.
   it('materializes the shared cold generic generation once for a mixed install', async () => {
-    installNativeTestQualification({ platforms: ['opencode'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['opencode'] });
     const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
     const value = await fixture('user', false, true);
     const { context, env } = value.options;

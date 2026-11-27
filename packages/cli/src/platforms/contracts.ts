@@ -1,4 +1,4 @@
-import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV2, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap, FeatureRequirement } from '@lesliechan721/aw-plugin-core/manifest';
+import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV3, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap, FeatureRequirement } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic, ProductInstallation, DiscoveryResult, ReadContext } from './discovery.js';
 import type { VerifiedResourceClosure } from '../utils/component-resources.js';
 export type { PlatformId, ComponentKind, ExpectedComponentSet, ComponentGap, ResolvedInvocationPolicy } from '@lesliechan721/aw-plugin-core/manifest';
@@ -55,7 +55,7 @@ export interface AgentPluginAdapter<P> {
   discover(ctx: ReadContext): Promise<DiscoveryResult>;
   resolve(ctx: ReadContext, request: ResolveRequest): Promise<Resolution>;
   inspect(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentObservation>;
-  capabilities(input: CapabilityInput): PlatformCapabilitiesV2;
+  capabilities(input: CapabilityInput): PlatformCapabilitiesV3;
   project(ctx: StageContext, input: ProjectionInput): Promise<ProjectionResult>;
   lifecycle: {
     prepare(input: LifecyclePrepareInput): PrepareResult<P>;
@@ -91,7 +91,6 @@ export type LifecycleOperation = 'ensure' | 'reinstall' | 'remove' | 'cleanup';
 export interface CapabilityInput {
   binding: DeploymentBinding;
   renderUnit: RenderUnit;
-  observation: DeploymentObservation;
   profile: QualifiedPlatformProfile;
 }
 
@@ -100,7 +99,7 @@ export interface ProjectionInput {
   grokScopeAuthorization?: DeploymentObservation['grokScopeAuthorization'];
   binding: DeploymentBinding;
   renderUnit: RenderUnit;
-  capabilities: PlatformCapabilitiesV2;
+  capabilities: PlatformCapabilitiesV3;
   components: PluginComponent[]; // 同一 binding、同一 renderScope 的完整已校验组件集合
   policy: ResolvedInvocationPolicy;
   resources: VerifiedResourceClosure;
@@ -147,7 +146,9 @@ export interface FrozenDeploymentPlan {
 export interface PlannedEffect {
   id: string;
   kind: 'publish-package' | 'register' | 'refresh' | 'activate' |
-    'deactivate' | 'unregister' | 'write-supplement' | 'remove-owned';
+    'deactivate' | 'unregister' | 'write-supplement' | 'remove-owned' | 'remove-marketplace-entry';
+  /** Exact Claude uninstall scope for a confirmed retirement. */
+  nativeScope?: 'user' | 'local';
   physicalKey: string;
   activationKey?: string;
   componentIds: string[];
@@ -165,6 +166,15 @@ export interface DeploymentConfigurationObservation {
   reasonCodes: string[];
 }
 export interface DeploymentObservation {
+  /** Additional, operation-local evidence for confirmed shared native retirement. */
+  retirement?: {
+    marketplaceProof: { manifestPath: string; fingerprint: string; entryPresent: boolean } | null;
+    configurationFingerprint?: string;
+    userActivation?: DeploymentConfigurationObservation['activation'];
+    userMarketplace?: DeploymentConfigurationObservation['marketplace'];
+    claudeKnownMarketplace?: DeploymentConfigurationObservation['marketplace'];
+    claudeRegistrations?: { local: boolean; user: boolean; managed: boolean; unsupported: boolean };
+  };
   /** Historical Project copy at the previous Antigravity namespaced path. */
   antigravityLegacyProjectPackage?: { path: string; state: 'owned' | 'unconfirmed' };
   /** Version read from the verified owned package descriptor; absence means unknown. */
@@ -278,24 +288,9 @@ export interface RecoveryCandidate {
 export interface QualifiedPlatformProfile {
   id: string;
   platform: PlatformId;
-  /** Qualification is explicit per capability; a version match alone grants none. */
-  kinds: PlatformCapabilitiesV2['kinds'];
-  features: PlatformCapabilitiesV2['features'];
-  /** Exact historical evidence; runtime management uses the product's interface minimum. */
-  qualifiedConsumers?: Partial<Record<ComponentKind, Array<{ product: ProductInstallation['product']; version: string }>>>;
-  /** Recorded scope limits apply to both runtime and authoring kind views. */
-  qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
-    platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
-  /** Native CLI invocation coverage for this host and these activation scopes. */
-  skillInvocation?: { reference: string; minimumVersion: string; scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[];
-    unsupported?: { scopes: Array<ScopeRef['kind']>; features: FeatureRequirement[] } };
-  agentConsumers: Array<{
-    id: string;
-    minimumVersion: string;
-    promptModes: Array<'host-default' | 'append' | 'replace'>;
-    qualified: boolean;
-    features: PlatformCapabilitiesV2['features'];
-  }>;
+  /** Deterministic standard writer mappings and interface limits. */
+  kinds: PlatformCapabilitiesV3['kinds'];
+  features: PlatformCapabilitiesV3['features'];
 }
 
 export interface DeploymentLayoutEvidence {
@@ -306,6 +301,8 @@ export interface DeploymentLayoutEvidence {
   marketplaceName: string | null;
 }
 export interface PreparationEvidence {
+  confirmedCatalogRetirement?: true;
+  nativeRetirement?: DeploymentObservation['retirement'];
   permissionOwnershipWarning?: Diagnostic;
   permissionBatch?: import('./permission-ownership.js').ReviewedPermissionBatch;
   fingerprint: string;

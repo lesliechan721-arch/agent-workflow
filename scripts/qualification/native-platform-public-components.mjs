@@ -339,7 +339,7 @@ async function verifyFixture(ctx, result, spec, revision) {
   for (const gap of gaps) {
     assert.equal(gap.providerPluginId, id);
     assert.equal(gap.id, gap.kind + ':' + names[gap.kind]);
-    assert.equal(gap.reasonCode, ctx.platform === 'generic' ? 'interface-unsupported' : 'delivery-unavailable');
+    assert.equal(gap.reasonCode, 'interface-unsupported');
     assert(gap.requiredFeatures.length > 0, 'Missing capability reason for ' + gap.id);
   }
   if (!expected.length) {

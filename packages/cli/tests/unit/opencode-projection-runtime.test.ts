@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import { afterEach, expect, it } from 'vitest';
 import type { PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { projectPlatform } from '../../src/platforms/projection.js';
 
 const temporaryRoots: string[] = [];
@@ -34,20 +35,7 @@ it.each([
     },
     renderUnit: { id: 'unit', physicalKey: 'physical', renderScope: { kind: 'project', projectRoot: path.join(root, 'project') },
       output: 'package', kinds: ['skill'], consumers: [] },
-    capabilities: {
-      schemaVersion: 2, platform: 'opencode', scope: 'project', basis: 'profile',
-      kinds: {
-        skill: { status: 'supported', reasonCodes: [], delivery: ['native-package'] },
-        mcp: { status: 'unsupported', reasonCodes: [], delivery: [] },
-        agent: { status: 'unsupported', reasonCodes: [], delivery: [] },
-        hook: { status: 'unsupported', reasonCodes: [], delivery: [] },
-        instruction: { status: 'unsupported', reasonCodes: [], delivery: [] },
-      },
-      features: {
-        'skill.invocation.manual': { status: 'supported', reasonCodes: [], values: ['true'] },
-        'skill.invocation.model': { status: 'supported', reasonCodes: [], values: ['true', 'false'] },
-      },
-    },
+    capabilities: getAuthoringPlatformCapabilities('opencode', 'project'),
     components: [skill], policy: { platform: 'opencode', permissions: [] },
     resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'closure' },
   };

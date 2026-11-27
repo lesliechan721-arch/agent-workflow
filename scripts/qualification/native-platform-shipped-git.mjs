@@ -3,7 +3,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
-import invocationEvidence from './evidence/native-manual-skill-invocation-2026-11-20.json' with { type: 'json' };
 
 const yaml = createRequire(path.join(repoRoot, 'packages/cli/package.json'))('yaml');
 
@@ -64,19 +63,15 @@ export async function qualifyShippedGitInstall(ctx) {
   assert.equal(result.data.allSatisfied, true);
   const required = ['git-commit', ...ordinaryGitSkills];
   const notices = result.diagnostics.filter(item => item.code === 'skillInvocationPolicyNotGuaranteed');
-  const desktopReader = target.deploymentPlans?.some(plan => plan.products.some(
-    reader => reader.product === 'app' && reader.availability === 'available'));
-  // Independently captured installed-session observations determine which User
-  // clients may claim the policy, including when a client could not be acquired.
-  const host = `${process.platform}-${process.arch}`;
-  const policyObservation = invocationEvidence.hosted.user.reports[host]?.userPolicy[ctx.platform];
-  const expectedWarning = ctx.platform !== 'antigravity' && (desktopReader || (ctx.platform !== 'codex' && policyObservation !== 'installed-entry'));
+  // The manual-only preferences are supported by every native writer.
+  // A standalone generic directory has no bound executor.
+  const expectedWarning = ctx.platform === 'generic';
   if (expectedWarning) {
     assert.equal(notices.length, 1);
     const [notice] = notices;
     assert.equal(notice.severity, 'warning');
     assert.deepEqual(notice.subject, { pluginId: gitPluginId, target: ctx.platform, scope, field: 'skill.git-commit' });
-    assert.equal(notice.detail.reasonCode, ctx.platform === 'generic' ? 'noBoundExecutor' : 'invocationControlUnverified');
+    assert.equal(notice.detail.reasonCode, 'noBoundExecutor');
     assert(notice.detail.skillInvocationControls.some(control => control.feature === 'skill.invocation.model' && control.values.includes('false')));
   } else assert.deepEqual(notices, []);
   if (ctx.platform === 'generic') {

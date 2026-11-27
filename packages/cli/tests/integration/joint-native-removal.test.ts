@@ -10,7 +10,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { git } from '../helpers/catalog-source-fixture.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import {
   createCodexNativeTestRuntime,
   createNativeDependencyCatalog,
@@ -20,7 +20,7 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(scope: Scope) {
-  installNativeTestQualification({ platforms: ['codex'], discovery: true });
+  installNativeTestDiscovery({ platforms: ['codex'] });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout } = isolation;
   const cwd = layout.fixtureCwd;

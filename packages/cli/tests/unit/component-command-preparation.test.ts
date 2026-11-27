@@ -38,7 +38,6 @@ describe('component command preparation', () => {
       const plugin = { ...await readPluginManifest(root), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`,
         pluginId: 'fixture/command-profile' };
       const capabilities = getAuthoringPlatformCapabilities('claude', 'user');
-      capabilities.kinds.skill = { status: 'supported', reasonCodes: [], delivery: ['native-package'] };
       const config = await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, manifest: plugin.manifest,
         platform: 'claude', scope: 'user', cwd, env: isolated.env });
       const prepared = await preparePlatformComponents({ plugin, platform: 'claude', renderScope: 'user', kinds: ['skill'],

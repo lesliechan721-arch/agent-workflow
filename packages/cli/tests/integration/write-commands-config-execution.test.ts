@@ -14,7 +14,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { PassThrough } from 'node:stream';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -113,7 +113,7 @@ console.log(JSON.stringify({ version: 3, omitted: [], unmet: partial ? [gap] : [
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex', 'claude'] });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

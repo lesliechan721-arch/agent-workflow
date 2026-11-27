@@ -2,14 +2,13 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getCommandPackageId, getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createRebuildIntegration, disposePreparedPlatformRebuildSession, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
-import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import type { PlatformName, PluginMeta, RebuildCommand, Scope } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readManagedCommandPackageView, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
@@ -66,16 +65,7 @@ describe('managed command plugin lifecycle', () => {
   }
   function integrationFor(env = isolated.env) {
     const context: RebuildExecutionContext = createCommandExecutionContext({ env, nativeCliRunner: nativeRunner });
-    // Replace qualification facts only. Discovery, layout, renderer, projection, ownership and execution remain real.
-    context.platformRebuildSession = new PlatformRebuildSession(context, (platform) => {
-      const adapter = getAgentPluginAdapter(platform);
-      return { ...adapter, capabilities: (input) => {
-        const facts = adapter.capabilities(input);
-        facts.kinds.skill = { ...facts.kinds.skill, status: 'supported', reasonCodes: [] };
-        for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) facts.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) };
-        return facts;
-      } };
-    });
+    context.platformRebuildSession = new PlatformRebuildSession(context);
     contexts.push(context);
     return { integration: createRebuildIntegration({ context }), context };
   }

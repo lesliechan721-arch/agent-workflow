@@ -15,10 +15,7 @@ import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
 import { getPhysicalKey } from '../../src/platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { DeploymentBinding } from '../../src/platforms/contracts.js';
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { prepareRetire, executeRetire } from '../../src/recovery/retirement.js';
-import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
-import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -98,19 +95,6 @@ async function directoryCatalog(root: string, platform: 'opencode' | 'codex' | '
   await fs.writeJson(catalogPath, { ...catalog, entries: [await createCatalogManifestV7Entry(meta, pluginRoot)] });
 }
 
-function qualifiedSession(runtime: RebuildCommandRuntime): PlatformRebuildSession {
-  const context = createCommandExecutionContext({ env: runtime.env, nativeCliRunner: runtime.nativeCliRunner });
-  // Only qualification facts are synthetic. Layout, preparation, publication and ownership use production code.
-  return new PlatformRebuildSession(context, (platform) => {
-    const adapter = getAgentPluginAdapter(platform);
-    return { ...adapter, capabilities: (input) => {
-      const facts = adapter.capabilities(input);
-      facts.kinds.skill = { ...facts.kinds.skill, status: 'supported', reasonCodes: [] };
-      return facts;
-    } };
-  });
-}
-
 async function nativeFixtureRuntime(): Promise<RebuildCommandRuntime> {
   const isolation = getCurrentSourceTestIsolation();
   const env = { ...isolation.env };
@@ -184,11 +168,9 @@ async function invokeNativeWriter(
     selectedTargets: ids.flatMap((pluginId) => platforms.map((platform) => ({ pluginId, platform }))),
     includeSelectedInDemand: writer === installNativeWriteCommand,
   });
-  const qualified = writer !== cleanupNativeWriteCommand && runtime?.nativeCliRunner ? qualifiedSession(runtime) : undefined;
   try {
-    return await writer(pluginNames, options, { ...runtime, ...(qualified ? { platformRebuildSession: qualified } : {}), executionInput: native.executionInput });
+    return await writer(pluginNames, options, { ...runtime, executionInput: native.executionInput });
   } finally {
-    await qualified?.dispose();
     await native.dispose();
   }
 }
@@ -1909,7 +1891,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign sibling.\n');
   });
 
-  it.each([['codex', false], ['claude', false], ['claude', true]] as const)('freezes %s unregistration after source loss and rejects drift=%s', async (platform, drift) => {
+  it.each([['codex', false], ['claude', false], ['claude', true]] as const)('freezes %s scoped deactivation after source loss, retains the shared package, and rejects drift=%s', async (platform, drift) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'lost-native-source');
     await directoryCatalog(sourceRoot, platform);
@@ -1937,10 +1919,14 @@ describe('phase 3B namespaced runtime stores', () => {
     try {
       const preview = await cleanupWriteCommand(['team/demo'], options, { ...cleanupRuntime, previewOperationPlan: true });
       expect(preview.operationPlan!.deploymentPlans, JSON.stringify(preview)).toHaveLength(1);
-      expect(preview.operationPlan!.deploymentPlans![0]!.effects.map((effect) => effect.kind)).toContain('unregister');
+      const effects = preview.operationPlan!.deploymentPlans![0]!.effects;
+      expect(effects.map((effect) => effect.kind)).toContain('deactivate');
+      expect(effects.map((effect) => effect.kind)).not.toContain('unregister');
+      expect(effects.some((effect) => effect.kind === 'remove-owned' && effect.destination === output)).toBe(false);
       expect(await fs.pathExists(output)).toBe(true);
       const mutations = () => nativeCalls.mock.calls.filter(([call]) => call.args[0] === 'plugin' && call.args[1] !== 'list').length;
       const beforeMutations = mutations();
+      const beforeCalls = nativeCalls.mock.calls.length;
       if (drift) await fs.appendFile(path.join(output, 'skills/demo-skill/SKILL.md'), '\nChanged after Review.\n');
       const result = await cleanupWriteCommand(['team/demo'], options, { ...cleanupRuntime,
         expectedPlanFingerprint: preview.operationPlan!.planFingerprint, expectedOfflineCleanupEvidence: preview.offlineCleanupPlans![0] });
@@ -1950,7 +1936,9 @@ describe('phase 3B namespaced runtime stores', () => {
         expect(mutations()).toBe(beforeMutations);
       } else {
         expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
-        expect(await fs.pathExists(output)).toBe(false);
+        expect(await fs.pathExists(output)).toBe(true);
+        expect(nativeCalls.mock.calls.slice(beforeCalls).some(([call]) => call.args[0] === 'plugin'
+          && ['remove', 'uninstall'].includes(call.args[1]!))).toBe(false);
         expect(result.rebuildResults[0]!.deploymentReceipts?.some((receipt) => receipt.effects.some((effect) => effect.status === 'applied'))).toBe(true);
       }
     } finally { await disposePreparedPlatformRebuildSession(preparedArtifactRenderResults); }

@@ -16,6 +16,7 @@ import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey
 import { selectNativeProduct } from './discovery.js';
 import { permissionFailureNotice } from './permission-sidecar.js';
 import { relatedProjectPermissionNotices } from './permission-ownership.js';
+import { sharedMarketplaceRoute } from './retirement-native.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -90,10 +91,19 @@ export function hasCompleteDeliveryDeclaration(expected: LifecyclePrepareInput['
     || expected.components.some((component) => component.id === gap.componentId)));
 }
 
+/** Review and risk confirmation consume the actual frozen shared effects, not a guessed mode. */
+export function hasSharedNativeRetirementEffect(plan: FrozenDeploymentPlan): boolean {
+  return plan.operation === 'cleanup' && plan.evidence.confirmedCatalogRetirement === true && sharedMarketplaceRoute(plan.binding)
+    && plan.effects.some((effect) => effect.kind === 'remove-owned' && effect.destination === plan.evidence.layout.packageRoot
+      || effect.kind === 'remove-marketplace-entry'
+      || effect.kind === 'unregister' && (plan.binding.route !== 'claude-marketplace' || effect.nativeScope === 'user'));
+}
+
 /** Selects fixed route operations from observed facts. It performs no I/O. */
 export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareResult<PlatformDriverState> {
   const { binding, observation, evidence, expected, operation } = input;
   const removing = operation === 'remove' || operation === 'cleanup';
+  const retiring = operation === 'cleanup' && evidence.confirmedCatalogRetirement === true && sharedMarketplaceRoute(binding);
   const retainPackage = !removing && evidence.retainPackage === true;
   const blocked = (code: string, message: string): PrepareResult<PlatformDriverState> => ({
     status: 'blocked', diagnostics: [lifecycleDiagnostic(binding, code, message)],
@@ -146,6 +156,42 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   if (identity && identity.route !== binding.route) return blocked('nativeIdentityMismatch', 'The native identity belongs to a different installation route.');
   const product = selectNativeProduct(binding.consumers) ?? null;
   const consumer = selectedNativeConsumer(binding, observation);
+  const fullRetirement = retiring && observation.package === 'present' && observation.ownership === 'aw';
+  if (retiring) {
+    const retirement = observation.retirement;
+    if (retirement?.claudeRegistrations?.managed) {
+      return blocked('nativeManagedRegistration', 'A managed Claude registration cannot be retired by AW. Existing output was kept.');
+    }
+    if (!product || !identity?.registrationId || identity.sourceLocation !== evidence.layout.packageRoot
+      || !retirement?.marketplaceProof || !retirement.configurationFingerprint || !observation.configuration || observation.configuration.activation === 'unknown'
+      || ['foreign', 'unknown'].includes(observation.configuration.marketplace ?? 'unknown')
+      || observation.registration === 'unknown' || observation.registration === 'not-applicable'
+      || observation.diagnostics.some(({ code }) => ['nativeObservationFailed', 'nativeObservationUnconfirmed', 'nativeMarketplaceUnconfirmed'].includes(code))) {
+      return blocked('deploymentOwnershipUnconfirmed', 'The native registration, canonical marketplace, or scoped configuration could not be verified. Existing output was kept.');
+    }
+    if (fullRetirement ? !packageSlot || !['present', 'partial'].includes(packageSlot.state)
+      : observation.package !== 'absent' || observation.ownership !== 'absent' || packageSlot?.state !== 'absent') {
+      return blocked('deploymentOwnershipUnconfirmed', 'The shared package ownership could not be verified. Existing output was kept.');
+    }
+    if (!fullRetirement && observation.configuration.marketplace !== 'canonical'
+      || fullRetirement && observation.registration === 'present' && observation.configuration.marketplace !== 'canonical') {
+      return blocked('deploymentOwnershipUnconfirmed', 'The native marketplace registration does not confirm this source. Existing output was kept.');
+    }
+    if (binding.route === 'claude-marketplace') {
+      const registrations = retirement.claudeRegistrations;
+      if (!registrations || registrations.unsupported || !fullRetirement && retirement.claudeKnownMarketplace !== 'canonical'
+        || !fullRetirement && binding.scope.kind === 'project' && registrations.user) {
+        return blocked('deploymentOwnershipUnconfirmed', 'Claude registration scope or marketplace ownership could not be verified. Existing output was kept.');
+      }
+    } else if (retirement.userActivation === undefined || retirement.userActivation === 'unknown') {
+      return blocked('deploymentOwnershipUnconfirmed', 'The user activation state could not be verified. Existing output was kept.');
+    }
+    if (binding.route === 'codex-marketplace' && fullRetirement && binding.scope.kind === 'project'
+      && retirement.userActivation !== 'absent' && retirement.userMarketplace !== 'canonical'
+      && observation.registration === 'present') {
+      return blocked('deploymentOwnershipUnconfirmed', 'The inherited user activation could not be bound to this marketplace. Existing output was kept.');
+    }
+  }
   if (!removing && !retainPackage && bundles.length && nativeRoute(binding.route) && !product) return blocked('clientInstallEntryUnavailable', 'The required native client entry is unavailable. Install or repair the client and retry.');
   if (!removing && !retainPackage && bundles.length && nativeRoute(binding.route) && !identity) return blocked('nativeIdentityUnconfirmed', 'The precise native package identity is unavailable. Prepare the operation again.');
   if (!removing && !retainPackage && bundles.length && binding.scope.kind === 'project' && ['codex-marketplace', 'copilot-marketplace'].includes(binding.route)
@@ -205,7 +251,40 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     }
   }
   const empty = !expected.components.length && !allContributions.length && complete && !retainPackage;
-  if (removing || empty) {
+  if (retiring) {
+    const retirement = observation.retirement!;
+    // Native removal must run while the package and its marketplace entry still exist.
+    // Claude verifies all required uninstalls together; Copilot verifies only
+    // after both the local marketplace entry and activation keys have gone.
+    if (binding.route === 'claude-marketplace') {
+      const registrations = retirement.claudeRegistrations!;
+      const unregister = (scope: 'user' | 'local') => {
+        add('unregister', identity!.sourceLocation, [], true, scope);
+        effects.at(-1)!.nativeScope = scope;
+      };
+      if (binding.scope.kind === 'project' && registrations.local) unregister('local');
+      if (registrations.user && (binding.scope.kind === 'user' || fullRetirement)) unregister('user');
+    } else if (fullRetirement && observation.registration === 'present') {
+      add('unregister', identity!.sourceLocation, [], true);
+    }
+    if (binding.route !== 'claude-marketplace' && (observation.configuration!.activation !== 'absent'
+      || fullRetirement && (retirement.userActivation !== 'absent' || observation.registration === 'present'))) {
+      add('deactivate', evidence.layout.activationPath, [], true);
+    }
+    if (retirement.marketplaceProof!.entryPresent) {
+      add('remove-marketplace-entry', retirement.marketplaceProof!.manifestPath, [], true);
+    }
+    if (fullRetirement) {
+      state.removals.push({ effectId: add('remove-owned', evidence.layout.packageRoot, [], true), component: packageSlot!.component });
+    }
+    // Scope-local supplement/permission cleanup never reaches an inherited
+    // User contribution or another project, even for a shared package.
+    for (const slot of slots.filter((slot) => slot !== packageSlot && exactScope(binding, slot.component)
+      && ['present', 'partial'].includes(slot.state))) {
+      state.removals.push({ effectId: add('remove-owned', contributionDestination(slot.component) ?? evidence.layout.activationPath,
+        [], true, slot.component.identity.artifactKey, slot.physicalKey), component: slot.component });
+    }
+  } else if (removing || empty) {
     // Scope-local entries are revoked before any package or native registration.
     if (nativeRoute(binding.route) && identity && observation.registration !== 'absent'
       && (observation.ownership === 'aw' || observation.ownership === 'shared') && revokeActivation) {
@@ -216,12 +295,13 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     for (const slot of removable.filter((item) => !('path' in item.component))) {
       state.removals.push({ effectId: add('remove-owned', contributionDestination(slot.component) ?? evidence.layout.activationPath, [], true, slot.component.identity.artifactKey, slot.physicalKey), component: slot.component });
     }
-    if (nativeRoute(binding.route) && identity && !hasReferences && observation.ownership === 'aw'
+    const preserveSharedPackage = hasReferences || operation === 'cleanup' && sharedMarketplaceRoute(binding);
+    if (nativeRoute(binding.route) && identity && !preserveSharedPackage && observation.ownership === 'aw'
       && observation.registration === 'present') add('unregister', identity.sourceLocation, [], true);
     for (const slot of removable.filter((item) => 'path' in item.component)) {
       state.removals.push({ effectId: add('remove-owned', componentPath(slot.component)!, [], true, '', slot.physicalKey), component: slot.component });
     }
-    if (!hasReferences && packageSlot && (packageSlot.state === 'present' || packageSlot.state === 'partial')
+    if (!preserveSharedPackage && packageSlot && (packageSlot.state === 'present' || packageSlot.state === 'partial')
       && observation.ownership === 'aw') {
       state.removals.push({ effectId: add('remove-owned', evidence.layout.packageRoot, [], true), component: packageSlot.component });
     }
@@ -298,7 +378,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     }
   }
   const frozenExpected = retainedGaps.length ? { ...expected, unmet: [...expected.unmet, ...retainedGaps] } : expected;
-  const plan: FrozenDeploymentPlan = { binding, operation, expected: frozenExpected, projections: input.projections, effects, evidence };
+  const plan: FrozenDeploymentPlan = { binding, operation, expected: frozenExpected, projections: input.projections, effects,
+    evidence: retiring ? { ...evidence, nativeRetirement: observation.retirement } : evidence };
   // Clone before freezing so prepare cannot freeze or mutate a caller's inputs.
   return { status: 'ready', prepared: freeze(structuredClone({ plan, driverState: state })) };
 }
@@ -308,6 +389,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>): Promise<DeploymentReceipt> {
   const { plan, driverState: state } = prepared;
   const { binding } = plan;
+  const retiring = plan.operation === 'cleanup' && plan.evidence.confirmedCatalogRetirement === true && sharedMarketplaceRoute(binding);
+  const fullRetirement = retiring && state.before.package === 'present';
   const writesPermissions = state.contributions.some(({ component }) =>
     component.kind === 'shared-config' && component.locator.kind === 'host-permissions');
   const receipt: DeploymentReceipt = { bindingId: binding.id, effects: [], after: state.before,
@@ -352,13 +435,14 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   let nativeReady = true;
   let nativeRemoved = !nativeRoute(binding.route) || state.before.registration === 'absent';
   let activationRemoved = true;
+  let retirementFailed = false;
   for (const effect of plan.effects) {
     const result: DeploymentReceipt['effects'][number] = { id: effect.id, status: 'skipped', mutation: 'none', diagnostics: [] };
     receipt.effects.push(result);
     const removal = state.removals.find((item) => item.effectId === effect.id);
     const contribution = state.contributions.find((item) => item.effectId === effect.id);
     const packageRemoval = removal && componentPath(removal.component) === plan.evidence.layout.packageRoot;
-    const dependencyFailed = !packageReady && ['register', 'refresh', 'activate'].includes(effect.kind)
+    const dependencyFailed = retirementFailed || !packageReady && ['register', 'refresh', 'activate'].includes(effect.kind)
       || !nativeReady && (effect.kind === 'activate' || binding.route === 'grok-cli'
         && contribution?.component.kind === 'shared-config' && contribution.component.locator.kind === 'host-permissions')
       || !packageReady && contribution?.contribution.kind === 'config-entry'
@@ -401,12 +485,28 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       }
       if (effect.kind === 'unregister') {
         if (binding.platform === 'codex') ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
-        const checked = await observe();
-        if (checked.physicalKey !== binding.physicalKey || checked.registration !== 'absent'
-          && !(outcome.unregisterConfirmed && piProjectRegistrationHidden(binding, checked))) {
-          throw Object.assign(new Error('nativeUnregisterPostcheckFailed'), { mutation: 'possible' });
+        const moreClaudeScopes = retiring && binding.route === 'claude-marketplace'
+          && plan.effects.slice(receipt.effects.length).some(({ kind }) => kind === 'unregister');
+        if (!moreClaudeScopes) {
+          if (!(retiring && binding.route === 'copilot-marketplace')) {
+            const checked = await observe();
+            if (checked.physicalKey !== binding.physicalKey || retiring
+              && (checked.ownership !== state.before.ownership || !checked.retirement?.marketplaceProof
+                || binding.route === 'claude-marketplace' && (!checked.retirement.claudeRegistrations
+                  || checked.retirement.claudeRegistrations.managed || checked.retirement.claudeRegistrations.unsupported)
+                || checked.retirement.marketplaceProof.fingerprint !== state.before.retirement?.marketplaceProof?.fingerprint)
+              || checked.registration !== 'absent'
+              && !(outcome.unregisterConfirmed && piProjectRegistrationHidden(binding, checked))) {
+              throw Object.assign(new Error('nativeUnregisterPostcheckFailed'), { mutation: 'possible',
+                ...(retiring ? { code: 'nativeUnregisterPostcheckFailed' } : {}) });
+            }
+          }
+          // Copilot's live row can remain visible until the marketplace entry,
+          // payload and activations have all been withdrawn. The successful
+          // uninstall authorizes those dependent actions; the final read must
+          // still confirm absence.
+          nativeRemoved = true;
         }
-        nativeRemoved = true;
       }
       if (effect.kind === 'deactivate') activationRemoved = true;
     } catch (error) {
@@ -432,7 +532,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       const permissionNotice = permissionFailureNotice(code, failurePath, subject);
       const relatedNotices = relatedProjectPermissionNotices(error, subject);
       if (relatedNotices.length) result.diagnostics.push(...relatedNotices);
-      else result.diagnostics.push(permissionNotice ?? lifecycleDiagnostic(binding, code === 'operationPlanStale' || definite ? code : 'platformMutationFailed',
+      else result.diagnostics.push(permissionNotice ?? lifecycleDiagnostic(binding,
+        code === 'operationPlanStale' || definite || retiring && code === 'nativeUnregisterPostcheckFailed' ? code : 'platformMutationFailed',
         definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.'
           : 'A platform action did not complete. Check status and retry the remaining actions.'));
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
@@ -454,6 +555,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
           detail: { reasonCode: 'grokNativeInstallConfigRoot', path: state.product.entry.configRoot } });
       }
       if (effect.kind === 'publish-package') packageReady = false;
+      if (retiring) retirementFailed = true;
       if (effect.kind === 'register' || effect.kind === 'refresh') nativeReady = false;
       if (effect.kind === 'deactivate') activationRemoved = false;
       if (removal && !('path' in removal.component)) activationRemoved = false;
@@ -468,6 +570,23 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
   }
   receipt.after = await observe();
+  if (retiring) {
+    const after = receipt.after;
+    const retirement = after.retirement;
+    const clear = after.physicalKey === binding.physicalKey && after.package === 'absent'
+      && after.ownership === 'absent' && after.registration === 'absent' && retirement?.marketplaceProof
+      && !retirement.marketplaceProof.entryPresent && retirement.configurationFingerprint
+      && after.configuration?.marketplace !== 'foreign' && after.configuration?.marketplace !== 'unknown'
+      && (fullRetirement || after.configuration?.marketplace === 'canonical')
+      && (binding.route === 'claude-marketplace'
+        ? retirement.claudeRegistrations && !retirement.claudeRegistrations.managed && !retirement.claudeRegistrations.unsupported
+          && (fullRetirement || retirement.claudeKnownMarketplace === 'canonical')
+        : after.configuration?.activation === 'absent' && (!fullRetirement || retirement.userActivation === 'absent'));
+    if (!clear) {
+      receipt.diagnostics.push(lifecycleDiagnostic(binding, 'nativeRetirementPostcheckFailed',
+        'The final native observation does not confirm that the package, registration and retired configuration are absent. Check status and retry retirement.'));
+    }
+  }
   receipt.diagnostics.push(...receipt.after.diagnostics.filter(({ code }) =>
     code === 'antigravityLegacyPackageUnconfirmed' || code === 'antigravityProjectPackageConflict'));
   const afterConsumer = selectedNativeConsumer(binding, receipt.after);
@@ -503,7 +622,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   // A bounded postcheck can resolve uncertain native effects. File publication
   // still requires byte evidence; mere existence cannot confirm those effects.
   for (const result of receipt.effects) {
-    if (result.status !== 'unknown' || receipt.after.ownership !== 'aw') continue;
+    if (retiring || result.status !== 'unknown' || receipt.after.ownership !== 'aw') continue;
     const effect = plan.effects.find((item) => item.id === result.id)!;
     const exactIdentity = state.identity && receipt.after.nativeIdentity
       && state.identity.packageId === receipt.after.nativeIdentity.packageId

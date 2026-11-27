@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
@@ -17,7 +17,7 @@ import { snapshotRegularTree } from '../helpers/write-command-fixture.js';
 import { fixture, expectSavedIntent, failManifestAfterActiveCheck } from '../helpers/joint-recovery-fixture.js';
 
 describe('joint recovery through real Catalog and owned outputs', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery(); });
   it.each(['required', 'required at recheck', 'independent'] as const)('protects an explicitly removed User provider according to its %s Project dependency', async (relation) => {
     const required = relation !== 'independent';
     const value = await fixture(false, ['generic'], false, { a: [], b: ['x'], x: [required ? 'a' : 'd'], d: [] });
@@ -469,7 +469,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
 // A requirements-only exit leaves the installed Project consumer able to use its dependency.
 it.each(['inherited skills', 'healthy project copy', 'damaged project copy', 'missing declared copy', 'removed consumer'] as const)(
   'removes a User root while accounting for %s in the current project', async (scenario) => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const value = await fixture(false, ['opencode']);
     const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
     const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
@@ -504,7 +504,7 @@ it.each(['inherited skills', 'healthy project copy', 'damaged project copy', 'mi
 
 it.each(['owned consumer', 'foreign consumer', 'removed consumer', 'healthy project copy'] as const)(
   'protects only dependencies still needed by a delisted %s', async (scenario) => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     const value = await fixture(false, ['opencode']);
     const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
     const project = { ...value.options, scope: 'project' as const, context: 'project' as const };

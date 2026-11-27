@@ -6115,24 +6115,24 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.activeReview).toBeUndefined();
   });
 
-  // Test Value Gate: the apply report must retain the desktop attribution even if the generated warning exceeds the summary limit.
-  it('keeps the full Skill identity and individual Codex App controls in config apply history', async () => {
+  // Test Value Gate: the apply report must retain the reader attribution even if the generated warning exceeds the summary limit.
+  it('keeps the full Skill identity and individual Antigravity App controls in config apply history', async () => {
     const pluginId = 'official/demo';
     const skill = `${'s'.repeat(59)}-tail`;
     const notice = {
       code: 'skillInvocationPolicyNotGuaranteed', severity: 'warning',
-      message: `Installed Skill "${skill}". AW has not verified skill.invocation.manual=true, skill.invocation.model=false, skill.visibility=visible for the Codex desktop app. Private context /private/catalog.`,
-      subject: { pluginId, target: 'codex', scope: 'project', field: `skill.${skill}` },
-      detail: { reasonCode: 'invocationControlUnverified', path: '/private/catalog', skillInvocationControls: [
-        { feature: 'skill.invocation.manual', values: ['true'], reasonCode: 'invocationControlUnverified', product: 'app' },
-        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
-        { feature: 'skill.visibility', values: ['visible'], reasonCode: 'invocationControlUnverified', product: 'app' },
+      message: `Installed Skill "${skill}". The observed policy differs from skill.invocation.manual=true, skill.invocation.model=false, skill.visibility=visible for the Antigravity App. Private context /private/catalog.`,
+      subject: { pluginId, target: 'antigravity', scope: 'project', field: `skill.${skill}` },
+      detail: { reasonCode: 'invocationControlDegraded', path: '/private/catalog', skillInvocationControls: [
+        { feature: 'skill.invocation.manual', values: ['true'], reasonCode: 'invocationControlDegraded', product: 'app' },
+        { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlDegraded', product: 'app' },
+        { feature: 'skill.visibility', values: ['visible'], reasonCode: 'invocationControlDegraded', product: 'app' },
       ] },
     };
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({ configWrite: 'succeeded', overallState: 'succeeded', apply: {
         state: 'succeeded', diagnostics: [notice, notice],
-        targetResults: [{ target: { pluginId, platform: 'codex', scope: 'project' }, state: 'completed' }],
+        targetResults: [{ target: { pluginId, platform: 'antigravity', scope: 'project' }, state: 'completed' }],
       } }),
     }));
     const review = await controller.buildOperationReview({
@@ -6145,17 +6145,17 @@ describe('TUI v4 Review safety', () => {
     expect(history).toEqual([expect.objectContaining({ state: 'succeeded', diagnosticCount: 1 })]);
     const recordId = history[0]!.recordId;
     const detailLines = [
-      `skill.${skill} · invocationControlUnverified`,
-      'skill.invocation.manual=true · invocationControlUnverified · product=app',
-      'skill.invocation.model=false · invocationControlUnverified · product=app',
-      'skill.visibility=visible · invocationControlUnverified · product=app',
+      `skill.${skill} · invocationControlDegraded`,
+      'skill.invocation.manual=true · invocationControlDegraded · product=app',
+      'skill.invocation.model=false · invocationControlDegraded · product=app',
+      'skill.visibility=visible · invocationControlDegraded · product=app',
     ];
     const detail = controller.getOperationDiagnostic(recordId)!;
     expect(detail.diagnostics).toMatchObject([{
-      code: notice.code, stage: 'apply', target: { pluginId, platform: 'codex', scope: 'project' }, detailLines,
+      code: notice.code, stage: 'apply', target: { pluginId, platform: 'antigravity', scope: 'project' }, detailLines,
     }]);
     expect(detail.targets).toMatchObject([{
-      pluginId, platform: 'codex', scope: 'project', state: 'completed', diagnosticIds: [detail.diagnostics[0]!.id],
+      pluginId, platform: 'antigravity', scope: 'project', state: 'completed', diagnosticIds: [detail.diagnostics[0]!.id],
     }]);
     const report = controller.previewOperationReport(recordId)?.content;
     expect(report).toContain(detailLines.join('\n'));

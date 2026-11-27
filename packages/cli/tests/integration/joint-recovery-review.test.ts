@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { git } from '../helpers/catalog-source-fixture.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
 import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
@@ -30,7 +30,7 @@ import { snapshotRegularTree } from '../helpers/write-command-fixture.js';
 import { fixture, expectSavedIntent, failManifestAfterActiveCheck } from '../helpers/joint-recovery-fixture.js';
 
 describe('joint recovery through real Catalog and owned outputs', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  beforeEach(() => { installNativeTestDiscovery(); });
   it.each(['same-path damage', 'new Active', 'new Active with caller context'] as const)('rejects install after %s between Review and confirmation', async (change) => {
     const value = await fixture();
     const user = { ...value.options, scope: 'user' as const };

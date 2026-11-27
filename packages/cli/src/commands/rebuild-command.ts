@@ -15,7 +15,7 @@ import { missingPermissionOwnershipWarning, pendingRelatedProjectNotices, relate
   updateHostPermissions, type PermissionRemovalReview } from '../platforms/permission-ownership.js';
 import { permissionConflict, permissionFailureNotice } from '../platforms/permission-sidecar.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
-import { getDeploymentLayout, scopedPermissionPath } from '../platforms/layout.js';
+import { getDeploymentLayout, hasSharedUserPackage, scopedPermissionPath } from '../platforms/layout.js';
 import type { DeploymentExclusion, Diagnostic } from '../platforms/contracts.js';
 import type { ScopeContext } from '../intent/scope-context.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
@@ -38,7 +38,7 @@ import { getCodexOperationRequirement, probeAgentVersion } from '../utils/agent-
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { configIssueDiagnostic, configReadDiagnostic } from '../utils/plugin-config-diagnostics.js';
 import type { RecoveryDiagnostic } from '../recovery/receipt.js';
-import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
+import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import {
   catalogGenerationErrorCode,
   isOfflineCleanupCatalogGenerationError,
@@ -54,7 +54,8 @@ import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import {
   assertCatalogSourceInventoryComplete,
-  canonicalMarketplaceRegistrationNames,
+  resolveCleanupMarketplaceIdentity,
+  scopedCleanupMarketplaceEvidence,
   inventoryCatalogSourceReferences,
   offlineOwnedPathEvidence,
   type CatalogSourceReferenceInventory,
@@ -1028,11 +1029,10 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
   };
 }
 
-function hasRebuildMutation(result: RebuildResult): boolean {
+export function hasRebuildMutation(result: RebuildResult): boolean {
   return result.removed.length > 0 || result.quarantined.length > 0
     || result.cleanupMutation !== undefined
-    || (result.deploymentReceipts ?? []).some((receipt) => receipt.effects.some((effect) =>
-      effect.mutation === 'confirmed' || effect.status === 'unknown' && effect.mutation === 'possible'))
+    || (result.deploymentReceipts ?? []).some((receipt) => receipt.effects.some((effect) => effect.mutation !== 'none'))
     || result.actions.some((action) => action.status === 'succeeded'
       && (action.name === 'native.write' || action.name === 'artifacts.write'));
 }
@@ -1275,7 +1275,7 @@ function cleanupIntentResult(target: LiveCleanupTarget): RebuildResult {
     cleanupAttempted: false,
     removed: [],
     absent: [],
-    residual: [],
+    residual: target.marketplaceIdentityUnresolved ? ['nativeMarketplaceIdentityUnresolved'] : [],
     quarantined: [],
     failures: [],
   };
@@ -1444,60 +1444,39 @@ function resolveLiveCleanupTargets(options: {
   const selectors = options.selectors.map((value) => {
     const parsed = parsePluginId(value);
     const matchesByTarget = new Map<string, LiveCleanupTarget>();
+    const targetFor = (sourceId: string, platform: PlatformName, sourceIdentity?: string): LiveCleanupTarget => {
+      const registeredIdentities = new Set(options.references.flatMap((entry) =>
+        entry.kind === 'namespacedMarketplace' && entry.sourceId === sourceId
+        && (entry.platform === undefined || entry.platform === platform)
+        && entry.sourceIdentity ? [entry.sourceIdentity] : []));
+      const stableSourceIdentity = sourceIdentity
+        ?? (registeredIdentities.size === 1 ? [...registeredIdentities][0]! : 'unavailable');
+      return {
+        pluginId: formatPluginId({ sourceId, pluginName: parsed.pluginName }),
+        pluginName: parsed.pluginName, sourceId, sourceIdentity: stableSourceIdentity, platform, scope: options.scope,
+        ...resolveCleanupMarketplaceIdentity({
+          references: options.references, sourceId, sourceIdentity: stableSourceIdentity,
+          pluginName: parsed.pluginName, platform, scope: options.scope,
+        }),
+      };
+    };
     for (const reference of visible.filter((entry) =>
       entry.pluginName === parsed.pluginName
       && (parsed.sourceId === undefined || entry.sourceId === parsed.sourceId))) {
-        const registeredSourceIdentity = options.references.find((entry) =>
-          entry.kind === 'namespacedMarketplace' && entry.sourceId === reference.sourceId && entry.sourceIdentity)?.sourceIdentity;
-        const stableSourceIdentity = reference.ownedComponent
-          ? reference.sourceIdentity ?? registeredSourceIdentity ?? 'unavailable'
-          : registeredSourceIdentity ?? reference.sourceIdentity ?? 'unavailable';
-        const liveNames = new Set(options.references.flatMap((candidate) =>
-          candidate.sourceId === reference.sourceId
-          && candidate.pluginName === reference.pluginName
-          && candidate.platform === reference.platform
-          && candidate.scope === reference.scope
-          && candidate.marketplaceName
-            ? [candidate.marketplaceName]
-            : []));
-        const registeredNames = canonicalMarketplaceRegistrationNames(
-          options.references,
-          reference.sourceId!,
-        );
-        const unboundNativeNames = new Set(options.references.flatMap((candidate) =>
-          candidate.kind === 'namespacedMarketplace'
-          && candidate.sourceId === undefined
-          && candidate.pluginName === reference.pluginName
-          && candidate.platform === reference.platform
-          && candidate.scope === reference.scope
-          && candidate.marketplaceName
-            ? [candidate.marketplaceName]
-            : []));
-        const marketplaceName = liveNames.size === 1
-          ? [...liveNames][0]
-          : liveNames.size === 0 && registeredNames.length === 1
-            ? registeredNames[0]
-            : undefined;
-        const marketplaceIdentityUnresolved = liveNames.size > 1
-          || (liveNames.size === 0 && registeredNames.length > 1)
-          || (liveNames.size === 0 && registeredNames.length === 0 && unboundNativeNames.size > 0);
-        const target: LiveCleanupTarget = {
-          pluginId: formatPluginId({ sourceId: reference.sourceId!, pluginName: reference.pluginName! }),
-          pluginName: reference.pluginName!,
-          sourceId: reference.sourceId!,
-          sourceIdentity: stableSourceIdentity,
-          platform: reference.platform as PlatformName,
-          scope: reference.scope as Scope,
-          ...(marketplaceName ? { marketplaceName } : {}),
-          ...((liveNames.size === 1
-            || (marketplaceName !== undefined && unboundNativeNames.has(marketplaceName)))
-            ? { nativeRegistration: true }
-            : {}),
-          ...(marketplaceIdentityUnresolved ? { marketplaceIdentityUnresolved: true } : {}),
-        };
-        const key = [target.pluginId, target.sourceIdentity, target.platform, target.scope].join('\0');
+        const target = targetFor(reference.sourceId!, reference.platform as PlatformName,
+          reference.sourceIdentity ?? reference.ownedComponent?.identity.sourceIdentity);
+        const key = offlineCleanupKey(target);
         const previous = matchesByTarget.get(key);
         matchesByTarget.set(key, previous?.marketplaceName ? previous : target);
+    }
+    // A qualified request can have only an unbound host activation left. It
+    // still needs a diagnostic target, but that clue never grants ownership.
+    if (parsed.sourceId) for (const platform of options.platforms) {
+      if ([...matchesByTarget.values()].some((target) => target.platform === platform)
+        || !scopedCleanupMarketplaceEvidence({ references: options.references, pluginName: parsed.pluginName,
+          platform, scope: options.scope }).unboundConsumers.length) continue;
+      const target = targetFor(parsed.sourceId, platform);
+      if (target.marketplaceIdentityUnresolved) matchesByTarget.set(offlineCleanupKey(target), target);
     }
     const matches = [...matchesByTarget.values()];
     const identities = [...new Set(matches.map((target) => target.pluginId))];
@@ -1515,6 +1494,12 @@ function resolveLiveCleanupTargets(options: {
       target.pluginId, target.sourceIdentity, target.platform, target.scope,
     ].join('\0'), target] as const)).values()],
   };
+}
+
+function cleanupMarketplaceIdentityWarnings(targets: readonly LiveCleanupTarget[]): string[] {
+  return targets.flatMap((target) => target.marketplaceIdentityUnresolved
+    ? [`nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`]
+    : []);
 }
 
 interface OfflineNativeCleanupPreparation {
@@ -1539,10 +1524,12 @@ async function prepareOfflineNativeCleanup(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   runtime?: RebuildCommandRuntime;
+  retirementNativePlatforms?: readonly PlatformName[];
 }): Promise<OfflineNativeCleanupPreparation> {
   const candidates = options.evidence.flatMap((target) => target.plan.actions.flatMap((action) =>
     action.recoveryCandidate && needsFrozenNativeRemoval(action.recoveryCandidate) ? [action.recoveryCandidate] : []));
   const context: RebuildExecutionContext = { ...options.runtime, env: options.env,
+    confirmedCatalogRetirement: options.retirementNativePlatforms ? true : undefined,
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), recoveryCandidates: candidates,
     sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView };
@@ -1551,7 +1538,8 @@ async function prepareOfflineNativeCleanup(options: {
   const deploymentExclusions: DeploymentExclusion[] = [];
   const warnings: string[] = [];
   for (const evidence of options.evidence) {
-    if (!candidates.some((candidate) => candidate.binding.plugin.sourceIdentity === evidence.sourceIdentity
+    if (!options.retirementNativePlatforms?.includes(evidence.platform)
+      && !candidates.some((candidate) => candidate.binding.plugin.sourceIdentity === evidence.sourceIdentity
       && candidate.binding.plugin.pluginId === evidence.pluginId && candidate.binding.platform === evidence.platform
       && candidate.binding.scope.kind === evidence.scope)) continue;
     const plugin = createSyntheticPlugin(evidence.pluginName, options.env);
@@ -1588,6 +1576,7 @@ async function cleanupOfflineOwnedComponents(options: {
   executeCleanupOperation?: typeof executeRebuildOperation;
   preserveLegacyNativeSkills?: boolean;
   nativePreparation?: OfflineNativeCleanupPreparation;
+  retirementNativePlatforms?: readonly PlatformName[];
 }): Promise<RebuildCommandResult> {
   const results: RebuildResult[] = [];
   const warnings: string[] = [...options.nativePreparation?.warnings ?? []];
@@ -1644,6 +1633,17 @@ async function cleanupOfflineOwnedComponents(options: {
         && candidate.platform === target.platform
         && candidate.scope === target.scope);
       const nativeTarget = options.nativePreparation?.targets.get(offlineCleanupKey(target));
+      // Confirmed retirement needs verified native observations, including when
+      // the package is already gone. Never downgrade a failed retirement to
+      // an offline activation edit with weaker evidence.
+      if (options.retirementNativePlatforms?.includes(target.platform) && !nativeTarget?.platformDeployment) {
+        results.push(failedResult('cleanup', {
+          ...target, pluginVersion: '0.0.0', cwd: options.cwd,
+        }, 'removedPluginNativeOwnershipUnavailable: Native retirement evidence could not be established.',
+        'preflight', options.nativePreparation?.deploymentExclusions.filter((entry) =>
+          entry.pluginId === target.pluginId && entry.platform === target.platform && entry.scope.kind === target.scope)));
+        continue;
+      }
       const cleanupContext = { cwd: options.cwd, env: options.env };
       const permissionNotice = !nativeTarget && isPermissionHost(target.platform) && (target.platform !== 'antigravity' || target.scope === 'user')
         ? await missingPermissionOwnershipWarning(cleanupContext, target.pluginId, target.scope, await scopedPermissionPath(cleanupContext, target.platform,
@@ -1786,7 +1786,11 @@ async function cleanupOfflineOwnedComponents(options: {
       const nativeResult = nativeTarget ? await (options.executeCleanupOperation ?? executeRebuildOperation)({
         command: 'cleanup', target: nativeTarget, driver: options.nativePreparation!.integration.driver,
       }) : undefined;
-      if (nativeResult?.status === 'failed' && nativeResult.error.phase === 'preflight') { results.push(nativeResult); continue; }
+      if (nativeResult?.status === 'failed' && (nativeResult.error.phase === 'preflight'
+        || options.retirementNativePlatforms?.includes(target.platform))) {
+        results.push(nativeResult);
+        continue;
+      }
       let result = await (options.executeCleanupOperation ?? executeRebuildOperation)({
         command: 'cleanup',
         target: desired,
@@ -1927,10 +1931,7 @@ async function previewOfflineOwnedComponents(options: {
 }): Promise<RebuildCommandResult> {
   await options.onPreviewStage?.('inventory');
   const preview = mergeRebuildCommandResults([]);
-  preview.warnings.push(...options.targets.flatMap((target) =>
-    target.marketplaceIdentityUnresolved
-      ? [`nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`]
-      : []));
+  preview.warnings.push(...cleanupMarketplaceIdentityWarnings(options.targets));
   if (options.evidence) {
     preview.offlineCleanupPlans = options.evidence;
     preview.operationPlan = createOfflineCleanupOperationPlan(options.evidence);
@@ -1945,6 +1946,7 @@ function createOfflineCleanupOperationPlan(
   warnings: readonly string[] = [],
   retainedPackages: readonly OperationAction[] = [],
   nativePreparation?: OfflineNativeCleanupPreparation,
+  retirement?: Pick<RemovedPluginCleanupTarget, 'pluginId' | 'snapshotDigest'>,
 ): OperationPlan {
   const reviewedActions = (target: OfflineCleanupTargetEvidence) => target.plan.actions.filter((action) => {
     const prepared = nativePreparation?.targets.get(offlineCleanupKey(target));
@@ -1989,6 +1991,9 @@ function createOfflineCleanupOperationPlan(
           : [])),
     warnings: [...warnings, ...nativePreparation?.warnings ?? []],
     evidence: {
+      ...(retirement ? { confirmedCatalogRetirement: {
+        pluginId: retirement.pluginId, snapshotDigest: retirement.snapshotDigest,
+      } } : {}),
       catalogDigests: evidence.map((target) => ({
         sourceId: target.sourceId,
         digest: target.sourceIdentity,
@@ -2271,17 +2276,11 @@ export type RemovedPluginCleanupTarget = {
   sourceIdentity: string;
   logicalIdentity: string;
   snapshotDigest: string;
-  marketplaceRoot: string;
-  marketplaceName?: string;
-  nativeOwnershipVerified: boolean;
-  projectionOwnershipVerified: boolean;
-  claudeNativeCleanupBlocked: boolean;
-  nativeState: 'installed' | 'absent' | 'unknown' | 'unbound';
-  nativeObservationFingerprint: string;
-  marketplaceEvidenceFingerprint: string;
+  confirmedCatalogRetirement?: true;
+  /** Shared native residue requires the platform retirement path; supplements alone do not. */
+  nativePlatforms: PlatformName[];
+  marketplaceNames: Partial<Record<PlatformName, string>>;
   projectionFingerprint: string;
-  projectionPresent: boolean;
-  activationScopes: Array<{ scope: Scope; enabled: boolean | undefined }>;
   configTargets: Array<{
     scope: Scope;
     kind: Awaited<ReturnType<typeof inspectPluginConfigResetTarget>>['kind'];
@@ -2361,9 +2360,16 @@ export async function inspectRemovedPluginCleanup(options: {
   try {
     const previous = options.preparation?.catalogOperationContext.catalog.sources
       .find((source) => source.sourceId === parsed.sourceId)?.resolution;
-    generation = previous && options.preparation
-      ? (await options.preparation.catalogReadScope.resolveActiveGeneration(parsed.sourceId, previous)).active
-      : await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
+    if (previous && options.preparation) {
+      const { active, reused } = await options.preparation.catalogReadScope.resolveActiveGeneration(parsed.sourceId, previous);
+      generation = active;
+      // Transport evidence alone does not establish a healthy Catalog for retirement.
+      if (reused) await CatalogPreparationReadScope.validateEntries(options.preparation.catalogReadScope, previous);
+      else await validateCatalogSnapshotComplete(generation.snapshotPath);
+    } else {
+      generation = await resolveActiveCatalogGeneration({ sourceId: parsed.sourceId, env: options.env });
+      await validateCatalogSnapshotComplete(generation.snapshotPath);
+    }
   } catch {
     return null;
   }
@@ -2397,49 +2403,72 @@ export async function inspectRemovedPluginCleanup(options: {
     }
   }
   const evidence: OfflineCleanupTargetEvidence[] = [];
+  const nativePlatforms: PlatformName[] = [];
+  const marketplaceNames: RemovedPluginCleanupTarget['marketplaceNames'] = {};
   for (const platform of NATIVE_PLATFORM_TARGETS) {
     const base = offlineCleanupEvidenceFromInventory({ reason: 'bundleUnavailable', pluginId,
       pluginName: parsed.pluginName, sourceId: parsed.sourceId, sourceIdentity: generation.sourceIdentity,
       platform, scope: options.scope, inventory: options.inventory });
-    if (!base) continue;
-    const actions = ownershipConflict ? [] : base.plan.actions.filter((action) =>
+    // Shared user packages can also be inherited by this project without an
+    // independent local owner marker. Canonical consumer records (including
+    // disabled activation) still identify targets after the package is gone.
+    const nativeReferences = hasSharedUserPackage(platform) && options.inventory.references.some((reference) =>
+      reference.platform === platform && reference.pluginName === parsed.pluginName
+      && !reference.disabledNativeActivation
+      && (reference.sourceId === parsed.sourceId || reference.sourceId === undefined
+        && reference.marketplaceName === getNamespacedMarketplaceName(parsed.sourceId!))
+      && (reference.kind === 'namespacedMarketplace'
+        || reference.kind === 'namespacedOwner' && reference.recoveryCandidate?.evidence === 'verified')
+      && (reference.scope === options.scope || options.scope === 'project' && reference.scope === 'user'));
+    if (!base && !nativeReferences) continue;
+    if (nativeReferences) nativePlatforms.push(platform);
+    const identity = resolveCleanupMarketplaceIdentity({
+      references: options.inventory.references, sourceId: parsed.sourceId,
+      sourceIdentity: generation.sourceIdentity, pluginName: parsed.pluginName, platform, scope: options.scope,
+    });
+    if (identity.marketplaceName) marketplaceNames[platform] = identity.marketplaceName;
+    const cleanup = base ?? intentOnlyOfflineCleanupEvidence({
+      pluginId, pluginName: parsed.pluginName, sourceId: parsed.sourceId, sourceIdentity: generation.sourceIdentity,
+      platform, scope: options.scope,
+    });
+    // Retirement never executes the weaker offline registration actions.
+    // The platform plan must establish package or canonical marketplace
+    // ownership before withdrawing any registration or activation.
+    const actions = ownershipConflict ? [] : cleanup.plan.actions.filter((action) =>
       action.action !== 'removeNativeRegistration');
-    const plan = { ...base.plan, actions };
-    evidence.push({ ...base, plan, planDigest: removedCleanupDigest(plan), targetFingerprint: removedCleanupDigest(plan) });
+    const plan = { ...cleanup.plan, actions };
+    const planDigest = removedCleanupDigest(plan);
+    evidence.push({ ...cleanup, plan, planDigest, targetFingerprint: planDigest });
   }
-  const candidates = evidence.flatMap((entry) => entry.plan.actions.flatMap((action) =>
-    action.recoveryCandidate ? [action.recoveryCandidate] : []));
-  for (const platform of NATIVE_PLATFORM_TARGETS) {
-    if (relevant.some((reference) => reference.kind === 'namespacedMarketplace' && reference.platform === platform
-      && reference.scope === options.scope) && !candidates.some((candidate) => candidate.binding.platform === platform)) {
-      blockers.push(`removedPluginNativeOwnershipUnavailable: ${platform} registration remains without a verified physical package owner.`);
-    }
-  }
-  const first = candidates[0];
-  const firstLayout = first ? await getDeploymentLayout({ cwd: options.cwd, env: options.env }, first.binding) : undefined;
   return {
     pluginId, pluginName: parsed.pluginName, sourceId: parsed.sourceId,
     sourceIdentity: generation.sourceIdentity, logicalIdentity: generation.logicalIdentity,
     snapshotDigest: generation.snapshotDigest,
-    marketplaceRoot: firstLayout?.marketplaceRoot ?? path.join(resolveAwHome(options.env), 'platforms'),
-    ...(firstLayout?.marketplaceName ? { marketplaceName: firstLayout.marketplaceName } : {}),
-    nativeOwnershipVerified: candidates.length > 0 && !ownershipConflict,
-    projectionOwnershipVerified: relevant.some((reference) => reference.ownedComponent) && !ownershipConflict,
-    claudeNativeCleanupBlocked: false, nativeState: 'unbound',
-    nativeObservationFingerprint: removedCleanupDigest(candidates),
-    marketplaceEvidenceFingerprint: removedCleanupDigest(candidates.map((candidate) => candidate.physicalIdentity)),
-    projectionFingerprint: removedCleanupDigest(evidence), projectionPresent: false, activationScopes: [],
+    ...(!ownershipConflict ? { confirmedCatalogRetirement: true as const } : {}),
+    nativePlatforms,
+    marketplaceNames,
+    projectionFingerprint: removedCleanupDigest({ evidence, marketplaceNames, nativePlatforms }),
     configTargets, evidence, blockers,
   };
 }
 
-export async function executeRemovedPluginOutputCleanup(options: {
+interface RemovedPluginCleanupRequest {
   target: RemovedPluginCleanupTarget;
   selectedTargets: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
   context: ScopeContext;
   runtime?: RebuildCommandRuntime;
   preparation?: RemovedPluginCleanupPreparation;
-}): Promise<RebuildCommandResult> {
+}
+
+export async function executeRemovedPluginOutputCleanup(options: RemovedPluginCleanupRequest): Promise<RebuildCommandResult> {
+  if (options.runtime?.previewOperationPlan) return removedPluginOutputCleanupInContext(options);
+  return withAwHomeMutationLock({ env: options.context.env, token: options.runtime?.awHomeMutationToken,
+    signal: options.runtime?.signal, action: (token) => removedPluginOutputCleanupInContext({
+      ...options, runtime: { ...options.runtime, awHomeMutationToken: token },
+    }) });
+}
+
+async function removedPluginOutputCleanupInContext(options: RemovedPluginCleanupRequest): Promise<RebuildCommandResult> {
   const selected = options.selectedTargets.filter((target) =>
     target.pluginId === options.target.pluginId && target.scope === options.context.scope);
   const retainedPackages = await discoverRetainedManagedCommandPackages({
@@ -2450,8 +2479,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
     ...entry, kind: 'retainManagedCommandPackage', pluginId: options.target.pluginId,
     scope: 'user',
   }));
-  const withRetainedPackages = (result: RebuildCommandResult,
-    operationPlan: OperationPlan = createOfflineCleanupOperationPlan([], undefined, [], retainedActions)): RebuildCommandResult => {
+  const withRetainedPackages = (result: RebuildCommandResult, operationPlan: OperationPlan): RebuildCommandResult => {
     result.operationPlan = operationPlan;
     if (operationPlan.deploymentExclusions?.length) result.deploymentExclusions = operationPlan.deploymentExclusions;
     const commandResults = [...new Map([
@@ -2465,7 +2493,6 @@ export async function executeRemovedPluginOutputCleanup(options: {
     }
     return result;
   };
-  if (selected.length === 0) return withRetainedPackages(mergeRebuildCommandResults([]));
   const inventoryReader = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   const inventory = await inventoryReader({
@@ -2485,6 +2512,9 @@ export async function executeRemovedPluginOutputCleanup(options: {
     preparation: options.runtime?.previewOperationPlan ? options.preparation : undefined,
   });
   if (!current || current.sourceIdentity !== options.target.sourceIdentity
+    || current.logicalIdentity !== options.target.logicalIdentity
+    || current.snapshotDigest !== options.target.snapshotDigest
+    || current.confirmedCatalogRetirement !== options.target.confirmedCatalogRetirement
     || current.projectionFingerprint !== options.target.projectionFingerprint
     || current.evidence.some((entry) => {
       const expected = options.target.evidence.find((candidate) =>
@@ -2492,6 +2522,11 @@ export async function executeRemovedPluginOutputCleanup(options: {
       return !expected || !offlineCleanupEvidenceMatches(expected, entry);
     })) {
     throw new Error('operationReviewStale: removed plugin ownership or output changed before cleanup.');
+  }
+  if (!current.confirmedCatalogRetirement) {
+    if (!options.runtime?.previewOperationPlan) throw new Error('removedPluginOwnershipConflict');
+    return withRetainedPackages(mergeRebuildCommandResults([]),
+      createOfflineCleanupOperationPlan([], undefined, current.blockers, retainedActions));
   }
   const evidence = current.evidence.filter((entry) => selected.some((target) =>
     target.platform === entry.platform && target.scope === entry.scope));
@@ -2502,15 +2537,16 @@ export async function executeRemovedPluginOutputCleanup(options: {
     sourceIdentity: current.sourceIdentity,
     platform: entry.platform,
     scope: entry.scope,
-    ...(current.marketplaceName ? { marketplaceName: current.marketplaceName } : {}),
+    ...(current.marketplaceNames[entry.platform] ? { marketplaceName: current.marketplaceNames[entry.platform] } : {}),
     nativeRegistration: entry.platform === 'codex',
   }));
   const nativePreparation = await prepareOfflineNativeCleanup({ evidence, cwd: options.context.executionCwd,
-    env: options.context.env, runtime: options.runtime });
-  const operationPlan = createOfflineCleanupOperationPlan(evidence, undefined, [], retainedActions, nativePreparation);
+    env: options.context.env, runtime: options.runtime, retirementNativePlatforms: current.nativePlatforms });
+  const operationPlan = createOfflineCleanupOperationPlan(evidence, undefined, [], retainedActions, nativePreparation, current);
   if (options.runtime?.expectedPlanFingerprint) {
     assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
   }
+  if (selected.length === 0) return withRetainedPackages(mergeRebuildCommandResults([]), operationPlan);
   const result = options.runtime?.previewOperationPlan
     ? await previewOfflineOwnedComponents({
         targets,
@@ -2525,6 +2561,7 @@ export async function executeRemovedPluginOutputCleanup(options: {
     targets,
     evidence,
     nativePreparation,
+    retirementNativePlatforms: current.nativePlatforms,
     inventoryErrors: inventory.errors.filter((error) => !error.kind.startsWith('config')),
     cwd: options.context.executionCwd,
     env: options.context.env,
@@ -2705,7 +2742,6 @@ async function runRebuildCommandInSession(
     liveTargets = projectedTargets;
     if (options.command === 'cleanup') {
       cleanupInventory = inventory;
-      cleanupLiveTargets = projectedTargets.filter(selectedExecutionTarget);
     }
     const identities = new Set<string>();
     for (const reference of live) {
@@ -2716,6 +2752,13 @@ async function runRebuildCommandInSession(
       for (const root of cleanupRequirements!.roots) identities.add(root.pluginId);
     }
     requestedPluginNames = [...identities];
+    if (options.command === 'cleanup') {
+      cleanupLiveTargets = resolveLiveCleanupTargets({
+        selectors: requestedPluginNames, platforms: selectedPlatforms(options.commandOptions.platform),
+        scope: options.commandOptions.scope, references: inventory.references,
+      }).targets.filter(selectedExecutionTarget);
+      liveTargets = cleanupLiveTargets;
+    }
   }
   let cleanupTargets: LiveCleanupTarget[] = [];
   let cleanupUnavailableWarnings: string[] = [];
@@ -2735,6 +2778,20 @@ async function runRebuildCommandInSession(
       liveTargets: cleanupLiveTargets,
       primarySourceId,
     });
+    // A bare selector with one known Intent identity needs the same identity
+    // check as an explicitly qualified request, even without owned output.
+    const unresolvedIntentSelectors = [...new Set(intentTargets.filter((target) =>
+      !cleanupLiveTargets.some((live) => live.pluginId === target.pluginId && live.platform === target.platform))
+      .map((target) => target.pluginId))];
+    if (unresolvedIntentSelectors.length) {
+      const intentLive = resolveLiveCleanupTargets({
+        selectors: unresolvedIntentSelectors, platforms: selectedPlatforms(options.commandOptions.platform),
+        scope: options.commandOptions.scope, references: cleanupInventory!.references,
+      }).targets.filter(selectedExecutionTarget);
+      cleanupLiveTargets = [...new Map([...cleanupLiveTargets, ...intentLive].map((target) =>
+        [offlineCleanupKey(target), target] as const)).values()];
+      liveTargets = cleanupLiveTargets;
+    }
     const damagedTargets = options.pluginNames.flatMap((selector) => {
       const parsed = parsePluginId(selector);
       if (!parsed.sourceId) return [];
@@ -2859,7 +2916,10 @@ async function runRebuildCommandInSession(
           platform: target.identity.platform,
           scope: target.identity.scope,
         })),
-      ].map((target) => [`${target.pluginId}\0${target.platform}\0${target.scope}`, target] as const)).values()];
+      ].map((target) => [`${target.pluginId}\0${target.platform}\0${target.scope}`, target] as const)).values()]
+        .map((target) => ({ ...target, ...resolveCleanupMarketplaceIdentity({
+          ...target, references: cleanupInventory!.references,
+        }) }));
       const requestedTargets = requestedPluginNames.flatMap((selector) => {
         const parsed = parsePluginId(selector);
         const sourceId = parsed.sourceId ?? primarySource;
@@ -2900,7 +2960,8 @@ async function runRebuildCommandInSession(
         && candidate.platform === target.platform
         && candidate.scope === target.scope)
         ?? intentOnlyOfflineCleanupEvidence(target));
-      const operationPlan = createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), retainedPackageActions);
+      const operationPlan = createOfflineCleanupOperationPlan(forceEvidence, { scope: options.commandOptions.scope, view: cleanupRequirements! },
+        [...cleanupInventoryWarnings(cleanupInventory!, forceCleanupTargets), ...cleanupMarketplaceIdentityWarnings(forceCleanupTargets)], retainedPackageActions);
       if (options.runtime?.expectedPlanFingerprint) {
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
@@ -2939,7 +3000,7 @@ async function runRebuildCommandInSession(
         const result = await (options.runtime?.executeCleanupOperation ?? executeRebuildOperation)({
           command: 'cleanup', target, driver: pathOnlyDriver,
         });
-        if (cleanupLiveTargets.some((liveTarget) =>
+        if (forceCleanupTargets.some((liveTarget) =>
           liveTarget.marketplaceIdentityUnresolved
           && liveTarget.pluginId === result.target.pluginId
           && liveTarget.platform === result.target.platform
@@ -2996,10 +3057,7 @@ async function runRebuildCommandInSession(
             && unresolved.scope === target.scope))
         .map(cleanupIntentResult);
       const allResults = [...forceResults, ...unresolvedResults, ...intentOnlyResults];
-      const warnings = cleanupLiveTargets.flatMap((target) =>
-        target.marketplaceIdentityUnresolved
-          ? [`nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`]
-          : []);
+      const warnings = cleanupMarketplaceIdentityWarnings(forceCleanupTargets);
       return leaseSafeRebuildResult({
         platforms: [...new Set(allResults.map((entry) => entry.target.platform))],
         plugins: allResults.filter((entry) => entry.status === 'succeeded')
@@ -3065,7 +3123,9 @@ async function runRebuildCommandInSession(
       ?? intentOnlyOfflineCleanupEvidence(target));
     const nativePreparation = await prepareOfflineNativeCleanup({ evidence, cwd: options.commandOptions.cwd,
       env: runtimeEnv, runtime: options.runtime });
-    const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! }, [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupUnavailableWarnings], retainedPackageActions, nativePreparation);
+    const operationPlan = createOfflineCleanupOperationPlan(evidence, { scope: options.commandOptions.scope, view: cleanupRequirements! },
+      [...cleanupInventoryWarnings(cleanupInventory!, cleanupTargets), ...cleanupMarketplaceIdentityWarnings(cleanupTargets), ...cleanupUnavailableWarnings],
+      retainedPackageActions, nativePreparation);
     if (options.runtime?.expectedPlanFingerprint) {
       assertOperationPlanFingerprint(
         options.runtime.expectedPlanFingerprint,
@@ -3129,7 +3189,7 @@ async function runRebuildCommandInSession(
     if (malformedSelectedConfigPreserved) {
       cleanupResult.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
     }
-    cleanupResult.warnings.push(...cleanupUnavailableWarnings);
+    cleanupResult.warnings = [...new Set([...cleanupResult.warnings, ...cleanupMarketplaceIdentityWarnings(cleanupTargets), ...cleanupUnavailableWarnings])];
     return cleanupResult;
   }
   try {

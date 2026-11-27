@@ -5,13 +5,13 @@ import {
   assertPlatformCapabilities, assertPluginComponent, getComponentFeatureRequirements, getMissingDeliveryRequirements, isSkillInvocationFeature,
   validatePortableSkillName,
   getHookHandlerContract,
-  renderHookDefinitionGroup,
+  renderHookDefinitionGroup, resolveProjectedAgentName,
   type AgentContent, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic } from '../output/public-result.js';
 import type { DeploymentBinding, HostContribution, ProjectionInput, ProjectionResult, StageContext } from './contracts.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPath, getNativePackageName, scopedPermissionPath } from './layout.js';
-import { ProjectionFiles, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath, type ProjectedFile } from './projection-files.js';
+import { ProjectionFiles, agentNamingForBinding, nativeComponentName, prepareProjectionRoot, resourceBytes, safeProjectionPath, type ProjectedFile } from './projection-files.js';
 import { projectCodeExtension } from './projection-code-extension.js';
 import { bindPlatformCommandResources } from './projection-command-resources.js';
 import { generateCodexPermissionArtifacts, mergeClaudePermissions, renderClaudeBashRule, hostPermissionClaims, selectPlatformInvocationPolicy } from '../generators/permissions.js';
@@ -46,9 +46,10 @@ function markdown(metadata: Record<string, unknown>, body: string): string {
 }
 
 function nameFor(input: ProjectionInput, component: PluginComponent): string {
+  if (component.kind === 'agent') return resolveProjectedAgentName(agentNamingForBinding(input.binding), component.name);
   const name = nativeComponentName(component.name);
   if (input.binding.platform === 'pi' && component.kind === 'mcp') return name.replace(/-/gu, '_');
-  return (input.binding.platform === 'pi' && component.kind === 'agent') || (input.binding.platform === 'generic' && component.kind === 'skill')
+  return input.binding.platform === 'generic' && component.kind === 'skill'
     ? `${getDeploymentResourceKey(input.binding.plugin)}-${name}` : name;
 }
 
@@ -244,7 +245,7 @@ function projectHooks(input: ProjectionInput, files: ProjectionFiles, hooks: Hoo
       // Claude reports the authoritative plugin-scoped role identifier on this hook.
       lines.push("  const { agent_type } = JSON.parse(readFileSync(0, 'utf8'));",
         "  if (typeof agent_type !== 'string') throw new Error('Missing subagent type');",
-        `  text = agent_type.startsWith(${JSON.stringify(getNativePackageName(input.binding.plugin) + ':')}) ? contexts.plugin : contexts.other;`);
+        `  text = agent_type.startsWith(${JSON.stringify(agentNamingForBinding(input.binding).invocationPrefix)}) ? contexts.plugin : contexts.other;`);
     } else lines.push('  text = contexts.plugin ?? contexts.other;');
     lines.push("} else if (event !== 'SessionStart') throw new Error('Unsupported instruction event');",
       'if (text) process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:event,additionalContext:text}}));', '');

@@ -1,4 +1,5 @@
 import type { FrozenDeploymentPlan, DeploymentExclusion } from '../platforms/contracts.js';
+import { hasSharedNativeRetirementEffect } from '../platforms/lifecycle.js';
 import type { PublicDeploymentResult, PublicDeploymentObservation, PublicDeploymentExclusion } from '../commands/public-lifecycle-result.js';
 import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic } from '../output/public-result.js';
@@ -14,7 +15,8 @@ const stateLabels: Record<string, string> = { present: '存在', absent: '缺失
   applied: '已完成', unchanged: '未改变', failed: '失败', skipped: '已跳过', confirmed: '已确认变更', possible: '可能已变更', none: '无变更' };
 const stateLabel = (state: string): string => stateLabels[state] ?? state;
 const effectLabels: Record<string, string> = { 'publish-package': '发布包', register: '登记', refresh: '刷新', activate: '启用',
-  deactivate: '停用', unregister: '撤销登记', 'write-supplement': '写入附加内容', 'remove-owned': '移除专属内容' };
+  deactivate: '停用', unregister: '撤销登记', 'write-supplement': '写入附加内容', 'remove-owned': '移除专属内容',
+  'remove-marketplace-entry': '移除市场插件条目' };
 const reloadLabels: Record<string, string> = { none: '无需重载', 'new-session': '需要新会话', 'workspace-reload': '需要重载工作区',
   'host-restart': '需要重启客户端', unknown: '重载条件未知' };
 
@@ -49,6 +51,7 @@ export function deliveryNoticeText(code: string, detail?: Diagnostic['detail'], 
   }
   if (code !== PI_AGENT_CONSUMER_NOTICE) return '旧输出仍保留，可能仍在生效。请先检查该位置再重试。';
   const reason = detail?.reasonCode;
+  if (reason === 'piConfigurationUnconfirmed') return 'Pi 角色已安装。无法读取角色扩展设置，尚不能确定执行器是否可用。请检查设置并重载 Pi。';
   if (reason === 'piAgentConsumerDisabled') return 'Pi 角色已安装。请启用兼容的角色扩展并重载 Pi。';
   if (reason === 'piAgentPackageAccessDenied') return 'Pi 角色已安装。请检查角色扩展能否访问此包并重载 Pi。';
   if (reason === 'piAgentPackageSourceUnsupported') return 'Pi 角色已安装。检测到的 pi-subagents 版本无法读取此包来源。请启用兼容的扩展，例如 @tintinweb/pi-subagents，然后重载 Pi。';
@@ -89,6 +92,17 @@ function configurationLines(after: PublicDeploymentResult['after']): string[] {
 }
 
 /** Text is derived from frozen plans. It does not inspect or render again. */
+export function sharedNativeRetirementImpact(plan: FrozenDeploymentPlan): string | undefined {
+  if (!hasSharedNativeRetirementEffect(plan)) return undefined;
+  const unregister = plan.effects.some((effect) => effect.kind === 'unregister'
+    && (plan.binding.platform !== 'claude' || effect.nativeScope === 'user'));
+  const removePackage = plan.effects.some((effect) => effect.kind === 'remove-owned'
+    && effect.destination === plan.evidence.layout.packageRoot);
+  const actions = [unregister ? '撤销共享原生登记' : undefined, removePackage ? '删除共享插件包' : undefined]
+    .filter(Boolean).join('并') || '清理共享原生市场中的插件条目';
+  return `将${actions}，${unregister || removePackage ? '其他项目的该插件将一并失效；' : ''}其他项目的需求声明保留，待进入对应项目时再处理。`;
+}
+
 export function deploymentPlanLines(plans: readonly FrozenDeploymentPlan[], technical = false): string[] {
   const groups = new Map<string, FrozenDeploymentPlan[]>();
   const seenEffects = new Set<string>();
@@ -109,9 +123,14 @@ export function deploymentPlanLines(plans: readonly FrozenDeploymentPlan[], tech
         const key = `${effect.physicalKey}\0${effect.id}`;
         if (seenEffects.has(key)) return [];
         seenEffects.add(key);
-        return [`    ${effect.destructive ? '−' : '+'} ${effectLabels[effect.kind] ?? effect.kind}${effect.componentIds.length ? ` · ${effect.componentIds.join(', ')}` : ''}${technical ? ` · ${effect.destination}` : ''}`];
+        const label = plan.evidence.confirmedCatalogRetirement && effect.kind === 'remove-owned'
+          && effect.destination === plan.evidence.layout.packageRoot ? '删除共享插件包' : effectLabels[effect.kind] ?? effect.kind;
+        return [`    ${effect.destructive ? '−' : '+'} ${label}${effect.componentIds.length ? ` · ${effect.componentIds.join(', ')}` : ''}${technical ? ` · ${effect.destination}` : ''}`];
       }),
-      ...(plan.evidence.sharedReferences !== 'none' ? [`    ! ${plan.evidence.sharedReferences === 'present' ? '有其他共享引用' : '共享引用尚未确认'}；保留其他使用位置。`] : []),
+      ...(plan.evidence.confirmedCatalogRetirement
+        ? [sharedNativeRetirementImpact(plan)].flatMap((impact) => impact ? [`    ! ${impact}`] : [])
+        : plan.evidence.sharedReferences !== 'none'
+          ? [`    ! ${plan.evidence.sharedReferences === 'present' ? '有其他共享引用' : '共享引用尚未确认'}；保留其他使用位置。`] : []),
       ...(technical ? [`    物理位置 ${plan.evidence.layout.packageRoot}`, `    冻结依据 ${plan.evidence.fingerprint}`] : []),
     ]),
   ]);

@@ -568,10 +568,10 @@ describe('ConsoleAppV4', () => {
       const target = { ...scopedTarget(pluginId, 'codex', 'applied', 'verified'), scope: request.scope };
       receipt.requestedTargets = [{ pluginId, agent: target.agent, scope: target.scope, delivery: target.delivery }];
       receipt.targetResults = [{ ...target, reasons: [{
-        code: 'skillInvocationPolicyNotGuaranteed', message: 'The installed Skill cannot guarantee disabled model invocation.',
+        code: 'skillInvocationPolicyNotGuaranteed', message: 'The installed Skill cannot disable manual invocation.',
         subject: { pluginId, target: target.agent, scope: target.scope, field: 'skill.commit' },
-        detail: { reasonCode: 'invocationControlUnverified', skillInvocationControls: [
-          { feature: 'skill.invocation.model', values: ['false'], reasonCode: 'invocationControlUnverified', product: 'app' },
+        detail: { reasonCode: 'invocationControlUnsupported', skillInvocationControls: [
+          { feature: 'skill.invocation.manual', values: ['false'], reasonCode: 'invocationControlUnsupported' },
         ] },
       }] }];
       return scopedPlan(request, receipt);
@@ -595,16 +595,16 @@ describe('ConsoleAppV4', () => {
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'recovery', command, selectors: [pluginId] }), expect.any(AbortSignal));
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
-    expect(instance.lastFrame()).toContain('禁止模型自动调用');
+    expect(instance.lastFrame()).toContain('禁止用户显式调用');
     expect(instance.lastFrame()).not.toContain('重试明确失败项');
-    expect(await readScopedDetails(instance)).toContain('skill.invocation.model=false · invocationControlUnverified · Codex 桌面 App');
+    expect(await readScopedDetails(instance)).toContain('skill.invocation.manual=false · invocationControlUnsupported');
 
     const history = value.listOperationHistory();
     expect(history).toEqual([expect.objectContaining({ state: 'succeeded', code: 'operationSucceeded', diagnosticCount: 1 })]);
     const detail = value.getOperationDiagnostic(history[0]!.recordId)!;
     expect(detail.targets).toMatchObject([{ pluginId, platform: 'codex', state: 'completed', diagnosticIds: [detail.diagnostics[0]!.id] }]);
     expect(value.previewOperationReport(history[0]!.recordId)?.content)
-      .toContain('skill.invocation.model=false · invocationControlUnverified · product=app');
+      .toContain('skill.invocation.manual=false · invocationControlUnsupported');
   });
 
   it.each(['install', 'refreshAndSync'] as const)(

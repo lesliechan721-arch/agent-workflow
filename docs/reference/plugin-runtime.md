@@ -154,13 +154,13 @@ AW 在运行脚本前由固定平台布局确定 render units。每单元按权�
 
 sourceDirs 是 bundle 内已验证相对目录；runtimeImports 使用既有具名 runtime export 与依赖来源合同。引用须经 realpath 和内容闭包校验；绝对路径、..、逃逸 symlink、未知 import 或闭包外文件均拒绝。资源入口不是输出位置。脚本使用隔离 HOME/USERPROFILE/AW_HOME/XDG 与受控进程收尾；这是输入隔离，不是 OS 沙箱。
 
-### 3.2 PlatformRenderContext v2
+### 3.2 PlatformRenderContext v3
 
 AW_PLUGIN_CONTEXT 指向本次隔离 JSON 文件的绝对路径：
 
 ~~~ts
-interface PlatformRenderContextV2 {
-  schemaVersion: 2;
+interface PlatformRenderContextV3 {
+  schemaVersion: 3;
   surface: 'agent-plugin';
   platform: PlatformId;
   scope: 'user' | 'project';
@@ -173,7 +173,8 @@ interface PlatformRenderContextV2 {
   };
   changedConfigKeys: string[];
   allowedOutputKinds: ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV2;
+  platformCapabilities: PlatformCapabilitiesV3;
+  agentNaming: PlatformAgentNaming;
   resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string;
     root: string; digest: string }>;
   previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
@@ -182,36 +183,58 @@ interface PlatformRenderContextV2 {
 
 缺值保留 missing，不填 null。previousComponents 仅含同类别批次的已验证身份，不含正文、配置或宿主路径，也不授予删除权。renderer 不能改变 platform、scope、支持结论或输出宿主位置。
 
-AW 从 artifacts 声明派生 `aw.platform-render-context.v2` 能力要求。Core 包公开 `schemas/platform-render-context-v2.json` 和 `schemas/platform-capabilities-v2.json`。
+AW 从 artifacts 声明派生 `aw.platform-components.v3` 和 `aw.platform-render-context.v3`。Core 包公开 `schemas/platform-render-context-v3.json` 和 `schemas/platform-capabilities-v3.json`。
+
+`agentNaming` 是按当前平台及插件身份计算的实际 Agent 命名信息，和 `platformCapabilities.agentNamingMode` 一致：
+
+~~~ts
+type PlatformAgentNamingMode = 'host-plugin' | 'aw-prefix' | 'unsupported';
+interface PlatformAgentNaming {
+  mode: PlatformAgentNamingMode;
+  filePrefix: string;
+  invocationPrefix: string;
+}
+~~~
+
+| 平台 | mode | filePrefix（例：official/demo） | invocationPrefix |
+| --- | --- | --- | --- |
+| Claude | host-plugin | 空字符串 | `demo:` |
+| Codex、Pi、Antigravity、Cursor、Copilot、Grok | aw-prefix | `aw-official-demo-` | `aw-official-demo-` |
+| OpenCode、generic | unsupported | 空字符串 | 空字符串 |
+
+renderer 以逻辑角色名声明组件，不预先添加宿主前缀。需要构造实际调用名时使用 Core 的 `resolveAgentInvocationName(context.agentNaming, role)`，而非硬编码来源或插件名。文件名和文件内 name 由 AW 以 `filePrefix` 加归一化角色名生成；完整投影名须是安全路径段且不超过 128 字符。Skill 引用同包 Agent 可以改用下面的[受控占位符](#skill-agent-reference)。
 
 ### 3.3 平台能力与具体要求
 
 ~~~ts
-type Support = 'supported' | 'unsupported' | 'unverified';
-interface CapabilityFact { status: Support; reasonCodes: string[] }
-interface PlatformCapabilitiesV2 {
-  schemaVersion: 2;
+type SupportV3 = 'supported' | 'unsupported';
+interface CapabilityFact { status: SupportV3; reasonCodes: string[] }
+interface PlatformCapabilitiesV3 {
+  schemaVersion: 3;
   platform: PlatformId;
   scope: 'user' | 'project';
   basis: 'local' | 'profile';
+  agentNamingMode: PlatformAgentNamingMode;
   kinds: Record<ComponentKind, CapabilityFact & {
     delivery: Array<'native-package' | 'native-extension' |
       'managed-host-resource' | 'generic-files'> }>;
   features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
-  deliveryFeatures?: FeatureRequirement[];
 }
 ~~~
 
-AW 将交付方式、原因码和 feature 取值去重并排序。profile 用于作者准备，local 根据实际产品和 scope 判定能力。共享包按实际读者准备。客户端入口、精确版本、profile 标识以及 Pi 消费者配置和授权的原始证据留在现场检查。
+AW 将交付方式、原因码和 feature 取值去重并排序。`profile` 用于离线作者准备，`local` 在同一确定性平台映射上检查现场客户端可用性。缺少可用入口时全部 kind 和 feature 为 unsupported；消费者 missing、unsupported、unknown 分别对应 `client-missing`、`version-unsupported`、`client-unknown`。入口未知不是可以静默跳过的交付缺口。
 
-- `kinds[*].status` 和 `features` 保留宿主运行资格及原因。`component.kind.<kind>` 的资格从 `kinds` 派生。renderer 可用这些事实判断调度流程依赖的实际执行能力，例如需要调用已安装的原生角色。
-- `kinds[*].delivery` 给出类别的写入方式。可选的 `deliveryFeatures` 列出 AW 标准写入器能保留的组件特性及取值，沿用 feature registry。该字段存在时，当前组件自身的声明按交付映射判断，跨类别的运行前提仍按宿主资格判断。旧能力输入省略该字段时，交付判断沿用运行资格。插件仍支持旧 AW 时，renderer 应在旧输入下返回符合旧资格的计划。作者可通过 `aw dev plugin capabilities --surface platform-capabilities --json` 查询字段合同。
+- `kinds[*].status` 和 `kinds[*].delivery` 描述类别能否按 AW 标准方式交付；`features` 描述可保真的平台特性。同类及跨类别要求使用同一份能力输入。`component.kind.<kind>` 要求对应 kind supported 且 delivery 非空。
+- `agentNamingMode` 仅描述平台策略，不含具体插件身份。Pi 的角色及依赖角色的 Skill 按标准映射交付；消费扩展缺失或禁用等现场事实单独产生执行提示，不改变能力输入。
+- supported 表示具有标准映射且没有已知接口限制，不代表特定宿主版本已取得会话执行证据。历史资格记录不参与能力判断。
+
+作者可通过 `aw dev plugin capabilities --surface platform-capabilities --json` 查询字段合同和各平台事实。可移植导出未能保留原生调用控制时会将相应 feature 标为 unsupported；Codex 的 `agents/openai.yaml` 与 OpenCode 的 `metadata["opencode/autoinvoke"]` 保留其可移植调用控制。
 
 feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 
 | Feature | 必需语义或取值 |
 | --- | --- |
-| `component.kind.<kind>` | 五类组件的基础运行前提，无 values，资格状态与原因从 kinds 统一派生 |
+| `component.kind.<kind>` | 五类组件的基础交付前提，无 values，状态与原因从 kinds 统一派生 |
 | skill.invocation.manual、skill.invocation.model、skill.visibility | 当前 Skill metadata 的调用与可见性控制 |
 | skill.runtime-config | AW 已安装配置合同版本 |
 | skill.tools | allowlist、denylist、none；对应实际工具限制 |
@@ -223,22 +246,22 @@ feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 | skill.shell | bash、powershell |
 | skill.invocation.hint、skill.arguments | when_to_use 的调用提示语义与 arguments 参数语义 |
 | mcp.transport | stdio、http、sse |
-| agent.execution | isolated-context 等已核验执行语义 |
-| agent.model、agent.tools | 模型选择；tools 的 allowlist、none |
+| agent.execution | isolated-context 等宿主执行语义 |
+| agent.model、agent.tools | 模型选择：supported 且没有 values 表示可接受任意非空模型名；有 values 则只接受白名单。tools 的 allowlist、none |
 | agent.prompt-mode | host-default、append、replace |
-| agent.declaration-protocol | 已核验消费者协议 ID |
+| agent.declaration-protocol | Agent 声明协议 ID |
 | `hook.common.<event>`、`hook.native.<event>` | 对应登记事件的 notify、context、block |
 | hook.matcher | 已登记的 `<dialect>.<event>`，例如 `common.before_tool`、`native.PreToolUse`；仅表示该事件支持 matcher，不从 feedback 支持推定 |
 | instruction.coverage | main、plugin-agents、other-agents |
 | instruction.paths、instruction.after-compaction | 条件匹配与压缩后覆盖 |
 
-FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记。values 若有须非空、无重复。满足运行前提须 `status: supported` 且包括全部必需值。内容自动推导要求，作者的 `requires` 可追加要求。Skill 中的工具限制、模型、fork、角色、后台、Hook 等行为字段也参与交付判断，需有能保留语义的映射。Tools 的空数组要求 `none`，Hook 的 `feedback: block` 要求该事件支持阻断。未声明字段和纯展示字段不增加执行要求。合法但缺少映射的取值进入 `unmet`，未知 ID 或取值会使声明校验失败。
+FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记。values 若有须非空、无重复。满足 feature 前提须 `status: supported` 且包括全部必需值。内容自动推导要求，作者的 `requires` 可追加要求。Skill 中的工具限制、模型、fork、角色、后台、Hook 等行为字段也参与交付判断，需有能保留语义的映射。Tools 的空数组要求 `none`，Hook 的 `feedback: block` 要求该事件支持阻断。未声明字段和纯展示字段不增加执行要求。合法但缺少映射的取值进入 `unmet`，未知 feature ID 或登记枚举外取值会使声明校验失败。Agent 的 content.model 若不在目标平台有限白名单中，则以 `{ feature: "agent.model" }` 报告缺口；动态 renderer 也可用此要求表达模型不适用，不需虚构全局模型枚举。
 
-需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态和动态 Skill 均交付完整正文和资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。调用资格缺口不阻断交付，实际提示按产品判断。Antigravity 只提示已确认不支持或有可靠回读的策略降级。其他执行、权限或依赖要求仍按能力检查。[诊断合同](cli.md#4-业务-payload-的边界) · [各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
+需要用户点名调用的 Skill 在 `SKILL.md` 中设置 `user-invocable: true` 和 `disable-model-invocation: true`。这组字段表示用户可见、可手动调用，以及模型不得自行选择。调用字段使用布尔值或其受支持的字符串写法时，AW 按同一规则投影。字符串会先去掉首尾空白并统一大小写。静态和动态 Skill 均交付完整正文和资源。`skill.invocation.manual`、`skill.invocation.model` 与 `skill.visibility` 标记调用和可见性能力。`requires` 追加的值也参与缺口提示，`SKILL.md` 中明确写出的字段决定实际原生开关。调用控制及可见性缺口不阻断交付；无绑定执行器、能力明确不支持或现场观测到策略降级时才提示。其他执行、权限或依赖要求仍按能力检查。[诊断合同](cli.md#4-业务-payload-的边界) · [各客户端实测范围](../maintainers/architecture/platforms.md#11-宿主根与接口最低条件)
 
 公共 Hook 的合法 matcher 可以保留在声明中。准备时，声明 matcher 的组件自动要求对应的 `hook.matcher` 事件值。静态和动态组件在目标缺少安全映射时都报告具体 `unmet`，独立组件继续交付。显式 Native 声明仍须符合该宿主事件的合法语法。
 
-稳定原因码包括 `delivery-unavailable`、`client-missing`、`version-unsupported`、`interface-unsupported`、`scope-unsupported`、`capability-unverified`、`consumer-missing`、`consumer-disabled`、`policy-blocked`。`delivery-unavailable` 表示当前 AW 写入器缺少所需映射。`requires.aw.capabilities` 使用独立的 AW 运行接口注册表。
+稳定能力原因码为 `delivery-unavailable`、`client-missing`、`client-unknown`、`version-unsupported`、`interface-unsupported`、`scope-unsupported`。`delivery-unavailable` 表示当前 AW 写入器缺少所需映射。`requires.aw.capabilities` 使用独立的 AW 运行接口注册表。
 
 ### 3.4 PlatformComponentPlan v3 与资源
 
@@ -259,7 +282,7 @@ type PluginComponent = { id: string; name: string;
 interface PlatformComponentPlanV3 {
   version: 3;
   components: PluginComponent[];
-  omitted: Array<{ id: string; kind: ComponentKind;
+  omitted: Array<{ id: string; kind: ComponentKind; name?: string;
     reason: 'not-offered' | 'config-disabled' }>;
   unmet: Array<{ id: string; kind: ComponentKind; name?: string;
     componentId?: string; requiredFeatures: FeatureRequirement[]; reasonCode: string }>;
@@ -268,9 +291,9 @@ interface PlatformComponentPlanV3 {
 
 Agent、Instructions、MCP 和静态声明见[Manifest](manifest-and-config.md#23-五类组件与静态扩展)。动态 HookContent 为 {dialect:'common'|'native',event,feedback,matcher?,command}；common event 使用登记的公共三事件，native 使用当前平台已登记事件。其反馈、资源闭包与静态 Hook 相同。
 
-Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。protocol=null 或所需反馈没有映射时不能声明 supported。协议定义与真实客户端资格分别判断；旧事件校验入口也消费此 registry，不能维护不同 allowlist。
+Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。nativeEvent 非 null 且 protocol=null 的已映射事件支持 `notify`（仅命令观察通知），不能声明 `context` 或 `block`。主动反馈必须有 protocol.responses 对应映射；matcher 须属于已支持事件且 matcherAllowed 为 true。协议定义与真实客户端资格分别判断，事件校验消费同一 registry。
 
-三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，并保留命令路由使用的 `command-routes`。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。非法来源、无效文件、秘密原值、类别越界或未知 feature 及其取值会拒绝整批。renderer 可以完整返回合规的声明，AW 校验资源和能力后交付可保真的部分，并为其余部分生成 `unmet`。
+三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。若省略的 Agent 逻辑名称与稳定 ID（或 agent: 前缀后的名称）不同，要在 omitted 中明确提供 name，避免同包 Skill 引用时将主动省略误判成能力缺口。ID 非空且无路径分隔符，并保留命令路由使用的 `command-routes`。Skill files 是组件根下相对路径，必须含有效 `SKILL.md`。AW 在投影前校验其 frontmatter 的 `name` 与组件 `name` 一致。静态组件以 Skill 目录名为准，动态组件的内联文档和来源引用适用同一规则。宿主名称映射后也查冲突。非法来源、无效文件、秘密原值、类别越界或未知 feature 及其取值会拒绝整批。renderer 可以完整返回合规的声明，AW 校验资源和能力后交付可保真的部分，并为其余部分生成 `unmet`。
 
 unmet 的 requiredFeatures 保留具体缺失值及 componentId。例如 before_tool 只支持 notify 而要求 block，缺口为 {feature:'hook.common.before_tool',values:['block']}。Instructions 要求 main/plugin-agents 而只支持 main，则成功组件只含 main，关联缺口只含 plugin-agents。模型、工具限制与阻断不能静默删去。依赖或配置缺口可用空 requiredFeatures，能力缺口不能借此隐藏。reasonCode 必须与当前能力依据或登记的配置/依赖原因一致。
 
@@ -280,7 +303,20 @@ stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64
 
 ### 3.5 合并、命令闭包与冻结
 
-AW 校验同一部署的静态和动态组件身份、宿主名与路径，核对运行资源，生成保留文件后投影并冻结。Skill 引用和宿主权限按这次部署采用的同一份共享路由表校验。动态命令使用无平台的独立 surface `managed-commands`，以 ArtifactPlan v2 返回完整路由表。精确合同见[动态路由渲染](managed-commands.md#动态路由渲染)。
+AW 先准备相关单元的完整静态和动态组件集合，校验身份、宿主名、路径和运行资源，然后解析同包 Agent 引用，生成保留文件后投影并冻结。Skill 引用和宿主权限按这次部署采用的同一份共享路由表校验。动态命令使用无平台的独立 surface `managed-commands`，以 ArtifactPlan v2 返回完整路由表。精确合同见[动态路由渲染](managed-commands.md#动态路由渲染)。
+
+<a id="skill-agent-reference"></a>
+
+**Skill 引用同包 Agent。** 在 Markdown 中用双花括号包围 `aw.agent:<name>`，其中 name 是静态 Agent 的稳定公共名（平台改名不改变匹配键），或动态 Agent 的逻辑名。精确语法、扫描边界和 AW 能力声明见[Manifest](manifest-and-config.md#skill-agent-placeholder)。AW 在准备阶段根据完整 Agent 视图绑定实际名称：
+
+| 引用目标 | 结果 |
+| --- | --- |
+| 可交付 | 替换全部引用为实际宿主调用名 |
+| Agent unmet | Skill 整项 unmet，继承 Agent 的 requiredFeatures/reasonCode；合并多重缺口，配置/依赖失败或客户端缺失/未知优先于可跳过的能力限制，generic 原部分 runtime gap 归入整项缺口 |
+| 作者有意省略 | 拒绝准备，报 agentReferenceInvalid |
+| 不存在 | 报 agentReferenceInvalid；若当前平台不支持 Agent 且该平台与实际 render scope 有适用的动态 renderer，则引用它的 Skill（包括混合插件的静态 Skill）按 component.kind.agent / interface-unsupported 整项 unmet |
+
+替换按目标单元的实际范围和能力，不受 allowedOutputKinds 裁剪；同包独立 Skill 仍可正常交付。Codex 固定 user 共享包引用 user 视图，Project-only 时必要的动态 Agent 批次只在内存评估，不写 User supplement；仅 Project 提供的角色不能被共享包引用。仅导出 Skill 时也可在支持 Agent 的 profile 下补评同 render scope 的动态 Agent，而不输出 Agent 文件。纯静态校验提前拒绝无效引用，混合插件的静态 Skill 可引用同包动态 Agent；只读状态不运行 renderer，未知动态引用留待准备及已记录的交付证据核对。不会发布未替换的占位符。
 
 Hook/MCP 命令引用的本地文件须来自已允许的来源。优先使用字面量 `./` 包内路径；平台专用声明也可使用 Codex 的 `${PLUGIN_ROOT}/` 或 Claude 的 `${CLAUDE_PLUGIN_ROOT}/` 前缀。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
 
@@ -297,7 +333,7 @@ Grok User 和 Project 的包投影从同一 binding、同一 render scope 的完
 
 Review 冻结实际组件、资源字节、输出位置、删除候选、能力及输入证据。Execute 在唯一写锁内重查来源、配置、能力、入口和现场归属，变化返回 stale，重新准备和确认，不在确认后生成另一集合。status/list/inspect 不运行 renderer；有匹配的可重建物化证据时才显示当前配置不产生组件，否则显示动态期望待确认。物化证据和 previousComponents 均不授予删除权。
 
-安装记录按实际生成范围保存输入摘要。动态生成使用同一份 v2 能力视图、该批声明的配置、生成器和资源。静态投影跟踪实际组件、使用的能力和资源。客户端入口、发现顺序和探测详情仍可在现场检查中变化。它们造成的实际能力变化才进入持久摘要。
+安装记录按实际生成范围保存输入摘要。动态生成绑定 V3 能力视图、该批声明的配置、生成器和资源。静态投影跟踪实际组件、使用的能力和资源。含 Skill 的单元还纳入 Agent 命名及对应 Agent 交付输入。Codex 共享包的摘要始终基于其 user 渲染视图，详见[固定 render scope](../maintainers/architecture/platforms.md#13-固定-render-scope)。客户端现场观察只有造成实际能力变化才进入持久摘要。
 
 ---
 

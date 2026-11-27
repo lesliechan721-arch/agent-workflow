@@ -294,7 +294,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               if (artifacts && unit.kinds.length && (!artifacts.scopes || artifacts.scopes.includes(unit.renderScope.kind))) {
                 dynamicUnits.add(unit.output);
               }
-              const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
+              const capabilities = adapter.capabilities({ binding, renderUnit: unit,
                 profile });
               const config = unit.renderScope.kind === demand.scope ? scopedConfig
                 : await configForScope(unit.renderScope.kind, unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : context.executionCwd);
@@ -332,6 +332,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             let expectedCount = 0;
             let grokAgentRecipientScope: string | undefined;
             for (const { renderUnit: unit, capabilities } of inputUnits) {
+              // Static Agent references are resolved by Core; dynamic references stay deferred to current delivery evidence.
               const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot,
                 manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds,
                 hasInstructionAgentRecipients: platform === 'grok' && unit.output === 'supplement'
@@ -951,8 +952,18 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       const nativeCopy = entry.platform === 'antigravity' && entry.scope === 'user'
         && entry.kind === 'namespacedMarketplace' && entry.recoveryCandidate?.evidence === 'verified'
         && entry.recoveryCandidate.binding.route === 'antigravity-cli';
-      return nativeCopy || entry.ownedComponent && !['codex', 'claude', 'copilot'].includes(entry.platform!)
-        ? [{ pluginId: `${entry.sourceId}/${entry.pluginName}`, agent: entry.platform as PlatformName, scope: options.scope }] : [];
+      const shared = ['codex', 'claude', 'copilot'].includes(entry.platform!);
+      const pluginId = `${entry.sourceId}/${entry.pluginName}`;
+      const source = catalogSources.get(entry.sourceId!)?.resolution;
+      // With no usable Catalog entry, native observation cannot resolve a normal
+      // deployment. Keep scoped marketplace residue visible using local evidence,
+      // without inventing ownership/activation or treating inherited current
+      // packages as separate project installations.
+      const sharedResidue = shared && !observedPlugins.has(pluginId)
+        && (!source || !source.manifest.entries.some((item) => item.name === entry.pluginName))
+        && (entry.kind === 'namespacedMarketplace' || entry.ownedComponent !== undefined);
+      return nativeCopy || sharedResidue || entry.ownedComponent && !shared
+        ? [{ pluginId, agent: entry.platform as PlatformName, scope: options.scope }] : [];
     });
     for (const entry of inventoryOwned) {
       if (!expected(entry.pluginId, entry.agent) && !nativeExtraObserved.some((target) => target.pluginId === entry.pluginId && target.agent === entry.agent)) {

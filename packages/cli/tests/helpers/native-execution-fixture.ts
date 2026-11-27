@@ -7,8 +7,7 @@ import type { PlatformName, Scope } from '../../src/types.js';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { onTestFinished, vi } from 'vitest';
-import { getPlatformHookHandlerRegistry, getPlatformFeatureRegistry, NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
-import * as capabilities from '../../src/platforms/capabilities.js';
+import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import * as registry from '../../src/platforms/registry.js';
 import * as codexExecutableDiscovery from '../../src/utils/codex-executable-discovery.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -47,37 +46,15 @@ export async function getNativeTestLayout(options: {
   return { ...await getDeploymentLayout(ctx, binding), binding };
 }
 
-const realProfile = capabilities.getQualifiedPlatformProfile;
 const realAdapters = new Map(registry.getAgentPluginAdapters().map((adapter) => [adapter.platform, adapter]));
 
-/** Explicit orchestration facts, never evidence of qualification for a real client. */
-export function installNativeTestQualification(options: {
+/** Provide controlled client installations while using the production platform capabilities. */
+export function installNativeTestDiscovery(options: {
   platforms?: readonly PlatformName[];
-  discovery?: boolean;
   executable?: string;
 } = {}): { restore(): void } {
   const platforms = new Set(options.platforms ?? NATIVE_PLATFORM_TARGETS);
-  const profile = vi.spyOn(capabilities, 'getQualifiedPlatformProfile').mockImplementation((platform, host) => {
-    const result = structuredClone(realProfile(platform, host));
-    if (!platforms.has(platform as PlatformName)) return result;
-    delete result.qualifiedConsumers;
-    delete result.qualificationEvidence;
-    delete result.skillInvocation;
-    result.id = `test-qualified:${result.id}`;
-    const handlers = getPlatformHookHandlerRegistry()[platform];
-    for (const kind of Object.values(result.kinds)) { kind.status = 'supported'; kind.reasonCodes = []; }
-    for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) {
-      if (feature.derivedFromKind) continue;
-      const hookFeature = id.startsWith('hook.');
-      const event = id.slice(id.indexOf('.', 5) + 1);
-      const hook = id.startsWith('hook.native.') ? handlers.native[event] : handlers.common[event as keyof typeof handlers.common];
-      const unsupported = hookFeature && !hook?.protocol;
-      result.features[id] = { status: unsupported ? 'unsupported' : 'supported', reasonCodes: unsupported ? ['interface-unsupported'] : [],
-        ...(feature.values ? { values: hookFeature ? feature.values.filter((value) => hook?.protocol && Object.hasOwn(hook.protocol.responses, value)) : [...feature.values] } : {}) };
-    }
-    return result;
-  });
-  const adapters = options.discovery ? vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {
+  const adapters = vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {
     const adapter = realAdapters.get(platform)!;
     if (!platforms.has(platform as PlatformName)) return adapter;
     return { ...adapter,
@@ -91,8 +68,8 @@ export function installNativeTestQualification(options: {
         }] };
       },
     };
-  }) : undefined;
-  const restore = () => { adapters?.mockRestore(); profile.mockRestore(); };
+  });
+  const restore = () => adapters.mockRestore();
   onTestFinished(restore);
   return { restore };
 }

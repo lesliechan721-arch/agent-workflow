@@ -9,7 +9,9 @@ import type { RecoveryTarget } from '../recovery/receipt.js';
 import { projectDeploymentNotices } from '../commands/public-lifecycle-result.js';
 import { isDeliveryNoticeCode, projectComponentDelivery, type ComponentDelivery } from '../output/component-delivery.js';
 import type { Diagnostic } from '../output/public-result.js';
-import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel } from './model.js';
+import { hasActualScopeEvidence, isHealthyActiveSource, type PluginDependencyOverviewViewModel,
+  type SourceHealthViewModel } from './model.js';
+import type { CatalogSourceGenerationViewModel, RetirementSourceChecks } from './catalog-generation.js';
 
 export type InventoryState = 'blocked' | 'unknown' | 'pending' | 'ready';
 
@@ -46,6 +48,8 @@ export interface InventoryRoot {
   agentResults?: Array<Pick<RecoveryTarget, 'agent' | 'delivery' | 'blockers' | 'reasons' | 'observation' | 'content'> & ComponentDelivery>;
   blockers?: Array<{ code: string; message: string }>;
   sourceState?: string;
+  retirementCandidate?: true;
+  sourceUnavailable?: true;
 }
 
 export interface ScopedInventoryViewModel {
@@ -90,6 +94,14 @@ export interface RecoveryInventoryInput {
 export interface ScopedInventoryLoadResult extends RecoveryInventoryInput {
   /** Current observed relations. A refreshed scope replaces its earlier verified edges. */
   dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
+  retirementSourceChecks?: RetirementSourceChecks;
+}
+
+export function inventoryPluginIds(status: RecoveryInventoryInput): string[] {
+  return [
+    ...(status.inventory ?? []).map((root) => root.pluginId),
+    ...(status.extraObserved ?? []).filter((extra) => extra.scope === status.scope).map((extra) => extra.pluginId),
+  ];
 }
 
 const stateOrder: Record<InventoryState, number> = {
@@ -162,6 +174,9 @@ export function buildScopedInventory(options: {
   recovery: RecoveryInventoryInput;
   status: StatusV8Payload;
   pluginSummaries: readonly Pick<StatusV8PluginSummary, 'pluginId' | 'displayName'>[];
+  sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
+  catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
+  retirementSourceChecks?: RetirementSourceChecks;
   targetRevisions?: readonly StatusTargetRevision[];
   dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
   projectRoot?: string;
@@ -187,6 +202,13 @@ export function buildScopedInventory(options: {
     };
   };
   const names = new Map(options.pluginSummaries.map((plugin) => [plugin.pluginId, plugin.displayName]));
+  const sources = new Map(options.status.catalog.sources.map((source) => [source.id, source]));
+  const missingEntryState = (pluginId: string, sourceId: string): Pick<InventoryRoot, 'retirementCandidate' | 'sourceUnavailable'> => {
+    if (names.has(pluginId)) return {};
+    return isHealthyActiveSource(sources.get(sourceId), options.sourceHealth?.get(sourceId),
+      options.catalogGenerations?.get(sourceId), options.retirementSourceChecks?.[sourceId])
+      ? { retirementCandidate: true } : { sourceUnavailable: true };
+  };
   const nameFor = (pluginId: string): string => names.get(pluginId) ?? pluginId.split('/').at(-1) ?? pluginId;
   const dependencyIds = new Set<string>();
   const declaredRoots = (recovery.inventory ?? []).map((root): InventoryRoot => {
@@ -294,6 +316,7 @@ export function buildScopedInventory(options: {
     agentResults: root.targetResults,
     blockers: root.blockers,
     sourceState: root.sourceState,
+    ...missingEntryState(root.pluginId, root.source),
   }; });
   const declaredIds = new Set(declaredRoots.map((root) => root.pluginId));
   const extras = new Map<string, InventoryTarget[]>();
@@ -344,6 +367,7 @@ export function buildScopedInventory(options: {
     section: 'extraInstalled', state: (['blocked', 'unknown', 'pending', 'ready'] as const)
       .find((state) => targets.some((target) => target.state === state)) ?? 'unknown',
     targets, dependencies: [],
+    ...missingEntryState(pluginId, pluginId.split('/')[0]!),
   }));
   const counts = { blocked: 0, unknown: 0, pending: 0, ready: 0 };
   for (const root of declaredRoots) counts[root.state] += 1;

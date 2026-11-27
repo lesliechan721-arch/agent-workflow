@@ -137,7 +137,18 @@ describe('v8.4 page contracts', () => {
   it('shows all plugin facts when the remaining space fits its only action', async () => {
     const loaded = data();
     const pluginId = `source${'x'.repeat(60)}/demo`;
-    loaded.scopedRecovery = { project: scopedProjectRoots([pluginId]) };
+    // A dependency observed only in the current scope can have just a diagnostic action.
+    // A residual declared root now also needs a source/retirement and declaration action.
+    const consumerId = 'official/consumer';
+    const project = scopedProjectRoots([consumerId]);
+    project.observedTargets = [{ ...project.inventory![0]!.targetResults[0]!, pluginId,
+      providerScope: 'project', relation: 'dependency',
+      contributions: [{ root: consumerId, scope: 'project', path: [consumerId, pluginId] }] }];
+    loaded.scopedRecovery = { project: { ...project, dependencyOverviews: [{ pluginId: consumerId,
+      summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 0, issueCount: 0 },
+      dependencies: [{ pluginId, displayName: 'demo', relation: 'direct', depth: 1,
+        requiredBy: [], placements: [], aggregateStatus: 'unavailable' }], dependents: [], blockers: [],
+    }] } };
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       captureEvidence: vi.fn(), executeIntent: vi.fn() });
     await controller.load();
@@ -146,6 +157,7 @@ describe('v8.4 page contracts', () => {
     const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
     await tick();
     const initial = frame(instance, size);
+    expect(initial).toContain('› 查看处理建议');
     expect(initial).toContain('Claude Code');
     expect(initial).toContain('未确认');
     expect(initial).not.toContain('上一页');

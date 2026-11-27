@@ -3,6 +3,7 @@ import { relatedOpenCodeProjectChanges } from '../platforms/opencode-related-per
 import { GROK_ADDITIONAL_RULES_UNVERIFIED, HOST_PERMISSION_ADDITIONAL_IMPACT } from '../output/component-delivery.js';
 import type { Confirmation } from '../output/public-result.js';
 import type { Diagnostic, FrozenDeploymentPlan } from '../platforms/contracts.js';
+import { hasSharedNativeRetirementEffect } from '../platforms/lifecycle.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 
 export function relatedProjectPermissionEffects(batch: FrozenDeploymentPlan['evidence']['permissionBatch']): Confirmation['effects'] {
@@ -86,6 +87,18 @@ export function deploymentConfirmationEffects(deployment: FrozenDeploymentPlan):
     }
   }
   return [...permissions, ...deployment.effects.flatMap((effect) => {
+    if (hasSharedNativeRetirementEffect({ ...deployment, effects: [effect] })) {
+      const actions = [
+        ...(deployment.effects.some((entry) => entry.kind === 'unregister'
+          && (binding.route !== 'claude-marketplace' || entry.nativeScope === 'user')) ? ['withdraw the shared native registration'] : []),
+        ...(deployment.effects.some((entry) => entry.kind === 'remove-owned' && entry.destination === evidence.layout.packageRoot)
+          ? ['delete the shared native package'] : []),
+        ...(deployment.effects.some((entry) => entry.kind === 'remove-marketplace-entry') ? ['remove its marketplace entry'] : []),
+      ];
+      return [{ code: 'removeOwnedOutput', impact: 'shared' as const,
+        message: `Retire this plugin: ${actions.join(', ')}. Other projects using the plugin will be affected; their requirements are preserved for cleanup in those projects.`,
+        subject: { pluginId: binding.plugin.pluginId, target: binding.platform, scope: binding.scope.kind } }];
+    }
     const replacesSharedOutput = sharedOutput && effect.physicalKey === binding.physicalKey
       && (effect.kind === 'refresh' || effect.kind === 'publish-package'
         && packageSlot !== undefined && ['present', 'partial'].includes(packageSlot.state));

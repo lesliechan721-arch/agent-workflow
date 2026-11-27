@@ -63,6 +63,21 @@ describe('plugin capabilities command', () => {
     expect(await runCli(['dev', 'plugin', 'capabilities', '--json'], { io: output.io })).toBe(0);
     const result = JSON.parse(output.stdout()).data;
     expect(result.surface).toBeNull();
+    expect(result.capabilities['platform-capabilities']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'schemaVersion', acceptedValues: [3] }),
+      expect.objectContaining({ field: 'status', acceptedValues: ['supported', 'unsupported'] }),
+      expect.objectContaining({ field: 'agentNamingMode', acceptedValues: ['host-plugin', 'aw-prefix', 'unsupported'] }),
+      expect.objectContaining({ field: 'features.agent.model', requires: expect.stringContaining('inherit, flash_lite, flash, pro') }),
+    ]));
+    expect(result.capabilities['platform-capabilities'].map(({ field }: { field: string }) => field))
+      .not.toContainEqual(expect.stringMatching(/^features\.component\.kind\./u));
+    expect(result.capabilities['platform-capabilities']).toContainEqual(expect.objectContaining({
+      field: 'kinds.<kind>', acceptedValues: ['skill', 'mcp', 'agent', 'hook', 'instruction'],
+    }));
+    expect(result.capabilities['platform-components']).toContainEqual(expect.objectContaining({
+      field: 'components[].requires', type: expect.stringContaining('component.kind.<kind>'),
+    }));
+    expect(result.capabilities.artifacts).toContainEqual(expect.objectContaining({ field: 'rendererContext.agentNaming', required: true }));
     expect(Object.keys(result.capabilities).sort()).toEqual([
       'manifest', 'build-config', 'extensions', 'mcp', 'config', 'pre-apply',
       'managed-commands', 'native-tools', 'artifacts', 'platform-components', 'platform-capabilities', 'hook-handlers',

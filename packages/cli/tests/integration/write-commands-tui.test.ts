@@ -1,4 +1,4 @@
-import { installNativeTestQualification, getNativeTestLayout } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery, getNativeTestLayout } from '../helpers/native-execution-fixture.js';
 import { describe, beforeEach, expect, it } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import {
@@ -40,7 +40,7 @@ import {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

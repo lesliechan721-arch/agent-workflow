@@ -424,6 +424,9 @@ const receiptCodes = new Set([
   'preApplyTargetUnavailable', 'preApplyFailed', 'preApplyExecutableMissing', 'preApplyInputFailed',
   'preApplyStartFailed', 'preApplyTimedOut', 'preApplyExited', 'processCleanupUnconfirmed',
   'pluginProcessCleanupFailed',
+  // Retirement and its confirmed native preparation/cleanup.
+  'removedPluginActiveUnavailable', 'removedPluginOwnershipConflict', 'removedPluginNativeOwnershipUnavailable',
+  'nativeRetireFailed', 'nativeRetirePartial', 'sharedNativePreserved', 'nativeManagedRegistration',
   // Managed command producers, including their consumers and native tool authorization.
   'commandPackageProviderNotSatisfied', 'commandPackagePreparationFailed', 'commandPackageApplyFailed',
   'commandPackageDeclarationMissing', 'commandPackageUnavailable', 'commandBindingInvalid',
@@ -454,12 +457,12 @@ const receiptCodes = new Set([
   'shared-projection-conflict', 'sharedPackageRetentionUnconfirmed', 'sharedOwnershipUnsupported',
   'exclusiveOwnerEvidenceInvalid', 'supplementOwnershipUnconfirmed', 'supplementOwnershipConflict',
   'supplementPhysicalIdentityUnconfirmed', 'nativeObservationFailed', 'nativeObservationUnavailable',
-  'nativeObservationUnconfirmed', 'nativeObservationUnknown', 'nativeMarketplaceUnconfirmed', 'nativeStateUnreadable',
+  'nativeObservationUnconfirmed', 'nativeObservationUnknown', 'nativeMarketplaceUnconfirmed', 'nativeObservationInvalid', 'nativeStateUnreadable',
   'nativeConfigurationUnreadable', 'targetInspectionFailed', 'componentInspectionFailed', 'componentResourceMissing', 'componentContentDrift', 'nativeActivationBlocked',
   'nativeActivationDisabled', 'nativeActivationUnconfirmed', 'nativeActivationEvidenceUnknown',
   'nativeRegistrationMissing', 'nativeRegistrationUnconfirmed', 'nativePackageMissing', 'nativePackageContentDrift',
   'nativePackageContentUnconfirmed', 'nativeMutationPostcheckFailed', 'nativeInstallContentPostcheckFailed',
-  'nativeUnregisterPostcheckFailed', 'dynamicExpectationUnconfirmed', 'componentOutputMissing',
+  'nativeUnregisterPostcheckFailed', 'nativeRetirementPostcheckFailed', 'dynamicExpectationUnconfirmed', 'componentOutputMissing',
   'componentOutputUnconfirmed', 'antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict',
   'codexSharedNativeForeign', 'codexSharedNativeCorrupt', 'codexExtensionScopeConflict', 'codexSurfaceOwnerCollision', 'codexSurfaceNativeIdentityMissing',
   'codexReconcileEvidenceInvalid', 'codexScopePathAlias', 'codexNativeKindUnsupported', 'codexSystemCliUnsupported',
@@ -489,7 +492,12 @@ const receiptCodes = new Set([
   'platformProjectionSkillMetadataUnsupported', 'platformProjectionSkillPolicyConflict',
   'platformProjectionSkillPolicyInvalid', 'platformProjectionStagingInvalid',
   'platformProjectionSupplementKindUnsupported', 'platformProjectionSupplementUnsupported',
-  'sharedConfigurationInvalid',
+  'sharedConfigurationInvalid', 'agentReferenceInvalid', 'platformPluginIdentityInvalid',
+  'platformEmptyStateStaticSourceInvalid', 'platformEmptyStateConfigInvalid',
+  // Fixed delivery notices and reason codes (not arbitrary runtime text).
+  'piAgentConsumerUnavailable', 'piConfigurationUnconfirmed', 'piProjectTrustRequired',
+  'piAgentConsumerMissing', 'piAgentConsumerDisabled', 'piAgentPackageSourceUnsupported', 'piAgentPackageAccessDenied',
+  'skillInvocationPolicyNotGuaranteed', 'invocationControlUnsupported', 'invocationControlDegraded', 'noBoundExecutor',
 ]);
 const deploymentStaleReasons = new Set(['deploymentInputsChanged', 'clientDiscoveryChanged', 'deploymentObservationChanged',
   'deploymentReferencesChanged', 'deploymentPathsChanged', 'marketplaceChanged', 'deploymentEvidenceReadFailed']);
@@ -604,8 +612,11 @@ export function nativePath(ctx, spec, kind, packageRoot, name) {
   assert(packageRoot, 'Missing native package path for ' + spec.id + '/' + kind);
   let file;
   if (kind === 'skill') file = 'skills/' + name + '/SKILL.md';
-  else if (kind === 'agent') file = platform === 'copilot' ? 'com.github.copilot/agents/' + name + '.agent.md'
-    : 'agents/' + (platform === 'pi' ? resource + '-' : '') + name + '.md';
+  else if (kind === 'agent') {
+    const projectedName = platform === 'claude' ? name : resource + '-' + name;
+    file = platform === 'copilot' ? 'com.github.copilot/agents/' + projectedName + '.agent.md'
+      : 'agents/' + projectedName + '.md';
+  }
   else if (['opencode', 'pi'].includes(platform)) file = 'index.mjs';
   else if (kind === 'hook') file = platform === 'antigravity' ? 'hooks.json' : platform === 'copilot' ? 'com.github.copilot/hooks/hooks.json' : 'hooks/hooks.json';
   else if (kind === 'mcp') file = platform === 'antigravity' ? 'mcp_config.json' : ['copilot', 'cursor'].includes(platform) ? 'mcp.json' : '.mcp.json';

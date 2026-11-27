@@ -228,7 +228,7 @@ python3 scripts/qualification/native-platform-cursor-skills.py --node "$(command
 
 PR 标签 `native-qualification-antigravity-user` 在同一六环境矩阵内只补测 Antigravity CLI `1.3.4` 的 User 普通 Skill 直接 Native 管理，使用独立的 [`native-platform-antigravity-user.mjs`](../../scripts/qualification/native-platform-antigravity-user.mjs)。该入口复用本源候选、Windows helper 和原严格 `execute`，不进入 `all` 客户端字典，不运行 Cursor、接口初探、Project、`agents` 或公开 AW 场景。六份官方 GitHub release 归档及固定 SHA-256 由 [`native-platform-antigravity-distributions.mjs`](../../scripts/qualification/native-platform-antigravity-distributions.mjs) 统一选择；下载上限256MiB，tar/zip 只提取普通文件和目录，拒绝越界、link 和重复节点，展开上限768MiB／20000项。Windows ZIP 的入口为已核对归档内的 `antigravity.exe`；提取使用宿主 Python 3 标准库，并有60秒直接子进程时限。提取及下载不构成客户端进程树证据。
 
-`native-qualification-antigravity-user-public` 标签复用同一六环境矩阵，唯一差异是显式向独立 User runner 传入 `--public-aw`；原标签及 runner 默认仍只做直接 Native。直接 User 场景通过且没有进程失败后，公开场景才通过既有 `runScope` 在新的独立临时 HOME 中执行，私有客户端 bin 位于本次 acquisition 根内。公开场景仍要求 Hosted、User、当前宿主的真实 production Skill profile 和精确 CLI `1.3.4` consumer；profile 未验证时，在公开 AW 写入前保留阻断，不注入候选 profile 或使用 force。直接 Native 保持原严格观察，公开 AW 使用现有普通观察及 Windows Job 路径，均保留原截止和实际回执。结果按主资格器的 `client.publicAw` 数组单列一个 User scope；只有直接 Native、所请求公开场景及全部清理通过，整份报告才通过。公开场景必须验证 v2 status、原生清单与已安装副本。普通 Skill 加载未知独立记录，进程、公开状态或清理失败会阻断资格。 同一 User runner 的 `native-qualification-antigravity-user-windows` 仅选择原矩阵内的 Windows x64/arm64，保持直接 Native 验证和原门槛；可用于修复 Windows 夹具后的有限补测，其他宿主仍沿用各自原始报告，不重绑为该次来源。 `native-qualification-antigravity-user-remaining` 选择原矩阵内的 macOS ARM64 与两个 Windows，最多三个作业，用于补齐已知剩余单元；不重复其他宿主或提升资格。
+`native-qualification-antigravity-user-public` 标签复用同一六环境矩阵，唯一差异是显式向独立 User runner 传入 `--public-aw`；原标签及 runner 默认仍只做直接 Native。直接 User 场景通过且没有进程失败后，公开场景才通过既有 `runScope` 在新的独立临时 HOME 中执行，私有客户端 bin 位于本次 acquisition 根内。公开场景仍限定 Hosted User，并在公开 AW 写入前检查正式 V3 production profile 的 Skill 映射为 supported；不支持时保留阻断，不注入候选 profile 或使用 force。随后通过 `target set` 核对实际发现的精确 CLI `1.3.4` 与取得的入口真实路径。历史宿主资格不作为生产能力门槛，当次运行资格仍按实际证据判定。直接 Native 保持原严格观察，公开 AW 使用现有普通观察及 Windows Job 路径，均保留原截止和实际回执。结果按主资格器的 `client.publicAw` 数组单列一个 User scope；只有直接 Native、所请求公开场景及全部清理通过，整份报告才通过。公开场景必须验证 v2 status、原生清单与已安装副本。普通 Skill 加载未知独立记录，进程、公开状态或清理失败会阻断资格。 同一 User runner 的 `native-qualification-antigravity-user-windows` 仅选择原矩阵内的 Windows x64/arm64，保持直接 Native 验证和原门槛；可用于修复 Windows 夹具后的有限补测，其他宿主仍沿用各自原始报告，不重绑为该次来源。 `native-qualification-antigravity-user-remaining` 选择原矩阵内的 macOS ARM64 与两个 Windows，最多三个作业，用于补齐已知剩余单元；不重复其他宿主或提升资格。
 
 手动触发同一 [Native 资格工作流](../../.github/workflows/native-platform-qualification.yml) 时，`client=antigravity-user-public` 会在六个环境执行 Antigravity User 原生和公开安装检查。要与常规 `all` 矩阵比较同一版本，可以用同一个固定 tag 分别运行下列命令，再核对两个 Actions run 的 head SHA。
 
@@ -237,7 +237,7 @@ gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=all -f 
 gh workflow run native-platform-qualification.yml --ref "$TAG" -f client=antigravity-user-public -f hosts=all
 ```
 
-独立 User 报告绑定 source、run attempt、candidate 摘要、实际入口摘要及 acquisition／scope 清理结果。 Antigravity 的 Git 项目准备记录自己的状态。准备失败时，报告保留实际取得的退出状态、受控的进程归属诊断及查询时序，以区分准备阶段、客户端安装和临时目录清理。Linux/macOS 管理命令保留严格 `verified-observed`；Windows 走既有 Job 路径，命令保留实际 `containmentMode`、grading 和后代清理字段，Job/helper 证据单列，不按 OS 改写命令模式。每条原生命令使用 EOF 和原30秒时限。临时 HOME/AW/Agent/XDG 根中，三轮分别验证安装、版本更新和同版本正文刷新；每轮从目标与 neutral 的新管理查询确认全局 enabled，并读取原生 `path` 指向的实际副本字节和完整 AW owner。内部判定使用原始 stdout，全部内容判定完成后才对报告脱敏。卸载后双侧缺席、进程及清理均为必需检查；Skill 加载／模型采用未知单列且不阻塞。该候选取证不新增或扩大 production profile，其他环境的支持仍须独立验收。
+独立 User 报告绑定 source、run attempt、candidate 摘要、实际入口摘要及 acquisition／scope 清理结果。 Antigravity 的 Git 项目准备记录自己的状态。准备失败时，报告保留实际取得的退出状态、受控的进程归属诊断及查询时序，以区分准备阶段、客户端安装和临时目录清理。Linux/macOS 管理命令保留严格 `verified-observed`；Windows 走既有 Job 路径，命令保留实际 `containmentMode`、grading 和后代清理字段，Job/helper 证据单列，不按 OS 改写命令模式。每条原生命令使用 EOF 和原30秒时限。临时 HOME/AW/Agent/XDG 根中，三轮分别验证安装、版本更新和同版本正文刷新；每轮从目标与 neutral 的新管理查询确认全局 enabled，并读取原生 `path` 指向的实际副本字节和完整 AW owner。内部判定使用原始 stdout，全部内容判定完成后才对报告脱敏。卸载后双侧缺席、进程及清理均为必需检查；Skill 加载／模型采用未知单列且不阻塞。该候选取证不新增或扩大 production profile，其他环境的运行资格仍须独立验收。
 
 资格报告格式保持 schema 2。直接 Native 报告使用 `management-content-scope-v1`。启用公开 AW 场景后，`public-status-and-native-scope-v2` 要求 v2 公开状态在适用场景中与原生登记、有效启用、实际消费字节和作用域一致。Project 在外部目录禁用或不可见，User 在两处全局可见。普通 Skill 发现和加载单列 `observations`。必测场景的证据缺失、命令失败、进程审计失败或清理失败会使对应单元无法通过。报告标明候选源码、宿主、真实客户端版本、产品面、scope 和未覆盖场景。旧报告保留原判据与来源。
 
@@ -269,7 +269,7 @@ POSIX RPC helper 在直接客户端关闭后、输出 JSON 前，等待初始进
 
 断言失败终止该 scope 的后续步骤，另一 scope 和客户端仍继续。Grok Project 候选夹具只在临时 GROK_HOME 写精确目录授信状态（固定1.0.77既有实测格式），安装/更新后以新的 inspect 启用状态、原生路径指向副本字节及 neutral 隔离判定；这是显式测试前提，不是产品自动授信或已验证的公开授信命令；Grok 本地更新必须按实际行为判定，不因为是已知问题而算通过。核心失败和未验证均返回非零，非阻塞 observations 与 excluded 不使核心失败；报告通过 `always()` 上传并生成 job summary，保留14天；需要长期引用的通过证据另按固定资格归档规则保存。
 
-托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317`、OpenCode CLI `2.0.0` 为记录六环境的 User/Project 普通 Skill，Grok CLI `1.0.77` 为四个有官方分发环境的 User/Project；各记录分别限定 scope，其他版本、产品面及组件不继承。缺资格或 scope 不可证明时仍 unverified，不注入候选 profile 或 force 绕过。Claude 依原生管理与有效启用状态记录开放有限资格，Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。
+托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。生产 profile 采用确定性平台能力；固定客户端版本、候选字节、作用域与实测证据仍由 qualification harness 独立核对。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317`、OpenCode CLI `2.0.0` 为记录六环境的 User/Project 普通 Skill，Grok CLI `1.0.77` 为四个有官方分发环境的 User/Project；各记录分别限定 scope，其他版本、产品面及组件不继承。缺少实际证据或 scope 不可证明时，资格报告仍为 unverified，不注入候选 profile 或 force 绕过。Claude 的 Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。历史实测记录保留在 `scripts/qualification/evidence/` 供维护者、CI 与文档引用，不导入生产 CLI 或作为运行时能力判定条件。
 
 公开场景先检查固定入口身份。Windows npm 入口经正常包、bin、路径及 shim 校验。安装后核对目标与 neutral 的新原生结果、公开就绪状态和实际消费字节。版本更新后再次核对状态，然后保留插件版本 `0.1.1`，将同一 Skill 改为 v3 投影计划生成的正文。激活新来源后、同步前必须报告待同步并保留已确认的包和启用事实。同步后核对实际消费文件字节与公开就绪状态。User 两处消费位置均核对，Project 仍验证外部关闭。移除后的新管理查询必须证明两处的有效范围关闭：独占登记消失，精确成功回执证明共享保留时才允许已禁用登记继续存在。
 
@@ -295,7 +295,7 @@ POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom
 node scripts/qualification/native-platforms.mjs --write-candidate /tmp/aw-native-candidate.json --source-sha "$(git rev-parse HEAD)"
 pnpm qualification:native-platforms --candidate /tmp/aw-native-candidate.json --client codex --executable /absolute/path/to/codex --report /tmp/aw-native-report.json
 # --install 替代 --executable：明确允许在临时目录下载固定公共 npm 包。
-# --public-aw：另外验证公开 AW CLI，未取得生产资格的 scope 保持 unverified。
+# --public-aw：另外验证公开 AW CLI；未取得直接观察证据的 scope 在资格报告中保持 unverified。
 ```
 
 本地未提交源码的 SHA 仅标识 checkout 基线，实际候选字节由清单摘要标识；不能把本地报告称为该 Git commit 的干净构建。Actions 报告另绑定 run ID、attempt、runner image 和操作系统版本。远端执行要求工作流及对应源码已经存在于 GitHub。`workflow_dispatch` 入口要求工作流先存在于默认分支（[GitHub 事件规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)）；显式 PR 标签入口允许合并前验证，并绑定该次 PR 合并候选 SHA。不通过该入口提交源码、发布产品或修改真实用户配置。

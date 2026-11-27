@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
-import type { PluginComponent, ResourceFile } from '@lesliechan721/aw-plugin-core/manifest';
-import type { ProjectionInput, ProjectionResult } from './contracts.js';
+import { resolvePlatformAgentNaming, type PlatformAgentNaming, type PluginComponent, type ResourceFile } from '@lesliechan721/aw-plugin-core/manifest';
+import type { DeploymentBinding, ProjectionInput, ProjectionResult } from './contracts.js';
+import { getNativePackageName } from './layout.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import { createDynamicSkillTreeContentDigest } from '../utils/dynamic-skill-tree.js';
+
+export { nativeComponentName } from '@lesliechan721/aw-plugin-core/manifest';
 
 export interface ProjectedFile { bytes: Buffer; mode: number }
 
@@ -16,10 +19,10 @@ export function safeProjectionPath(value: string): string {
   return value;
 }
 
-export function nativeComponentName(value: string): string {
-  const name = value.normalize('NFKC').toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '');
-  if (!name || name.length > 128) throw new Error('platformProjectionNameInvalid');
-  return name;
+export function agentNamingForBinding(binding: DeploymentBinding): PlatformAgentNaming {
+  return resolvePlatformAgentNaming(binding.platform, {
+    sourceId: binding.plugin.sourceId, name: getNativePackageName(binding.plugin),
+  });
 }
 
 /** Every path is reserved before staging is touched, including case aliases. */

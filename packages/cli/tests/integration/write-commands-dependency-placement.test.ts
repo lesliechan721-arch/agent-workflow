@@ -1,5 +1,5 @@
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { realpath } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -142,7 +142,7 @@ async function createIntentRoundTripFixture(nativeProviders = false) {
 describe('five namespaced write commands', () => {
   let defaultNativeRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true });
+    installNativeTestDiscovery();
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });

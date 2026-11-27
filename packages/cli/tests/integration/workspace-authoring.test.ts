@@ -113,9 +113,10 @@ describe('public Catalog Workspace authoring commands', () => {
         "import fs from 'node:fs';",
         "const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
         "if (Object.keys(c.config.values).join() !== 'selected') throw new Error('Provider config leaked');",
+        "if (c.config.values.selected !== 'external') throw new Error('Expected the same-source configuration default');",
         "const requested = c.allowedOutputKinds.includes('instruction');",
         "const supported = c.platformCapabilities.kinds.instruction.status === 'supported';",
-        "console.log(JSON.stringify({version:3,components:requested && supported ? [{id:'instruction',kind:'instruction',name:'instruction',content:{title:'Selected configuration',content:c.config.values.selected,coverage:['main']}}] : [],omitted:[],unmet:requested && !supported ? [{id:'instruction',kind:'instruction',requiredFeatures:[{feature:'component.kind.instruction'}],reasonCode:'capability-unverified'}] : []}));",
+        "console.log(JSON.stringify({version:3,components:requested && supported ? [{id:'instruction',kind:'instruction',name:'instruction',content:{title:'Selected configuration',content:c.config.values.selected,coverage:['main']}}] : [],omitted:[],unmet:requested && !supported ? [{id:'instruction',kind:'instruction',requiredFeatures:[{feature:'component.kind.instruction'}],reasonCode:'interface-unsupported'}] : []}));",
       ].join('\n'));
       const providerPath = path.join(root, 'plugins', 'config-provider', '.agents-plugin', 'plugin.json');
       const provider = await fs.readJson(providerPath);
@@ -137,7 +138,7 @@ describe('public Catalog Workspace authoring commands', () => {
       const exitCode = await runCli(['dev', 'plugin', 'validate', consumerRoot, '--workspace-root', root, '--json'],
         { cwd: root, io: output.io });
       const result = { exitCode, receipt: readResult(output.stdout(), 'dev.plugin.validate') };
-      expect(result).toMatchObject(scenario === 'valid'
+      expect(result, JSON.stringify(result.receipt.diagnostics)).toMatchObject(scenario === 'valid'
         ? { exitCode: 0, receipt: { status: 'success', data: { profile: 'aw-source' } } }
         : { exitCode: 1, receipt: { status: 'failed', diagnostics: expect.arrayContaining([
             expect.objectContaining({ message: expect.stringContaining('config-provider/registry') }),

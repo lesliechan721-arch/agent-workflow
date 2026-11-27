@@ -152,7 +152,8 @@ import {
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from '../utils/catalog-public-error.js';
-import { loadCatalogGenerationViewModels } from './catalog-generation.js';
+import { checkRetirementSources, loadCatalogGenerationViewModels } from './catalog-generation.js';
+import { inventoryPluginIds } from './scoped-inventory.js';
 import { recoveryReason } from './glossary.js';
 import {
   executePortableRetry,
@@ -1080,10 +1081,6 @@ export function createTuiControllerDependencies(
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
       });
       signal.throwIfAborted();
-      const storeEntries = new Map(catalogReadScope ? undefined : sessionStoreEntries);
-      const catalogGenerations = await loadCatalogGenerations(storeEntries, signal, catalogReadScope
-        ? { scope: catalogReadScope, context: catalogOperationContext } : undefined);
-      signal.throwIfAborted();
       const configStoreInventory = (await Promise.all((['user'] as const).map(async (scope) => {
         try {
           return (await listNamespacedPluginConfigStoreIdentities({
@@ -1104,6 +1101,15 @@ export function createTuiControllerDependencies(
           return [];
         }
       }))).flat();
+      const scopedRecovery = { user: { ...scopedCurrentStatus(current, snapshot, 'user'), dependencyOverviews },
+        ...(snapshot.project ? { project: { ...scopedCurrentStatus(current, snapshot, 'project'), dependencyOverviews } } : {}) };
+      const retirementSourceChecks = await checkRetirementSources(catalogOperationContext, [
+        ...Object.values(scopedRecovery).flatMap(inventoryPluginIds),
+        ...configStoreInventory.map((store) => store.pluginId),
+      ], signal, catalogReadScope);
+      const storeEntries = new Map(catalogReadScope ? undefined : sessionStoreEntries);
+      const catalogGenerations = await loadCatalogGenerations(storeEntries, signal, catalogReadScope
+        ? { scope: catalogReadScope, context: catalogOperationContext } : undefined);
       const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
       if (result.payload.catalog.configDigest !== configured.configDigest
@@ -1115,8 +1121,8 @@ export function createTuiControllerDependencies(
       const status: TuiStatusLoadResult = {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
         ...(current.coverage.projectRoot ? { projectRoot: current.coverage.projectRoot } : {}),
-        scopedRecovery: { user: { ...scopedCurrentStatus(current, snapshot, 'user'), dependencyOverviews },
-          ...(snapshot.project ? { project: { ...scopedCurrentStatus(current, snapshot, 'project'), dependencyOverviews } } : {}) },
+        scopedRecovery,
+        retirementSourceChecks,
         configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
@@ -2233,9 +2239,11 @@ export function createTuiControllerDependencies(
       const source = catalogView ?? await loadCatalogView({ context, cliVersion: packageInfo.version, signal, catalogOperationContext });
       const dependencyOverviews = await loadDependencyOverviews({ context, cliVersion: packageInfo.version, status,
         pluginSummaries: source.pluginSummaries, signal, catalogOperationContext });
+      const recovery = scopedCurrentStatus(status, snapshot, scope);
+      const retirementSourceChecks = await checkRetirementSources(catalogOperationContext, inventoryPluginIds(recovery), signal);
       signal.throwIfAborted();
       if (read === latestStatusRead) sessionRecoveryStatus = status;
-      return { ...scopedCurrentStatus(status, snapshot, scope), dependencyOverviews };
+      return { ...recovery, dependencyOverviews, retirementSourceChecks };
     },
     async prepareScopedTask(request, signal) {
       signal.throwIfAborted();

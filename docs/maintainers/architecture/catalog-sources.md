@@ -82,6 +82,7 @@ stateDiagram-v2
 ### 4.1 Inventory 检查范围与未知保护
 
 - **枚举范围**：检查范围覆盖 installation、config、intent、marketplace 以及 user、current project 和平台自身可枚举的历史 project 记录，不扫描未知 project 路径。
+- **市场身份**：按[固定平台与 namespace](platforms.md#12-身份与物理实例)识别新旧 canonical 市场，并通过对应平台的市场配置、宿主登记与可见激活证据关联消费者；不能把未绑定的同名插件认作本来源。
 - **用户配置文档上下文**：配置引用仅从唯一的用户配置文档根（`catalog-source-references.ts`）枚举；项目目录仅提供授权来源与安装上下文，不单独作为第二配置源。
 - **Unknown 非零原则**：当清单或旧 manifest 因文件损坏或权限问题不可读时，标记 `inventoryComplete: false`，影响判定为 `unknown`。**严禁将 unknown 假定为零影响**，必须要求用户显式传入 `--yes` 确认。
 

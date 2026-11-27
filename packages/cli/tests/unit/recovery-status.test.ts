@@ -14,6 +14,9 @@ import type { NativeCliResult } from '../../src/utils/native-cli.js';
 import * as portableRecovery from '../../src/portable/recovery.js';
 import * as demandService from '../../src/recovery/demand.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { getNativeTestLayout } from '../helpers/native-execution-fixture.js';
+import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
+import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 const context = { scope: 'user', executionCwd: '/tmp/aw-status', env: {},
   dispose: async () => undefined } as ScopeContext;
@@ -95,6 +98,116 @@ describe('recovery status satisfaction', () => {
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'sourceMissing', subject: {
       pluginId: 'ghost/missing', sourceId: 'ghost',
     } }));
+  });
+
+  // Test Value Gate: downlisted/unavailable plugins must remain discoverable
+  // from their actual scoped residue until cleanup removes the last evidence.
+  it('keeps shared marketplace residue visible only in its observed scope without a Catalog entry', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    const pluginId = 'local/demo';
+    const platform = 'codex' as const;
+    const native = await getNativeTestLayout({ cwd, env, platform, pluginId, sourceIdentity, scope: 'user' });
+    const root = native.marketplaceRoot!;
+    const marketplaceName = native.marketplaceName!;
+    const manifest = path.join(root, '.agents/plugins/marketplace.json');
+    await fs.outputJson(path.join(root, 'config.json'), { schemaVersion: 2, sourceId: 'local', sourceIdentity, marketplaceName });
+    await fs.outputJson(manifest, { name: marketplaceName, plugins: [{ name: 'demo', source: './plugins/demo' }] });
+    const userConfig = path.join(native.activationPath, 'config.toml');
+    const projectConfig = path.join(cwd, '.codex/config.toml');
+    await fs.outputFile(userConfig, `[plugins."demo@${marketplaceName}"]\nenabled = false\n`);
+    await fs.outputFile(projectConfig, `[plugins."demo@${marketplaceName}"]\nenabled = true\n`);
+    const readScope = (scope: 'user' | 'project') => readScopedRecoveryStatus({ cwd, env, scope, targets: [platform],
+      demandOverride: { ...demand([], [platform]), scope } });
+    const expected = (scope: 'user' | 'project') => expect.objectContaining({ pluginId, agent: platform, scope,
+      observation: 'unknown', content: 'unknown' });
+    expect((await readScope('user')).extraObserved).toContainEqual(expected('user'));
+    expect((await readScope('project')).extraObserved).toContainEqual(expected('project'));
+    const current = demand([pluginId], [platform]);
+    const plugin = current.roots![0]!.plugin!;
+    Object.assign(plugin, { pluginId, sourceId: 'local', sourceIdentity, rootDir: cwd });
+    Object.assign(plugin.manifest, { platforms: [platform], version: '1.0.0' });
+    const adapter = registry.getAgentPluginAdapter(platform);
+    const missingClient = vi.spyOn(registry, 'getAgentPluginAdapter').mockReturnValue({ ...adapter,
+      discover: async () => ({ platform, availability: 'missing', installations: [], diagnostics: [] }),
+      resolve: async () => ({ bindings: [], renderUnits: [], exclusions: [], diagnostics: [] }),
+    });
+    const knownGraph = await readScopedRecoveryStatus({ cwd, env, scope: 'project', targets: [platform],
+      demandOverride: { ...demand([], [platform]), scope: 'project', plugins: [plugin] } });
+    expect(knownGraph.extraObserved).not.toContainEqual(expected('project'));
+    missingClient.mockRestore();
+    await fs.remove(projectConfig);
+    expect((await readScope('project')).extraObserved).not.toContainEqual(expected('project'));
+    await fs.remove(userConfig);
+    expect((await readScope('user')).extraObserved).toContainEqual(expected('user'));
+    const component = deploymentPackageComponent(native.binding, native);
+    if (component.kind !== 'owned-directory') throw new Error('Expected the native package directory.');
+    await fs.ensureDir(component.path);
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity });
+    await fs.outputJson(manifest, { name: marketplaceName, plugins: [] });
+    expect((await readScope('user')).extraObserved).toContainEqual(expected('user'));
+    expect((await readScope('project')).extraObserved).not.toContainEqual(expected('project'));
+    await fs.remove(component.path);
+    expect((await readScope('user')).extraObserved).not.toContainEqual(expected('user'));
+  });
+
+  // Test Value Gate: Claude's persisted disable preference is not an extra
+  // installation after retirement, but independent registration/owner evidence is.
+  it('distinguishes a Claude disabled preference from actual removed-plugin residue', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    const pluginId = 'local/demo';
+    const native = await getNativeTestLayout({ cwd, env, platform: 'claude', pluginId, sourceIdentity, scope: 'user' });
+    const marketplaceName = native.marketplaceName!;
+    const nativeId = `demo@${marketplaceName}`;
+    const root = native.marketplaceRoot!;
+    const manifest = path.join(root, '.claude-plugin/marketplace.json');
+    const userSettings = path.join(native.activationPath, 'settings.json');
+    const installed = path.join(native.activationPath, 'plugins/installed_plugins.json');
+    const projectSettings = path.join(cwd, '.claude/settings.local.json');
+    const disabled = { enabledPlugins: { [nativeId]: false } };
+    await fs.outputJson(path.join(root, 'config.json'), { schemaVersion: 2, sourceId: 'local', sourceIdentity, marketplaceName });
+    await fs.outputJson(manifest, { name: marketplaceName, plugins: [] });
+    await fs.outputJson(path.join(native.activationPath, 'plugins/known_marketplaces.json'), {
+      [marketplaceName]: { source: { source: 'directory', path: root }, installLocation: root },
+    });
+    await fs.outputJson(userSettings, disabled);
+    await fs.outputJson(projectSettings, disabled);
+    const readScope = (scope: 'user' | 'project') => readScopedRecoveryStatus({ cwd, env, scope, targets: ['claude'],
+      demandOverride: { ...demand([], ['claude']), scope } });
+    const residual = (scope: 'user' | 'project') => expect.objectContaining({ pluginId, agent: 'claude', scope });
+    expect((await readScope('user')).extraObserved).not.toContainEqual(residual('user'));
+    expect((await readScope('project')).extraObserved).not.toContainEqual(residual('project'));
+    await fs.outputJson(userSettings, { ...disabled, plugins: { installed: { [nativeId]: { marketplace: marketplaceName } } } });
+    expect((await readScope('user')).extraObserved).toContainEqual(residual('user'));
+    await fs.outputJson(userSettings, disabled);
+    await fs.outputJson(installed, { plugins: { [nativeId]: [{ scope: 'local', projectPath: cwd }, { scope: 'managed' }] } });
+    expect((await readScope('user')).extraObserved).toContainEqual(residual('user'));
+    expect((await readScope('project')).extraObserved).toContainEqual(residual('project'));
+    await fs.outputJson(installed, { plugins: {} });
+    await fs.outputJson(manifest, { name: marketplaceName, plugins: [{ name: 'demo', source: './plugins/demo' }] });
+    expect((await readScope('user')).extraObserved).toContainEqual(residual('user'));
+    expect((await readScope('project')).extraObserved).not.toContainEqual(residual('project'));
+    await fs.outputJson(manifest, { name: marketplaceName, plugins: [] });
+    const component = deploymentPackageComponent(native.binding, native);
+    if (component.kind !== 'owned-directory') throw new Error('Expected the native package directory.');
+    await fs.ensureDir(component.path);
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity });
+    expect((await readScope('user')).extraObserved).toContainEqual(residual('user'));
+    await fs.remove(component.path);
+    await fs.outputFile(installed, '{ invalid json');
+    const unreadable = await readScope('project');
+    expect(unreadable.errors).toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
+    expect(unreadable.coverage.native).toBe(false);
+    await fs.outputJson(installed, { plugins: {} });
+    expect((await readScope('user')).extraObserved).not.toContainEqual(residual('user'));
+    expect((await readScope('project')).extraObserved).not.toContainEqual(residual('project'));
+    await expect(fs.readJson(userSettings)).resolves.toEqual(disabled);
+    await expect(fs.readJson(projectSettings)).resolves.toEqual(disabled);
   });
 
   it('keeps a source-scoped inventory error off another source with the same plugin name', async () => {

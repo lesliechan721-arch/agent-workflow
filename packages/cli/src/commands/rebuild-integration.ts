@@ -196,6 +196,7 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  confirmedCatalogRetirement?: true;
   removeHostPermissions?: (locator: import('../platforms/permission-ownership.js').PermissionLocator) => Promise<void>;
   invocationCwd?: string;
   recoveryCandidates?: readonly import('../platforms/contracts.js').RecoveryCandidate[];

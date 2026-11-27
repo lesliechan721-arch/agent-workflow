@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { preparePublicClientEntry, preparePublicClientPath, preparePublicClientPaths } from './native-platform-public-aw.mjs';
+import { preparePublicClientEntry, preparePublicClientPath, preparePublicClientPaths, qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { qualifyRemainingPlugins } from './native-platform-public-catalog.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
@@ -15,6 +15,18 @@ import { executePublicAw } from './native-platform-public-process.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
+
+// Test Value Gate: when the job pool cannot start a unit, component mode
+// must not begin preparing its private client launcher outside that pool.
+test('leaves public component client preparation inside its qualification unit', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-client-unit-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const clientBin = path.join(root, 'client-bin');
+  const failure = new Error('qualification-unit-unavailable');
+  await assert.rejects(qualifyPublicAw({ root, clientBin, platform: 'codex',
+    group: { async runUnit() { throw failure; } } }, { components: true }), failure);
+  await assert.rejects(fs.stat(clientBin), { code: 'ENOENT' });
+});
 
 const publicResponse = (command, data) => ({
   exitCode: 0, terminationReason: 'complete', stderr: '',
@@ -324,6 +336,7 @@ test('keeps fixed native install blockers and does not guess a batch reason for 
     ['codex', 'sourceChanged'],
     ['claude', 'legacyStateUnsupported'],
     ['codex', 'catalogSourceConflict'],
+    ['codex', 'agentReferenceInvalid'],
   ]) {
     const scope = 'project';
     const entries = ['blocked', 'redacted', 'unplanned-redacted', 'unreported'].map(name => ({ name }));
@@ -355,6 +368,38 @@ test('keeps fixed native install blockers and does not guess a batch reason for 
     assert.deepEqual(evidence.awReceipt.targets.map(row => row.blockerCodes), [[code], []]);
     assert.doesNotMatch(JSON.stringify([report, evidence]), /private operation output|unknownPrivateCode|\/private\/catalog/u);
   }
+});
+
+// Test Value Gate: new retirement failures in public v2 receipts must remain
+// distinguishable from unknown diagnostics without disclosing private detail.
+test('retains fixed retirement receipt codes and redacts unknown diagnostics', () => {
+  const scope = 'project', target = 'codex', pluginId = 'team/retired';
+  const subject = { pluginId, target, scope };
+  const privateCode = 'unknownPrivateCode';
+  const diagnostic = code => ({ code, severity: 'error', subject, message: '/private/retirement',
+    detail: { reasonCode: privateCode, path: '/private/retirement' } });
+  const codes = ['nativeRetireFailed', 'removedPluginNativeOwnershipUnavailable', 'nativeRetirementPostcheckFailed', 'nativeManagedRegistration'];
+  const value = { schemaVersion: 2, command: 'plugin.remove', status: 'partial', diagnostics: [...codes, privateCode].map(diagnostic),
+    data: { targetResults: [{ ...subject, execution: 'partial', blockerCodes: [...codes, privateCode],
+      deploymentReceipts: [{ diagnostics: [diagnostic(codes[2]), diagnostic(privateCode)] }] }] } };
+  const evidence = componentReceiptEvidence(value, { command: value.command, scope, pluginIds: [pluginId] }, target);
+  assert.deepEqual(evidence.awReceipt, { status: 'partial',
+    diagnostics: codes.map(code => ({ code, severity: 'error', subject })),
+    targets: [{ ...subject, execution: 'partial', blockerCodes: codes,
+      diagnostics: [{ code: codes[2], severity: 'error', subject }] }] });
+  assert.doesNotMatch(JSON.stringify(evidence), /unknownPrivateCode|\/private\/retirement/u);
+});
+
+test('retains the fixed Pi configuration notice when another component failed', () => {
+  const target = 'pi', scope = 'project', pluginId = 'team/roles';
+  const subject = { target, scope, pluginId };
+  const value = { schemaVersion: 2, command: 'plugin.install', status: 'partial',
+    diagnostics: [{ code: 'piAgentConsumerUnavailable', severity: 'warning', subject, message: '/private/pi',
+      detail: { reasonCode: 'piConfigurationUnconfirmed', path: '/private/pi' } }] };
+  assert.deepEqual(componentReceiptEvidence(value, { command: value.command, scope, pluginIds: [pluginId] }, target),
+    { awReceipt: { status: 'partial', diagnostics: [
+      { code: 'piAgentConsumerUnavailable', severity: 'warning', subject, reasonCode: 'piConfigurationUnconfirmed' },
+    ] } });
 });
 
 test('keeps fixed install and sync blockers when planning produces no targets', async () => {

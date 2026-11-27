@@ -14,7 +14,10 @@ import { supportsPlatform } from './platform-support.js';
 import { assertManagedCommandPlatform, normalizeCommandSelector, normalizeCommandRelativeFile, parseManagedCommandPlaceholders, type PermissionCommand, type ManagedCommandPermission } from './managed-commands.js';
 import { resolveCanonicalRuntimeSourceIdentity } from './runtime-export-source.js';
 import { isSkillAuthorOnlyPath, isAuthorOnlySkillDirectory } from './skill-authoring.js';
+import { scanSkillAgentReferences, parseAgentNamePlaceholders, assertSkillAgentReferencesInFrontmatter, SKILL_AGENT_PLACEHOLDER_CAPABILITY } from './agent-placeholders.js';
+import { applyStaticSkillAgentUnmet, readSkillAgentReferenceNames } from './skill-agent-registry.js';
 import { validatePortableSkillName } from './portable-skill-validation.js';
+import { resolvePlatformAgentNaming, resolvePlatformAgentNamingMode, type PlatformAgentNaming, type PlatformAgentNamingMode } from './platform-agent-naming.js';
 import { validateSkillFrontmatterCapabilities } from './skill-frontmatter-capabilities.js';
 import type { NormalizedPluginManifest, PlatformId, PluginConfigDefinition, PluginConfigValidationIssue, PluginConfigValue, Scope } from './types.js';
 
@@ -22,7 +25,8 @@ export const COMPONENT_KINDS = ['skill', 'mcp', 'agent', 'hook', 'instruction'] 
 export type ComponentKind = (typeof COMPONENT_KINDS)[number];
 export type InstructionAudience = 'main' | 'plugin-agents' | 'other-agents';
 export type HookFeedback = 'notify' | 'context' | 'block';
-export type Support = 'supported' | 'unsupported' | 'unverified';
+export type SupportV3 = 'supported' | 'unsupported';
+export type Support = SupportV3;
 export type SourceRef = { kind: 'bundle'; path: string } | { kind: 'runtime-import'; name: string; path: string };
 export type ResourceFile = { text: string } | { source: SourceRef };
 export interface FeatureRequirement { feature: string; values?: string[] }
@@ -45,7 +49,7 @@ export type PluginComponent = ComponentBase & (
   | { kind: 'hook'; content: HookContent }
   | { kind: 'instruction'; content: InstructionContent }
 );
-export interface ComponentOmission { id: string; kind: ComponentKind; reason: 'not-offered' | 'config-disabled' }
+export interface ComponentOmission { id: string; name?: string; kind: ComponentKind; reason: 'not-offered' | 'config-disabled' }
 export interface ComponentUnmet {
   id: string; kind: ComponentKind; name?: string; componentId?: string;
   requiredFeatures: FeatureRequirement[]; reasonCode: string;
@@ -68,27 +72,26 @@ export interface ResolvedInvocationPolicy {
   invocationSelector?: string;
 }
 export interface CapabilityFact { status: Support; reasonCodes: string[] }
-export interface PlatformCapabilitiesV2 {
-  schemaVersion: 2; platform: PlatformId; scope: Scope; basis: 'local' | 'profile';
+export interface PlatformCapabilitiesV3 {
+  schemaVersion: 3; platform: PlatformId; scope: Scope; basis: 'local' | 'profile';
+  agentNamingMode: PlatformAgentNamingMode;
   kinds: Record<ComponentKind, CapabilityFact & { delivery: Array<'native-package' | 'native-extension' | 'managed-host-resource' | 'generic-files'> }>;
   features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
-  /** Standard writer mappings. Runtime support remains in kinds.status and features. */
-  deliveryFeatures?: FeatureRequirement[];
 }
-export interface PlatformRenderContextV2 {
-  schemaVersion: 2; surface: 'agent-plugin'; platform: PlatformId; scope: Scope;
+export interface PlatformRenderContextV3 {
+  schemaVersion: 3; surface: 'agent-plugin'; platform: PlatformId; scope: Scope;
   plugin: { pluginId: string; name: string; version: string };
   config: {
     schema: PluginConfigDefinition; values: Record<string, PluginConfigValue>;
     sources: Record<string, 'default' | 'common' | 'platform' | 'missing'>; issues: PluginConfigValidationIssue[];
   };
-  changedConfigKeys: string[]; allowedOutputKinds: ComponentKind[]; platformCapabilities: PlatformCapabilitiesV2;
+  changedConfigKeys: string[]; allowedOutputKinds: ComponentKind[]; platformCapabilities: PlatformCapabilitiesV3;
+  agentNaming: PlatformAgentNaming;
   resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string; root: string; digest: string }>;
   previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
 }
 export const CAPABILITY_REASON_CODES = [
-  'client-missing', 'version-unsupported', 'interface-unsupported', 'scope-unsupported',
-  'capability-unverified', 'delivery-unavailable', 'consumer-missing', 'consumer-disabled', 'policy-blocked',
+  'client-missing', 'client-unknown', 'version-unsupported', 'interface-unsupported', 'scope-unsupported', 'delivery-unavailable',
 ] as const;
 export const COMPONENT_DEPENDENCY_REASON_CODES = ['dependency-missing', 'dependency-unmet', 'config-missing', 'config-invalid'] as const;
 
@@ -106,9 +109,10 @@ export const PLATFORM_FEATURE_REGISTRY: Readonly<Record<string, PlatformFeatureD
       ...(entry.properties.values ? { values: Object.freeze([...entry.properties.values.items.enum]) } : {}),
       defaultStatus: 'unsupported' as const,
       ...(id.startsWith('component.kind.') ? { derivedFromKind: id.slice('component.kind.'.length) as ComponentKind } : {}),
-      evidence: id === 'hook.matcher' ? 'Verified preservation of the declared matcher for each listed dialect.event and selected consumer profile.'
-        : id.startsWith('hook.') ? 'Verified event input, feedback output and exit semantics for the selected consumer profile.'
-        : 'Verified behavior for every selected consumer, scope and qualified profile.',
+      evidence: id === 'hook.matcher' ? 'Matcher mapping for each listed dialect.event.'
+        : id.startsWith('hook.') ? 'Mapped host event with notify support; context and block require a registered wire protocol.'
+        : id === 'agent.model' ? 'Model selection; when present, values constrain the exact model identifiers.'
+        : 'Delivery capability for the selected platform and scope.',
       separable: id === 'instruction.coverage',
     })];
   }),
@@ -132,8 +136,8 @@ function lazyValidator<T>(ref: string): () => ValidateFunction<T> {
 }
 const getComponentValidator = lazyValidator<PluginComponent>(`${componentSchema.$id}#/$defs/pluginComponent`);
 const getPlanValidator = lazyValidator<PlatformComponentPlanV3>(`${componentSchema.$id}#/$defs/platformComponentPlanV3`);
-const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV2>(`${componentSchema.$id}#/$defs/platformCapabilitiesV2`);
-const getContextValidator = lazyValidator<PlatformRenderContextV2>(`${componentSchema.$id}#/$defs/platformRenderContextV2`);
+const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV3>(`${componentSchema.$id}#/$defs/platformCapabilitiesV3`);
+const getContextValidator = lazyValidator<PlatformRenderContextV3>(`${componentSchema.$id}#/$defs/platformRenderContextV3`);
 const getRequirementValidator = lazyValidator<FeatureRequirement>(`${manifestSchema.$id}#/$defs/featureRequirement`);
 function assertSchema<T>(getValidator: () => ValidateFunction<T>, value: unknown, field: string): asserts value is T {
   const validator = getValidator();
@@ -150,13 +154,9 @@ function safeRelativePath(value: string, field: string): string {
 export function assertFeatureRequirement(value: unknown): asserts value is FeatureRequirement {
   assertSchema(getRequirementValidator, value, 'feature requirement');
 }
-export function assertPlatformCapabilities(value: unknown): asserts value is PlatformCapabilitiesV2 {
+export function assertPlatformCapabilities(value: unknown): asserts value is PlatformCapabilitiesV3 {
   assertSchema(getCapabilitiesValidator, value, 'platform capabilities');
-  for (const fact of [...Object.values(value.kinds), ...Object.values(value.features)]) {
-    if (fact.reasonCodes.some((code) => !CAPABILITY_REASON_CODES.includes(code as typeof CAPABILITY_REASON_CODES[number]))) {
-      throw new Error('Invalid platform capabilities: unknown reason code.');
-    }
-  }
+  if (value.agentNamingMode !== resolvePlatformAgentNamingMode(value.platform)) throw new Error('Invalid platform capabilities: agentNamingMode mismatch.');
   for (const [feature, fact] of Object.entries(value.features)) {
     if (fact.status === 'supported' && feature === 'hook.matcher') {
       for (const key of fact.values ?? []) {
@@ -164,24 +164,30 @@ export function assertPlatformCapabilities(value: unknown): asserts value is Pla
         const dialect = key.slice(0, separator);
         if (dialect !== 'common' && dialect !== 'native') throw new Error('Invalid platform capabilities: unknown hook matcher dialect.');
         const handler = getHookHandlerContract(value.platform, dialect, key.slice(separator + 1));
-        if (handler.matcherAllowed !== true || !handler.protocol || value.features[`hook.${key}`]?.status !== 'supported') {
-          throw new Error(`Invalid platform capabilities: hook matcher is unverified or unsupported for ${key}.`);
+        if (handler.matcherAllowed !== true || value.features[`hook.${key}`]?.status !== 'supported') {
+          throw new Error(`Invalid platform capabilities: hook matcher is unsupported for ${key}.`);
         }
       }
     } else if (fact.status === 'supported' && feature.startsWith('hook.')) {
       const dialect = feature.startsWith('hook.native.') ? 'native' : 'common';
       const event = feature.slice(`hook.${dialect}.`.length);
       const handler = getHookHandlerContract(value.platform, dialect, event);
-      if (!handler.protocol) throw new Error(`Invalid platform capabilities: hook handler protocol is unverified for ${feature}.`);
-      if (fact.values?.some((feedback) => !Object.hasOwn(handler.protocol!.responses, feedback))) throw new Error(`Invalid platform capabilities: ${feature} feedback has no registered wire protocol.`);
+      if (handler.nativeEvent === null) throw new Error(`Invalid platform capabilities: no native event mapping for ${feature}.`);
+      if (fact.values?.some((feedback) => feedback !== 'notify' && (!handler.protocol || !Object.hasOwn(handler.protocol.responses, feedback)))) {
+        throw new Error(`Invalid platform capabilities: ${feature} feedback has no registered wire protocol.`);
+      }
     }
     if (fact.status !== 'supported' && (fact.values?.length ?? 0) > 0) throw new Error(`Invalid platform capabilities: unsupported feature ${feature} cannot grant values.`);
   }
 }
-export function assertPlatformRenderContext(value: unknown): asserts value is PlatformRenderContextV2 {
+export function assertPlatformRenderContext(value: unknown): asserts value is PlatformRenderContextV3 {
   assertSchema(getContextValidator, value, 'platform render context');
   assertPlatformCapabilities(value.platformCapabilities);
   if (value.platform !== value.platformCapabilities.platform || value.scope !== value.platformCapabilities.scope) throw new Error('Invalid platform render context: capability platform/scope mismatch.');
+  const naming = resolvePlatformAgentNaming(value.platform, value.plugin);
+  if (!isDeepStrictEqual(value.agentNaming, naming) || value.agentNaming.mode !== value.platformCapabilities.agentNamingMode) {
+    throw new Error('Invalid platform render context: agentNaming mismatch.');
+  }
   const keys = new Set(Object.keys(value.config.schema.fields));
   for (const key of [...Object.keys(value.config.values), ...Object.keys(value.config.sources), ...value.changedConfigKeys]) {
     if (!keys.has(key)) throw new Error(`Invalid platform render context: config key ${key} is outside the batch whitelist.`);
@@ -208,9 +214,13 @@ function parseSkillFrontmatter(text: string): Record<string, unknown> {
   const normalized = text.replace(/\r\n/gu, '\n');
   const match = /^---\n([\s\S]*?)\n---(?:\n|$)/u.exec(normalized);
   if (!match) throw new Error('Invalid Skill: SKILL.md requires YAML frontmatter.');
+  assertSkillAgentReferencesInFrontmatter(text);
   const frontmatter: unknown = YAML.parse(match[1]!);
   if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) throw new Error('Invalid Skill frontmatter.');
   const record = frontmatter as Record<string, unknown>;
+  if (typeof record.name === 'string' && parseAgentNamePlaceholders(record.name).length) {
+    throw new Error('agentReferenceInvalid: the SKILL.md frontmatter name cannot reference an Agent.');
+  }
   const diagnostics = validateSkillFrontmatterCapabilities(record, 'claude-current');
   if (diagnostics.length) throw new Error(`Invalid Skill frontmatter: ${diagnostics.map((entry) => entry.message).join('; ')}.`);
   if (typeof record.name !== 'string') throw new Error('Invalid Skill frontmatter.name.');
@@ -275,27 +285,32 @@ export function getComponentFeatureRequirements(component: PluginComponent, opti
       break;
     }
   }
+  // Invocation preferences describe how a host should expose the Skill. They never withhold its files.
+  return mergeFeatureRequirements(requirements).filter(({ feature }) =>
+    !(options.deliveryOnly && component.kind === 'skill' && isSkillInvocationFeature(feature)));
+}
+
+export function mergeFeatureRequirements(requirements: readonly FeatureRequirement[]): FeatureRequirement[] {
   const merged = new Map<string, FeatureRequirement>();
   for (const requirement of requirements) {
     assertFeatureRequirement(requirement);
-    // Invocation preferences describe how a host should expose the Skill. They never withhold its files.
-    if (options.deliveryOnly && component.kind === 'skill' && isSkillInvocationFeature(requirement.feature)) continue;
     const previous = merged.get(requirement.feature);
     if (previous?.values || requirement.values) merged.set(requirement.feature, { feature: requirement.feature, values: [...new Set([...(previous?.values ?? []), ...(requirement.values ?? [])])] });
     else merged.set(requirement.feature, { feature: requirement.feature });
   }
   return [...merged.values()];
 }
-export function getPlatformCapabilityFact(feature: string, capabilities: PlatformCapabilitiesV2): CapabilityFact & { values?: string[]; maxBytes?: number } {
+export function getPlatformCapabilityFact(feature: string, capabilities: PlatformCapabilitiesV3): CapabilityFact & { values?: string[]; maxBytes?: number } {
   const entry = PLATFORM_FEATURE_REGISTRY[feature];
   if (!entry) throw new Error(`Unknown platform feature ${feature}.`);
   return entry.derivedFromKind ? capabilities.kinds[entry.derivedFromKind] : capabilities.features[feature] ?? { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
 }
-export function getUnmetFeatureRequirements(requirements: readonly FeatureRequirement[], capabilities: PlatformCapabilitiesV2): FeatureRequirement[] {
+export function getUnmetFeatureRequirements(requirements: readonly FeatureRequirement[], capabilities: PlatformCapabilitiesV3): FeatureRequirement[] {
   return requirements.flatMap((requirement): FeatureRequirement[] => {
     assertFeatureRequirement(requirement);
     const fact = getPlatformCapabilityFact(requirement.feature, capabilities);
-    if (fact?.status !== 'supported') return [structuredClone(requirement)];
+    const kind = PLATFORM_FEATURE_REGISTRY[requirement.feature]?.derivedFromKind;
+    if (fact.status !== 'supported' || (kind && !capabilities.kinds[kind].delivery.length)) return [structuredClone(requirement)];
     if (!requirement.values) return [];
     const missing = requirement.values.filter((value) => !fact.values?.includes(value));
     return missing.length ? [{ feature: requirement.feature, values: missing }] : [];
@@ -304,10 +319,11 @@ export function getUnmetFeatureRequirements(requirements: readonly FeatureRequir
 const RESERVED_COMPONENT_FILES = new Set(['.agent-workflows-owner.json', '.aw-runtime-config.json', 'scripts/aw-runtime-config.mjs', '.aw-command-producer.json', '.agents-plugin/aw-codex-native-render.json', '.aw-runtime-native-receipt.json']);
 export interface ComponentPlanValidationOptions {
   platform: PlatformId; scope?: Scope; allowedOutputKinds: readonly ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV2;
+  platformCapabilities: PlatformCapabilitiesV3;
   configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[]; requiredAwCapabilities?: readonly string[];
-  resources?: PlatformRenderContextV2['resources']; sourceDirs?: readonly string[];
+  resources?: PlatformRenderContextV3['resources']; sourceDirs?: readonly string[];
   staticComponents?: readonly PluginComponent[];
+  hasInstructionAgentRecipients?: boolean;
 }
 export function assertPluginComponent(value: unknown, options: Pick<ComponentPlanValidationOptions, 'platform'> & { phase?: 'source' | 'target' }): asserts value is PluginComponent {
   assertSchema(getComponentValidator, value, 'plugin component');
@@ -359,7 +375,11 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
     }
     if (component.kind === 'skill') {
       if (component.runtimeConfig && !options.requiredAwCapabilities?.includes('aw.installed-runtime-config.v2')) throw new Error('Invalid component plan: runtimeConfig requires aw.installed-runtime-config.v2.');
-      for (const resource of Object.values(component.content.files)) {
+      for (const [file, resource] of Object.entries(component.content.files)) {
+        if ('text' in resource && scanSkillAgentReferences(file, resource.text).length
+          && !options.requiredAwCapabilities?.includes(SKILL_AGENT_PLACEHOLDER_CAPABILITY)) {
+          throw new Error('agentReferenceInvalid: dynamic Skill Markdown requires ' + SKILL_AGENT_PLACEHOLDER_CAPABILITY);
+        }
         if ('source' in resource && !sourceIsAllowed(resource.source, options)) throw new Error('Invalid component plan: resource source is outside declared inputs.');
       }
       for (const key of component.runtimeConfig?.keys ?? []) {
@@ -367,75 +387,107 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
       }
     }
   }
-  const reasonCodes = new Set<string>([...CAPABILITY_REASON_CODES, ...COMPONENT_DEPENDENCY_REASON_CODES,
-    ...Object.values(options.platformCapabilities.features).flatMap((fact) => fact.reasonCodes), ...Object.values(options.platformCapabilities.kinds).flatMap((fact) => fact.reasonCodes)]);
+  const capabilities = options.platformCapabilities;
+  const hasRecipients = options.hasInstructionAgentRecipients ?? hasDeliverableInstructionAgent(
+    [...(options.staticComponents ?? []), ...value.components], capabilities);
+  const linkedAudiences = new Map<Extract<PluginComponent, { kind: 'instruction' }>, Set<string>>();
   for (const unmet of value.unmet) {
-    if (!reasonCodes.has(unmet.reasonCode)) throw new Error('Invalid component plan: unknown unmet reason code.');
-    const missing = getUnmetFeatureRequirements(unmet.requiredFeatures, options.platformCapabilities);
-    if (!isDeepStrictEqual(missing, unmet.requiredFeatures)) throw new Error('Invalid component plan: unmet requirements include supported values.');
-    if (unmet.requiredFeatures.length === 0 && !COMPONENT_DEPENDENCY_REASON_CODES.includes(unmet.reasonCode as typeof COMPONENT_DEPENDENCY_REASON_CODES[number])) throw new Error('Invalid component plan: capability gap requires concrete features.');
+    const dependencyReason = COMPONENT_DEPENDENCY_REASON_CODES.some((code) => code === unmet.reasonCode);
+    if (!dependencyReason && !CAPABILITY_REASON_CODES.some((code) => code === unmet.reasonCode)) throw new Error('Invalid component plan: unknown unmet reason code.');
     if (unmet.componentId !== undefined) {
       const component = value.components.find((entry) => entry.id === unmet.componentId);
-      if (!component || component.kind !== 'instruction' || unmet.kind !== 'instruction' || unmet.requiredFeatures.length !== 1 || unmet.requiredFeatures[0]?.feature !== 'instruction.coverage') throw new Error('Invalid component plan: only instruction coverage can be split.');
-      if (!unmet.requiredFeatures[0].values?.length || unmet.requiredFeatures[0].values.some((audience) => component.content.coverage.includes(audience as InstructionAudience))) throw new Error('Invalid component plan: instruction coverage gap must contain only missing audiences.');
-    }
-  }
-}
-/** Check a component's own representation against the writer, and foreign runtime prerequisites against the host. */
-export function getMissingDeliveryRequirements(component: PluginComponent, capabilities: PlatformCapabilitiesV2, skillText?: string,
-  hasInstructionAgentRecipients = false): FeatureRequirement[] {
-  const requirements = getComponentFeatureRequirements(component, { deliveryOnly: true, skillText });
-  if (!capabilities.deliveryFeatures) return getUnmetFeatureRequirements(requirements, capabilities);
-  if (!capabilities.kinds[component.kind].delivery.length) return [{ feature: `component.kind.${component.kind}` }];
-  const missing: FeatureRequirement[] = [];
-  for (const requirement of requirements) {
-    if (requirement.feature === `component.kind.${component.kind}`) continue;
-    if (!requirement.feature.startsWith(`${component.kind}.`)) {
-      missing.push(...getUnmetFeatureRequirements([requirement], capabilities));
-      continue;
-    }
-    const mapping = capabilities.deliveryFeatures.find(({ feature }) => feature === requirement.feature);
-    if (component.kind === 'agent' && requirement.feature === 'agent.model' && capabilities.platform === 'antigravity'
-      && component.content.model && !['inherit', 'flash_lite', 'flash', 'pro'].includes(component.content.model)) {
-      missing.push(requirement);
-      continue;
-    }
-    if (!mapping) missing.push(requirement);
-    else if (requirement.values) {
-      let values = mapping.values ?? [];
-      if (component.kind === 'instruction' && requirement.feature === 'instruction.coverage') {
-        if (capabilities.platform === 'codex') {
-          // The shared Codex package cannot identify all roles from independent project-scoped TOML files. Selecting one group must not inject text into the other.
-          if (!['plugin-agents', 'other-agents'].every((audience) => requirement.values!.includes(audience))) {
-            values = values.filter((audience) => audience === 'main');
-          }
-        } else if (capabilities.platform === 'copilot' || capabilities.platform === 'grok') {
-          // These writers can reach plugin agents only by adding to the same-scope role files.
-          if (!hasInstructionAgentRecipients) values = values.filter((audience) => audience !== 'plugin-agents');
-        } else if (capabilities.platform !== 'claude' && !component.content.coverage.includes('main')) {
-          // Other rule and extension entries reach the main session whenever enabled.
-          values = [];
+      const [requirement] = unmet.requiredFeatures;
+      if (component?.kind !== 'instruction' || unmet.kind !== 'instruction' || unmet.requiredFeatures.length !== 1 || requirement?.feature !== 'instruction.coverage' || !requirement.values?.length) {
+        throw new Error('Invalid component plan: only instruction coverage can be split.');
+      }
+      const audiences = linkedAudiences.get(component) ?? new Set<string>();
+      for (const audience of requirement.values) {
+        if (audiences.has(audience)) throw new Error('Invalid component plan: overlapping instruction coverage gaps.');
+        audiences.add(audience);
+      }
+      linkedAudiences.set(component, audiences);
+    } else {
+      const coverage = unmet.kind === 'instruction'
+        ? unmet.requiredFeatures.flatMap(({ feature, values }) => feature === 'instruction.coverage' ? values ?? [] : []) : [];
+      if (coverage.length !== missingInstructionAudiences(coverage, coverage, capabilities, hasRecipients).length) {
+        throw new Error('Invalid component plan: instruction coverage gap includes deliverable audiences.');
+      }
+      for (const requirement of unmet.requiredFeatures) {
+        if (unmet.kind === 'instruction' && requirement.feature === 'instruction.coverage' && requirement.values) continue;
+        const model = capabilities.features['agent.model'];
+        if (unmet.kind === 'agent' && requirement.feature === 'agent.model' && model?.status === 'supported' && model.values !== undefined) continue;
+        if (!isDeepStrictEqual(getUnmetFeatureRequirements([requirement], capabilities), [requirement])) {
+          throw new Error('Invalid component plan: unmet requirements include supported values.');
         }
       }
-      const absent = requirement.values.filter((value) => !values.includes(value));
-      if (absent.length) missing.push({ feature: requirement.feature, values: absent });
+    }
+    if (!unmet.requiredFeatures.length) {
+      if (!dependencyReason) throw new Error('Invalid component plan: capability gap requires concrete features.');
+    } else if (unmet.reasonCode !== reasonForMissing(unmet.requiredFeatures, capabilities)) {
+      throw new Error('Invalid component plan: unmet reason does not match the missing capability.');
     }
   }
-  return missing;
+  for (const [component, reported] of linkedAudiences) {
+    const retained = getComponentFeatureRequirements(component).find(({ feature }) => feature === 'instruction.coverage')!.values!;
+    if (retained.some((audience) => reported.has(audience))) throw new Error('Invalid component plan: instruction coverage gap overlaps retained audiences.');
+    // Codex can reach the two agent audiences together. Check the complete request across all linked gaps.
+    const missing = missingInstructionAudiences([...retained, ...reported], [...component.content.coverage, ...reported], capabilities, hasRecipients);
+    if (!isDeepStrictEqual(new Set(missing), reported)) throw new Error('Invalid component plan: instruction coverage split does not match deliverable audiences.');
+  }
 }
-function reasonForMissing(component: PluginComponent, requirements: FeatureRequirement[], capabilities: PlatformCapabilitiesV2): string {
-  if (requirements.some(({ feature }) => getPlatformCapabilityFact(feature, capabilities).reasonCodes.includes('interface-unsupported'))) {
-    return 'interface-unsupported';
+
+function missingInstructionAudiences(requested: readonly string[], bodyCoverage: readonly string[], capabilities: PlatformCapabilitiesV3,
+  hasAgentRecipients: boolean): string[] {
+  const fact = capabilities.features['instruction.coverage'];
+  let available = fact?.status === 'supported' ? fact.values ?? [] : [];
+  if (capabilities.platform === 'codex') {
+    // A shared package cannot distinguish plugin roles from independent project roles.
+    if (!['plugin-agents', 'other-agents'].every((audience) => requested.includes(audience))) available = available.filter((audience) => audience === 'main');
+  } else if (capabilities.platform === 'copilot' || capabilities.platform === 'grok') {
+    if (!hasAgentRecipients) available = available.filter((audience) => audience !== 'plugin-agents');
+  } else if (capabilities.platform !== 'claude' && !bodyCoverage.includes('main')) {
+    // Other rule and extension entries reach the main session whenever enabled.
+    available = [];
   }
-  if (capabilities.deliveryFeatures && requirements.some(({ feature }) =>
-    feature.startsWith(`${component.kind}.`) || feature === `component.kind.${component.kind}`)) {
-    return capabilities.platform === 'generic' ? 'interface-unsupported' : 'delivery-unavailable';
-  }
-  return requirements.flatMap((requirement) => getPlatformCapabilityFact(requirement.feature, capabilities).reasonCodes)[0]
-    ?? capabilities.kinds[component.kind].reasonCodes[0] ?? 'interface-unsupported';
+  return requested.filter((audience) => !available.includes(audience));
+}
+
+export function hasDeliverableInstructionAgent(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV3): boolean {
+  return ['copilot', 'grok'].includes(capabilities.platform) && components.some((component) =>
+    component.kind === 'agent' && getMissingDeliveryRequirements(component, capabilities).length === 0);
+}
+/** Check the component representation and all declared prerequisites against the same capability facts. */
+export function getMissingDeliveryRequirements(component: PluginComponent, capabilities: PlatformCapabilitiesV3, skillText?: string,
+  hasInstructionAgentRecipients = false): FeatureRequirement[] {
+  const requirements = getComponentFeatureRequirements(component, { deliveryOnly: true, skillText });
+  // No representation of this kind is possible; its concrete fields need not be reported separately.
+  const ownKind = getUnmetFeatureRequirements([{ feature: `component.kind.${component.kind}` }], capabilities);
+  if (ownKind.length) return ownKind;
+  return requirements.flatMap((requirement): FeatureRequirement[] => {
+    const fact = capabilities.features[requirement.feature];
+    if (component.kind === 'agent' && requirement.feature === 'agent.model' && component.content.model !== undefined
+      && fact?.values !== undefined && !fact.values.includes(component.content.model)) {
+      return [{ feature: 'agent.model' }];
+    }
+    if (component.kind === 'instruction' && requirement.feature === 'instruction.coverage' && requirement.values) {
+      const missing = missingInstructionAudiences(requirement.values, component.content.coverage, capabilities, hasInstructionAgentRecipients);
+      return missing.length ? [{ feature: requirement.feature, values: missing }] : [];
+    }
+    return getUnmetFeatureRequirements([requirement], capabilities);
+  });
+}
+export function reasonForMissing(requirements: FeatureRequirement[], capabilities: PlatformCapabilitiesV3): string {
+  const codes = requirements.flatMap(({ feature }) => getPlatformCapabilityFact(feature, capabilities).reasonCodes);
+  return selectMissingReasonCode(codes);
+}
+export function selectMissingReasonCode(codes: readonly string[]): string {
+  // Missing or unknown clients require action even when another consumer only lacks an interface or version.
+  return codes.find((code) => code === 'client-missing' || code === 'client-unknown')
+    ?? (codes.includes('interface-unsupported') ? 'interface-unsupported' : codes[0])
+    ?? 'interface-unsupported';
 }
 /** A renderer may supply a complete declaration even when a host cannot express all of it. */
-export function partitionPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2,
+export function partitionPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV3,
   sources: 'static' | 'dynamic' | ExpectedComponentSet['sources'], skillTexts?: ReadonlyMap<string, string>,
   hasInstructionAgentRecipients?: boolean): ExpectedComponentSet {
   assertPlatformCapabilities(capabilities);
@@ -443,8 +495,7 @@ export function partitionPluginComponents(components: readonly PluginComponent[]
   const identities = new Set<string>();
   const names = new Set<string>();
   assertNoDuplicateHookHandlers(components, capabilities.platform);
-  hasInstructionAgentRecipients ??= ['copilot', 'grok'].includes(capabilities.platform) && components.some((component) =>
-    component.kind === 'agent' && getMissingDeliveryRequirements(component, capabilities).length === 0);
+  hasInstructionAgentRecipients ??= hasDeliverableInstructionAgent(components, capabilities);
   for (const original of components) {
     assertPluginComponent(original, { platform: capabilities.platform, phase: 'source' });
     if (identities.has(original.id) || names.has(`${original.kind}:${original.name}`)) throw new Error('Invalid components: duplicate identity or name.');
@@ -476,11 +527,11 @@ export function partitionPluginComponents(components: readonly PluginComponent[]
       result.components.push(component);
     }
     result.unmet.push({ id, kind: component.kind, name: component.name, ...(partial ? { componentId: component.id } : {}),
-      requiredFeatures: missing, reasonCode: reasonForMissing(component, missing, capabilities) });
+      requiredFeatures: missing, reasonCode: reasonForMissing(missing, capabilities) });
   }
   return result;
 }
-export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2,
+export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV3,
   hasInstructionAgentRecipients?: boolean): ExpectedComponentSet {
   return partitionPluginComponents(components, capabilities, 'static', undefined, hasInstructionAgentRecipients);
 }
@@ -529,10 +580,14 @@ export function resolveInvocationPolicy(manifest: NormalizedPluginManifest, plat
 }
 export async function normalizeStaticPluginComponents(options: {
   pluginRoot: string; staticResourceRoot?: string; manifest: NormalizedPluginManifest; platform: PlatformId;
-  capabilities: PlatformCapabilitiesV2; allowedOutputKinds?: readonly ComponentKind[]; deferPartition?: boolean;
+  capabilities: PlatformCapabilitiesV3; allowedOutputKinds?: readonly ComponentKind[]; deferPartition?: boolean;
   hasInstructionAgentRecipients?: boolean;
 }): Promise<ExpectedComponentSet> {
   const { manifest, platform, pluginRoot } = options;
+  const readSource = async (source: SourceRef): Promise<string> => {
+    const identity = await resolveCanonicalRuntimeSourceIdentity(pluginRoot, source.path, 'static Skill Markdown');
+    return fs.readFile(identity.sourceRealPath, 'utf8');
+  };
   const staticRoot = options.staticResourceRoot ?? pluginRoot;
   const relativeRoot = path.relative(path.resolve(pluginRoot), path.resolve(staticRoot)).split(path.sep).join('/');
   if (relativeRoot === '..' || relativeRoot.startsWith('../') || path.isAbsolute(relativeRoot)) throw new Error('Invalid static resource root: outside bundle.');
@@ -560,7 +615,9 @@ export async function normalizeStaticPluginComponents(options: {
       const skill: PluginComponent = { id: `skill:${entry.name}`, kind: 'skill', name: entry.name, content: { files } };
       const skillIdentity = await resolveCanonicalRuntimeSourceIdentity(pluginRoot, path.posix.join(directory, entry.name, 'SKILL.md'), 'static Skill frontmatter');
       const skillText = await fs.readFile(skillIdentity.sourceRealPath, 'utf8');
-      if (parseManagedCommandPlaceholders(skillText).length > 0) {
+      // A missing Agent can withhold the entire Skill before its command needs a host binding.
+      if (parseManagedCommandPlaceholders(skillText).length > 0
+        && (!manifest.command || (await readSkillAgentReferenceNames(files, readSource)).size === 0)) {
         assertManagedCommandPlatform(manifest, platform, `Skill ${entry.name} {{aw.command}}`);
       }
       skill.requires = getComponentFeatureRequirements(skill, { skillText }).filter((requirement) => requirement.feature !== 'component.kind.skill');
@@ -614,7 +671,12 @@ export async function normalizeStaticPluginComponents(options: {
     result.sources[entry.id] = 'static';
     result.omitted.push(entry);
   }
-  return result;
+  if (options.deferPartition) return result;
+  return applyStaticSkillAgentUnmet({
+    expected: result, manifest, platform, capabilities: options.capabilities,
+    allowDynamicAgentDeferral: manifest.artifacts !== undefined,
+    readSource,
+  });
 }
 export function getRendererConfigKeys(manifest: NormalizedPluginManifest, platform: PlatformId, kind: 'skill' | 'non-skill'): string[] {
   const declared = manifest.artifacts?.configKeys ?? [];

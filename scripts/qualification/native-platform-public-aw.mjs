@@ -338,12 +338,9 @@ export async function writePublicFixtureRevision(ctx, plugin, revision, platform
 }
 
 export async function requireProductionSkillProfile(ctx) {
-  const { getQualifiedPlatformProfile, getQualifiedKindsForScope } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
+  const { getQualifiedPlatformProfile } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
   const profile = getQualifiedPlatformProfile(ctx.platform);
-  if (getQualifiedKindsForScope(profile, ctx.scope).skill.status !== 'supported'
-    || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === fixedClientVersion(ctx.platform))) {
-    await ctx.defer('public-aw-production-skill-profile-unverified');
-  }
+  if (profile.kinds.skill.status !== 'supported') await ctx.defer('public-aw-production-skill-profile-unsupported');
 }
 
 async function observePublicComponentSuites(ctx, publicClientEntry) {
@@ -385,7 +382,7 @@ export async function qualifyPublicAw(ctx, { components = false } = {}) {
   const runUnit = ctx.group?.runUnit ?? (action => action());
   if (!components) return runUnit(() => qualifyPublicLifecycle(ctx));
   // Component delivery has its own file and receipt evidence. Collect it before
-  // the runtime/session observer can defer a platform with an unknown profile.
+  // the runtime/session observer can defer an unsupported platform.
   const entry = await runUnit(() => preparePublicClientPath(ctx));
   const failures = await observePublicComponentSuites(ctx, entry);
   try {
@@ -401,7 +398,7 @@ async function qualifyPublicLifecycle(ctx, preparedEntry) {
   if (!['codex', 'pi', 'grok', 'copilot', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'antigravity') {
     if (ctx.scope !== 'user' || process.env.GITHUB_ACTIONS !== 'true') await ctx.defer('antigravity-public-aw-limited-to-hosted-user');
-    // Other hosts remain blocked until their actual production profile is qualified.
+    // The Hosted User restriction is specific to this qualification scenario.
     // Check before even target preferences are written in the isolated AW home.
     await requireProductionSkillProfile(ctx);
   }
@@ -409,7 +406,7 @@ async function qualifyPublicLifecycle(ctx, preparedEntry) {
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => assertPublicClientDiscovery(
     await ctx.aw(['target', 'set', ctx.platform]), ctx, expectedEntry));
-  // Production qualification remains authoritative. Never inject a candidate
+  // Production capability mappings remain authoritative. Never inject a candidate
   // profile or use --force to turn a missing capability into public success.
   if (ctx.platform !== 'antigravity') await requireProductionSkillProfile(ctx);
   if (ctx.platform === 'opencode') await ctx.check('public-opencode-observation-environment', () => preparePublicOpenCodeObservation(ctx));

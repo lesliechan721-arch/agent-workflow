@@ -22,6 +22,7 @@ import {
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
+import type { ComponentPreparationBinding } from '../../src/review/skill-materialization.js';
 import type { PluginMeta } from '../../src/types.js';
 
 const roots: string[] = [];
@@ -213,6 +214,30 @@ describe('AW source binding', () => {
           + 'Run "aw dev eval prepare" or "aw dev skill export" again.',
       }],
     });
+  });
+
+  // The renderer can omit a role whose stable component ID is not its logical name.
+  it('round-trips named and unnamed omissions without accepting invalid name types', async () => {
+    const root = await tempRoot();
+    await fs.outputFile(path.join(root, 'skills/fixture/SKILL.md'), '---\nname: fixture\ndescription: Fixture.\n---\nBody.\n');
+    const omitted: ComponentPreparationBinding['omitted'] = [
+      { id: 'opaque-role', kind: 'agent', name: 'reviewer', reason: 'config-disabled' },
+      { id: 'agent:optional', kind: 'agent', reason: 'not-offered' },
+    ];
+    const options = {
+      rootDir: root,
+      preparation: [{ ...preparation()[0]!, omitted }],
+      source: { kind: 'workspace' as const, workspaceIdentity: 'fixture', sourceIdentity: digest },
+      subject: { plugin: 'fixture' },
+      profile: { kind: 'portable' as const, id: 'generic-project', platform: 'generic' as const, scope: 'project' as const, inputDigest: digest },
+      artifacts: [{ kind: 'portable-skill' as const, plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
+    };
+    for (const name of [17, '', null]) {
+      const invalid = { ...options, preparation: [{ ...options.preparation[0]!, omitted: [{ ...omitted[0]!, name }] }] };
+      await expect(writeAwSourceBinding(invalid as unknown as typeof options)).rejects.toThrow('Source binding omission is invalid.');
+    }
+    const written = await writeAwSourceBinding(options);
+    expect((await readAwSourceBinding(written.bindingPath)).preparation[0]!.omitted).toEqual(omitted);
   });
 
   it('does not accept editable approval fields in a receipt', async () => {

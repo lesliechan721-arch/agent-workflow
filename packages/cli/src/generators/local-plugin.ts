@@ -5,7 +5,10 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { preparePluginNativeTools, PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import {
+  preparePluginNativeTools, PLATFORM_TARGETS, type PlatformTarget, SKILL_AGENT_PLACEHOLDER_CAPABILITY,
+  scanSkillCollectionAgentReferences, validateStaticSkillAgentReferences,
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 import { applyFileRules } from '../utils/file-rules.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
@@ -1668,17 +1671,6 @@ export async function bundleLocalPlugin(
       outputRoot,
       resolver: buildPlugin.runtimeContext.resolver,
     });
-    const finalEffective = normalizeAwCapabilities([
-      ...requirements.effective,
-      ...skillRuntimeFiles.flatMap((entry) => entry.requiredCapabilities),
-      ...artifactRuntimeProjection.requiredCapabilities,
-    ]);
-    if (!historicalComparison) {
-      assertRequiredCapabilitiesSupported(plugin.manifest.name, finalEffective);
-    }
-    artifactRuntimeProjection.manifest.requires = {
-      aw: { capabilities: finalEffective },
-    };
     const bundleManifest = artifactRuntimeProjection.manifest;
 
     await fs.ensureDir(outputRoot);
@@ -1753,6 +1745,25 @@ export async function bundleLocalPlugin(
     }
 
     await materializeSkillRuntimeFiles(skillRuntimeFileProjections);
+
+    let hasAgentReferences = false;
+    for (const platform of supportedPlatforms) {
+      const references = await scanSkillCollectionAgentReferences(path.join(outputRoot, platform));
+      validateStaticSkillAgentReferences(references, plugin.manifest, [platform]);
+      if (references.size) hasAgentReferences = true;
+    }
+    const finalEffective = normalizeAwCapabilities([
+      ...requirements.effective,
+      ...(hasAgentReferences ? [SKILL_AGENT_PLACEHOLDER_CAPABILITY] : []),
+      ...skillRuntimeFiles.flatMap((entry) => entry.requiredCapabilities),
+      ...artifactRuntimeProjection.requiredCapabilities,
+    ]);
+    if (!historicalComparison) {
+      assertRequiredCapabilitiesSupported(plugin.manifest.name, finalEffective);
+    }
+    bundleManifest.requires = {
+      aw: { capabilities: finalEffective },
+    };
 
     if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');

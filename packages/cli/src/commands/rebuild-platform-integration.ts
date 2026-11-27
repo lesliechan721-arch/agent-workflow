@@ -10,8 +10,8 @@ import type { DeploymentBinding, DeploymentEvidenceChangeReason, DeploymentExclu
 import { selectNativeProduct, supportsSharedNativeProbe, type PlacementProbeGroup } from '../platforms/discovery.js';
 import type { NativeObservationBatch } from '../platforms/inspection-query.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
-import { getAntigravityUnsupportedSkillControls, getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory } from '../platforms/layout.js';
+import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
+import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey, scopedPermissionPath, isAntigravityProjectDirectory, hasSharedUserPackage } from '../platforms/layout.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { antigravityLegacyProjectComponent, deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import { hasCompleteDeliveryDeclaration, type PlatformDriverState } from '../platforms/lifecycle.js';
@@ -30,6 +30,7 @@ import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.
 import { isDeliveryCapabilityGap } from '../utils/component-gap.js';
 import { artifactValueDigest, mergeExpectedComponentSets } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type PreparedPlatformComponents } from '../utils/artifact-renderer.js';
+import { skillAgentBinding, type RawPlatformUnit } from '../utils/component-agent-binding.js';
 import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from '../utils/component-command-preparation.js';
 import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, renderOwnedTextFile, writeOwnedTextFile,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
@@ -195,6 +196,7 @@ async function grokUserBehindProject(ctx: ReadContext, binding: DeploymentBindin
   const hasPackageHook = evidence.hookOrder.some((row) => row.sourceRoot === user.path);
   return { installedRoot: user.path, owner, nativeDigest, hasPackageHook };
 }
+interface ResolvedTargetRequest { request?: TargetInput; resolution?: TargetResolution }
 interface TargetResolution extends Resolution {
   ordinaryEvidence?: { discovery: string; observations: Map<string, string> };
 }
@@ -310,9 +312,9 @@ async function ownedSupplements(binding: DeploymentBinding, root: string | null,
   }
   return result;
 }
-function readContext(context: RebuildExecutionContext, cwd: string): ReadContext {
+function readContext(context: RebuildExecutionContext, cwd: string, confirmedCatalogRetirement?: true): ReadContext {
   return { cwd, invocationCwd: context.invocationCwd, env: context.env, runner: context.nativeCliRunner, signal: context.signal,
-    codexObservationSession: context.codexObservationSession };
+    confirmedCatalogRetirement, codexObservationSession: confirmedCatalogRetirement ? undefined : context.codexObservationSession };
 }
 function operation(input: TargetInput): 'ensure' | 'reinstall' | 'remove' | 'cleanup' {
   return input.command === 'uninstall' ? 'remove' : input.command === 'cleanup' ? 'cleanup'
@@ -488,6 +490,7 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
 export class PlatformRebuildSession {
   private readonly targets = new Map<string, Promise<DesiredTarget>>();
   private readonly resolutions = new Map<string, Promise<TargetResolution>>();
+  private readonly rawUnits = new Map<string, Promise<Pick<RawPlatformUnit, 'request' | 'prepared'>>>();
   private readonly units = new Map<string, Promise<UnitPreparation>>();
   private readonly published = new Map<string, Promise<{ mutation: 'none' | 'confirmed' | 'possible'; changed: boolean }>>();
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
@@ -533,7 +536,7 @@ export class PlatformRebuildSession {
     private readonly adapterFor: typeof getAgentPluginAdapter = getAgentPluginAdapter) {}
   updateContext(context: RebuildExecutionContext): void {
     this.context = context;
-    for (const ctx of this.contexts) Object.assign(ctx, readContext(context, ctx.cwd));
+    for (const ctx of this.contexts) Object.assign(ctx, readContext(context, ctx.cwd, ctx.confirmedCatalogRetirement));
   }
   setOwnershipExecutor(executor: OwnedComponentExecutor): void { this.ownership = executor; }
   private root(): Promise<string> { return this.staging ??= fs.mkdtemp(path.join(os.tmpdir(), 'aw-deployment-')); }
@@ -639,10 +642,10 @@ export class PlatformRebuildSession {
       userContentDigest: user.nativePackageContentDigest, userPhysicalKey: user.physicalKey });
   }
   async dispose(): Promise<void> {
-    await Promise.allSettled(this.units.values());
+    await Promise.allSettled([...this.rawUnits.values(), ...this.units.values()]);
     if (this.staging) await fs.remove(await this.staging);
     this.staging = undefined;
-    this.targets.clear(); this.resolutions.clear(); this.units.clear(); this.published.clear();
+    this.targets.clear(); this.resolutions.clear(); this.rawUnits.clear(); this.units.clear(); this.published.clear();
     this.nativeEffects.clear(); this.piProjectRegisteredRoots.clear(); this.exclusions.clear();
     this.grokPublications.clear();
     this.grokProjectRetirements.clear();
@@ -650,7 +653,11 @@ export class PlatformRebuildSession {
     this.marketplaceTargets.clear(); this.marketplaceCandidatesFrozen = false;
   }
   freezeMarketplaceCandidates(): void { this.marketplaceCandidatesFrozen = true; }
-  private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null, operation: operation(input) }); }
+  private retirementMode(input: TargetInput): true | undefined {
+    return input.command === 'cleanup' && hasSharedUserPackage(input.platform) && this.context.confirmedCatalogRetirement === true ? true : undefined;
+  }
+  private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null,
+    operation: operation(input), confirmedCatalogRetirement: this.retirementMode(input) }); }
   private resolve(input: TargetInput, placementProbeGroup?: PlacementProbeGroup): Promise<TargetResolution> {
     const key = this.key(input);
     // Inspection of a shared package does not request activation in that scope.
@@ -659,8 +666,10 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = input.readOnlyInspectionPlan && input.observationBatch ? { ...readContext(this.context, input.cwd), ...input.observationBatch }
-          : this.ordinaryReadContext(readContext(this.context, input.cwd), input.platform);
+        const mode = this.retirementMode(input);
+        const readCtx = readContext(this.context, input.cwd, mode);
+        const ctx = mode ? readCtx : input.readOnlyInspectionPlan && input.observationBatch ? { ...readCtx, ...input.observationBatch }
+          : this.ordinaryReadContext(readCtx, input.platform);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -840,9 +849,38 @@ export class PlatformRebuildSession {
     else await result.platformDeployment?.verify(input.observationBatch);
     return result;
   }
+  private prepareRawUnit(key: string, requestFor: () => Promise<RawPlatformUnit['request']>) {
+    let result = this.rawUnits.get(key);
+    if (!result) {
+      result = requestFor().then(async (request) => ({ request, prepared: await preparePlatformComponents(request) }));
+      this.rawUnits.set(key, result);
+    }
+    return result;
+  }
+  private async prepareCodexUserAgents(raw: RawPlatformUnit, resolved: readonly ResolvedTargetRequest[]): Promise<PreparedPlatformComponents> {
+    const key = raw.unit.physicalKey;
+    // The User supplement and Project-only in-memory view share one raw batch, independently of package finalization.
+    const result = await this.prepareRawUnit(key + ':user-agents', async () => {
+      const request = { ...raw.request, kinds: ['agent'] as const };
+      const sibling = resolved.find((entry) => entry.request?.scope === 'user'
+        && !['remove', 'cleanup'].includes(operation(entry.request))
+        && entry.resolution?.bindings.some((binding) => binding.physicalKey === key));
+      const binding = sibling?.resolution?.bindings.find((other) => other.physicalKey === key);
+      const renderUnit = sibling?.resolution?.renderUnits.find((other) => binding?.renderUnitIds.includes(other.id)
+        && other.output === 'supplement' && other.renderScope.kind === 'user');
+      if (!binding || !renderUnit || !sibling?.request) return request;
+      // The Project target can be built first, before a known User target starts preparing its supplement.
+      const adapter = this.adapterFor('codex');
+      const cwd = sibling.request.cwd;
+      const capabilities = adapter.capabilities({ binding, renderUnit, profile: getQualifiedPlatformProfile('codex') });
+      return { ...request, cwd, capabilities };
+    });
+    return result.prepared;
+  }
   private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
-    const ctx = readContext(this.context, input.cwd);
-    const ordinaryCtx = input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
+    const confirmedCatalogRetirement = this.retirementMode(input);
+    const ctx = readContext(this.context, input.cwd, confirmedCatalogRetirement);
+    const ordinaryCtx = confirmedCatalogRetirement ? ctx : input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
       : this.ordinaryReadContext(ctx, input.platform);
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
@@ -874,7 +912,7 @@ export class PlatformRebuildSession {
       if (!unit) continue;
       const expected = await normalizeStaticPluginComponents({ pluginRoot: input.plugin.rootDir, manifest: input.plugin.manifest,
         platform: input.platform, capabilities: adapter.capabilities({ binding: entry.binding, renderUnit: unit,
-          observation: entry.observation, profile: getQualifiedPlatformProfile(input.platform) }), allowedOutputKinds: unit.kinds });
+          profile: getQualifiedPlatformProfile(input.platform) }), allowedOutputKinds: unit.kinds });
       const supplements = await inspectStaticSupplements(ctx, entry.binding, expected.components);
       entry.observation.components.push(...supplements.components);
     }
@@ -887,42 +925,61 @@ export class PlatformRebuildSession {
     if (input.readOnlyInspectionPlan) return target;
     const removing = operation(input) === 'remove' || operation(input) === 'cleanup';
     const preparedUnits = new Map<string, UnitPreparation>();
-    if (!removing) for (const unit of resolution.renderUnits) {
-      const bindingEntry = observed.find(({ binding }) => binding.renderUnitIds.includes(unit.id));
-      if (!bindingEntry) throw new Error('deploymentRenderUnitUnbound');
-      const compatible = (await Promise.allSettled([...this.resolutions.values()])).flatMap((result) => result.status === 'fulfilled' ? result.value.renderUnits : []).filter((item) => item.physicalKey === unit.physicalKey);
-      if (compatible.some((item) => artifactValueDigest({ scope: item.renderScope, kinds: item.kinds, output: item.output })
-        !== artifactValueDigest({ scope: unit.renderScope, kinds: unit.kinds, output: unit.output }))) throw new Error('shared-projection-conflict');
-      const commonUnit = { ...unit, consumers: [...new Map(compatible.flatMap((item) => item.consumers).map((consumer) => [consumer.id, consumer])).values()] };
-      let promise = this.units.get(unit.physicalKey);
-      if (!promise) {
-        promise = (async () => {
-          const capabilities = adapter.capabilities({ ...bindingEntry, renderUnit: commonUnit, profile: getQualifiedPlatformProfile(input.platform) });
+    if (!removing) {
+      const resolved = await Promise.all([...this.resolutions].map(async ([key, promise]) => ({
+        request: this.requestedOperations.get(key), resolution: await promise.catch(() => undefined),
+      })));
+      const allUnits = resolved.flatMap((entry) => entry.resolution?.renderUnits ?? []);
+      const rawUnits = new Map<string, RawPlatformUnit>();
+      const profile = getQualifiedPlatformProfile(input.platform);
+      for (const unit of resolution.renderUnits) {
+        const bindingEntry = observed.find(({ binding }) => binding.renderUnitIds.includes(unit.id));
+        if (!bindingEntry) throw new Error('deploymentRenderUnitUnbound');
+        const compatible = allUnits.filter((item) => item.physicalKey === unit.physicalKey);
+        if (compatible.some((item) => artifactValueDigest({ scope: item.renderScope, kinds: item.kinds, output: item.output })
+          !== artifactValueDigest({ scope: unit.renderScope, kinds: unit.kinds, output: unit.output }))) throw new Error('shared-projection-conflict');
+        const commonUnit = { ...unit, consumers: [...new Map(compatible.flatMap((item) => item.consumers).map((consumer) => [consumer.id, consumer])).values()] };
+        const codexUserRoles = input.platform === 'codex' && unit.output === 'supplement' && unit.renderScope.kind === 'user';
+        const key = codexUserRoles ? bindingEntry.binding.physicalKey + ':user-agents' : unit.physicalKey;
+        const raw = await this.prepareRawUnit(key, async () => {
+          const capabilities = adapter.capabilities({ binding: bindingEntry.binding, renderUnit: commonUnit, profile });
           const config = await resolveArtifactRenderConfig({ ...sourceIdentity(input), logicalIdentity: input.plugin.catalogLogicalIdentity,
             pluginName: input.plugin.manifest.name, manifest: input.plugin.manifest, platform: input.platform,
             scope: unit.renderScope.kind, cwd: unit.renderScope.kind === 'project' ? unit.renderScope.projectRoot : input.cwd,
             env: this.context.env, referencePlugins: this.context.referencePlugins });
           const platformRoot = path.join(input.plugin.rootDir, input.platform);
           const staticResourceRoot = await fs.pathExists(platformRoot) ? platformRoot : input.plugin.rootDir;
-          // Grok prepares the package before its rules. Only roles prepared for this same target can receive the text.
           const grokRoleUnit = input.platform === 'grok' && unit.output === 'supplement'
             ? bindingEntry.layout.renderUnits.find((candidate) => candidate.output === 'package'
               && artifactValueDigest(candidate.renderScope) === artifactValueDigest(unit.renderScope)) : undefined;
-          const prepared = await preparePlatformComponents({ plugin: input.plugin, platform: input.platform, staticResourceRoot,
+          return { plugin: input.plugin, platform: input.platform, staticResourceRoot,
             renderScope: unit.renderScope.kind, kinds: unit.kinds, capabilities, config, cwd: input.cwd,
-            hasInstructionAgentRecipients: grokRoleUnit && preparedUnits.get(grokRoleUnit.id)?.prepared.expected.components.some(({ kind }) => kind === 'agent'),
+            hasInstructionAgentRecipients: grokRoleUnit && rawUnits.get(grokRoleUnit.id)?.prepared.expected.components.some(({ kind }) => kind === 'agent'),
             commandEnv: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
-            preparedResults: this.context.preparedArtifactRenderResults });
-          const finalized = await finalizePlatformSkillProducers({ plugin: input.plugin, plugins: this.context.referencePlugins,
-            platform: input.platform, renderUnit: commonUnit, prepared, skillWorkRoot: path.join(await this.root(), artifactValueDigest(unit.physicalKey).slice(7), 'skills'),
-            cwd: input.cwd, env: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
-            commandRecord: input.commandRecord });
-          return { unit: commonUnit, prepared: finalized.prepared, finalized,
-            evidenceInput: { renderUnit: commonUnit, capabilities, config } };
-        })();
-        this.units.set(unit.physicalKey, promise);
+            preparedResults: this.context.preparedArtifactRenderResults };
+        });
+        rawUnits.set(unit.id, { unit: commonUnit, ...raw });
       }
-      preparedUnits.set(unit.id, await promise);
+      for (const raw of rawUnits.values()) {
+        const { unit, request: { config, capabilities } } = raw;
+        let promise = this.units.get(unit.physicalKey);
+        if (!promise) {
+          promise = (async () => {
+            const binding = observed.find((entry) => entry.binding.renderUnitIds.includes(unit.id))!.binding;
+            const peers = binding.renderUnitIds.map((id) => rawUnits.get(id)!);
+            const sharedCodexPackage = input.platform === 'codex' && unit.output === 'package' && unit.renderScope.kind === 'user';
+            const extraAgents = sharedCodexPackage ? () => this.prepareCodexUserAgents(raw, resolved) : undefined;
+            const finalized = await finalizePlatformSkillProducers({ plugin: input.plugin, plugins: this.context.referencePlugins,
+              platform: input.platform, renderUnit: unit, prepared: raw.prepared, agentBinding: skillAgentBinding(raw, peers, extraAgents),
+              skillWorkRoot: path.join(await this.root(), artifactValueDigest(unit.physicalKey).slice(7), 'skills'),
+              cwd: input.cwd, env: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
+              commandRecord: input.commandRecord });
+            return { unit, prepared: finalized.prepared, finalized, evidenceInput: { renderUnit: unit, capabilities, config } };
+          })();
+          this.units.set(unit.physicalKey, promise);
+        }
+        preparedUnits.set(unit.id, await promise);
+      }
     }
     const deployments: PreparedDeployment<PlatformDriverState>[] = [];
     const plans: FrozenDeploymentPlan[] = [];
@@ -953,7 +1010,8 @@ export class PlatformRebuildSession {
           commandResources: sameScope.flatMap((candidate) => candidate.prepared.resources.commandResources),
           digest: artifactValueDigest(sameScope.map((candidate) => candidate.prepared.resources.digest)) };
         const projection = await adapter.project({ ...ctx, stagingRoot: path.join(await this.root(), 'projection') }, {
-          binding: entry.binding, renderUnit: unit.unit, capabilities: adapter.capabilities({ ...entry, renderUnit: unit.unit, profile: getQualifiedPlatformProfile(input.platform) }),
+          binding: entry.binding, renderUnit: unit.unit,
+          capabilities: adapter.capabilities({ binding: entry.binding, renderUnit: unit.unit, profile: getQualifiedPlatformProfile(input.platform) }),
           components, resources, policy: unit.finalized.invocationPolicy.policy,
           ...(grokProjectBlocked ? { grokScopeAuthorization: 'denied' as const } : {}) });
         for (const notice of unit.finalized.invocationPolicy.diagnostics) {
@@ -1011,7 +1069,7 @@ export class PlatformRebuildSession {
       const managedCommandReview = await captureManagedCommandReviewEvidence({ binding: entry.binding,
         renderUnits: entry.layout.renderUnits, inactivePermissions: units.flatMap((unit) => unit.finalized.invocationPolicy.inactivePermissions), projections });
       const currentMutable = async (batch?: NativeObservationBatch) => {
-        const observation = await adapter.inspect(batch ? { ...ctx, ...batch } : ctx, entry.binding);
+        const observation = await adapter.inspect(batch && !confirmedCatalogRetirement ? { ...ctx, ...batch } : ctx, entry.binding);
         return { observation, references: await sharedReferences(this.context, entry.binding, observation, entry.layout),
           paths: await Promise.all(components.map(async (component) => {
             if ('path' in component) return pathEvidence(component.path);
@@ -1028,6 +1086,7 @@ export class PlatformRebuildSession {
       };
       const shadowedUser = operation(input) === 'ensure' ? await grokUserBehindProject(ctx, entry.binding, entry.observation) : undefined;
       const fingerprintParts = async (discovery?: { value: unknown }) => ({
+        confirmedCatalogRetirement: this.retirementMode(input),
         ...(shadowedUser && { grokUserContent: await grokUserContentDigest(shadowedUser) }),
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
@@ -1065,7 +1124,7 @@ export class PlatformRebuildSession {
       if (ordinaryObservation !== undefined && ordinaryObservation !== artifactValueDigest(mutableBaseline.observation)) {
         throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
       }
-      const preparationObservation = entry.binding.route === 'antigravity-cli' || antigravityProject
+      const preparationObservation = confirmedCatalogRetirement || entry.binding.route === 'antigravity-cli' || antigravityProject
         ? mutableBaseline.observation : entry.observation;
       const piInventoryKey = piProjectInventoryKey(entry.binding, entry.layout.activationPath);
       const matchesMutable = (current: Awaited<ReturnType<typeof currentMutable>>): boolean => {
@@ -1297,7 +1356,7 @@ export class PlatformRebuildSession {
           }) : [];
           return { observation: mutable.observation, verifiedSupplementIds };
         } });
-      const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
+      const evidence: PreparationEvidence = { confirmedCatalogRetirement, fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
           contentDigest: state === 'present' ? await ownedContentDigest(component, ctx) : undefined,
           physicalKey: component.identity.physicalKey ?? entry.binding.physicalKey }))),
@@ -1313,14 +1372,14 @@ export class PlatformRebuildSession {
         const notice = await missingPermissionOwnershipWarning(ctx, entry.binding.plugin.pluginId, entry.binding.scope.kind, settingsPath ?? hostPolicyPath, entry.binding.platform, grokProjectBlocked);
         if (notice) evidence.permissionOwnershipWarning = notice;
       }
-      if (entry.binding.platform === 'codex') {
+      if (!confirmedCatalogRetirement && entry.binding.platform === 'codex') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli'
           || removing && consumer.entry?.kind === 'directory')?.entry;
         if (!hostEntry || hostEntry.kind === 'generic') throw new Error('nativeActivationEvidenceUnknown');
         const config = await readCodexConfigFile(path.join(hostEntry.configRoot, 'config.toml'));
         evidence.userActivationEnabled = config.snapshot.plugins[entry.layout.nativeIdentity.registrationId!]?.enabled === true;
       }
-      if (entry.binding.platform === 'copilot') {
+      if (!confirmedCatalogRetirement && entry.binding.platform === 'copilot') {
         const hostEntry = entry.binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
         if (hostEntry?.kind === 'cli') {
           const settings = await jsonObject(path.join(hostEntry.configRoot, 'settings.json'));
@@ -1329,7 +1388,7 @@ export class PlatformRebuildSession {
             ? (enabled as Record<string, unknown>)[entry.layout.nativeIdentity.registrationId!] === true : 'unknown';
         }
       }
-      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
+      if (!confirmedCatalogRetirement && entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
         const plannedUser = [...this.requestedOperations.values()].find((request) => request.scope === 'user'
           && request.platform === input.platform && sourceIdentity(request).sourceIdentity === entry.binding.plugin.sourceIdentity
           && sourceIdentity(request).pluginId === entry.binding.plugin.pluginId);
@@ -1481,32 +1540,18 @@ export class PlatformRebuildSession {
             for (const unitId of plan.binding.renderUnitIds) {
               const unit = preparedUnits.get(unitId);
               if (!unit?.finalized.skills.length) continue;
-              const capabilityInput = { binding: plan.binding, renderUnit: unit.unit,
-                observation: after, profile: getQualifiedPlatformProfile(input.platform) };
-              const capabilities = adapter.capabilities(capabilityInput);
-              const cliReaders = unit.unit.consumers.filter(({ product }) => product === 'cli');
-              // Only attribute a shared package's limitation to Desktop if the same
-              // check passes for its CLI readers and an App reader was observed.
-              const codexCliCapabilities = plan.binding.platform === 'codex'
-                && cliReaders.some(({ availability }) => availability === 'available')
-                && unit.unit.consumers.some(({ product, availability }) => product === 'app' && availability === 'available')
-                && unit.unit.consumers.every(({ product, availability, entry }) => product === 'app'
-                  || product === 'cli' && availability === 'available' && entry?.kind === 'cli')
-                ? adapter.capabilities({ ...capabilityInput, renderUnit: { ...unit.unit, consumers: cliReaders } }) : undefined;
-              const antigravityReaders = plan.binding.platform === 'antigravity'
-                ? unit.unit.consumers.flatMap((reader) => reader.availability === 'available' && reader.product !== 'generic'
-                  ? [{ id: reader.id, product: reader.product,
-                    unsupported: getAntigravityUnsupportedSkillControls(capabilityInput.profile, plan.binding.scope.kind, reader) }]
-                  : []) : [];
+              const capabilities = adapter.capabilities({ binding: plan.binding, renderUnit: unit.unit,
+                profile: getQualifiedPlatformProfile(input.platform) });
               for (const skill of unit.finalized.skills) {
                 if (!packageIds.has(skill.componentId) || !delivered.has(skill.componentId)) continue;
                 const component = unit.prepared.expected.components.find((item) => item.id === skill.componentId)!;
                 const requested = getComponentFeatureRequirements(component, { skillText: skill.tree.files['SKILL.md']!.toString('utf8') });
                 const warning = skillInvocationWarning(component.name, requested,
                   { pluginId: plan.binding.plugin.pluginId, target: plan.binding.platform, scope: plan.binding.scope.kind },
-                  capabilities, codexCliCapabilities, antigravityReaders.map((reader) => ({ ...reader,
-                    observed: after.skillInvocationPolicies?.find(({ componentId, productId }) => componentId === component.id
-                      && productId === reader.id)?.features })));
+                  capabilities, plan.binding.platform === 'antigravity' ? unit.unit.consumers.flatMap((reader) =>
+                    reader.availability === 'available' && reader.product !== 'generic'
+                      ? [{ product: reader.product, observed: after.skillInvocationPolicies?.find(({ componentId, productId }) =>
+                        componentId === component.id && productId === reader.id)?.features }] : []) : []);
                 if (warning) receipt.diagnostics.push(warning);
               }
             }
@@ -1723,6 +1768,7 @@ export class PlatformRebuildSession {
           if (receipt.diagnostics.some(({ code }) => code === 'processCleanupUnconfirmed')) return receipts;
           if ((prepared.plan.operation === 'remove' || prepared.plan.operation === 'cleanup'
             || prepared.plan.expected.components.length === 0 && prepared.plan.expected.unmet.length === 0)
+            && prepared.plan.evidence.confirmedCatalogRetirement !== true
             && prepared.plan.evidence.sharedReferences !== 'none' && receipt.after.package === 'present') {
             receipt.diagnostics.push({ code: prepared.plan.evidence.sharedReferences === 'unknown' ? 'sharedReferenceUnknown' : 'sharedPackageRetained', severity: 'warning',
               message: prepared.plan.evidence.sharedReferences === 'unknown'

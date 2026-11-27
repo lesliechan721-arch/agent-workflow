@@ -25,7 +25,7 @@ import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 
 import {
   syncWriteCommand,
@@ -52,7 +52,7 @@ async function readPublicStatus(options: {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true });
+    installNativeTestDiscovery({ platforms: ['codex'] });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

@@ -9,7 +9,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -21,7 +21,7 @@ import { useEmptyGitRepositoryFixture } from '../helpers/git-repository-fixture.
 const createEmptyGitRepository = useEmptyGitRepositoryFixture();
 
 async function grokTrustFixture({ failProject = false, baseHook = false, commandPermissions = false, permissionOnly = false } = {}) {
-  installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+  installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
   await createEmptyGitRepository(cwd);

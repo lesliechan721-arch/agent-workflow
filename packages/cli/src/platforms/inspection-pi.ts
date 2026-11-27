@@ -118,7 +118,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   catch (error) {
     rethrowFatalError(error); ctx.signal?.throwIfAborted();
     result.configuration ??= { scope: binding.scope.kind, activation: 'unknown', reasonCodes: ['piConfigurationUnconfirmed'] };
-    result.prerequisites.agentConsumers = { observation: 'unknown', candidates: [], reasonCodes: ['agentConsumerDiscoveryUnverified'] };
+    result.prerequisites.agentConsumers = { observation: 'unknown', candidates: [], reasonCodes: ['agentConsumerDiscoveryUnverified', 'piConfigurationUnconfirmed'] };
     result.diagnostics.push({ code: 'piConfigurationUnconfirmed', severity: 'warning',
       message: 'Pi supplemental configuration or Agent consumer settings could not be read.', subject: { target: 'pi', scope: binding.scope.kind } });
   }
@@ -134,6 +134,7 @@ const consumerRemedies = {
   piAgentPackageSourceUnsupported: 'The detected pi-subagents version cannot read this Pi package source. Enable a compatible extension such as @tintinweb/pi-subagents and reload Pi.',
   piProjectTrustRequired: 'Pi project trust blocks access to the roles. In Pi, review the trust decision for this project and reload if you choose to trust it.',
   piAgentConsumerUnavailable: 'The detected Agent extensions are disabled or cannot access this package. Check Pi extension and package access settings, then reload Pi.',
+  piConfigurationUnconfirmed: 'Pi Agent extension settings could not be read. Execution availability remains unknown. Check the settings and reload Pi.',
 };
 type ConsumerWarningReason = keyof typeof consumerRemedies;
 
@@ -142,15 +143,21 @@ export function piAgentConsumerDiagnostic(binding: DeploymentBinding, observatio
   deliveredAgentIds: readonly string[]): Diagnostic | undefined {
   if (binding.platform !== 'pi' || !deliveredAgentIds.length) return undefined;
   const { observation: discovery, candidates, reasonCodes } = observation.prerequisites.agentConsumers;
-  if (discovery !== 'complete') return undefined;
   const reasons = new Set<ConsumerWarningReason>();
-  const projectBlocked = reasonCodes.includes('piProjectTrustRequired');
-  for (const candidate of candidates) {
-    if (projectBlocked || candidate.trust === 'blocked') reasons.add('piProjectTrustRequired');
-    else if (candidate.enabled === 'no') reasons.add('piAgentConsumerDisabled');
-    else if (candidate.packageAccess === 'denied') reasons.add(candidate.reasonCodes.includes('piAgentPackageSourceUnsupported')
-      ? 'piAgentPackageSourceUnsupported' : 'piAgentPackageAccessDenied');
-    else return undefined; // A configured or unresolved candidate is enough to avoid asserting unavailability.
+  if (discovery !== 'complete') {
+    // An actual configuration read failure is actionable. Other unknown
+    // discovery results do not establish whether any executor is available.
+    if (!reasonCodes.includes('piConfigurationUnconfirmed')) return undefined;
+    reasons.add('piConfigurationUnconfirmed');
+  } else {
+    const projectBlocked = reasonCodes.includes('piProjectTrustRequired');
+    for (const candidate of candidates) {
+      if (projectBlocked || candidate.trust === 'blocked') reasons.add('piProjectTrustRequired');
+      else if (candidate.enabled === 'no') reasons.add('piAgentConsumerDisabled');
+      else if (candidate.packageAccess === 'denied') reasons.add(candidate.reasonCodes.includes('piAgentPackageSourceUnsupported')
+        ? 'piAgentPackageSourceUnsupported' : 'piAgentPackageAccessDenied');
+      else return undefined; // A configured or unresolved candidate is enough to avoid asserting unavailability.
+    }
   }
   const reasonCode = reasons.size === 0 ? 'piAgentConsumerMissing'
     : reasons.size === 1 ? [...reasons][0]! : 'piAgentConsumerUnavailable';
