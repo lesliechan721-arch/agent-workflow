@@ -11,7 +11,7 @@ import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, re
 import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
 import { qualificationGroup, qualificationPool } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
+import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate, usesCopilotInventoryObservation } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
@@ -687,9 +687,43 @@ test('Darwin native execution retains query timing and strict marker failures', 
   }
 });
 
-// Test Value Gate: the approved ordinary-client contract is limited to Copilot
-// Darwin; other native clients retain their existing qualification contract.
-test('selects ordinary observation only for Copilot Darwin native commands', { timeout: 30_000 }, async () => {
+// The Linux exception is fixed to the approved version and two exact
+// inventory commands; neither a general client flag nor extra arguments suffice.
+test('limits Linux Copilot inventory observation to the approved version and commands', () => {
+  const options = { nativeClient: 'copilot', nativeClientVersion: '1.0.95' };
+  for (const arch of ['x64', 'arm64']) {
+    const host = { platform: 'linux', arch };
+    for (const kind of ['plugin', 'skill']) assert(usesCopilotInventoryObservation([kind, 'list', '--json'], options, host));
+    for (const args of [['plugin', 'list'], ['plugin', 'list', '--json', '--extra'], ['plugin', 'install', '--json'], ['skill', 'run', '--json'], ['--version']]) {
+      assert.equal(usesCopilotInventoryObservation(args, options, host), false);
+    }
+    for (const patch of [{ nativeClient: 'pi' }, { nativeClientVersion: undefined }, { nativeClientVersion: '1.0.96' }]) {
+      assert.equal(usesCopilotInventoryObservation(['skill', 'list', '--json'], { ...options, ...patch }, host), false);
+    }
+  }
+  for (const platform of ['darwin', 'win32']) assert.equal(usesCopilotInventoryObservation(['plugin', 'list', '--json'], options, { platform }), false);
+});
+
+test('Linux approved Copilot inventory commands use ordinary observation without changing other commands', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const script = 'console.log(JSON.stringify(process.argv.slice(1)))';
+    const launcher = { executable: process.execPath, prefix: ['-e', script, '--'] };
+    for (const args of [['plugin', 'list', '--json'], ['skill', 'list', '--json'], ['plugin', 'install', '--json']]) {
+      const result = await execute(launcher, args, { ...options, nativeClient: 'copilot', nativeClientVersion: '1.0.95' });
+      assertCommand(result);
+      assert.deepEqual(JSON.parse(result.stdout), args);
+      const inventory = args[1] === 'list';
+      assert.equal(result.containmentMode, inventory ? 'observed' : 'verified-observed');
+      assert.equal(result.gradingEvidenceAccepted, !inventory);
+      if (inventory) assert.equal(result.descendantCleanupGuaranteed, false);
+    }
+  });
+});
+
+// Other native clients retain their existing qualification contract.
+test('retains the existing Copilot Darwin native command observation', { timeout: 30_000 }, async () => {
   await publicProcessFixture(async (options) => {
     for (const nativeClient of ['copilot', 'pi']) {
       const result = await execute(nodeLauncher, ['-e', 'console.log("native observation fixture")'], { ...options, nativeClient });

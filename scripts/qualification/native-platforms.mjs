@@ -202,11 +202,15 @@ export async function runScope(platform, scope, launcher, options = {}) {
       recordCommand(command) { report.commands.push(redactScope(command)); },
       async command(args, cwd = project, commandOptions = {}) {
         const nativeClient = commandOptions.nativeClient ?? platform;
+        // Only the default launcher of the acquired fixed distribution has
+        // this version evidence. Provided or alternate entries stay strict.
+        const nativeClientVersion = nativeClient === platform && !commandOptions.entry && !commandOptions.launcher
+          ? options.nativeClientVersion : undefined;
         let result;
         try {
           result = await execute(commandOptions.entry ? { executable: commandOptions.entry, prefix: [] } : commandOptions.launcher ?? launcher, args,
             { cwd, env, stdin: commandOptions.input,
-            nativeClient, captureProcessNames: nativeClient === 'copilot' });
+            nativeClient, nativeClientVersion, captureProcessNames: nativeClient === 'copilot' });
         } catch (error) {
           report.commands.push(redactScope({ args, cwd, ...(mixedClients ? { nativeClient } : {}), processFailure: error?.message,
             processDiagnostics: error?.processTreeDiagnostics ?? error?.publicAwProcessDiagnostics ?? [],
@@ -526,9 +530,9 @@ export async function run(options, acquire = acquireClient) {
         }
         const scopesToRun = ['user', 'project'];
         const [direct, publicAw] = await Promise.all([
-          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group }))),
+          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group, nativeClientVersion: result.acquisition?.version }))),
           options['public-aw'] && Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher,
-            { publicAw: true, clientBin, preparedClient, publicClientError, group }))),
+            { publicAw: true, clientBin, preparedClient, publicClientError, group, nativeClientVersion: result.acquisition?.version }))),
         ]);
         result.scopes = direct;
         if (publicAw) result.publicAw = publicAw;

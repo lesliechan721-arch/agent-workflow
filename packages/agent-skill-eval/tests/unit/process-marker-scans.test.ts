@@ -32,6 +32,322 @@ function processScans() {
   return { pending, kill, observe, terminate };
 }
 
+// A new lease can be created while another observer's ps is still pending.
+// That previously launched table cannot prove the new sentinel's presence.
+it.each(['late-lease', 'fresh-invalid', 'first-invalid', 'already-ready', 'old-pending', 'fresh-pending', 'darwin-fresh-pending'] as const)(
+  'keeps a shared ps scan on the correct side of the lease preflight: %s', async scenario => {
+    vi.useFakeTimers();
+    const markerName = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+    const platform = scenario === 'darwin-fresh-pending' ? 'darwin' : 'linux';
+    const freshPending = scenario === 'fresh-pending' || scenario === 'darwin-fresh-pending';
+    const sentinels = new Map<number, string>();
+    const start = 'Fri Nov 27 08:05:29 2026';
+    const kill = vi.fn();
+    let markerScans = 0;
+    let holdNext = false;
+    let holdFresh = false;
+    let omitSecond = false;
+    let deliverOld: (() => void) | undefined;
+    let failFresh: (() => void) | undefined;
+    const dependencies: ProcessTreeDependencies = {
+      platform, markerEnvironmentVariable: markerName, enforceCooperativeProcessGroup: true, kill,
+      createSentinel: async (_name, marker) => {
+        const pid = 900_001 + sentinels.size;
+        sentinels.set(pid, marker);
+        return { pid, stop: async () => { sentinels.delete(pid); } };
+      },
+      execFile: (_command, args, _options, callback) => {
+        const markerScan = args.some(arg => arg.includes('command='));
+        if (markerScan) markerScans += 1;
+        const rows = [...sentinels].filter(([pid]) => !(markerScan && (omitSecond && pid === 900_002
+          || holdNext && scenario === 'first-invalid' && pid === 900_001))).map(([pid, marker]) =>
+          `${pid} 1 ${pid} S ${start}${markerScan ? ` node ${markerName}=${marker}` : ''}`).join('\n');
+        if (markerScan && holdNext) {
+          holdNext = false;
+          deliverOld = () => callback(null, rows);
+        } else if (markerScan && holdFresh) {
+          holdFresh = false;
+          failFresh = () => callback(new Error('ps failed'), '');
+        } else callback(null, rows);
+      },
+    };
+    const firstLease = await acquireProcessTreeInspectionLease(dependencies);
+    let secondLease = scenario === 'already-ready' ? await acquireProcessTreeInspectionLease(dependencies) : undefined;
+    holdNext = true;
+    const first = observeProcessTree(101, firstLease.marker, dependencies, firstLease);
+    let second: ReturnType<typeof observeProcessTree> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      secondLease ??= await acquireProcessTreeInspectionLease(dependencies);
+      omitSecond = scenario === 'fresh-invalid';
+      holdFresh = freshPending;
+      second = observeProcessTree(201, secondLease.marker, dependencies, secondLease);
+      await vi.advanceTimersByTimeAsync(0);
+      const close = (observation: ReturnType<typeof observeProcessTree>) => terminateProcessTree(observation.pid, () => {}, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => undefined, (error: Error) => error);
+      if (scenario === 'old-pending' || freshPending) {
+        // Closing the new observer drains its own initial read, not a
+        // pre-lease query still needed by another active subscriber.
+        expect(markerScans).toBe(4);
+        const closed = vi.fn();
+        const completion = close(second).then(closed);
+        await vi.advanceTimersByTimeAsync(0);
+        if (freshPending) {
+          expect(closed).not.toHaveBeenCalled();
+          failFresh!();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(closed).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('marker lookup failed') }));
+          const diagnostic = second.diagnostics[0]!;
+          expect(diagnostic.snapshotDeadline! - diagnostic.snapshotStartedAt!).toBe(platform === 'darwin' ? 7_000 : 2_000);
+          expect(diagnostic.queries![0]!.deadline - diagnostic.queries![0]!.startedAt).toBe(platform === 'darwin' ? 5_000 : 2_000);
+        } else expect(closed).toHaveBeenCalledWith(undefined);
+        deliverOld!();
+        await completion;
+        await expect(close(first)).resolves.toBeUndefined();
+        expect(kill).not.toHaveBeenCalled();
+        return;
+      }
+      deliverOld!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.diagnostics[0]?.reason).toBe(scenario === 'first-invalid' ? 'inspection-lease-invalid' : undefined);
+      expect(second.diagnostics[0]?.reason).toBe(scenario === 'fresh-invalid' ? 'inspection-lease-invalid' : undefined);
+      expect(markerScans).toBe(scenario === 'already-ready' ? 3 : 4);
+      omitSecond = false;
+      const results = await Promise.all([close(first), close(second)]);
+      expect(Boolean(results[0])).toBe(scenario === 'first-invalid');
+      expect(Boolean(results[1])).toBe(scenario === 'fresh-invalid');
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      first.dispose();
+      second?.dispose();
+      await firstLease.release();
+      await secondLease?.release();
+      vi.useRealTimers();
+    }
+  },
+);
+
+// A late lease's own first scan must establish known identities before a
+// subsequent shared table is consumed by that observer.
+it.each([
+  ['marker', 'initial-first'], ['marker', 'later-first'],
+  ['identity', 'initial-first'], ['identity', 'later-first'],
+] as const)('preserves a later %s departure while the new lease first read is pending (%s)', async (kind, order) => {
+  vi.useFakeTimers();
+  const markerName = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+  const start = 'Fri Nov 27 08:05:29 2026';
+  const sentinels = new Map<number, string>();
+  const kill = vi.fn();
+  let hold: 'old' | 'first' | undefined;
+  let old: (() => void) | undefined;
+  let firstRead: (() => void) | undefined;
+  let later = false;
+  let cleanup = false;
+  let laterReads = 0;
+  const dependencies: ProcessTreeDependencies = {
+    platform: 'linux', markerEnvironmentVariable: markerName, enforceCooperativeProcessGroup: true, kill,
+    createSentinel: async (_name, marker) => {
+      const pid = 900_001 + sentinels.size;
+      sentinels.set(pid, marker);
+      return { pid, stop: async () => { sentinels.delete(pid); } };
+    },
+    execFile: (_command, args, _options, callback) => {
+      const marker = args.some(arg => arg.includes('command='));
+      const rows = [...sentinels].map(([pid, value]) => `${pid} 1 ${pid} S ${start}${marker ? ` node ${markerName}=${value}` : ''}`);
+      const markerB = sentinels.get(900_002);
+      if (!cleanup && markerB && (hold === 'first' || later)) {
+        const departed = later && (kind === 'marker' ? marker : !marker);
+        rows.push(`201 1 201 S ${start}${marker ? ` node ${markerName}=${markerB}` : ''}`);
+        rows.push(`${departed ? '202 1 400 R' : '202 201 201 S'} ${start}${marker ? departed ? ' node PATH=/bin' : ` node ${markerName}=${markerB}` : ''}`);
+        if (departed) laterReads += 1;
+      }
+      const output = rows.join('\n');
+      if (marker && hold) {
+        const deliver = () => callback(null, output);
+        if (hold === 'old') old = deliver; else firstRead = deliver;
+        hold = undefined;
+      } else callback(null, output);
+    },
+  };
+  const leaseA = await acquireProcessTreeInspectionLease(dependencies);
+  hold = 'old';
+  const a = observeProcessTree(101, leaseA.marker, dependencies, leaseA);
+  let leaseB: Awaited<ReturnType<typeof acquireProcessTreeInspectionLease>> | undefined;
+  let b: ReturnType<typeof observeProcessTree> | undefined;
+  let c: ReturnType<typeof observeProcessTree> | undefined;
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    leaseB = await acquireProcessTreeInspectionLease(dependencies);
+    hold = 'first';
+    b = observeProcessTree(201, leaseB.marker, dependencies, leaseB);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(firstRead).toBeTypeOf('function');
+    old!();
+    await vi.advanceTimersByTimeAsync(0);
+    later = true;
+    if (order === 'initial-first') {
+      firstRead!();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    // A third subscriber may need a new shared marker query while B's
+    // independent first marker read is still returning. Identity polling
+    // can produce the same race without a new subscriber.
+    if (kind === 'marker') c = observeProcessTree(301, 'third-private-marker', dependencies);
+    await vi.advanceTimersByTimeAsync(kind === 'marker' ? 0 : 250);
+    expect(laterReads).toBeGreaterThan(0);
+    if (order === 'later-first') {
+      firstRead!();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    cleanup = true;
+    await expect(terminateProcessTree(201, () => {}, dependencies, { observation: b, requireConfirmedCleanup: true }))
+      .rejects.toThrow('left its initial process group');
+    expect(b.diagnostics[0]).toMatchObject({ reason: 'marked-process-group-changed', affectedPids: [202] });
+    expect(a.diagnostics).toEqual([]);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    a.dispose(); b?.dispose(); c?.dispose();
+    await leaseA.release(); await leaseB?.release(); vi.useRealTimers();
+  }
+});
+
+// A subscriber joining after the result's recipients were selected must
+// receive its own first result, even if the shared delivery is still pending.
+it.each(['lease-marker', 'marker-error', 'identity-error'] as const)('does not skip a first observation on a shared delivery late join: %s', async scenario => {
+  vi.useFakeTimers();
+  const markerName = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+  const start = 'Fri Nov 27 08:05:29 2026';
+  const sentinels = new Map<number, string>();
+  const kill = vi.fn();
+  let hold: 'old' | 'first' | undefined;
+  let old: (() => void) | undefined;
+  let firstRead: (() => void) | undefined;
+  let failing = false;
+  let markerScans = 0;
+  const dependencies: ProcessTreeDependencies = {
+    platform: 'linux', markerEnvironmentVariable: markerName, enforceCooperativeProcessGroup: true, kill,
+    createSentinel: async (_name, marker) => {
+      const pid = 900_001 + sentinels.size;
+      sentinels.set(pid, marker);
+      return { pid, stop: async () => { sentinels.delete(pid); } };
+    },
+    execFile: (_command, args, _options, callback) => {
+      const marker = args.some(arg => arg.includes('command='));
+      if (marker) markerScans += 1;
+      const output = [...sentinels].filter(([pid]) => !(failing && marker && scenario === 'lease-marker' && pid === 900_003))
+        .map(([pid, value]) => `${pid} 1 ${pid} S ${start}${marker ? ` node ${markerName}=${value}` : ''}`).join('\n');
+      if (marker && hold) {
+        const deliver = () => callback(null, output);
+        if (hold === 'old') old = deliver; else firstRead = deliver;
+        hold = undefined;
+      } else if (failing && (scenario === 'marker-error' && marker || scenario === 'identity-error' && !marker)) {
+        callback(new Error('ps failed'), '');
+      } else callback(null, output);
+    },
+  };
+  const leaseA = await acquireProcessTreeInspectionLease(dependencies);
+  hold = 'old';
+  const a = observeProcessTree(101, leaseA.marker, dependencies, leaseA);
+  let leaseB: Awaited<ReturnType<typeof acquireProcessTreeInspectionLease>> | undefined;
+  let leaseD: Awaited<ReturnType<typeof acquireProcessTreeInspectionLease>> | undefined;
+  let b: ReturnType<typeof observeProcessTree> | undefined;
+  let c: ReturnType<typeof observeProcessTree> | undefined;
+  let d: ReturnType<typeof observeProcessTree> | undefined;
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    leaseB = await acquireProcessTreeInspectionLease(dependencies);
+    hold = 'first';
+    b = observeProcessTree(201, leaseB.marker, dependencies, leaseB);
+    await vi.advanceTimersByTimeAsync(0);
+    if (scenario === 'lease-marker') leaseD = await acquireProcessTreeInspectionLease(dependencies);
+    old!();
+    await vi.advanceTimersByTimeAsync(0);
+    failing = true;
+    if (scenario === 'identity-error') await vi.advanceTimersByTimeAsync(250);
+    else {
+      c = observeProcessTree(301, 'third-private-marker', dependencies);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    const before = markerScans;
+    d = observeProcessTree(401, leaseD?.marker ?? 'fourth-private-marker', dependencies, leaseD);
+    await vi.advanceTimersByTimeAsync(0);
+    const reason = scenario === 'lease-marker' ? 'inspection-lease-invalid' : scenario === 'identity-error' ? 'identity-lookup-failed' : 'marker-lookup-failed';
+    expect(d.diagnostics[0]?.reason).toBe(reason);
+    if (scenario !== 'identity-error') expect(markerScans).toBe(before + 1);
+    failing = false;
+    firstRead!();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(terminateProcessTree(401, () => {}, dependencies, { observation: d, requireConfirmedCleanup: true })).rejects.toBeInstanceOf(Error);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    a.dispose(); b?.dispose(); c?.dispose(); d?.dispose();
+    await leaseA.release(); await leaseB?.release(); await leaseD?.release(); vi.useRealTimers();
+  }
+});
+
+// A shared table must not cross cleanup requests or authorize signaling a reused PID.
+it.each(['identity', 'marker'] as const)('does not make another lease wait for an unrelated first read through shared %s delivery', async kind => {
+  vi.useFakeTimers();
+  const markerName = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+  const start = 'Fri Nov 27 08:05:29 2026';
+  const sentinels = new Map<number, string>();
+  const kill = vi.fn();
+  let hold: 'old' | 'first' | undefined;
+  let old: (() => void) | undefined;
+  let firstRead: (() => void) | undefined;
+  const dependencies: ProcessTreeDependencies = {
+    platform: 'darwin', markerEnvironmentVariable: markerName, enforceCooperativeProcessGroup: true, kill,
+    createSentinel: async (_name, marker) => {
+      const pid = 900_001 + sentinels.size;
+      sentinels.set(pid, marker);
+      return { pid, stop: async () => { sentinels.delete(pid); } };
+    },
+    execFile: (_command, args, _options, callback) => {
+      const marker = args.some(arg => arg.includes('command='));
+      const output = [...sentinels].map(([pid, value]) => `${pid} 1 ${pid} S ${start}${marker ? ` node ${markerName}=${value}` : ''}`).join('\n');
+      if (marker && hold) {
+        const deliver = () => callback(null, output);
+        if (hold === 'old') old = deliver; else firstRead = deliver;
+        hold = undefined;
+      } else callback(null, output);
+    },
+  };
+  const leaseA = await acquireProcessTreeInspectionLease(dependencies);
+  hold = 'old';
+  const a = observeProcessTree(101, leaseA.marker, dependencies, leaseA);
+  let leaseB: Awaited<ReturnType<typeof acquireProcessTreeInspectionLease>> | undefined;
+  let b: ReturnType<typeof observeProcessTree> | undefined;
+  let c: ReturnType<typeof observeProcessTree> | undefined;
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    leaseB = await acquireProcessTreeInspectionLease(dependencies);
+    hold = 'first';
+    b = observeProcessTree(201, leaseB.marker, dependencies, leaseB);
+    await vi.advanceTimersByTimeAsync(0);
+    old!();
+    await vi.advanceTimersByTimeAsync(0);
+    if (kind === 'marker') c = observeProcessTree(301, 'third-private-marker', dependencies);
+    await vi.advanceTimersByTimeAsync(kind === 'marker' ? 0 : 250);
+    const closed = vi.fn();
+    const completion = terminateProcessTree(101, () => {}, dependencies, { observation: a, requireConfirmedCleanup: true })
+      .then(() => closed(undefined), (error: Error) => closed(error));
+    // A has received its own successful delivery and immediate cleanup
+    // result. B may still legally wait within its independent 5s first read.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(closed).toHaveBeenCalledWith(undefined);
+    await completion;
+    firstRead!();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(terminateProcessTree(201, () => {}, dependencies, { observation: b, requireConfirmedCleanup: true })).resolves.toBeUndefined();
+    expect(a.diagnostics).toEqual([]); expect(b.diagnostics).toEqual([]);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    a.dispose(); b?.dispose(); c?.dispose();
+    await leaseA.release(); await leaseB?.release(); vi.useRealTimers();
+  }
+});
+
 // A shared table must not cross cleanup requests or authorize signaling a reused PID.
 it('takes a fresh scan for a request made after launch and keeps marker ownership independent', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });

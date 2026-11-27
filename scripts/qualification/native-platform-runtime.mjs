@@ -109,8 +109,14 @@ export function usesAntigravityAgentObservation(args, options, host = process, h
     && options.antigravityAgentObservation === true && args.length === 1 && args[0] === 'agents';
 }
 
+export function usesCopilotInventoryObservation(args, options, host = process) {
+  return host.platform === 'linux' && options.nativeClient === 'copilot' && options.nativeClientVersion === '1.0.95'
+    && args.length === 3 && ['plugin', 'skill'].includes(args[0]) && args[1] === 'list' && args[2] === '--json';
+}
+
 export async function execute(launcher, args, options) {
   if (options.nativeClient === 'copilot' && process.platform === 'darwin'
+    || usesCopilotInventoryObservation(args, options)
     || usesAntigravityAgentObservation(args, options)) {
     const { executePublicAw } = await import('./native-platform-public-process.mjs');
     return executePublicAw(launcher, args, { ...options, timeoutMs: options.timeoutMs ?? 30_000 });
