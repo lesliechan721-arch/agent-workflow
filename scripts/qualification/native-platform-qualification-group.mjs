@@ -5,7 +5,7 @@ import { candidateArtifactSha256, candidateFiles, prepareEnvironment, sha256, ve
 
 // Only leaf operations take a slot. A scope waiting for its component suites
 // never occupies a worker that a nested suite needs in order to finish.
-export function qualificationPool(limit = Number(process.env.AW_QUALIFICATION_CONCURRENCY ?? (process.platform === 'darwin' ? 2 : 3))) {
+export function qualificationPool(limit = Number(process.env.AW_QUALIFICATION_CONCURRENCY ?? (process.platform === 'darwin' || process.platform === 'win32' ? 2 : 3))) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 3) throw new Error('invalid-qualification-concurrency');
   let available = limit;
   const waiting = [];

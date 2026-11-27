@@ -8,6 +8,7 @@ runs:
   using: composite
   steps:
     - uses: ./.github/actions/native-qualification-setup
+      id: setup
       with:
         clients: ${{ env.QUALIFICATION_CLIENT != 'antigravity-user' && env.QUALIFICATION_CLIENT || '' }}
         components: ${{ env.AW_QUALIFICATION_PUBLIC_COMPONENTS }}
@@ -36,6 +37,7 @@ runs:
         assert.equal(createHash('sha256').update(manifest).digest('hex'), '95b7be92ed40dc2068227c29459963bcb0170446e10646bc650d08a45c9e6b1f');
         JS
     - name: Verify real clients and public AW status in credential-free temporary environments
+      id: verify-clients
       if: env.QUALIFICATION_CLIENT != 'antigravity-user'
       shell: bash
       env:
@@ -46,6 +48,15 @@ runs:
           args+=(--mixed-native-aw)
         fi
         node scripts/qualification/native-platforms.mjs "${args[@]}"
+    # Downloads remain useful even if a later qualification assertion failed.
+    # Saving only npm content never reuses an installed client or its logs.
+    - name: Save npm content downloads for the exact fixed-client group
+      if: ${{ !cancelled() && steps.setup.outputs.client-cache-key != '' && steps.setup.outputs.client-cache-hit != 'true' && (steps.verify-clients.outcome == 'success' || steps.verify-clients.outcome == 'failure') }}
+      continue-on-error: true
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/native-client-npm-cache/_cacache
+        key: ${{ steps.setup.outputs.client-cache-key }}
     - name: Verify the Antigravity User harness on this host
       if: env.QUALIFICATION_CLIENT == 'antigravity-user'
       shell: bash

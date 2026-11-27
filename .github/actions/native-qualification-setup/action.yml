@@ -7,6 +7,13 @@ inputs:
   components:
     description: Prepare the fixed agent-browser prerequisite for component suites.
     default: '0'
+outputs:
+  client-cache-key:
+    description: Primary key attempted for the exact fixed-client group.
+    value: ${{ steps.restore-client-cache.outputs.cache-primary-key }}
+  client-cache-hit:
+    description: Whether that exact primary key was restored.
+    value: ${{ steps.restore-client-cache.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -56,6 +63,7 @@ runs:
     - name: Compute the fixed-client download cache identity
       if: inputs.clients != ''
       id: client-cache
+      continue-on-error: true
       shell: bash
       env:
         SELECTED_CLIENTS: ${{ inputs.clients }}
@@ -65,17 +73,17 @@ runs:
         import path from 'node:path';
         import { clients, sha256 } from './scripts/qualification/native-platform-runtime.mjs';
         const manifest = Object.values(clients).map(({ package: name, version }) => [name, version]);
-        const group = process.env.SELECTED_CLIENTS.replaceAll(',', '-');
-        appendFileSync(process.env.GITHUB_OUTPUT, `versions=${sha256(JSON.stringify(manifest))}\ngroup=${group}\n`);
+        const identity = sha256(JSON.stringify([manifest, process.env.SELECTED_CLIENTS]));
+        appendFileSync(process.env.GITHUB_OUTPUT, `identity=${identity}\n`);
         appendFileSync(process.env.GITHUB_ENV, `AW_QUALIFICATION_NPM_CACHE=${path.join(process.env.RUNNER_TEMP, 'native-client-npm-cache')}\n`);
         JS
-    - name: Cache npm content downloads for fixed clients
-      if: inputs.clients != ''
-      uses: actions/cache@v6
+    - name: Restore npm content downloads for the exact fixed-client group
+      if: steps.client-cache.outputs.identity != ''
+      id: restore-client-cache
+      continue-on-error: true
+      uses: actions/cache/restore@v6
       with:
         path: ${{ runner.temp }}/native-client-npm-cache/_cacache
-        # Disjoint client groups need separate writable keys so the first
-        # group to finish does not prevent saving the other group's cache.
-        key: native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.versions }}-${{ steps.client-cache.outputs.group }}
-        restore-keys: |
-          native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.versions }}-
+        # Hash the whole group identity as well as the fixed version manifest.
+        # Even the implicit primary-key prefix match cannot cross client groups.
+        key: native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.identity }}

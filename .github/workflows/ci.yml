@@ -167,7 +167,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || matrix.os == 'darwin' && '2' || '1') }}
+      AW_TEST_WORKERS: ${{ matrix.os == 'win32' && '1' || vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || '2') }}
       EXPECTED_OS: ${{ matrix.os }}
       EXPECTED_ARCH: ${{ matrix.arch }}
       TEST_SHARD: ${{ matrix.shard }}
@@ -251,59 +251,20 @@ jobs:
             process_lifecycle: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
-      EXPECTED_OS: ${{ matrix.os }}
-      EXPECTED_ARCH: ${{ matrix.arch }}
+      AW_TEST_WORKERS: ${{ matrix.os == 'win32' && '1' || vars.AW_TEST_WORKERS }}
     steps:
-      - name: Configure test diagnostics
-        shell: bash
-        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/platform-integration
         with:
-          version: 10.33.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          architecture: ${{ matrix.arch }}
-          cache: pnpm
-      - name: Check the native runtime
-        run: node -e 'if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Unexpected runner architecture"); console.log(process.platform, process.arch, process.version);'
-      - run: pnpm install --frozen-lockfile
-      - name: Read the Windows source candidate toolchain
-        if: matrix.os == 'win32'
-        id: native-tool
-        run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
-      - uses: actions/setup-go@v6
-        if: matrix.os == 'win32'
-        with:
-          go-version: ${{ steps.native-tool.outputs.go }}
-          cache: false
-      - run: pnpm native:windows-job:prepare
-        if: matrix.os == 'win32'
-      - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
-        if: matrix.os == 'win32'
-      - run: pnpm build
-      - name: Run the integration shard
-        working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "${{ matrix.integration_shard }}"
-        env:
-          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'win32' && '1' || '2') }}
-          AW_TEST_SHARD_PLATFORM: ${{ matrix.os }}
-      - name: Run process lifecycle tests
-        if: matrix.process_lifecycle
-        working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration ${{ matrix.os == 'win32' && 'tests/unit/test-command-diagnostics.test.ts' || '' }}
-      - name: Verify Windows command runtime configuration paths
-        if: matrix.os == 'win32' && matrix.process_lifecycle
-        working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated tests/unit/command-runtime-config.test.ts
+          os: ${{ matrix.os }}
+          arch: ${{ matrix.arch }}
+          shard: ${{ matrix.integration_shard }}
+          # Windows stays at 1 until the independent comparison passes D4.
+          workers: ${{ matrix.os == 'win32' && '1' || vars.AW_TEST_WORKERS || '2' }}
+          process-lifecycle: ${{ matrix.process_lifecycle }}
       - name: Save failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

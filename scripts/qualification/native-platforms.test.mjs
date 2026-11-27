@@ -1077,7 +1077,13 @@ test('public AW rejects a zero-exit root that leaves an independently grouped ch
       const {spawn}=require('node:child_process');
       spawn(process.execPath,['-e','setTimeout(()=>{},5000)'],{detached:true,stdio:'ignore'}).unref();
       setTimeout(()=>process.exit(0),1400);
-    `], options), /all provider descendants must exit before completion/);
+    `], options), error => {
+      assert.match(error.message, /all provider descendants must exit before completion/);
+      assert.equal(error.result?.exitCode, 0);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'process-execution', reason: 'process-cleanup-unconfirmed',
+        processCleanup: 'unconfirmed', leaseCleanup: 'confirmed' });
+      return true;
+    });
   });
 });
 
@@ -1088,6 +1094,8 @@ test('public AW rejects timeout, output limit and cancellation despite a zero ex
       assert.match(error.message, /public-aw-process-timeout/);
       assert.equal(error.result.stdout, 'started');
       assert.equal(error.result.terminationReason, 'timeout');
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'process-result', reason: 'process-result-rejected',
+        processCleanup: 'confirmed', leaseCleanup: 'confirmed' });
       return true;
     });
     await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'process.stdout.write("x".repeat(3*1024*1024));setTimeout(()=>{},10000)'],
@@ -1107,7 +1115,13 @@ test('public AW inspection preflight failure prevents command launch', posixOnly
     const marker = path.join(options.cwd, 'launched');
     await assert.rejects(executePublicAw(nodeLauncher, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes')`],
       options, { execFile(_command, _args, _options, callback) { callback(new Error('inspection unavailable'), ''); } }),
-    /process identity lookup failed|process marker lookup failed/);
+    error => {
+      assert.match(error.message, /process identity lookup failed|process marker lookup failed/);
+      assert.equal(error.result, undefined);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'inspection-lease-acquire', reason: 'inspection-lease-acquisition-failed',
+        processCleanup: 'not-needed', leaseCleanup: 'unconfirmed' });
+      return true;
+    });
     await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
   });
 });
@@ -1143,8 +1157,15 @@ test('public AW lease release failure cannot become success', posixOnly, async (
         const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},10000)'],
           { env: { PATH: process.env.PATH, [name]: marker }, stdio: 'ignore' });
         const closed = once(child, 'close');
+        await once(child, 'spawn');
         return { pid: child.pid, async stop() { child.kill('SIGTERM'); await closed; throw new Error('release failed'); } };
       },
-    }), /public-aw-inspection-lease-release-failed/);
+    }), error => {
+      assert.match(error.message, /public-aw-inspection-lease-release-failed/);
+      assert.equal(error.result?.exitCode, 0);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'inspection-lease-release', reason: 'inspection-lease-release-failed',
+        processCleanup: 'confirmed', leaseCleanup: 'unconfirmed' });
+      return true;
+    });
   });
 });

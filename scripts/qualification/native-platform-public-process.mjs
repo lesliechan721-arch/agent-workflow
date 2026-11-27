@@ -21,7 +21,16 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const { runProviderProcess } = await import('../../packages/agent-skill-eval/dist/process.js');
   const { acquireProcessTreeInspectionLease, observeProcessTree, terminateProcessTree } =
     await import('../../packages/agent-skill-eval/dist/process-tree.js');
-  if (options.signal?.aborted) throw options.signal.reason ?? new Error('public-aw-cancelled');
+  if (options.signal?.aborted) {
+    const error = options.signal.reason ?? new Error('public-aw-cancelled');
+    if (error && typeof error === 'object') {
+      try {
+        error.publicAwProcessFailure = { stage: 'before-launch', reason: 'cancelled',
+          processCleanup: 'not-needed', leaseCleanup: 'not-needed' };
+      } catch { /* A caller's immutable cancellation reason still wins. */ }
+    }
+    throw error;
+  }
   const hostedDiagnostics = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
   const procfs = process.platform === 'linux' && processTree.execFile === undefined && launcher.executable === process.execPath
     && launcher.prefix.at(-1) === path.join(repoRoot, 'packages/cli/dist/index.js');
@@ -47,9 +56,14 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   let stopFailureListener;
   let failure;
   let returned;
+  let stage = 'inspection-lease-acquire';
+  let cleanupConfirmed = false;
+  let observationFailed = false;
+  let leaseCleanup = 'unconfirmed';
   try {
     lease = await acquireProcessTreeInspectionLease(dependencies);
     markerRows?.setMarker(MARKER_ENV, lease.marker);
+    stage = 'process-execution';
     const result = await runProviderProcess({
       executable: launcher.executable, args: [...launcher.prefix, ...args], cwd: options.cwd,
       env: { ...options.env, [MARKER_ENV]: lease.marker }, signal: controller.signal,
@@ -60,7 +74,10 @@ export async function executePublicAw(launcher, args, options, processTree = {})
         names?.onSpawn({ pid });
         markerRows?.onSpawn({ pid });
         observation = observeProcessTree(pid, lease.marker, dependencies, lease);
-        stopFailureListener = observation.onFailure((error) => controller.abort(error));
+        stopFailureListener = observation.onFailure((error) => {
+          observationFailed = true;
+          controller.abort(error);
+        });
       },
       async terminateProcessTree({ pid }, reason) {
         if (!observation) throw new Error('public-aw-inspection-not-started');
@@ -68,9 +85,11 @@ export async function executePublicAw(launcher, args, options, processTree = {})
         // This hook signals only identities revalidated by the observation.
         await terminateProcessTree(pid, () => {}, dependencies, { observation, requireConfirmedCleanup: true,
           requireDescendantsExitedBeforeCompletion: reason === 'complete' });
+        cleanupConfirmed = true;
         return { confirmed: true };
       },
     }, { containment: 'observed', processTree: dependencies });
+    stage = 'process-result';
     if (result.cancelled || result.terminationReason !== 'complete') {
       throw Object.assign(new Error(`public-aw-process-${result.terminationReason}`), { result });
     }
@@ -83,6 +102,16 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     failure = error;
     if (lease && error instanceof Error) error.message = error.message.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
     if (error && typeof error === 'object') {
+      // Acquisition may fail before the AW process exists, including during
+      // sentinel preflight. Neither an exit code nor sentinel cleanup can be
+      // inferred from that failure. Record only phases we actually reached.
+      const cleanupFailed = error.name === 'ProviderProcessCleanupError';
+      error.publicAwProcessFailure = { stage, reason: stage === 'inspection-lease-acquire'
+        ? 'inspection-lease-acquisition-failed' : cleanupFailed ? 'process-cleanup-unconfirmed'
+          : observationFailed ? 'process-observation-failed' : stage === 'process-result'
+            ? 'process-result-rejected' : 'provider-process-threw',
+        processCleanup: stage === 'inspection-lease-acquire' ? 'not-needed'
+          : cleanupConfirmed && !cleanupFailed ? 'confirmed' : 'unconfirmed' };
       const diagnostics = observation?.diagnostics ?? [];
       error.publicAwProcessDiagnostics = diagnostics.length > 1 ? [diagnostics[0], diagnostics.at(-1)] : diagnostics;
       try {
@@ -106,18 +135,25 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     confirmations?.stop();
     stopFailureListener?.();
     observation?.dispose();
-    try { await lease?.release(); }
-    catch (error) {
+    try {
+      if (lease) {
+        await lease.release();
+        leaseCleanup = 'confirmed';
+      }
+    } catch (error) {
       const releaseFailure = new Error(`${failure?.message ? `${failure.message}; ` : ''}public-aw-inspection-lease-release-failed`,
         { cause: new AggregateError([failure, error].filter(Boolean)) });
       releaseFailure.publicAwProcessDiagnostics = failure?.publicAwProcessDiagnostics ?? [];
       if (failure?.publicAwProcessNames) releaseFailure.publicAwProcessNames = failure.publicAwProcessNames;
       if (failure?.publicAwMarkerRows) releaseFailure.publicAwMarkerRows = failure.publicAwMarkerRows;
       if (failure?.qualificationMarkerIdentityConfirmations) releaseFailure.qualificationMarkerIdentityConfirmations = failure.qualificationMarkerIdentityConfirmations;
-      if (failure?.result) releaseFailure.result = failure.result;
+      if (failure?.result ?? returned) releaseFailure.result = failure?.result ?? returned;
+      releaseFailure.publicAwProcessFailure = { stage: 'inspection-lease-release', reason: 'inspection-lease-release-failed',
+        processCleanup: failure?.publicAwProcessFailure?.processCleanup ?? (cleanupConfirmed ? 'confirmed' : 'unconfirmed') };
       failure = releaseFailure;
       throw releaseFailure;
     } finally {
+      if (failure?.publicAwProcessFailure) failure.publicAwProcessFailure.leaseCleanup = leaseCleanup;
       try {
         const timings = queryTimings?.snapshot();
         if (timings) {

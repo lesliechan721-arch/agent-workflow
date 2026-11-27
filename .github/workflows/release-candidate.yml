@@ -77,7 +77,7 @@ jobs:
       bundle_digest: ${{ steps.prepare.outputs.bundle_digest || steps.inspect.outputs.recovery_digest }}
       version: ${{ steps.inspect.outputs.version }}
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS }}
+      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '4' }}
       RELEASE_PRODUCT: ${{ inputs.product }}
       RELEASE_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -243,7 +243,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || matrix.os == 'darwin' && '2' || '1') }}
+      AW_TEST_WORKERS: ${{ matrix.os == 'win32' && '1' || vars.AW_TEST_WORKERS || (matrix.os == 'linux' && '3' || '2') }}
       EXPECTED_OS: ${{ matrix.os }}
       EXPECTED_ARCH: ${{ matrix.arch }}
       TEST_SHARD: ${{ matrix.shard }}

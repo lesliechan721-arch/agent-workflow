@@ -213,6 +213,18 @@ function processObservation(row) {
       'kind startedAt deadline callbackAt settledAt callbackState completion failureReason')) } : {}) };
 }
 
+function componentProcessFailure(error, result) {
+  const evidence = error?.publicAwProcessFailure;
+  if (!evidence && result) return {};
+  const fixed = (field, values) => values.includes(evidence?.[field]) ? evidence[field] : 'unknown';
+  const cleanupStates = ['not-needed', 'confirmed', 'unconfirmed'];
+  return { processFailure: { stage: fixed('stage', ['before-launch', 'inspection-lease-acquire', 'process-execution',
+    'process-result', 'inspection-lease-release']), reason: fixed('reason', ['cancelled', 'inspection-lease-acquisition-failed',
+    'process-cleanup-unconfirmed', 'process-observation-failed', 'process-result-rejected', 'provider-process-threw',
+    'inspection-lease-release-failed']), resultAvailable: Boolean(result),
+    processCleanup: fixed('processCleanup', cleanupStates), leaseCleanup: fixed('leaseCleanup', cleanupStates) } };
+}
+
 function componentProcessEvidence(error, response) {
   const result = error?.result ?? response;
   const diagnostics = error?.publicAwProcessDiagnostics?.length ? error.publicAwProcessDiagnostics : error?.processTreeDiagnostics;
@@ -220,6 +232,7 @@ function componentProcessEvidence(error, response) {
   const markerRows = error?.publicAwMarkerRows ?? error?.qualificationMarkerRows;
   const confirmations = error?.qualificationMarkerIdentityConfirmations;
   return {
+    ...componentProcessFailure(error, result),
     ...observationFields(result, 'exitCode timedOut cancelled maxBufferExceeded terminationReason'),
     ...(result?.exitCode === 250 ? {} : observationFields(result, 'descendantCleanupGuaranteed')),
     ...(typeof result?.signal === 'string' && Object.hasOwn(os.constants.signals, result.signal) ? { signal: result.signal } : {}),

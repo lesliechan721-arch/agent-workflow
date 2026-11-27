@@ -49,15 +49,24 @@ test('keeps the public command and actual scope when the process has no snapshot
   await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries: [] }));
   const helperFailures = { 'helper-failure': {}, 'helper-timeout': { timedOut: true }, 'helper-signal': { signal: 'SIGTERM' },
     'helper-max-buffer': { maxBufferExceeded: true }, 'helper-truncated': { stdoutTruncated: true }, 'helper-wrong-command': {} };
-  for (const outcome of ['timeout', 'preflight', 'signal', 'invalid-output', ...Object.keys(helperFailures)]) {
-    const command = outcome === 'preflight' ? 'source.add' : 'target.set';
-    const privateMessage = 'private fixture output that must stay out of the report';
+  for (const outcome of ['timeout', 'preflight', 'unclassified', 'signal', 'invalid-output', ...Object.keys(helperFailures)]) {
+    const command = ['preflight', 'unclassified'].includes(outcome) ? 'source.add' : 'target.set';
+    const privateMessage = 'private_fixture_output_that_must_stay_out_of_the_report';
     const result = await runScenario({ platform: 'generic', scope: 'project', suite: 'candidate', catalog }, {
       executeCommand: async () => ({ exitCode: 0 }),
-      async executeAw(_launcher, args) {
+      async executeAw(launcher, args, options) {
         const called = args.slice(0, 2).join('.');
         if (called !== command) return publicResponse(called, { availability: [{ id: 'generic', installations: [] }] });
-        if (outcome === 'preflight') throw new Error(privateMessage);
+        if (outcome === 'preflight') {
+          if (process.platform === 'win32') throw new Error(privateMessage);
+          return executePublicAw(launcher, args, options, {
+            execFile(_command, _args, _options, callback) { callback(new Error(privateMessage), ''); },
+          });
+        }
+        if (outcome === 'unclassified') throw Object.assign(new Error(privateMessage), { publicAwProcessFailure: {
+          stage: privateMessage, reason: privateMessage, processCleanup: privateMessage, leaseCleanup: privateMessage,
+          raw: privateMessage, resultAvailable: true,
+        } });
         if (outcome === 'signal') return { exitCode: null, signal: 'SIGTERM', terminationReason: 'complete', stdout: privateMessage };
         if (Object.hasOwn(helperFailures, outcome)) {
           const receipt = publicResponse(outcome === 'helper-wrong-command' ? 'plugin.status' : called, { raw: privateMessage });
@@ -79,6 +88,16 @@ test('keeps the public command and actual scope when the process has no snapshot
       assert.equal(failure.timedOut, true);
       assert.equal(failure.terminationReason, 'timeout');
       assert.equal(failure.descendantCleanupGuaranteed, true);
+    } else if (['preflight', 'unclassified'].includes(outcome)) {
+      assert.equal(failure.stage, 'execute');
+      assert.equal(failure.error, 'process-failed');
+      assert(!Object.hasOwn(failure, 'exitCode'));
+      assert.deepEqual(failure.processFailure, outcome === 'unclassified' || process.platform === 'win32' ? {
+        stage: 'unknown', reason: 'unknown', resultAvailable: false, processCleanup: 'unknown', leaseCleanup: 'unknown',
+      } : {
+        stage: 'inspection-lease-acquire', reason: 'inspection-lease-acquisition-failed',
+        resultAvailable: false, processCleanup: 'not-needed', leaseCleanup: 'unconfirmed',
+      });
     } else if (outcome === 'signal') {
       assert.equal(failure.exitCode, null);
       assert.equal(failure.signal, 'SIGTERM');
