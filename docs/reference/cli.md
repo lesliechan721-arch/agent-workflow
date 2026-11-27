@@ -23,7 +23,7 @@
 
 普通 install 若所有实际候选目标（不含已排除、不受支持或预检已确认不适用的目标）均因缺少或无效配置受阻，则在保存需求、启用首次安装的来源候选和部署前返回 `blocked`（退出码 3）。修复配置后重新执行原 install；若来源尚无 Active，先用 `aw source sync` 显式启用来源。`install --only requirements` 不受此部署配置门禁限制。部分目标已就绪时仍保存全局需求并处理独立就绪目标；有已完成部分或业务变更时返回 `partial`（退出码 4）。
 
-普通 remove 完整校验 Active 和联合依赖；插件已下架时，须由健康 Active 证明缺席。Active 不可验证时保留需求和输出。两个 only 模式分别支持离线取消合法声明中的完整 ID，以及依据现场 ownership 清理输出。foreign、shared 和未知归属内容保持不动，force 不扩大删除权限。完整领域门禁见[生命周期](../maintainers/architecture/lifecycle.md)。
+普通 remove 完整校验 Active 和联合依赖；插件已下架时，须由健康 Active 证明缺席，进入退役分支。确认下架且同源 AW 归属和原生观测充分时，退役可撤销 Codex、Claude、Copilot 的共享原生登记并删除共享包，其他项目的需求声明保持不动；包已缺席的后续收尾仍须严格 canonical 市场证据。Active 不可验证时保留需求和输出。两个 only 模式分别支持离线取消合法声明中的完整 ID，以及依据现场 ownership 清理输出，不升级为退役。foreign、shared 和未知归属内容保持不动，force 不扩大删除权限。退役未完成时重新 Review 后用普通 `aw plugin remove <selector> --scope <scope>` 重试，不使用 outputs-only 或普通 remove 禁止的 target 参数。完整领域门禁见[生命周期](../maintainers/architecture/lifecycle.md)。
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
 
@@ -115,6 +115,8 @@ type Confirmation = {
 **待确认影响的公共投影：**所有自管写命令在形成业务 data 后使用 `data.confirmation: Confirmation | null`。生命周期 data 明确包含该字段，其它写命令族复用同一类型；只读命令无须提供它。尚未完成影响准备时为 null，null 不表示无需确认，也不能据此进入写入。准备完成且无重要影响时为 `{ required: false, provided: <本次是否带 --yes>, effects: [] }`。需要确认时 required 为 true；provided 只记录本次是否显式提供 `--yes`，提供后 required 仍为 true，不抹掉动作本身的确认要求。
 
 effects 只描述本次请求拟执行的重要影响，不表示已经发生。每项有稳定 code、英文 message、适用的 source/plugin/target/scope/field 身份和影响范围。`selected-scope` 表示所选范围内的影响，`user-wide` 表示整台机器的用户设置，`shared` 表示可能影响其它项目的共享内容，`unknown` 明确保留无法完整确定的影响；不能把 unknown 写成“没有影响”。适用的对象和 scope 必须给出，不能只依靠英文 message 定位。
+
+退役的共享影响从冻结的部署动作投影，撤销共享原生登记、删除共享包或市场条目的对应 effects 使用 `impact: 'shared'`，英文 message 说明其他项目可能失去使用能力，而其需求声明继续保留。
 
 重要影响使用稳定 code，例如 `removeOwnedOutput`、`deletePluginConfig`、`runPreApply`、`replaceSharedOutput`、`changeSource`、`deletePluginSource`、`publishRemote`。新增 code 与诊断 code 一样可兼容扩展，既有 code 和 impact 的含义不得静默改变。该视图从现有 `requiresConfirmation`、`sharedImpact` 及领域影响描述投影，不增加持久计划、令牌或可执行动作。无法取得必要证据时仍遵守相应领域阻断规则，`--yes` 不补造证据。
 

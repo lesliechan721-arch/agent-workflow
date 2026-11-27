@@ -147,7 +147,9 @@ export interface FrozenDeploymentPlan {
 export interface PlannedEffect {
   id: string;
   kind: 'publish-package' | 'register' | 'refresh' | 'activate' |
-    'deactivate' | 'unregister' | 'write-supplement' | 'remove-owned';
+    'deactivate' | 'unregister' | 'write-supplement' | 'remove-owned' | 'remove-marketplace-entry';
+  /** Exact Claude uninstall scope for a confirmed retirement. */
+  nativeScope?: 'user' | 'local';
   physicalKey: string;
   activationKey?: string;
   componentIds: string[];
@@ -165,6 +167,15 @@ export interface DeploymentConfigurationObservation {
   reasonCodes: string[];
 }
 export interface DeploymentObservation {
+  /** Additional, operation-local evidence for confirmed shared native retirement. */
+  retirement?: {
+    marketplaceProof: { manifestPath: string; fingerprint: string; entryPresent: boolean } | null;
+    configurationFingerprint?: string;
+    userActivation?: DeploymentConfigurationObservation['activation'];
+    userMarketplace?: DeploymentConfigurationObservation['marketplace'];
+    claudeKnownMarketplace?: DeploymentConfigurationObservation['marketplace'];
+    claudeRegistrations?: { local: boolean; user: boolean; managed: boolean; unsupported: boolean };
+  };
   /** Historical Project copy at the previous Antigravity namespaced path. */
   antigravityLegacyProjectPackage?: { path: string; state: 'owned' | 'unconfirmed' };
   /** Version read from the verified owned package descriptor; absence means unknown. */
@@ -306,6 +317,8 @@ export interface DeploymentLayoutEvidence {
   marketplaceName: string | null;
 }
 export interface PreparationEvidence {
+  confirmedCatalogRetirement?: true;
+  nativeRetirement?: DeploymentObservation['retirement'];
   permissionOwnershipWarning?: Diagnostic;
   permissionBatch?: import('./permission-ownership.js').ReviewedPermissionBatch;
   fingerprint: string;

@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { PlatformName, Scope } from '../types.js';
-import type { CatalogSourceReferenceInventory } from '../utils/catalog-source-references.js';
+import { resolveCleanupMarketplaceIdentity, type CatalogSourceReferenceInventory } from '../utils/catalog-source-references.js';
 import type { OwnedComponent, OwnerIdentity } from '../utils/ownership.js';
 
 export interface OfflineCleanupTargetEvidence {
@@ -164,21 +164,31 @@ export function offlineCleanupEvidenceFromInventory(options: {
     && reference.platform === options.platform
     && reference.scope === options.scope);
   if (references.length === 0) return null;
+  const marketplaceIdentity = resolveCleanupMarketplaceIdentity({ ...options, references: options.inventory.references });
+  const isMarketplaceRoute = options.platform === 'codex' || options.platform === 'claude' || options.platform === 'copilot';
   const marketplaceRoots = options.inventory.references.flatMap((reference) =>
     reference.kind === 'namespacedMarketplace'
     && reference.sourceId === options.sourceId
     && reference.sourceIdentity === options.sourceIdentity
+    && (reference.platform === undefined || reference.platform === options.platform)
     && reference.pluginName === undefined
-    && path.basename(reference.location) === 'config.json'
-      ? [path.dirname(reference.location)]
+    && reference.marketplaceRoot
+      ? [reference.marketplaceRoot]
       : []);
-  const ownedReferences = references.filter((reference) =>
-    reference.kind !== 'namespacedOwner'
-    || !marketplaceRoots.some((root) => isPathInside(
-      reference.location,
-      path.join(root, 'plugins', options.pluginName),
-    )));
+  const ownedReferences = references.filter((reference) => {
+    if (reference.marketplaceManifestEntry || reference.managedNativeRegistration) return false;
+    if (isMarketplaceRoute && reference.recoveryCandidate) {
+      // Only a proven current-namespace package can enter the native planner.
+      // A foreign/ambiguous marketplace name must not cause a native disable.
+      return reference.recoveryCandidate.evidence === 'verified' && reference.marketplaceRoot !== undefined
+        && marketplaceIdentity.marketplaceName !== undefined
+        && reference.recoveryCandidate.nativeIdentity?.registrationId === `${options.pluginName}@${marketplaceIdentity.marketplaceName}`;
+    }
+    return reference.kind !== 'namespacedOwner'
+      || !marketplaceRoots.some((root) => isPathInside(reference.location, path.join(root, 'plugins', options.pluginName)));
+  });
   const actions = ownedReferences.flatMap((reference): OfflineCleanupPlanAction[] => {
+    if (isMarketplaceRoute && reference.kind === 'namespacedMarketplace' && !marketplaceIdentity.marketplaceName) return [];
     if (options.platform === 'codex' && reference.kind === 'namespacedMarketplace') return [];
     return [{
       action: reference.kind === 'namespacedOwner'
@@ -194,35 +204,15 @@ export function offlineCleanupEvidenceFromInventory(options: {
       ...(reference.pluginVersion ? { pluginVersion: reference.pluginVersion } : {}),
     }];
   });
-  if (options.platform === 'codex') {
-    const registeredNames = new Set(options.inventory.references.flatMap((reference) =>
-      reference.kind === 'namespacedMarketplace'
-      && reference.sourceId === options.sourceId
-      && reference.sourceIdentity === options.sourceIdentity
-      && reference.pluginName === undefined
-      && reference.marketplaceName
-        ? [reference.marketplaceName]
-        : []));
-    const nativeNames = new Set(options.inventory.references.flatMap((reference) =>
-      reference.kind === 'namespacedMarketplace'
-      && reference.pluginName === options.pluginName
-      && reference.platform === 'codex'
-      && reference.marketplaceName
-      && ((reference.sourceId === options.sourceId
-          && reference.sourceIdentity === options.sourceIdentity)
-        || (reference.sourceId === undefined && registeredNames.has(reference.marketplaceName)))
-        ? [reference.marketplaceName]
-        : []));
-    if (nativeNames.size === 1) {
-      const marketplaceName = [...nativeNames][0]!;
-      actions.push({
-        action: 'removeNativeRegistration',
-        kind: 'namespacedMarketplace',
-        target: `${options.pluginName}@${marketplaceName}`,
-        marketplaceName,
-        activationScope: options.scope,
-      });
-    }
+  if (options.platform === 'codex' && marketplaceIdentity.marketplaceName && marketplaceIdentity.nativeRegistration) {
+    const { marketplaceName } = marketplaceIdentity;
+    actions.push({
+      action: 'removeNativeRegistration',
+      kind: 'namespacedMarketplace',
+      target: `${options.pluginName}@${marketplaceName}`,
+      marketplaceName,
+      activationScope: options.scope,
+    });
   }
   actions.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), 'en'));
   const plan: OfflineCleanupPlan = {

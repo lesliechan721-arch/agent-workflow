@@ -86,6 +86,8 @@ export interface RecoveryReceipt {
   nativeToolChanges?: NativeToolChange[];
   remainingTargets: Array<{ pluginId: string; agent: AgentId; scope: Scope; delivery: RecoveryDelivery | null }>;
   recoveryActions: string[];
+  /** Retirement requested global configuration deletion that still needs Review. */
+  retirementConfigDeletionPending?: true;
   declarationChanged: boolean;
   preferencesChanged: boolean;
   configChanged: boolean;

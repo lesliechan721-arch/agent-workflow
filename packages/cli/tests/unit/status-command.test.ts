@@ -149,6 +149,11 @@ async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>)
     : probe(invocation));
   await fs.outputFile(path.join(value.env.CODEX_HOME!, 'config.toml'),
     `[marketplaces.${JSON.stringify(layout.marketplaceName!)}]\nsource_type = "local"\nsource = ${JSON.stringify(layout.marketplaceRoot!)}\n`);
+  await fs.outputJson(path.join(layout.marketplaceRoot!, 'config.json'), { schemaVersion: 2,
+    sourceId: 'local', sourceIdentity: value.sourceIdentity, marketplaceName: layout.marketplaceName });
+  await fs.outputJson(path.join(layout.marketplaceRoot!, '.agents/plugins/marketplace.json'), {
+    name: layout.marketplaceName, plugins: [{ name: 'demo', source: './plugins/demo' }],
+  });
   if (value.scope === 'project') await fs.outputFile(path.join(value.cwd, '.codex/config.toml'),
     `[plugins.${JSON.stringify(id)}]\nenabled = true\n`);
   return materializeStatusSkill(value, 'codex', { binding, layout, renderUnits, component });

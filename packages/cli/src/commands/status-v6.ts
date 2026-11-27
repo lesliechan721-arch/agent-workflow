@@ -25,7 +25,7 @@ import {
 } from '../utils/catalog-public-error.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import {
-  canonicalMarketplaceRegistrationNames,
+  legacyCanonicalMarketplaceRegistrationNames,
   inventoryCatalogSourceReferences,
   inventoryLegacyOwnerReferences,
   type CatalogSourceInventoryError,
@@ -74,6 +74,7 @@ import {
   createProjectLocationKey,
   getClaudeHome,
   getCodexHome,
+  resolveAwHomeCanonical,
   resolveRequiredCanonicalRepoRoot,
 } from '../utils/state-paths.js';
 import {
@@ -1684,7 +1685,7 @@ async function statusCommandV8InSession(options: {
             available: placementEntries,
             codexProjectAllowed: !codexScopePathsAlias,
           });
-          const registeredNames = canonicalMarketplaceRegistrationNames(
+          const registeredNames = legacyCanonicalMarketplaceRegistrationNames(
             ownerInventory.references,
             item.resolution!.sourceId,
           );
@@ -1846,6 +1847,7 @@ async function statusCommandV8InSession(options: {
               const defaultMarketplaceName = item.resolution!.sourceId === resolution.primarySourceId
                 ? 'aw'
                 : `aw-${item.resolution!.sourceId}`;
+              const legacyMarketplaceRoot = path.join(await resolveAwHomeCanonical(env), 'marketplaces', item.resolution!.sourceId);
               const marketplaceNameFor = (
                 pluginName: string,
                 platform: PlatformName,
@@ -1856,12 +1858,14 @@ async function statusCommandV8InSession(options: {
                   && reference.sourceId === item.resolution!.sourceId
                   && reference.sourceIdentity === item.resolution!.sourceIdentity
                   && reference.pluginName === pluginName
+                  && (reference.kind !== 'namespacedMarketplace' || !reference.marketplaceRoot
+                    || reference.marketplaceRoot === legacyMarketplaceRoot)
                   && reference.platform === platform
                   && reference.scope === scope
                   && (scope === 'user' || reference.projectKey === currentProjectKey)
                   && reference.marketplaceName)?.marketplaceName;
                 if (liveName) return liveName;
-                const registeredNames = canonicalMarketplaceRegistrationNames(
+                const registeredNames = legacyCanonicalMarketplaceRegistrationNames(
                   ownerInventory.references,
                   item.resolution!.sourceId,
                 );

@@ -1,8 +1,9 @@
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-resolver.js';
-import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import {
   createCatalogStoreKey,
   readCatalogStoreEntry,
@@ -20,6 +21,42 @@ export type {
   CatalogGenerationViewModel,
   CatalogSourceGenerationViewModel,
 } from './catalog-sources/types.js';
+
+/** Complete validation of a source with a missing plugin. Null revokes a previous positive check. */
+export type RetirementSourceChecks = Readonly<Record<string, string | null>>;
+
+export async function checkRetirementSources(
+  catalog: CatalogOperationContext | undefined,
+  residualPluginIds: readonly string[],
+  signal: AbortSignal,
+  readScope?: CatalogPreparationReadScope,
+): Promise<RetirementSourceChecks> {
+  const checks: Array<[string, string | null]> = [];
+  for (const { sourceId, resolution: source } of catalog?.catalog.sources ?? []) {
+    if (!source) continue;
+    const prefix = sourceId + '/';
+    const residuals = residualPluginIds.filter((id) => id.startsWith(prefix));
+    if (!residuals.length) continue;
+    const listed = new Set(source.manifest.entries.map((entry) => prefix + entry.name));
+    if (residuals.every((id) => listed.has(id))) continue;
+    signal.throwIfAborted();
+    let complete = false;
+    try {
+      if (readScope) {
+        await CatalogPreparationReadScope.validateEntries(readScope, source);
+        complete = true;
+      } else {
+        const checked = await validateCatalogSnapshotComplete(source.rootDir);
+        complete = checked.snapshotDigest === source.snapshotDigest;
+      }
+    } catch {
+      // An unreadable bundle leaves the source recovery and offline actions available.
+    }
+    signal.throwIfAborted();
+    checks.push([sourceId, complete ? createCatalogStoreKey(source.logicalIdentity, source.snapshotDigest) : null]);
+  }
+  return Object.fromEntries(checks);
+}
 
 export type CatalogGenerationLoadStageEvent =
   | {

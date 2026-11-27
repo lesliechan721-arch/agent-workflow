@@ -2,12 +2,13 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
-import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../utils/codex-config.js';
-import { atomicReplaceSafeFile } from '../utils/safe-fs.js';
+import { applyCodexConfigTransaction, applyCodexConfigTransactionFile, readCodexConfigFile } from '../utils/codex-config.js';
+import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { runNativeCliChecked } from '../utils/native-cli.js';
 import { installationInvocation, selectNativeProduct } from './discovery.js';
 import { getDeploymentLayout } from './layout.js';
 import { inspectClaudeMarketplaceSource, inspectCopilotMarketplaceSource } from './inspection-native.js';
+import { inspectRetirementMarketplace } from './retirement-native.js';
 import type { DeploymentBinding, MutationContext, NativeIdentity, PreparationEvidence, ReadContext } from './contracts.js';
 
 async function readObject(file: string): Promise<Record<string, unknown>> {
@@ -74,6 +75,58 @@ export function createNativeLifecycleServices(ctx: ReadContext, evidence: Prepar
         || !enabled && binding.route === 'codex-marketplace' && item.entry?.kind === 'directory');
       if (!product?.entry || product.entry.kind === 'generic') fail('clientInstallEntryUnavailable');
       const id = identity.registrationId;
+      const retiring = !enabled && evidence.confirmedCatalogRetirement === true && !!evidence.nativeRetirement;
+      if (retiring) {
+        const layout = await getDeploymentLayout(ctx, binding);
+        const before = evidence.nativeRetirement!.marketplaceProof;
+        const proof = await inspectRetirementMarketplace(ctx, binding, layout);
+        if (!before || !proof || proof.fingerprint !== before.fingerprint || identity.sourceLocation !== layout.packageRoot) fail('operationPlanStale');
+        const full = evidence.ownership.some((slot) => 'path' in slot.component && slot.component.path === layout.packageRoot
+          && ['present', 'partial'].includes(slot.state));
+        const hostRoot = layout.physicalIdentity.namespaceRoot;
+        const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : undefined;
+        const currentRoot = projectRoot ? path.join(projectRoot, binding.platform === 'codex' ? '.codex' : '.github/copilot') : hostRoot;
+        if (currentRoot !== layout.activationPath) fail('operationPlanStale');
+        const files = [{ file: path.join(currentRoot, binding.platform === 'codex' ? 'config.toml'
+          : projectRoot ? 'settings.local.json' : 'settings.json'), allowedRoot: projectRoot ?? hostRoot }];
+        if (projectRoot && full) files.push({ file: path.join(hostRoot, binding.platform === 'codex' ? 'config.toml' : 'settings.json'), allowedRoot: hostRoot });
+        // Validate all destinations before the first mutation. In particular,
+        // do not follow a Project config-directory link into another scope.
+        for (const { file, allowedRoot } of files) {
+          await assertSafeFileMutationPath({ filePath: file, allowedRoot, label: 'Native retirement activation' });
+        }
+        let changed = false;
+        try {
+          for (const { file, allowedRoot } of files) {
+            if (binding.route === 'codex-marketplace') {
+              const config = await readCodexConfigFile(file);
+              if (!config.snapshot.plugins[id]) continue;
+              await atomicReplaceSafeFile({ filePath: file, allowedRoot,
+                content: applyCodexConfigTransaction(config.content, { removePluginEntries: [id] }), label: 'Codex retirement activation',
+                beforeRename: async () => { if (await fs.readFile(file, 'utf8') !== config.content) fail('operationPlanStale'); } });
+              changed = true;
+            } else if (binding.route === 'copilot-marketplace') {
+              const settings = await readObject(file);
+              const current = settings.enabledPlugins;
+              if (current !== undefined && (!current || typeof current !== 'object' || Array.isArray(current))) fail('nativeConfigInvalid');
+              const entries = { ...(current as Record<string, unknown> | undefined) };
+              if (!Object.hasOwn(entries, id)) continue;
+              if (typeof entries[id] !== 'boolean') fail('nativeConfigInvalid');
+              delete entries[id];
+              const content = `${JSON.stringify({ ...settings, enabledPlugins: entries }, null, 2)}\n`;
+              const baseline = JSON.stringify(settings);
+              await atomicReplaceSafeFile({ filePath: file, allowedRoot, content, label: 'Copilot retirement activation',
+                beforeRename: async () => { if (JSON.stringify(await readObject(file)) !== baseline) fail('operationPlanStale'); } });
+              changed = true;
+            } else fail('nativeRouteUnsupported');
+          }
+        } catch (error) {
+          // The first exact scope edit may have committed before another
+          // fails. Do not erase that confirmed mutation from the receipt.
+          throw changed ? Object.assign(error instanceof Error ? error : new Error(String(error)), { mutation: 'confirmed' }) : error;
+        }
+        return { changed, mutation: changed ? 'confirmed' : 'none' };
+      }
       if (binding.route === 'codex-marketplace') {
         let changed = false;
         if (binding.scope.kind === 'project') {

@@ -210,6 +210,8 @@ describe('ConsoleAppV4', () => {
 
   it('opens source-missing saved settings from the user document when their source is missing', async () => {
     const loaded = loadResult();
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.filter((source) => source.id !== 'team-tools');
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((plugin) => !plugin.pluginId.startsWith('team-tools/'));
     loaded.configStoreInventory = [{
       pluginId: 'team-tools/retired-settings',
       sourceId: 'team-tools',
