@@ -5,16 +5,20 @@ import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
 import fs from 'fs-extra';
 import { expect, it, onTestFinished, vi } from 'vitest';
 
-import { runCli } from '../../src/index.js';
+import cliPackage from '../../package.json' with { type: 'json' };
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { runCli } from '../../src/index.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { renderPublicResult, type CommandResult } from '../../src/output/public-result.js';
 import * as registry from '../../src/platforms/registry.js';
 import { createConsoleTuiV4Controller } from '../../src/tui/controller-runtime.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { addCatalogSource, readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import * as safeFiles from '../../src/utils/safe-fs.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function shellRule(resource: string, effect: 'allow' | 'ask' | 'deny') {
   return { action: 'shell', resource, effect };
@@ -28,7 +32,7 @@ const managedAllow = shellRule('aw command run local/probe -- show *', 'allow');
 const managedAsk = shellRule('aw command run local/probe -- confirm *', 'ask');
 const managedDeny = shellRule('aw command run local/probe -- blocked *', 'deny');
 
-async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false, userBatch = false, extraPrefixes: string[] = []) {
+async function createPermissionFixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false, userBatch = false, extraPrefixes: string[] = []) {
   const { env, layout } = getCurrentSourceTestIsolation();
   const catalog = path.join(layout.fixtureCwd, 'catalog');
   const projectA = path.join(layout.fixtureCwd, 'project-a');
@@ -120,16 +124,42 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
     expect({ exitCode, status: result.status }, JSON.stringify(result.diagnostics)).toEqual({ exitCode: 0, status: 'success' });
     return result;
   }
+  return { catalog, env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
+}
+
+async function fixture(...args: Parameters<typeof createPermissionFixture>) {
+  const setup = await createPermissionFixture(...args);
+  const { catalog, projectA, success } = setup;
   await success(projectA, ['source', 'add', 'local', '--path', catalog, '--primary', '--no-auto-check', '--yes']);
   await success(projectA, ['source', 'sync', 'local', '--yes']);
   await success(projectA, ['target', 'set', 'opencode', '--context', 'user', '--force']);
-  return { env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
+  return setup;
+}
+
+async function preparePermissionMergeFixture(timing: ReturnType<typeof createCommandTestTiming>) {
+  const setup = await timing.measure('fixture-step', 'catalog.snapshot', () => createPermissionFixture());
+  const { catalog, env, projectA: cwd } = setup;
+  // Source registration and target selection are prerequisites, not part of the permission lifecycle under test.
+  await timing.measure('fixture-step', 'source.configure', async () => {
+    const { config, digest } = await readCatalogSourcesConfigSnapshot(env);
+    const nextConfig = await addCatalogSource(config, {
+      id: 'local', type: 'path', path: catalog, primary: true, autoCheck: false,
+    }, cwd);
+    await replaceCatalogSourcesConfig({ config: nextConfig, expectedDigest: digest, env });
+  });
+  await timing.measure('fixture-step', 'source.sync', () => syncCatalogSourceGeneration({
+    sourceId: 'local', cliVersion: cliPackage.version, cwd, env, impactConfirmed: true,
+  }));
+  await timing.measure('fixture-step', 'target.preferences', () => setTargets({ cwd, env, scope: 'user' }, ['opencode']));
+  return setup;
 }
 
 // Public lifecycle must write strict host config in the selected scope and release only the retiring owner's rules.
 it('merges two OpenCode owners and preserves manual rules through scoped sync and removal', async (test) => {
   const timing = createCommandTestTiming(test);
-  const { projectA, projectB, userConfig, projectConfig, success } = await timing.measure('fixture', 'opencode-permissions', () => fixture());
+  const { projectA, projectB, userConfig, projectConfig, success } = await timing.measure(
+    'fixture', 'opencode-permissions', () => preparePermissionMergeFixture(timing),
+  );
   const run = (phase: string, args: string[]) => timing.measure('command', phase, () => success(projectA, args));
   const userRules = [shellRule('*', 'allow'), shellRule('aw-other personal', 'ask')];
   const initialProjectRules = [shellRule('aw-other first', 'ask'), manualAllow, shellRule('aw-other last', 'deny')];
