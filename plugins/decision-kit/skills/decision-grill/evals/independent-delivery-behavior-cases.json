@@ -48,7 +48,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "围绕缓存压缩算法继续访谈。发布需要实测耗时证据，目前没有基准数据。可以确认我们愿意花更多CPU换存储，但不能猜测性能结果。",
+      "prompt": "围绕缓存压缩方案的用户体验与存储成本继续访谈。发布需要实测耗时证据，但本轮没有代表性样本或基准环境，暂不做实验。可以确认我们愿意花更多CPU换存储，但不能猜测性能结果。",
       "assertions": [
         "不发明测量值或阈值。",
         "说明所需测量和足以决定的条件，未自行运行生产实验或创建文件。"
@@ -76,7 +76,7 @@
       "tags": [
         "boundary"
       ],
-      "prompt": "请围绕离线阅读体验逐轮访谈，先决定启动策略，之后再决定无网络时的检索表现。允许在 planning/reading-mode/shape.md 保存这个主题已确认的决定；这是记录授权，不是整体方案确认。当前两项都未决定，不制作原型或改产品。",
+      "prompt": "请围绕离线阅读体验逐轮访谈，先决定启动策略，之后再决定无网络时的检索表现。允许在 planning/reading-mode/decisions.md 保存这个主题已确认的决定；这是记录授权，不是整体方案确认。当前两项都未决定，不制作原型或改产品。",
       "assertions": [
         "实际围绕上游启动取舍提问，并保留已确定的共享方向。",
         "用户明确确认这一批后，在指定记录中保存快速打开、后台补索引；未确认的检索行为仍列为开放问题。",
@@ -88,7 +88,7 @@
           "确认这一批采用快速打开，后台增量补齐索引。无网络时检索该怎样表现仍没决定，整个主题还没结束；我稍后继续。"
         ],
         "workspaceFiles": {
-          "planning/reading-mode/shape.md": "# 当前理解\n目标：离线阅读。\n共享方向：兼顾启动体验与离线可用性，具体取舍尚未确认。\n开放问题：启动策略；无网络时的检索表现。\n",
+          "planning/reading-mode/decisions.md": "# 当前理解\n目标：离线阅读。\n共享方向：兼顾启动体验与离线可用性，具体取舍尚未确认。\n开放问题：启动策略；无网络时的检索表现。\n",
           "src/reader.js": "export const readerMode = \"existing\";\n"
         }
       },
@@ -96,17 +96,17 @@
         "output": "保存这一批已确认内容和仍开放的检索问题，明确整体未完成确认；不要求先结束整个访谈才能记录，也不把部分记录当整体批准。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "planning/reading-mode/shape.md"
+          "planning/reading-mode/decisions.md"
         ],
         "artifacts": [
           {
-            "path": "planning/reading-mode/shape.md",
+            "path": "planning/reading-mode/decisions.md",
             "exists": true
           }
         ]
       },
       "audit": {
-        "rationale": "F-02：局部用户确认、记录授权与最终整体确认必须可区分。",
+        "rationale": "局部用户确认、记录授权与最终整体确认必须可区分。",
         "minimalCounterexample": "用户没有授权保存或只表示倾向而未确认时，不把候选写为确定决定。",
         "allowedVariance": "接受等价中文、文件组织与实现方式；实际条件不足标 unknown/unavailable，不用预置成功报告或最后回复代替真实读取、写入和独立上下文证据。"
       }

@@ -15,7 +15,7 @@
         }
       }
     },
-    "project-dev-build": {
+    "project-dev-workflow": {
       "platform": "codex",
       "scope": "project",
       "plugins": {
@@ -147,11 +147,11 @@
       "timeoutMs": 180000
     },
     {
-      "id": "trigger-dev-build",
+      "id": "trigger-dev-workflow",
       "kind": "trigger",
-      "cases": "trigger-dev-build-cases.json",
+      "cases": "trigger-dev-workflow-cases.json",
       "profiles": [
-        "project-dev-build"
+        "project-dev-workflow"
       ],
       "runs": 3,
       "timeoutMs": 180000

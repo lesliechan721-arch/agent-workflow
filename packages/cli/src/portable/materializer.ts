@@ -242,9 +242,13 @@ async function materializePluginCandidates(options: {
   }
 }
 
+// Match actual AW template syntax (template-engine vars/conditionals and {{aw.*}}
+// placeholders) without rejecting prose placeholders like {{用户目标}} in Skill assets.
+const UNRESOLVED_AW_TEMPLATE_PATTERN = /\{\{(?:aw\.[^{}\r\n]+|(?:#(?:if|unless)\s+)?[A-Za-z0-9_]+|\/(?:if|unless))\}\}/u;
+
 function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
   for (const [file, bytes] of Object.entries(candidate.tree.files)) {
-    if (/\{\{[^{}]+\}\}/u.test(bytes.toString('utf8'))) {
+    if (UNRESOLVED_AW_TEMPLATE_PATTERN.test(bytes.toString('utf8'))) {
       throw new Error(`Portable Skill "${candidate.tree.skillKey}" has an unresolved template in ${file}.`);
     }
   }

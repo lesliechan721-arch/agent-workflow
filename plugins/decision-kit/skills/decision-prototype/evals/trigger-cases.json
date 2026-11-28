@@ -78,8 +78,21 @@
         "evidence-required"
       ],
       "input": {
-        "query": "用最小技术 spike 验证浏览器端加密方案是否值得选，不要直接做生产实现。",
+        "query": "我还没决定是否在浏览器离线模式提供本地加密草稿。用最小技术 spike 验证代表性浏览器的能力，让我据此决定是否提供这项体验；不要做生产实现。",
         "expectedLoad": true
+      }
+    },
+    {
+      "id": "prototype_internal_technical_spike",
+      "split": "validation",
+      "tags": ["boundary", "internal-engineering-choice"],
+      "input": {
+        "query": "浏览器离线加密草稿的产品规则都已确定。用最小技术 spike 比较两个内部加密库的运行兼容性，选定实现，不需要我作产品决定。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "技术实验只涉及内部实现选型，不是让用户决定产品体验的原型。",
+        "minimalCounterexample": "若是否提供离线加密草稿仍未定且需要用户观察实测结果后决定，则应加载 decision-prototype。"
       }
     },
     {
@@ -134,6 +147,19 @@
         "minimalCounterexample": "改为需要实际看到或操作三个方案后再选择。",
         "errorCost": "high",
         "allowedVariance": "可以直接回答，但不应加载 decision-prototype。"
+      }
+    },
+    {
+      "id": "prototype_not_existing_material_reading",
+      "split": "validation",
+      "tags": ["boundary", "explanation-vs-experience"],
+      "input": {
+        "query": "审批规则已确认：草稿提交后进入待审，待审可撤回，批准后不可撤回。把这些既定状态关系做成可交互的阅读页，帮助我理解；不比较新方案，也不改变产品行为。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "交互形式用于理解已有材料而非体验未定候选，属于解释呈现。",
+        "minimalCounterexample": "若待审后能否撤回仍未决定且需要操作候选状态模型后选择，则应加载 decision-prototype。"
       }
     }
   ]

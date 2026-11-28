@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-verify"
+  short_description: "运行检查并解释真实证据范围。"
+  default_prompt: "使用 $dev-verify 验证当前版本的导入和错误恢复，保留真实运行输出。"
+policy:
+  allow_implicit_invocation: true

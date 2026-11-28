@@ -1,8 +1,6 @@
 # Decision Kit
 
-先看清需求全貌，再通过问答、可体验原型和领域知识维护，为重要决定建立准确的共享理解，减少遗漏和反复确认。
-
-Decision Kit 先调查可查事实，保留原始要求和开放问题，再按任务范围选择主题对齐、独立访谈、最低成本原型或知识维护。
+在动手设计或编码之前，通过有边界的逐轮访谈和最低成本的可丢弃体验原型，把未定的产品取舍、交互方向与隐藏假设落成清晰、可追溯的决定。
 
 ## 安装
 
@@ -11,66 +9,37 @@ aw target set codex claude
 aw plugin install decision-kit --scope user
 ```
 
-安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。AW 按目标核对组件能力，并提示客户端无法保证的调用控制。
+支持 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。
 
-安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-clearly`。普通短问题仍直接说明，不强制制作阅读页。
+安装会自动检查同源依赖 `human-content`，在复杂已有材料妨碍理解时提供 `explain-clearly`。普通短问题直接沟通，不强制制作阅读页。
 
 ## 包含的 Skill
 
 | Skill | 什么时候使用 |
 | --- | --- |
-| [`decision-shape`](skills/decision-shape/) | 检查需求整体覆盖，组织问答、原型与知识维护，交付当前共识及剩余缺口 |
-| [`decision-grill`](skills/decision-grill/) | 通过持续问答展开计划或重要选择，也支持明确限定的单项访谈 |
-| [`decision-prototype`](skills/decision-prototype/) | 用早期候选、操作演示或实验校准布局、行为、状态关系及可行性 |
-| [`project-context`](skills/project-context/) | 澄清领域概念与关系，及时维护已确认词义和重要决定的理由 |
-
-四个 Skill 都可以直接调用。`decision-shape` 负责整体需求覆盖、方法选择与对齐完成判断，协调问答、原型和知识维护，并按需使用 `explain-clearly` 呈现已有复杂材料。方向变化时只重新打开受影响的决定；范围内尚未展开的主题不会被当成已经排除。三个叶子能力可独立完成本职工作，不反向依赖 Shape。完整开发设计可使用 dev-workflow 插件的 `dev-design`，由它衔接对齐、规格和审查。
-
-`decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式，不必等文字讨论失败。Review Shell 负责呈现证据和收集输入。Shape 保留当前答案、接受范围、成立条件、必要风险和证据指针；Context 将确需长期保留且已确认的知识更新到既有位置。
+| [`decision-grill`](skills/decision-grill/README.md) | 围绕计划、业务规则或重要产品选择逐轮追问，主动暴露分支、假设与后果，直到关键取舍明确 |
+| [`decision-prototype`](skills/decision-prototype/README.md) | 布局、信息层级、操作流或状态关系难靠文字说清时，用低成本可丢弃原型取得真实反馈并记录接受边界 |
 
 ## 典型用法
 
 ```text
-把这个复杂的产品方向通过问答和必要原型完整塑形，最后给我一份当前有效的 Shape。
+围绕新的租户退出与数据保留规则逐轮问我，先查清楚仓库现状，把遗漏分支和后果问透。
 ```
 
 ```text
-围绕新的权限模型逐轮提问我，直到目标、取舍、失败路径和验证方式都清楚。
+这个审批页面的筛选和详情排布我拿不准，把两三种实质不同的方案放进同一个切换器里让我点点看。
 ```
 
-```text
-这个审批页面怎么排版我说不清。做一个可点击原型让我试。
-```
+## 两个 Skill 怎么选
 
-```text
-项目中的 account 同时指租户和登录账号。基于现有资料澄清词汇，并把已确认的定义维护到现有词汇表。
-```
-
-## 四个 Skill 怎么选
-
-- “检查需求有没有遗漏，建立或恢复共识并按需问答、试原型、维护知识” → `decision-shape`
-- “围绕这个计划逐轮追问，检查遗漏和重要后果” → `decision-grill`
-- “用具体候选或实验校准这一处体验、行为或技术选择” → `decision-prototype`
-- “澄清项目概念、关系，或维护已确认的重要词义与决定” → `project-context`
+- **想通过问答把目标、业务规则、分支和后果想清** → `decision-grill`
+- **想亲手体验具体布局、操作或状态演示再拍板** → `decision-prototype`
+- **只需把已有复杂文档、规格或机制讲清楚（不探索未定新方案）** → `explain-clearly`
 
 ## 边界
 
-- 能从代码、配置或文档查到的事实不会反复询问用户。
-- 普通实施任务中的局部歧义不会自动进入完整决策访谈。
-- `decision-shape` 只在调用者提供路径、仓库有约定或跨会话确有价值时写入 Shape。
-- 开发过程资料默认仅在本地 `.dev-workflows/<task>/` 保存，已有位置优先。长期术语与重要决定复用项目知识位置；没有等价位置且确有内容时可采用 `CONTEXT.md` 或 `docs/adr/`。只读请求不授权写入，普通文案修改无需调用知识维护能力。
-- `decision-grill` 根据实际答复继续展开范围内的重要分支；局部缺少证据时保留缺口，用户可随时暂停。保存遵循授权；综合产生新含义时再核对，清楚的回答无需机械重复确认。
-- 持久化原型保存问题、可重放证据和结论；只有标准网页 Review 或用户明确要求时才需要 `prototype.json`。构建和迭代默认委派一个 Builder；极小新建、局部微调或子代理不可用时由主代理完成，主代理负责必要验收。
-- `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。页面用 tabs 展示单个大预览，可按需并排比较；用户选择总体判断后，页面才显示相关评论、受控参数或 drawer 标注。页面只有一个提交动作，同一 revision 的首个有效反馈生效。Agent 优先使用用户可交互的原生预览，脚本的 `open` 操作提供本机默认浏览器兜底；脚本技术失败后由 Agent 使用系统浏览器能力打开同一 URL，均失败则输出 URL 供用户自行打开。权限拒绝不能绕过。所有 `submitted` 回执直接包含当前 revision 已校验的完整反馈和文件路径。原型不会自动成为生产实现。
-
-## Skill 导出
-
-四个 Skill 可按所选目标导出；完整依赖闭包同时提供 Human Content 的 `explain-clearly`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
-
-## Review 默认期限
-
-新会话默认有效 30 分钟。使用 `start --ttl` 可以设置本次会话期限，最大为 4 小时。
-
-页面显示剩余期限，支持显式延长或取消本次会话。服务会自行到期，提交成功后也会自行关闭。`wait` 应在工具限制内采用较长等待窗口，避免短轮询。超时只结束当前等待，不取消仍有效的会话。原型和已保存的反馈继续保留。
-
-Review Shell 的维护边界见 [`docs/prototype-review-ux.md`](docs/prototype-review-ux.md)，会话行为见 [`docs/prototype-review-runtime.md`](docs/prototype-review-runtime.md)。
+- **可查可跑的不问人**：能从仓库代码、配置或最小实验中确认的事实由 Agent 自行核查或实测后给出带证据的推荐，不抛给用户凭直觉猜；纯内部工程选型归工程设计，不拉用户做原型仪式。
+- **不自动实施产品**：两项能力停在确认共识与记录接受边界，不自动修改生产代码；原型明确标注为一次性临时产物，复用为生产实现需另行决定并按工程标准重评估。
+- **提交不等于接受**：多轮原型修订递增 revision，旧 revision 的反馈不能批准新版本；构建子代理交付演示也不等于用户已接受。
+- **本机 Review 会话**：按需启动仅绑定本机的网页 Review 服务，默认有效 30 分钟（`start --ttl` 最高 4 小时），支持页面延长或取消，提交成功后自动关闭并保留原型与已校验反馈文件。
+- **写入与外部动作**：持久化原型默认写入调用方指定目录或 `.dev-workflows/<decision-id>/prototypes/`，不覆盖生产源码；只读请求不触发写入。

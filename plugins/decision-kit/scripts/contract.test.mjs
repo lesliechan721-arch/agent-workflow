@@ -13,10 +13,8 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
-const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape', 'project-context'];
-const leafSkills = ['decision-grill', 'decision-prototype'];
-const decisionSkills = [...leafSkills, 'decision-shape', 'project-context'];
-const alignmentSkills = [...decisionSkills, 'explain-clearly'];
+const requiredSkills = ['decision-grill', 'decision-prototype'];
+const availableSkills = [...requiredSkills, 'explain-clearly'];
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -95,7 +93,7 @@ function assertCaseDocument(document, skillName, availableSkills) {
 
 const context = await resolveContext();
 
-test('manifest exposes the four decision and project knowledge Skills', async () => {
+test('manifest exposes a static decision plugin without native agents or engineering dependencies', async () => {
   const manifest = await readJson(path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'));
 
   assert.equal(manifest.name, 'decision-kit');
@@ -108,9 +106,11 @@ test('manifest exposes the four decision and project knowledge Skills', async ()
   assert.equal(manifest.artifacts, undefined);
   assert.equal(manifest.scripts.artifacts, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
+  assert.deepEqual(manifest.dependencies, ['human-content']);
+  assert.equal(manifest.extensions?.agents?.length ?? 0, 0);
 });
 
-test('source package contains the four public Skills and native metadata', async () => {
+test('source package contains the two public Skills and native metadata', async () => {
   const sourceSkillNames = new Set(await readdir(path.join(context.sourceRoot, 'skills')));
   assert.deepEqual([...sourceSkillNames].sort(), [...requiredSkills].sort());
   for (const skillName of requiredSkills) {
@@ -126,7 +126,7 @@ test('source package contains the four public Skills and native metadata', async
 });
 
 test('eval manifests point to parseable case documents with valid participant names', async () => {
-  const participants = new Set(alignmentSkills);
+  const participants = new Set(availableSkills);
   for (const skillName of requiredSkills) {
     const evalRoot = path.join(context.sourceRoot, 'skills', skillName, 'evals');
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
@@ -137,9 +137,10 @@ test('eval manifests point to parseable case documents with valid participant na
     for (const suite of manifest.suites) {
       const casePath = path.resolve(evalRoot, suite.cases);
       await access(casePath);
-      assertCaseDocument(await readJson(casePath), skillName, participants);
-      if (suite.fixtureModule) {
-        await access(path.resolve(evalRoot, suite.fixtureModule));
+      const corpus = assertCaseDocument(await readJson(casePath), skillName, participants);
+      assert.equal(corpus.suite.kind, suite.kind);
+      if (corpus.suite.runtime?.fixture) {
+        await access(path.resolve(evalRoot, corpus.suite.runtime.fixture));
       }
       if (suite.kind === 'codex-workflow') {
         assert.equal(suite.provider?.type, 'codex-workflow');
@@ -235,13 +236,11 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     });
     assert.equal(prepared.sandbox, 'workspace-write');
     assert.equal(prepared.model, null);
-    assert.equal(prepared.roles[0].name, 'prototype-builder');
-    assert.equal(prepared.roles[0].configFile, '.codex/agents/prototype-builder.toml');
-    const builderConfig = await readFile(
-      path.join(fixtures[0].paths.workspace, prepared.roles[0].configFile), 'utf8',
+    assert.deepEqual(prepared.roles, []);
+    await assert.rejects(
+      access(path.join(fixtures[0].paths.workspace, '.codex', 'agents')),
+      (error) => error?.code === 'ENOENT',
     );
-    assert.match(builderConfig, /只创建或修改指定 Prototype 的 artifact\/\*\*/u);
-    assert.doesNotMatch(builderConfig, /^model(?:_reasoning_effort)?\s*=/mu);
 
     const prototypeRoot = path.join(
       fixtures[0].paths.workspace,
@@ -290,7 +289,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       workspaceDiff: { added, modified: [], removed: [] },
       threadGraph: [
         { threadId: 'root', parentThreadId: null },
-        { threadId: 'builder', parentThreadId: 'root', agentRole: 'prototype-builder' },
+        { threadId: 'builder', parentThreadId: 'root', agentRole: 'worker' },
       ],
       collaborationCalls: [
         {
@@ -303,7 +302,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
         {
           threadId: 'root',
           tool: 'spawn_agent',
-          arguments: { agent_type: 'prototype-builder' },
+          arguments: { agent_type: 'worker' },
         },
         {
           threadId: 'builder',
@@ -337,6 +336,16 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[0].paths,
     });
     assert.equal(passing.passed, true, JSON.stringify(passing.details));
+
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify({
+      ...evidence,
+      cleanup: { isolatedCodexHomeRemoved: false },
+    }));
+    await assert.rejects(
+      gradeBuilderWorkflow({ case: persistent, variant: 'current', paths: fixtures[0].paths }),
+      /workflow evidence does not show clean completion/,
+    );
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
 
     evidence.collaborationCalls.push({
       ordinal: evidence.collaborationCalls.length + 1,
@@ -428,8 +437,8 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
 
     const builderThread = evidence.threadGraph[1];
     const builderSpawn = evidence.collaborationCalls.find((entry) => entry.tool === 'spawn_agent');
-    builderThread.agentRole = 'worker';
-    builderSpawn.arguments.agent_type = 'worker';
+    delete builderThread.agentRole;
+    delete builderSpawn.arguments.agent_type;
     await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
     const genericBuilder = await gradeBuilderWorkflow({
       case: persistent,
@@ -441,8 +450,8 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       genericBuilder.details.assertions.find((entry) => entry.name === 'builder_delegation').passed,
       true,
     );
-    builderThread.agentRole = 'prototype-builder';
-    builderSpawn.arguments.agent_type = 'prototype-builder';
+    builderThread.agentRole = 'worker';
+    builderSpawn.arguments.agent_type = 'worker';
     await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
 
     const validPrototype = await readFile(path.join(prototypeRoot, 'prototype.json'), 'utf8');
@@ -513,7 +522,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       },
       threadGraph: [
         { threadId: 'root', parentThreadId: null },
-        { threadId: 'builder', parentThreadId: 'root', agentRole: 'prototype-builder' },
+        { threadId: 'builder', parentThreadId: 'root', agentRole: 'worker' },
       ],
       collaborationCalls: [
         {
@@ -526,7 +535,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
         {
           threadId: 'root',
           tool: 'spawn_agent',
-          arguments: { agent_type: 'prototype-builder' },
+          arguments: { agent_type: 'worker' },
         },
         {
           threadId: 'builder',
@@ -831,8 +840,8 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
   }
 });
 
-test('leaf scopes stay independent and composition suites expose their methods', async () => {
-  for (const skillName of leafSkills) {
+test('routing and presentation-handoff cases expose the required Skills', async () => {
+  for (const skillName of requiredSkills) {
     const manifest = await readJson(
       path.join(context.sourceRoot, 'skills', skillName, 'evals', 'manifest.json'),
     );
@@ -842,7 +851,7 @@ test('leaf scopes stay independent and composition suites expose their methods',
     ));
     assert.deepEqual(
       [routerCorpus.suite.unitUnderTest, ...(routerCorpus.suite.participants ?? [])].sort(),
-      [...leafSkills].sort(),
+      [...requiredSkills].sort(),
     );
     assert.equal(routerCorpus.suite.runtime.forbidMultipleSkillLoads, true);
 
@@ -861,42 +870,9 @@ test('leaf scopes stay independent and composition suites expose their methods',
       }
     }
   }
+});
 
-  const shapeManifest = await readJson(
-    path.join(context.sourceRoot, 'skills', 'decision-shape', 'evals', 'manifest.json'),
-  );
-  const shapeRouter = shapeManifest.suites.find((suite) => suite.id === 'router');
-  const shapeEvalRoot = path.join(context.sourceRoot, 'skills', 'decision-shape', 'evals');
-  const shapeRouterCorpus = await readJson(path.join(shapeEvalRoot, shapeRouter.cases));
-  assert.deepEqual(
-    [shapeRouterCorpus.suite.unitUnderTest, ...(shapeRouterCorpus.suite.participants ?? [])].sort(),
-    [...alignmentSkills].sort(),
-  );
-  assert.equal(shapeRouterCorpus.suite.runtime.forbidMultipleSkillLoads, false);
-  // Isolated composition suites must expose every declared method to their consumer.
-  for (const id of ['behavior', 'shared-frame', 'prototype-evidence', 'alignment-coverage']) {
-    const suite = shapeManifest.suites.find((entry) => entry.id === id);
-    assert.ok(suite);
-    const corpus = await readJson(path.join(shapeEvalRoot, suite.cases));
-    assert.deepEqual(
-      [corpus.suite.unitUnderTest, ...(corpus.suite.participants ?? [])].sort(),
-      [...alignmentSkills].sort(),
-    );
-  }
-  const sharedFrameSuite = shapeManifest.suites.find((suite) => suite.id === 'shared-frame');
-  assert.ok(sharedFrameSuite);
-  assert.equal(sharedFrameSuite.cases, 'shared-frame-cases.json');
-  const sharedFrameCorpus = await readJson(path.join(shapeEvalRoot, sharedFrameSuite.cases));
-  assert.deepEqual(
-    sharedFrameCorpus.cases.map((entry) => entry.id),
-    [
-      'shape-shares-provisional-frame',
-      'shape-passes-frame-to-prototype',
-      'shape-passes-frame-to-grill',
-      'frame-change-reopens-affected-only',
-    ],
-  );
-
+test('prototype release cases provide production fixtures while limiting changes to prototypes', async () => {
   const prototypeRoot = path.join(context.sourceRoot, 'skills', 'decision-prototype', 'evals');
   const behavior = await readJson(
     path.join(prototypeRoot, 'decision-prototype-release-evals.json'),
@@ -918,28 +894,6 @@ test('leaf scopes stay independent and composition suites expose their methods',
       true,
     );
   }
-});
-
-test('published leaf Skills stay independent and the macro stays generic', async () => {
-  const grill = await readFile(
-    path.join(context.sourceRoot, 'skills', 'decision-grill', 'SKILL.md'),
-    'utf8',
-  );
-  const prototype = await readFile(
-    path.join(context.sourceRoot, 'skills', 'decision-prototype', 'SKILL.md'),
-    'utf8',
-  );
-  const shape = await readFile(
-    path.join(context.sourceRoot, 'skills', 'decision-shape', 'SKILL.md'),
-    'utf8',
-  );
-
-  // Static contract exception: leaf independence and reverse coupling are properties of the published instruction text itself, so runtime behavior cannot prove that the forbidden dependency is absent.
-  assert.doesNotMatch(grill, /decision-shape|decision-prototype/);
-  assert.doesNotMatch(prototype, /decision-shape|decision-grill/);
-  assert.match(shape, /decision-grill/);
-  assert.match(shape, /decision-prototype/);
-  assert.doesNotMatch(shape, /\bdev-workflow\b|docs\/dev|Fast|Standard|Assured/);
 });
 
 test('plan-review cases receive an actual migration plan fixture', async () => {
@@ -967,7 +921,7 @@ test('plan-review cases receive an actual migration plan fixture', async () => {
   }
 });
 
-test('prepared bundle renders the four static Skills on every supported platform', async () => {
+test('prepared bundle renders the two static Skills on every supported platform', async () => {
   if (!context.platform) return;
 
   const platformManifest = await readJson(
@@ -979,33 +933,44 @@ test('prepared bundle renders the four static Skills on every supported platform
     context.bundleRoot, '.agents-plugin', 'plugin.json',
   ));
   // Dependency resolution consumes the published manifest, not prose calls.
-  assert.ok(bundleManifest.dependencies.includes('human-content'));
+  assert.deepEqual(bundleManifest.dependencies, ['human-content']);
 
   for (const platform of bundleManifest.platforms) {
+    assert.deepEqual(
+      (await readdir(path.join(context.bundleRoot, platform, 'skills'))).sort(),
+      [...requiredSkills].sort(),
+    );
     for (const skillName of requiredSkills) {
       const skillRoot = path.join(context.bundleRoot, platform, 'skills', skillName);
       const skill = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
       await access(path.join(skillRoot, 'README.md'));
-      // Static contract exception: portable Skill text must not bind questioning to a platform tool name; behavior tests cannot observe consumer-read Skill text.
+      if (platform === 'codex') {
+        assertOpenAiMetadata(await readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8'), skillName);
+      }
+      // Static contract exception: platform-specific question tool names make portable instructions unusable with some hosts; behavior test is not suitable because all shipped variants must be checked for the absent binding.
       assert.equal(skill.includes('`request_user_input`'), false);
       assert.equal(skill.includes('`AskUserQuestion`'), false);
       assert.equal(skill.includes('{{questionTool}}'), false);
+      // Static contract exception: an engineering-plugin reference in a standalone decision Skill creates an undeclared cross-plugin dependency; behavior test is not suitable because absence must be checked across the shipped instructions.
+      assert.doesNotMatch(skill, /\bdev-workflow\b/);
     }
     const prototypeRoot = path.join(context.bundleRoot, platform, 'skills', 'decision-prototype');
-    await access(path.join(prototypeRoot, 'assets', 'prototype-verdict.md'));
-    await access(path.join(prototypeRoot, 'references', 'prototype-review.md'));
+    for (const resource of [
+      'assets/prototype-brief.md',
+      'assets/prototype-verdict.md',
+      'assets/prototype.schema.json',
+      'assets/feedback.schema.json',
+      'assets/review-shell/index.html',
+      'references/prototype-review.md',
+      'references/ui-prototype.md',
+      'references/logic-prototype.md',
+      'scripts/prototype-review.mjs',
+    ]) {
+      await access(path.join(prototypeRoot, resource));
+    }
+    await assert.rejects(
+      access(path.join(prototypeRoot, 'references', 'prototype-review-runtime.md')),
+      (error) => error?.code === 'ENOENT',
+    );
   }
-
-  const prototypeBundleRoot = path.join(
-    context.bundleRoot,
-    context.platform,
-    'skills',
-    'decision-prototype',
-  );
-  await access(path.join(prototypeBundleRoot, 'assets', 'prototype-verdict.md'));
-  await access(path.join(prototypeBundleRoot, 'references', 'prototype-review.md'));
-  await assert.rejects(
-    access(path.join(prototypeBundleRoot, 'references', 'prototype-review-runtime.md')),
-    (error) => error?.code === 'ENOENT',
-  );
 });

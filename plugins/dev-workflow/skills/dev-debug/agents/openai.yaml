@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-debug"
+  short_description: "用复现和区分实验建立因果诊断。"
+  default_prompt: "使用 $dev-debug 定位这个偶发超时的原因，先亲手复现并取得诊断证据。"
+policy:
+  allow_implicit_invocation: true

@@ -39,7 +39,7 @@
       },
       "audit": {
         "rationale": "这是技术说明和难度评估，应直接回答。",
-        "minimalCounterexample": "若用户要求逐轮权衡 runner 取舍并共同决定，则应只加载 decision-grill。",
+        "minimalCounterexample": "若用户要求逐轮决定凭据能否离开本机、可接受的等待时间及其产品后果，则应只加载 decision-grill。",
         "errorCost": "high",
         "allowedVariance": "说明内容可以不同，但不能加载任一 participant Skill。"
       }
@@ -62,7 +62,7 @@
       },
       "audit": {
         "rationale": "这是一次性比较和推荐，应直接回答。",
-        "minimalCounterexample": "若用户要求逐轮参与凭据、运维和工作树取舍，则应只加载 decision-grill。",
+        "minimalCounterexample": "若用户要求逐轮决定凭据使用范围及用户可接受的运维负担，则应只加载 decision-grill。",
         "errorCost": "high",
         "allowedVariance": "推荐内容可以不同，但不能加载任一 participant Skill。"
       }
@@ -77,7 +77,7 @@
         "runner-request-mode"
       ],
       "input": {
-        "query": "逐轮问我凭据、运维和工作树取舍，压力测试本地 MCP runner 和 CI runner，直到我们形成共同决定。",
+        "query": "本地 MCP runner 和 CI runner 都可行，但凭据能否离开用户本机、用户可接受的等待时间和运维负担还没定。请逐轮问我这些产品取舍，直到我们形成共同决定，再由你做内部技术选型。",
         "expected": {
           "loadedSkills": [
             "decision-grill"
@@ -86,8 +86,8 @@
         "useProjectRules": false
       },
       "audit": {
-        "rationale": "用户明确要求围绕 runner 决策进行逐轮访谈。",
-        "minimalCounterexample": "若用户只要说明、比较或直接推荐，则不应加载任一 participant Skill。",
+        "rationale": "用户明确保留凭据使用规则等重要产品取舍，要求逐轮访谈；内部选型留给工程设计。",
+        "minimalCounterexample": "若这些产品规则已明确，只需选 runner 的内部实现，则不应加载任一 participant Skill。",
         "errorCost": "high",
         "allowedVariance": "问题顺序可以不同，但必须只加载 decision-grill。"
       }
@@ -110,7 +110,7 @@
         "useProjectRules": false
       },
       "audit": {
-        "rationale": "具体实施结果存在关键需求歧义。",
+        "rationale": "具体实施结果存在一个关键需求歧义，可直接询问，无须展开访谈。",
         "minimalCounterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应只加载 decision-grill。",
         "errorCost": "high",
         "allowedVariance": "可以先查仓库，但不应加载任何 Decision Kit Skill。"
@@ -305,7 +305,7 @@
       },
       "audit": {
         "rationale": "用户已明确委托内部选择。",
-        "minimalCounterexample": "若用户保留关键取舍并要求逐轮共同选择，则应只加载 decision-grill。",
+        "minimalCounterexample": "若用户保留日志的查看权限、保留期限等产品取舍并要求逐轮共同选择，则应只加载 decision-grill。",
         "errorCost": "high",
         "allowedVariance": "选型结果可以不同，但不能加载任一 participant Skill。"
       }

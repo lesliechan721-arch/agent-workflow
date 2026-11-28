@@ -15,7 +15,7 @@ Agent Workflows (AW) 不试图将单一开发方法强加给所有任务。它�
 - **用户控制宏流程**：会产生重要副作用或改变工作流向的入口保持用户显式触发。
 - **机械工作交给工具**：安装、配置、物化与确定性校验由 CLI 自动完成。
 - **状态留在项目中**：长期信息写入 Spec、Issue、Git 等可恢复载体，不只留在对话上下文中。
-- **按风险增加保障**：小任务快速完成；高风险任务按需增加澄清、规格、隔离与双轴审查。
+- **按风险增加保障**：小任务快速完成；高风险任务按需增加澄清、规格、隔离与独立审查。
 - **通过真实评测精简**：Skill 存废与提示词优化由真实的 with/without-skill 评测结果驱动。
 
 ---
@@ -98,13 +98,13 @@ aw plugin status --context user
 ## 使用示例
 
 ### 在实现前问清关键需求
-`decision-kit` 调查现有代码与项目约定，只询问会明显改变设计、范围或验收的核心问题。
+`decision-grill` 先查现有代码与项目约定，再通过逐轮问答澄清关键取舍、分支与后果。
 
 ### 用原型帮助作出决定
-`decision-prototype` 制作回答单一问题的轻量可丢弃原型，记录用户确认的技术决策。
+`decision-prototype` 制作回答具体布局、操作或状态关系问题的轻量可丢弃原型，记录用户确认的接受边界。
 
 ### 启动结构化开发流程
-Codex 使用 `$dev-workflow`（或 `$dev-design` / `$dev-build` / `$dev-review-loop`），Claude Code 使用 `/dev-workflow:dev-workflow`（平台插件 Skill 命名空间调用语法）协调规范开发，小任务走快速通道，复杂任务跨会话接续。详见 [dev-workflow README](plugins/dev-workflow/README.md)。
+Codex 使用 `$dev-workflow`，Claude Code 使用 `/dev-workflow:dev-workflow`（平台插件 Skill 命名空间调用语法），按目标进入设计、功能、故障修复、重构、性能、持续优化或大型组合路线。只需开发设计时可显式调用 `dev-design`。详见 [dev-workflow README](plugins/dev-workflow/README.md)。
 
 ### 创建一个只包含本次改动的提交
 `git-commit` 保护范围外的 index 与工作树，创建符合规范的本地提交，绝不隐式 push。

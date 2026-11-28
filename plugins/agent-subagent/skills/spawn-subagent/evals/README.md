@@ -33,9 +33,9 @@ strict 语料分成 train（12）、validation（10）和不参与 description �
 
 standard 组合性诊断语料另有 8 条，并把 `spawn-subagent` 与 `explore-facts` 同时列为 participant。它使用精确 loaded-skill 集合检查：只授权或只指定模型/上下文、不提供完整代理管理时由 guide 接管；真实的大范围事实探索由 Explore 确定事实范围，再由 Guide 处理执行；专用 fixture skill 已完整拥有当前委派生命周期时，两者都不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture。
 
-`trigger-dev-build` 使用 `project-dev-build` profile 物化真实 `dev-workflow`，覆盖明确委派要求下的 Build 与 guide 组合。用户只点名 `dev-build`，给出两个已确认且可独立验收的工作项，并明确要求本轮启动子代理承担首个工作项的只读实施核对，符合 trigger provider 的只读环境。用例检查 Build、guide 均加载且实际启动子代理，允许其它辅助技能；不证明 Build 自主决定委派、加载先后、产品实施或完整生命周期。已有 `trigger-composition` 中的专用生命周期负例继续检查误触发边界。
+`trigger-dev-workflow` 使用 `project-dev-workflow` profile 物化真实 `dev-workflow`，覆盖明确委派要求下的工作流与 guide 组合。用户以普通文字显式调用 `dev-workflow` 的 feature 路线，给出两个已确认且可独立验收的工作项，并明确要求本轮启动子代理承担首个工作项的只读实施核对，符合 trigger provider 的只读环境。用例检查 `dev-workflow`、guide 均加载且实际启动子代理，允许其它辅助技能；不证明工作流自主决定委派、路线正文读取、加载先后、产品实施或完整生命周期。已有 `trigger-composition` 中的专用生命周期负例继续检查误触发边界。
 
-其中 `real_explore_owner_route` 是真实 `explore-facts` 的排除用例：要求加载 Explore 并实际委派，要求同一父协调加载 Guide 处理执行。它与 `dev_build_partial_dispatch_requires_guide` 分别覆盖领域协调与通用执行组合，以及局部工作流调度，可用 `--case` 定向准备这两个 V2 用例。
+其中 `real_explore_owner_route` 是真实 `explore-facts` 的排除用例：要求加载 Explore 并实际委派，要求同一父协调加载 Guide 处理执行。它与 `dev_workflow_partial_dispatch_requires_guide` 分别覆盖领域协调与通用执行组合，以及局部工作流调度，可用 `--case` 定向准备这两个用例。
 
 每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并保留用例声明的组合加载集合。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 只表示请求调用；加载证据来自正确 participant 的成功 `SKILL.md` 读取，或匹配本次线程、轮次、名称和完整路径的受信任原生注入记录。必要证据不可用时记录执行错误；spawn 还要求原始 rollout 参数证据。
 
@@ -44,7 +44,7 @@ aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile proj
 aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-validation --json
 aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-sanity --json
 aw dev eval prepare agent-subagent spawn-subagent --suite trigger-composition --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-composition --json
-aw dev eval prepare agent-subagent spawn-subagent --suite trigger-dev-build --profile project-dev-build --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-dev-build --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger-dev-workflow --profile project-dev-workflow --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-dev-workflow --json
 ```
 
 ## Routing 参数评估

@@ -53,8 +53,6 @@ const MAX_SKILL_COMPATIBILITY_LEN = 500;
 const MAX_SKILL_SHORT_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_LINES = 500;
 const MAX_OPENAI_INTERFACE_NAME_LEN = 64;
-const MIN_OPENAI_INTERFACE_DESCRIPTION_LEN = 25;
-const MAX_OPENAI_INTERFACE_DESCRIPTION_LEN = 64;
 const MAX_OPENAI_DEFAULT_PROMPT_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_TYPE_LEN = 64;
 const MAX_OPENAI_DEPENDENCY_TRANSPORT_LEN = 64;
@@ -627,24 +625,6 @@ function validateCodexMetadataString(record, key, fieldName, maxLength, required
     error(`${fieldName}.${key} must be <= ${maxLength} characters`);
   }
 
-  return sanitized;
-}
-
-function validateCodexShortDescription(record, fieldName) {
-  const sanitized = validateCodexMetadataString(
-    record,
-    'short_description',
-    fieldName,
-    MAX_OPENAI_INTERFACE_DESCRIPTION_LEN,
-  );
-  if (
-    sanitized !== null &&
-    countCharacters(sanitized) < MIN_OPENAI_INTERFACE_DESCRIPTION_LEN
-  ) {
-    error(
-      `${fieldName}.short_description must be >= ${MIN_OPENAI_INTERFACE_DESCRIPTION_LEN} characters`,
-    );
-  }
   return sanitized;
 }
 

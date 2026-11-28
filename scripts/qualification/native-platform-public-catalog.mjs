@@ -6,16 +6,36 @@ import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGr
 import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
-// Candidate plugins own no native roles (all three deliver Skills and/or main-session instructions only).
+// Candidate plugins own no native roles (all deliver Skills and/or main-session instructions only).
 const candidateRoleSkills = { 'agent-subagent': {},
   'agent-explore': {}, 'agent-advisor': {} };
-export const shippedSkills = { 'agent-subagent': 'spawn-subagent', 'agent-explore': 'explore-facts', 'agent-advisor': 'consult-advisor' };
+export const shippedDynamicPlugins = {
+  'agent-subagent': { skills: ['spawn-subagent'], instructions: [], roles: [] },
+  'agent-explore': { skills: ['explore-facts'], instructions: ['explore-facts-trigger'], roles: [] },
+  'agent-advisor': { skills: ['consult-advisor'], instructions: ['consult-advisor-trigger'], roles: [] },
+  'dev-workflow': {
+    skills: [
+      'dev-architect', 'dev-arena', 'dev-benchmark', 'dev-correct', 'dev-debug', 'dev-design',
+      'dev-investigate', 'dev-review', 'dev-tdd', 'dev-verify', 'dev-verify-author', 'dev-workflow',
+    ],
+    instructions: [],
+    roles: [],
+  },
+};
 // Immutable historical beta.76 source, bound to the digest below; not a current plugin set.
 const frozenRoleSkills = { 'agent-subagent': { subagent: 'skills/spawn-subagent/assets/task-instructions.md' },
   'codex-enhance': { 'codex-explore': 'skills/codex-explore/assets/explore-instructions.md',
     'codex-advisor': 'skills/codex-advisor/assets/advisor-instructions.md' } };
-export const shippedRoles = Object.fromEntries(Object.entries(candidateRoleSkills).map(([plugin, roles]) => [plugin, Object.keys(roles).sort()]));
 export const rolePlatform = platform => !['generic', 'opencode'].includes(platform);
+
+function authoredSkillMarker(skill, label) {
+  // Platform projections can translate frontmatter and command bindings.
+  // Read back an authored body line at the actual native publication path.
+  const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
+  const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('{{') && !line.includes('<!--'));
+  assert(authored, label + ' must have an authored body');
+  return authored;
+}
 
 async function readGrokPersonalCopies(ctx, providers) {
   const workspace = await fs.realpath(path.join(ctx.env.AW_HOME, 'runtime', 'user'));
@@ -239,7 +259,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     }
     let skills;
     if (!frozen) {
-      const name = shippedSkills[plugin];
+      const [name] = shippedDynamicPlugins[plugin].skills;
       assert(!gaps.some(gap => gap.providerPluginId === id && gap.kind === 'skill'));
       assert.equal(roleGaps.length, expectRoles ? 0 : Object.keys(roles).length);
       skills = [await readInstalled(ctx, nativePath(ctx, { id }, 'skill', packageRoot, name), name)];
@@ -294,7 +314,7 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
       if (plugin === 'agent-subagent') {
         await assert.rejects(fs.stat(path.join(directory, 'agents', `aw-${catalogId}-${plugin}-subagent.md`)), { code: 'ENOENT' });
       }
-      const skill = shippedSkills[plugin];
+      const [skill] = shippedDynamicPlugins[plugin].skills;
       installed.push({ name: skill, ...await readInstalled(ctx, nativePath(ctx, { id }, 'skill', directory, skill), skill) });
       report.upgrade.plugins[plugin] = { version: entry.version, artifactDigest: entry.artifactDigest, installed };
     }
@@ -305,24 +325,36 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
       const id = catalogId + '/' + entry.name;
       try {
         const manifest = JSON.parse(await fs.readFile(path.join(catalog, entry.source, manifestFile), 'utf8'));
-        const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
         const install = await ctx.aw(['plugin', 'install', id, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
         const receipt = targetOf(install, ctx, id);
         const verified = [];
-        for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
-          if (!dir.isDirectory()) continue;
-          const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
-          let skill;
-          try { skill = await fs.readFile(sourceFile, 'utf8'); }
-          catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-          assert(!(receipt.componentGaps ?? []).some(gap => gap.providerPluginId === id && gap.kind === 'skill' && gap.name === dir.name));
-          // Platform projections can translate frontmatter and command bindings.
-          // Read back an authored body line at the actual native publication path.
-          const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
-          const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('{{'));
-          assert(authored, id + '/' + dir.name + ' must have an authored body');
-          const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
-          verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });
+        if (manifest.skills) {
+          const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
+          for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
+            if (!dir.isDirectory()) continue;
+            const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
+            let skill;
+            try { skill = await fs.readFile(sourceFile, 'utf8'); }
+            catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+            assert(!(receipt.componentGaps ?? []).some(gap => gap.providerPluginId === id && gap.kind === 'skill' && gap.name === dir.name));
+            const authored = authoredSkillMarker(skill, id + '/' + dir.name);
+            const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
+            verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });
+          }
+        } else if (manifest.scripts?.artifacts?.render) {
+          const expectedRenderer = shippedDynamicPlugins[entry.name];
+          assert(expectedRenderer?.skills?.length, `Add an independent output expectation for shipped renderer ${entry.name}`);
+          assert.deepEqual(expectedRenderer.instructions, [], `${id}: unexpected dynamic instructions in non-role catalog loop`);
+          assert.deepEqual((receipt.componentGaps ?? []).filter(gap => gap.providerPluginId === id), [], `${id}: unexpected component gaps`);
+          for (const name of expectedRenderer.skills) {
+            const sourceFile = path.join(catalog, entry.source, 'skills', name, 'SKILL.md');
+            const skill = await fs.readFile(sourceFile, 'utf8');
+            const authored = authoredSkillMarker(skill, id + '/' + name);
+            const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), name);
+            verified.push({ name, ...await readInstalled(ctx, file, authored) });
+          }
+        } else {
+          throw new Error(`Unsupported catalog plugin layout without static skills or renderer: ${entry.name}`);
         }
         assert(verified.length > 0);
         report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, skills: verified };

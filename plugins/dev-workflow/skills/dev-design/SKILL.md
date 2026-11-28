@@ -1,12 +1,20 @@
 ---
 name: dev-design
-description: 当用户显式选择从需求对齐到可交接设计的阶段工作时使用。组织对齐、规格、独立审查和有界修订，在设计边界结束；独立访谈、原型、知识维护或局部规格编写使用对应能力。
+description: 形成或修订可实施的开发设计与可选规格，内置跨阶段工程判据并严格停在写代码之前。
 user-invocable: true
 disable-model-invocation: true
+compatibility: AW 支持的宿主；按需协作 decision-kit、human-content 与同插件工程能力，不自动修改产品代码。
+metadata:
+  short-description: 形成可直接施工的开发设计与按需规格，严格停在写代码之前
 ---
 
 # Dev Design
 
-负责设计阶段的来源、授权、修订协调与用户确认，不实施产品。已有有效决定直接复用，正式规格与独立审查由相应能力负责。
+<!-- design-playbook -->
 
-用户启动后读取并采用 设计协调（`references/methods/design.md`），在当前范围和授权内执行。只读限制、累计预算与停止点保持；共享方法不授权其他自动技能启动本流程。
+<!-- core-discipline -->
+
+## 位置与恢复
+
+- 首次保存、建立交接记录或替换旧设计依据前，读取 `references/workspace.md`；会话中断或写入归属不明时读取 `references/recovery.md`。
+- 交付可直接实施的设计依据（调用示例、具体类型/边界、状态归属、未决项与验证入口）；仅在用户或项目明确要求完整规格时输出完整文档。

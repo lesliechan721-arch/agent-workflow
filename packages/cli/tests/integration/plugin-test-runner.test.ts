@@ -303,7 +303,7 @@ describe('plugin script test runner', () => {
     const nodeShardsByPlugin: Record<string, number[]> = {
       'agent-skill-toolkit': [1, 3, 2],
       'aw-development-toolkit': [2, 3, 1],
-      'dev-workflow': [1, 3, 2],
+      'dev-workflow': [1, 2, 3],
       'git-commit': [1, 2, 3],
     };
     for (const plugin of Object.keys(nodeShardsByPlugin)) {

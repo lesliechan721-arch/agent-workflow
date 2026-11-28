@@ -23,7 +23,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式；请创建 brief.md、prototype.json，以及两个可直接读取比较的临时静态线框 artifact/compact.html 和 artifact/risk-first.html。brief.md 要标明这是临时原型。prototype.json 使用 v2、revision 1 和单选模式；问题是审批页应采用哪个信息层级，目标是比较审批页信息层级，优先保证风险摘要可见和审批操作清楚，约束是只制作静态线框且本轮不作最终决定；两个完整 option 分别用 id compact、label 审批操作优先、kind html 和 id risk-first、label 风险摘要优先、kind html，并指向对应 artifact；停止条件是用户选择一个候选、都不接受或补充评论。两个 HTML 都使用包含 doctype、title 和 main 的最小可读文档结构，并可见地标为“临时原型”；compact 以“审批操作优先”为标题，risk-first 以“风险摘要优先”为标题，两者都应包含审批操作和风险摘要。展示后用问题工具让我选择，并允许都不接受或补充评论；如果我暂不决定，不要生成 verdict.md 或 feedback.json。本用例只做静态文件和聊天反馈，不启动 Review 会话，也不要直接做生产实现。",
+      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式；请创建 brief.md、为后续网页 Review 准备的 prototype.json，以及两个可直接读取比较的临时静态线框 artifact/compact.html 和 artifact/risk-first.html。brief.md 要标明这是临时原型。prototype.json 使用 v2、revision 1 和单选模式；问题是审批页应采用哪个信息层级，目标是比较审批页信息层级，优先保证风险摘要可见和审批操作清楚，约束是只制作静态线框且本轮不作最终决定；两个完整 option 分别用 id compact、label 审批操作优先、kind html 和 id risk-first、label 风险摘要优先、kind html，并指向对应 artifact；停止条件是用户选择一个候选、都不接受或补充评论。两个 HTML 都使用包含 doctype、title 和 main 的最小可读文档结构，并可见地标为“临时原型”；compact 以“审批操作优先”为标题，risk-first 以“风险摘要优先”为标题，两者都应包含审批操作和风险摘要。展示后用问题工具让我选择，并允许都不接受或补充评论；如果我暂不决定，不要生成 verdict.md 或 feedback.json。本用例只做静态文件和聊天反馈，不启动 Review 会话，也不要直接做生产实现。",
       "assertions": [
         "prototype.json 是完整 v2 配置，并准确引用 compact 和 risk-first 两个有限静态候选",
         "两个 HTML 是可直接读取比较的最小文档；compact 突出审批操作，risk-first 突出风险摘要，brief 和候选明确其临时原型性质",
@@ -177,9 +177,9 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个可直接读取和离线运行的最小命令行 API consumer 示例，让我在聊天中判断接口是否易用。请创建 brief.md、prototype.json 和 artifact/consumer.mjs。prototype.json 使用 v2、revision 1 和单选模式；问题是当前 API 是否易用，目标是判断当前 API consumer 是否易用，优先保证调用顺序清楚和错误处理容易发现，约束是离线运行且不访问真实网络；唯一完整 option 使用 id current-api、label 当前 API consumer、kind text，并指向 artifact/consumer.mjs；停止条件是用户接受、拒绝或要求修改当前接口。consumer.mjs 使用最小可执行的 console、try/catch 和模拟错误，依次输出“1. 构造请求”“2. 调用客户端”“3. 处理结果”，并输出“模拟错误已捕获”。请运行 `node prototypes/api-consumer/artifact/consumer.mjs > prototypes/api-consumer/artifact/consumer-output.txt`。收到我的反馈后，把当前问题的独立决定记录写入 verdict.md，其中明确写出“当前结论：接受当前接口”“支持证据”“调用顺序清楚”和“错误处理容易发现”。本用例只做离线文件、命令输出和聊天反馈，不启动 Review 会话。",
+      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个可直接读取和离线运行的最小命令行 API consumer 示例，让我在聊天中判断接口是否易用。请创建 brief.md、为后续网页 Review 准备的 prototype.json 和 artifact/consumer.mjs。prototype.json 使用 v2、revision 1 和单选模式；问题是当前 API 是否易用，目标是判断当前 API consumer 是否易用，优先保证调用顺序清楚和错误处理容易发现，约束是离线运行且不访问真实网络；唯一完整 option 使用 id current-api、label 当前 API consumer、kind text，并指向 artifact/consumer.mjs；停止条件是用户接受、拒绝或要求修改当前接口。consumer.mjs 使用最小可执行的 console、try/catch 和模拟错误，依次输出“1. 构造请求”“2. 调用客户端”“3. 处理结果”，并输出“模拟错误已捕获”。请运行 `node prototypes/api-consumer/artifact/consumer.mjs > prototypes/api-consumer/artifact/consumer-output.txt`。收到我的反馈后，把当前问题的独立决定记录写入 verdict.md，其中明确写出“当前结论：接受当前接口”“支持证据”“调用顺序清楚”和“错误处理容易发现”。本用例只做离线文件、命令输出和聊天反馈，不启动 Review 会话。",
       "assertions": [
-        "prototype.json 是完整 v2 配置；brief、Prototype、离线 CLI、运行输出和 verdict 无需 Shape 输入即可形成完整证据链",
+        "prototype.json 是完整 v2 配置；brief、Prototype、离线 CLI、运行输出和 verdict 无需外部协调者的额外输入即可形成完整证据链",
         "consumer.mjs 使用最小可执行结构按顺序展示三个调用步骤，并捕获模拟错误；consumer-output.txt 保存准确运行结果",
         "用户接受后，独立 verdict.md 明确记录当前结论和调用顺序、错误处理两项支持证据"
       ],
@@ -279,8 +279,8 @@
         ]
       },
       "audit": {
-        "rationale": "本 conversation case 验证 Skill 产生的完整 Prototype v2、可运行 CLI、真实 stdout 和独立 verdict 证据；server、browser 和 wait 的真实生命周期由 scripts/prototype-review.test.mjs 与 Playwright decision-kit Prototype Review smoke 确定性覆盖，Leaf Skill 的加载独立性由 plugins/decision-kit/scripts/contract.test.mjs 覆盖，不从本 case 推断。",
-        "minimalCounterexample": "如果用户要求对多个相互依赖的决定进行完整塑形，并由宏能力选择访谈或 Prototype，则不应只使用 decision-prototype。",
+        "rationale": "本 conversation case 验证 Skill 产生的完整 Prototype v2、可运行 CLI、真实 stdout 和独立 verdict 证据；server、browser 和 wait 的真实生命周期由 scripts/prototype-review.test.mjs 与 Playwright decision-kit Prototype Review smoke 确定性覆盖，Skill 的加载行为由 trigger suite 观测，不从本 case 或确定性结构测试推断。",
+        "minimalCounterexample": "如果用户只希望理解既有接口材料，而不是通过体验该示例决定是否接受接口，则应使用解释呈现。",
         "errorCost": "high",
         "allowedVariance": "实现细节可以不同，但必须保留完整 v2 字段、离线可执行结构、有序 stdout、模拟错误被捕获，以及包含明确结论和两项支持证据的独立 verdict。"
       }

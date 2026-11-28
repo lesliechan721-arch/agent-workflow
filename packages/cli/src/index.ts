@@ -1371,7 +1371,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--short-description <text>', 'short plugin UI description')
     .option('--skill-name <name>', 'initial static Skill name')
     .option('--skill-description <text>', 'initial Skill goal and discovery description')
-    .option('--skill-short-description <text>', 'initial Skill UI summary (25-64 characters)')
+    .option('--skill-short-description <text>', 'initial Skill UI summary (1-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
@@ -1393,7 +1393,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('--plugin <name>', 'Plugin that owns the Skill')
     .option('--skill-name <name>', 'new static Skill name (required)')
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
-    .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
+    .option('--skill-short-description <text>', 'Skill UI summary (1-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
 

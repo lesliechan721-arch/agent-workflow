@@ -120,11 +120,11 @@ const TEST_PLATFORM_ORDER: readonly PlatformTarget[] = ['codex', 'claude'];
 // CI shard -> Node shard, measured at 5dab92c25796ebc17592fb997839c3e128199ea4:
 // https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44028891314
 // Sum each plugin/platform's maximum AW_PLUGIN_TEST.elapsedMs, including both
-// backends. These three permutations predict 270/272/270s instead of 181/393/238s.
+// backends. Retain the measured permutations for still-mapped plugins;
+// dev-workflow has a single test file and uses the default Node shard order.
 const WINDOWS_CI_NODE_TEST_SHARDS: ReadonlyMap<string, readonly [number, number, number]> = new Map([
   ['agent-skill-toolkit', [1, 3, 2]],
   ['aw-development-toolkit', [2, 3, 1]],
-  ['dev-workflow', [1, 3, 2]],
 ]);
 
 function resolveRepoRoot(): string {

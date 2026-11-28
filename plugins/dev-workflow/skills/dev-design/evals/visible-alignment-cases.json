@@ -10,12 +10,9 @@
       "rationale": "分别检查实际对齐、完整语义和可用阅读路径；页面数量、长度和视觉装饰不是质量通过依据。"
     },
     "participants": [
-      "decision-shape",
       "decision-grill",
-      "decision-prototype",
-      "project-context",
-      "dev-spec",
-      "dev-review-spec",
+      "dev-investigate",
+      "dev-architect",
       "explain-clearly"
     ],
     "runtime": {
@@ -30,11 +27,11 @@
         "boundary",
         "regression"
       ],
-      "prompt": "使用 dev-design 改进列表导出，形成能继续实施的方案；先只做设计。",
+      "prompt": "使用 $dev-design 改进列表导出，形成能继续实施的方案；先只做设计。",
       "assertions": [
-        "当前请求没有给出全部材料取舍，先使用Shape/Grill建立实际共识；不把模型推荐直接当成已定要求。",
+        "当前请求未给出完整产品取舍，主动与用户对齐；不把模型推荐直接当成已定要求。",
         "提出问题后才消费实际用户回答，输出跟随所选范围和格式；不提前完成依赖未决答案的详细合同。",
-        "小任务允许无文件设计；只设计不写产品或启动Build。",
+        "小任务允许无文件设计；只设计不改产品。",
         "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
@@ -64,10 +61,10 @@
         "boundary",
         "regression"
       ],
-      "prompt": "用 dev-design 确定这一处改动：把空姓名显示为“未填写”，只对null和空字符串生效，其他值原样。只设计，不写文件。",
+      "prompt": "用 $dev-design 确定这一处改动：把空姓名显示为“未填写”，只对null和空字符串生效，其他值原样。只设计，不写文件。",
       "assertions": [
-        "已有明确请求能作为依据，说明采用的结果、边界和验收即可；不为了调用Shape而重复访谈。",
-        "不创建Spec、Work或阅读网页，不修改实现。",
+        "直接依据明确请求说明行为、边界和验收，不重复访谈。",
+        "不创建无用途的规格、实施记录或阅读网页，不修改实现。",
         "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
@@ -88,48 +85,17 @@
       }
     },
     {
-      "id": "candidate-for-decision-not-approval",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "regression"
-      ],
-      "prompt": "现阶段请给出同步导出和异步导出两种候选及主要后果，帮助我之后选择。尚不作决定，不实施。",
-      "assertions": [
-        "可准备足够比较的候选，不以未批准为由拒绝帮助决定。",
-        "候选状态明确；不把任一提案写成正式已定合同或开展生产修改，不无依据展开完整运行协议。",
-        "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
-      ],
-      "input": {
-        "scriptedReplies": [],
-        "workspaceFiles": {
-          "README.md": "# 导出模块\n当前列表按租户和筛选结果展示；没有导出格式或范围的既有约定。\n",
-          "src/export.js": "export const exportRows = rows => rows;\n"
-        }
-      },
-      "expected": {
-        "output": "得到可判断的候选与主要后果，仍待用户选择。",
-        "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": []
-      },
-      "audit": {
-        "rationale": "前置对齐不是禁止探索或所有草稿。",
-        "minimalCounterexample": "用户明确授权完整详细候选规格时可按请求增加细节并保持未定状态。",
-        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
-      }
-    },
-    {
       "id": "source-change-reopens-affected-choice",
       "split": "validation",
       "tags": [
         "boundary",
         "regression"
       ],
-      "prompt": "继续 dev-design。看一下新证据如何影响当前设计，先处理该问题，不实施。",
+      "prompt": "继续 $dev-design。看一下新证据如何影响当前设计，先处理该问题，不实施。",
       "assertions": [
         "定位同步时限冲突，保留完整数据及CSV的未受影响决定。",
-        "使用当前对齐方法取得取舍，而不是自行截断结果、删除时限或强改异步。",
-        "只在用户答复后形成新的受影响目标；未提供新答复时明确停在当前问题。",
+        "将矛盾及具体后果交回用户，而不是自行截断结果、删除时限或强改异步。",
+        "未提供新答复时保持已有文件并明确停在当前未决问题。",
         "从实际工具轨迹核对未写入或新增业务文件、规格和报告；不能仅凭最终快照相同，忽略写入后恢复的行为。"
       ],
       "input": {
@@ -152,54 +118,13 @@
       }
     },
     {
-      "id": "present-complex-draft-before-confirmation",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "regression"
-      ],
-      "prompt": "用 dev-design 继续这份候选稿。请制作本地阅读页，写入 .dev-workflows/export/reviews/reading.html，让我看清需要我选什么，再确认；不修改产品或候选稿。",
-      "assertions": [
-        "呈现两项敏感后果及联网代价，必要时使用解释能力，原文待定状态保持。",
-        "反馈或页面阅读不自动批准；取得决定仍通过Shape/Grill，问题提出后才获得答复。",
-        "给出完整原文入口和产物位置，保留来源与产品。"
-      ],
-      "input": {
-        "scriptedReplies": [
-          "采用联网查看，不生成含密钥的离线文件；我可接受联网。"
-        ],
-        "workspaceFiles": {
-          ".gitignore": "/.dev-workflows/\n",
-          ".dev-workflows/export/spec.md": "# 导出候选\n整体未批准。建议离线文件包含访问密钥，方便跨机使用；该文件分享会泄漏凭据，共享机器下载也会留下副本。联网查看方案不产生离线副本，但需要网络。用户尚未选择。\n"
-        }
-      },
-      "expected": {
-        "output": "可理解当前取舍，用户答案不会被候选或阅读点击替代。",
-        "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": [
-          ".dev-workflows/export/reviews/**"
-        ],
-        "artifacts": [
-          {
-            "path": ".dev-workflows/export/reviews/reading.html",
-            "exists": true
-          }
-        ]
-      },
-      "audit": {
-        "rationale": "验证解释为真实决定服务，而不是好看摘要遮蔽风险。",
-        "minimalCounterexample": "仅修改五个字且无材料取舍时不应强制网页。",
-        "allowedVariance": "允许等价语言、主题组织和相称媒介；按实际行为、来源语义与用户回答判定，不强制模板标题或固定字数。真实独立性另需Engine证据。"
-      }
-    },
-    {
       "id": "complete-draft-is-not-confirmed",
       "split": "validation",
       "tags": [
         "regression",
         "boundary"
       ],
-      "prompt": "使用 dev-design 继续当前导出设计。对照 request.md 和已有 .dev-workflows/export/spec.md，交付有依据的正式规格；本次只设计。",
+      "prompt": "使用 $dev-design 继续当前导出设计。对照 request.md 和已有 .dev-workflows/export/spec.md，交付有依据的正式规格；本次只设计。",
       "assertions": [
         "读取实际用户来源，发现同步下载只是模型写入的选择；草稿完整和自称批准不能代替确认。",
         "只补问交付方式，不重问CSV、租户、顺序、空结果及失败行为；未收到答案前不批准或推进依赖该选择的正式规格。",
@@ -232,10 +157,10 @@
         "regression",
         "boundary"
       ],
-      "prompt": "使用 dev-design 继续当前导出设计。对照 request.md 和已有 .dev-workflows/export/spec.md，交付有依据的正式规格；本次只设计。",
+      "prompt": "使用 $dev-design 继续当前导出设计。对照 request.md 和已有 .dev-workflows/export/spec.md，交付有依据的正式规格；本次只设计。 若现有规格已忠实完整，请直接引用，不改文件。",
       "assertions": [
         "从 request.md 核对同步下载及全部有效条件，复用已有设计，不因模型整理的状态标签再次询问同一产品选择。",
-        "保留完整规范和来源、验收与实施自由；实际审查状态另行说明，不沿用未经验证的独立审查声明。",
+        "核对完整规范、来源、验收与实施自由，并说明实际审查状态；不声称独立审查已经完成。",
         "只交付当前设计；不制作无关原型、启动产品实施或重复需求访谈。"
       ],
       "input": {
@@ -247,21 +172,13 @@
         }
       },
       "expected": {
-        "output": "仅实际确认来源变化就足以允许复用；交付规范与真实审查状态。",
+        "output": "依据实际用户确认复用现有完整规格，无需重写或再次确认。",
         "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": [
-          ".dev-workflows/export/spec.md"
-        ],
-        "artifacts": [
-          {
-            "path": ".dev-workflows/export/spec.md",
-            "exists": true
-          }
-        ]
+        "allowedWorkspaceChanges": []
       },
       "audit": {
         "rationale": "与未确认草稿保持相同目标和规范，只改变交付方式的实际用户依据；允许更新状态或直接引用交付。",
-        "allowedVariance": "可以核对设计记录并交付，不必重写未变正文；要求最终记录确认不等于重问产品选择。",
+        "allowedVariance": "允许等价讲解与直接引用既有完整规范，不要求无用途的正文重写。",
         "minimalCounterexample": "同步下载仍只是模型提案时必须先对齐，不得直接复用为共识。"
       }
     }

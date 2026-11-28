@@ -1,4 +1,4 @@
-export const MIN_CODEX_SHORT_DESCRIPTION_LEN = 25;
+export const MIN_CODEX_SHORT_DESCRIPTION_LEN = 1;
 export const MAX_CODEX_SHORT_DESCRIPTION_LEN = 64;
 export const SKILL_INVOCATION_MODES = new Set(['model', 'manual', 'claude-model-only']);
 

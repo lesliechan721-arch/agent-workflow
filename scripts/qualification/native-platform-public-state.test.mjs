@@ -8,6 +8,7 @@ import { preparePublicClientPath, preparePublicClientPaths } from './native-plat
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { componentReceiptEvidence, grokTrustTargets, runComponentQualification } from './native-platform-public-components.mjs';
+import { shippedDynamicPlugins } from './native-platform-public-catalog.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 import { clients, prepareEnvironment } from './native-platform-runtime.mjs';
 
@@ -781,4 +782,71 @@ test('rejects an enabled or stale registration in either fresh scope after share
       await assert.rejects(readPublicRemovedNativeScope(fixture.ctx, 3, fixture.result, fixture.pluginId), { code: 'ERR_ASSERTION' });
     });
   }
+});
+
+// Test Value Gate: non-role dynamic Catalog plugins omit manifest.skills and
+// must verify their rendered Skill outputs instead of failing on static paths.
+test('verifies dynamic non-role Catalog plugins without manifest.skills and fails on missing outputs', async (t) => {
+  const catalog = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-component-dynamic-catalog-'));
+  t.after(() => fs.rm(catalog, { recursive: true, force: true }));
+  const roleNames = ['agent-subagent', 'agent-explore', 'agent-advisor'];
+  const dynamicSkills = shippedDynamicPlugins['dev-workflow'].skills;
+  const entries = [...roleNames, 'dev-workflow'].map((name) => ({
+    name, source: name, dependencies: [], version: '0.1.0', artifactDigest: 'fixture-digest',
+  }));
+  await fs.writeFile(path.join(catalog, 'catalog-manifest.json'), JSON.stringify({ entries }));
+  const workflowManifestDir = path.join(catalog, 'dev-workflow', '.agents-plugin');
+  await fs.mkdir(workflowManifestDir, { recursive: true });
+  await fs.writeFile(path.join(workflowManifestDir, 'plugin.json'), JSON.stringify({
+    name: 'dev-workflow',
+    scripts: { artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } } },
+  }));
+  for (const skill of dynamicSkills) {
+    const dir = path.join(catalog, 'dev-workflow', 'skills', skill);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${skill}\n---\n\n<!-- slot -->\n# ${skill} body\n`);
+  }
+
+  const runWithInstalled = async (installedDynamicSkills) => runComponentQualification({
+    platform: 'generic', scope: 'project', suite: 'candidate', catalog,
+  }, {
+    executeCommand: async () => ({ exitCode: 0 }),
+    async executeAw(_launcher, args, { env, cwd }) {
+      const command = args.slice(0, 2).join('.');
+      if (command === 'target.set') return publicResponse(command, { availability: [{ id: 'generic', installations: [] }] });
+      if (command === 'source.sync') await fs.writeFile(path.join(env.AW_HOME, 'catalog-state.json'), JSON.stringify({
+        sources: { 'qualification-official': { active: { snapshotDigest: 'fixture-snapshot' } } },
+      }));
+      const targets = entries.map(({ name }) => ({
+        pluginId: `qualification-official/${name}`, scope: 'project', target: 'generic',
+        blockerCodes: [], deploymentReceipts: [], componentGaps: [],
+      }));
+      if (command === 'plugin.status') {
+        return publicResponse(command, { targetResults: targets, inSync: true, allSatisfied: true, counts: { pending: 0 } });
+      }
+      if (command === 'plugin.install' && args[2] === 'qualification-official/agent-subagent') {
+        for (const skill of ['spawn-subagent', 'explore-facts', 'consult-advisor']) {
+          const dir = path.join(cwd, '.agents', 'skills', skill);
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(path.join(dir, 'SKILL.md'), skill);
+        }
+      }
+      if (command === 'plugin.install' && args[2] === 'qualification-official/dev-workflow') {
+        for (const skill of installedDynamicSkills) {
+          const dir = path.join(cwd, '.agents', 'skills', skill);
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(path.join(dir, 'SKILL.md'), `# ${skill} body\n`);
+        }
+      }
+      return publicResponse(command, { targetResults: targets });
+    },
+  });
+
+  const passed = await runWithInstalled(dynamicSkills);
+  assert.equal(passed.status, 'passed', passed.reason);
+  assert.deepEqual(passed.catalog.plugins['dev-workflow'].skills.map((item) => item.name), dynamicSkills);
+
+  const missingOne = await runWithInstalled(dynamicSkills.slice(1));
+  assert.equal(missingOne.status, 'failed');
+  assert.match(missingOne.reason, /Shipped plugin installation failed: dev-workflow/u);
 });

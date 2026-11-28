@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-arena"
+  short_description: "并行生成多个独立竞争候选，跨视角评判并选基嫁接最优方案。"
+  default_prompt: "使用 $dev-arena 为这个有实质分歧的设计或实现发起多候选竞争对比，选出最佳基座并融合优点。"
+policy:
+  allow_implicit_invocation: true

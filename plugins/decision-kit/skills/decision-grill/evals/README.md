@@ -31,11 +31,13 @@ aw dev eval prepare decision-kit decision-grill --suite behavior --profile proje
 aw dev eval prepare decision-kit decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
 aw dev eval prepare decision-kit decision-grill --suite sustained-interview --profile project-default --output /tmp/aw-eval-specs/decision-grill-sustained-interview --json
 aw dev eval prepare decision-kit decision-grill --suite decision-comprehension --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-comprehension --json
+aw dev eval prepare decision-kit decision-grill --suite bounded-question-trigger --profile project-default --output /tmp/aw-eval-specs/decision-grill-bounded-question --json
+aw dev eval prepare decision-kit decision-grill --suite presentation-handoff --profile project-default --output /tmp/aw-eval-specs/decision-grill-presentation-handoff --json
 ```
 
 单 Skill trigger
-corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条 sanity。train/validation 各含 5 条隐式正例和 5 条近似负例；sanity 含显式调用、口语正例、短推荐、长上下文评审和完整实施任务。它覆盖计划、决策或想法访谈，以及一次性技术说明、直接推荐、内部执行计划和实施歧义等近似负例。`n09_implementation_ambiguity`
-不加载项目规则，用于独立验证 description 边界；validation 和 sanity 负例零容忍。
+corpus 有 25 条用例：train 5 正 5 负、validation 3 正 7 负、sanity 2 正 3 负。它覆盖用户拥有的重要取舍、计划访谈，以及一次性技术说明、内部工程选型、直接推荐和单项实施澄清等近似负例。`n09_implementation_ambiguity`
+不加载项目规则，用于独立验证单项选择可直接澄清的边界；validation 和 sanity 负例零容忍。
 
 `decision-kit-routing-cases.json` 是两个 Decision Kit Skill 的路由矩阵。它用 `expected_loaded_skills` 精确区分
 `decision-grill`、`decision-prototype`
@@ -49,3 +51,5 @@ corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条 sanity�
 `decision-frame-cases.json` 检查推断的共享决策方向对用户可见、方向歧义先选择、调用方方向复用，以及叶子 Skill 的独立交付。`decision-comprehension-cases.json` 检查紧凑默认呈现、非技术场景、短流程、时间线、上下文压缩和理解失败后的表现形式切换。
 
 `sustained-interview-cases.json` 检查开放主题在没有“请继续”提示时仍根据实际回答展开、单轮题数上限不丢失剩余问题、局部证据缺口不阻塞其他取舍，以及含糊方向需要具体后果核对。开放主题不预先提供依赖树；只评价实际提问与答复的先后，不把会话运行器追加的脚本答复当作主动继续的证据。批量用例的三题与两题来自用户显式要求，其他用例按用户要求每轮一题。保留已有单题、委托、暂停和无新增含义时不重复确认的回归用例。
+
+`bounded-question-trigger` 检查显式指定或由协调者委派的一题访谈，以及解释、原型反馈的近似负例。`presentation-handoff` 单独暴露 explain-clearly，检查复杂材料的辅助呈现能回到当前问题；两种 `independent-delivery` suite 保留独立交付、证据不足和已授权局部记录的回归。

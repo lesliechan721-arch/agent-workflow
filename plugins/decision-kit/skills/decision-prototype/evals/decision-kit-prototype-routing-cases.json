@@ -35,10 +35,10 @@
         "useProjectRules": true
       },
       "audit": {
-        "rationale": "这是具体实现中的局部材料歧义，不需要原型或完整访谈；局部实施澄清能力已迁出 Ask-Me。",
+        "rationale": "这是具体实现中的一个局部产品歧义，可直接澄清，不需要原型或完整访谈。",
         "minimalCounterexample": "若必须操作候选导出界面后才能决定，则应加载 decision-prototype。",
         "errorCost": "high",
-        "allowedVariance": "可以先调查事实，但不应加载 Ask-Me 的任一 participant Skill。"
+        "allowedVariance": "可以先调查事实，但不应加载任一 Decision Kit participant Skill。"
       }
     },
     {
@@ -89,7 +89,7 @@
         "decision-kit-capability-routing"
       ],
       "input": {
-        "query": "先用最小 spike 测一下这条加密路线是否可行，再决定是否采用。",
+        "query": "我要决定是否在浏览器离线模式提供加密草稿。先用最小 spike 测出代表性浏览器的兼容性，让我根据结果决定是否提供这项体验。",
         "expected": {
           "loadedSkills": [
             "decision-prototype"

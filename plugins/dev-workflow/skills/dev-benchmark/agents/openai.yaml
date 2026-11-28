@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-benchmark"
+  short_description: "核对可信的性能测量与比较。"
+  default_prompt: "使用 $dev-benchmark 比较这两个版本的导入耗时，核对完成量、错误与波动。"
+policy:
+  allow_implicit_invocation: true

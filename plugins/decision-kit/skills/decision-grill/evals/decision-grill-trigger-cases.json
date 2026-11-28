@@ -61,22 +61,23 @@
       }
     },
     {
-      "id": "p04_runner_choice_to_plan",
+      "id": "n11_runner_choice_to_plan",
       "split": "validation",
       "tags": [
         "boundary",
-        "runner-decision-mode"
+        "runner-decision-mode",
+        "internal-engineering-choice"
       ],
       "input": {
-        "query": "本地 MCP runner 和 CI runner 都可行。请和我权衡凭据、运维和工作树要求，关键取舍逐项问我，最后定下方向并形成落地计划。",
-        "expectedLoad": true,
+        "query": "本地 MCP runner 和 CI runner 都可行。凭据范围、运维预算和工作树要求已经确认。请权衡内部实现成本与可靠性，并在这些约束下选定 runner 和技术落地计划。",
+        "expectedLoad": false,
         "useProjectRules": true
       },
       "audit": {
-        "rationale": "方案比较服务于用户参与的选择和规划。",
-        "minimalCounterexample": "若只要求解释 runner 的实现和难度，不要求逐轮共同决定，则不应加载。",
+        "rationale": "用户拥有的规则已确认，剩余选择只涉及内部工程方案。",
+        "minimalCounterexample": "若凭据能否离开用户本机这一产品规则未决定，且用户要求逐轮权衡其使用后果，则应加载。",
         "errorCost": "high",
-        "allowedVariance": "可以先查事实，但必须加载 decision-grill。"
+        "allowedVariance": "技术设计和推荐方式可以不同，但不应加载 decision-grill。"
       }
     },
     {
@@ -119,22 +120,23 @@
       }
     },
     {
-      "id": "p08_architecture_choice_plan",
+      "id": "n12_architecture_choice_plan",
       "split": "validation",
       "tags": [
         "boundary",
-        "architecture-decision-mode"
+        "architecture-decision-mode",
+        "internal-engineering-choice"
       ],
       "input": {
-        "query": "单体和微服务都能满足需求。请先问清我的交付期限和运维取舍，和我选定方向，再形成迁移计划。",
-        "expectedLoad": true,
+        "query": "单体和微服务都能满足已确认的用户需求。交付期限与运维预算也已明确。请在这些约束下比较内部架构的实现与维护代价，选定方向并形成技术迁移计划。",
+        "expectedLoad": false,
         "useProjectRules": true
       },
       "audit": {
-        "rationale": "比较是共同选定方向并制定计划的一部分。",
-        "minimalCounterexample": "若只要求一次性比较单体和微服务，不要求共同选择，则不应加载。",
+        "rationale": "产品行为与用户取舍已确认，纯内部工程选型由工程设计处理。",
+        "minimalCounterexample": "若首批上线范围和用户可接受的服务中断时间仍未确定，且用户要求逐轮作出这些取舍，则应加载。",
         "errorCost": "high",
-        "allowedVariance": "可以先查仓库事实，但必须加载 decision-grill。"
+        "allowedVariance": "可以先查仓库事实和验证技术假设，但不应加载 decision-grill。"
       }
     },
     {
@@ -196,7 +198,7 @@
       },
       "audit": {
         "rationale": "用户要求技术说明和难度估算，没有要求共同形成计划或决定。",
-        "minimalCounterexample": "若用户要求逐轮权衡 runner 取舍并共同定下方向，则应加载。",
+        "minimalCounterexample": "若用户要求逐轮决定凭据能否离开本机及其使用后果，则应加载。",
         "errorCost": "high",
         "allowedVariance": "回答深度可以不同，但不能加载 decision-grill。"
       }
@@ -215,7 +217,7 @@
       },
       "audit": {
         "rationale": "这是一次性方案比较，不是交互式规划。",
-        "minimalCounterexample": "若用户要求先问清期限和运维取舍，再共同选定方向，则应加载。",
+        "minimalCounterexample": "若用户要求逐轮决定首批上线范围与可接受的服务中断时间，则应加载。",
         "errorCost": "high",
         "allowedVariance": "可以给出比较表或结论，但不能加载 decision-grill。"
       }
@@ -272,7 +274,7 @@
       },
       "audit": {
         "rationale": "用户要一次性技术选型建议，没有要求参与取舍或形成计划。",
-        "minimalCounterexample": "若用户要求逐轮讨论一致性、运维和迁移取舍后共同选择，则应加载。",
+        "minimalCounterexample": "若用户要求逐轮决定用户可见的数据延迟、停机窗口和迁移范围，则应加载。",
         "errorCost": "high",
         "allowedVariance": "推荐内容可以不同，但不能加载 decision-grill。"
       }
@@ -312,7 +314,7 @@
       },
       "audit": {
         "rationale": "用户已把内部选择委托给 agent，且没有协作规划意图。",
-        "minimalCounterexample": "若用户保留关键取舍并要求逐轮参与，则应加载。",
+        "minimalCounterexample": "若尚未决定的是用户可见的日志保留规则，且用户要求逐轮参与，则应加载。",
         "errorCost": "high",
         "allowedVariance": "可以选择不同方案，但不能加载 decision-grill。"
       }
@@ -346,15 +348,15 @@
       ],
       "input": {
         "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
-        "expectedLoad": true,
+        "expectedLoad": false,
         "workspaceFixture": "neutral_export_repo",
         "useProjectRules": false
       },
       "audit": {
-        "rationale": "导出全部或当前筛选是用户尚未决定的材料选择；Grill不要求多轮访谈才适用。",
-        "minimalCounterexample": "用户已经明确导出当前筛选结果且其它要求完整时可直接实施。",
+        "rationale": "导出全部或当前筛选是尚未决定的局部选择；当前只需直接澄清一项行为，不必进入逐轮访谈。",
+        "minimalCounterexample": "若用户要求围绕导出范围、权限和格式逐轮压力测试并共同决定，则应加载。",
         "errorCost": "high",
-        "allowedVariance": "先查明实际代码与后果，再采用Grill取得当前选择；可一问完成，不要求新建子代理。"
+        "allowedVariance": "先查明实际代码与后果，再直接询问当前选择；不加载 decision-grill，也不猜测用户决定。"
       }
     },
     {
@@ -404,7 +406,7 @@
       },
       "audit": {
         "rationale": "短请求仍是一次性推荐，没有协作访谈意图。",
-        "minimalCounterexample": "若用户要求一个问题一个问题地共同选择方向，则应加载。",
+        "minimalCounterexample": "若用户要求一个问题一个问题地共同确定上线范围、可接受中断和迁移责任等产品取舍，则应加载。",
         "errorCost": "high",
         "allowedVariance": "推荐内容可以不同，但不能加载 decision-grill。"
       }

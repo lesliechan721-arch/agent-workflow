@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-tdd"
+  short_description: "条件先红后绿 TDD 与行为敏感性测试过滤，拦截伪测试与脆弱 mock。"
+  default_prompt: "使用 $dev-tdd 为这个缺陷先写最小失败回归测试并验证真红灯，再修复并重跑验证。"
+policy:
+  allow_implicit_invocation: true

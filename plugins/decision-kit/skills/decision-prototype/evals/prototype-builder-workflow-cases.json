@@ -23,7 +23,7 @@
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。本次明确授权且要求委派一个 Builder 创建 prototypes/settings-density/artifact/compact.html, prototypes/settings-density/artifact/comfortable.html；两页都显示“通知”和“语言”这两个设置字段，并在可见文本中标识各自的 compact 或 comfortable ID。主代理创建 brief.md 和 schema v2 prototype.json；brief 用两个 ID 说明正在比较的信息密度。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；没有交互式用户回复，不创建 verdict.md。随后结束。"
+        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。本次明确授权且要求委派一个 Builder 创建 prototypes/settings-density/artifact/compact.html, prototypes/settings-density/artifact/comfortable.html；两页都显示“通知”和“语言”这两个设置字段，并在可见文本中标识各自的 compact 或 comfortable ID。主代理创建 brief.md 和供后续网页 Review 使用的 schema v2 prototype.json；brief 用两个 ID 说明正在比较的信息密度。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；没有交互式用户回复，不创建 verdict.md。随后结束。"
       },
       "expected": {
         "criteria": {
@@ -89,7 +89,7 @@
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。创建 prototypes/settings-density/artifact/compact.html 和 prototypes/settings-density/artifact/comfortable.html，两页都显示“通知”和“语言”，在可见文本中标识各自的 compact 或 comfortable ID，并用明显不同的密度组织设置内容。同时创建 brief.md 和 schema v2、revision 1 的 prototype.json，原型 ID 为 settings-density；brief 用两个 ID 说明正在比较的信息密度。构建完成后，主代理用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact，最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；不启动服务，没有交互式用户回复，不创建 verdict.md，随后结束。"
+        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。创建 prototypes/settings-density/artifact/compact.html 和 prototypes/settings-density/artifact/comfortable.html，两页都显示“通知”和“语言”，在可见文本中标识各自的 compact 或 comfortable ID，并用明显不同的密度组织设置内容。同时创建 brief.md 和供后续网页 Review 使用的 schema v2、revision 1 的 prototype.json，原型 ID 为 settings-density；brief 用两个 ID 说明正在比较的信息密度。构建完成后，主代理用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact，最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；不启动服务，没有交互式用户回复，不创建 verdict.md，随后结束。"
       },
       "expected": {
         "criteria": {
@@ -155,7 +155,7 @@
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 运行最小 Node.js Web Crypto 探针；结论只覆盖当前 Node 环境。本次明确授权且要求委派一个 Builder 创建 prototypes/web-crypto-runtime/artifact/spike.mjs；主代理创建 brief.md。Builder 用 UTF-8 输入 ask-me 调用 crypto.subtle.digest 计算 SHA-256，并向 stdout 输出单个 JSON 对象，包含 runtime 和 sha256。Builder 必须用精确命令 node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt 保存该 stdout。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/web-crypto-runtime/artifact/result.txt 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/web-crypto-runtime/；没有交互式用户回复，不创建 prototype.json 或 verdict.md。随后结束。"
+        "prompt": "$decision-prototype 为用户决定是否提供浏览器离线加密草稿运行最小 Node.js Web Crypto 探针；结论只覆盖当前 Node 环境。本次明确授权且要求委派一个 Builder 创建 prototypes/web-crypto-runtime/artifact/spike.mjs；主代理创建 brief.md。Builder 用 UTF-8 输入 ask-me 调用 crypto.subtle.digest 计算 SHA-256，并向 stdout 输出单个 JSON 对象，包含 runtime 和 sha256。Builder 必须用精确命令 node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt 保存该 stdout。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/web-crypto-runtime/artifact/result.txt 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/web-crypto-runtime/；没有交互式用户回复，不创建 prototype.json 或 verdict.md。随后结束。"
       },
       "expected": {
         "criteria": {

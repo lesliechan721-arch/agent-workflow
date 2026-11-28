@@ -71,7 +71,7 @@ Options:
   --skill-name <name>           New static Skill name. Required.
   --skill-description <text>    Skill goal and discovery description. Required.
   --skill-short-description <text>
-                                Skill UI summary (25-64 characters). Default: description.
+                                Skill UI summary (1-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
   --workspace-root <path>            Workspace root. Default: current directory.
   -h, --help                    Show this help message.

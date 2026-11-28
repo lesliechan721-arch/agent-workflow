@@ -1,10 +1,8 @@
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-const BUILDER_ROLE = 'prototype-builder';
-const BUILDER_CONFIG = '.codex/agents/prototype-builder.toml';
 const WRITE_TOOLS = new Set(['apply_patch', 'write_file']);
 
 function record(value, label) {
@@ -229,20 +227,8 @@ function parseCase(selectedCase) {
   return result;
 }
 
-async function materializeBuilderRole(workspace) {
-  const target = path.join(workspace, BUILDER_CONFIG);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, [
-    `name = ${JSON.stringify(BUILDER_ROLE)}`,
-    `description = ${JSON.stringify('构建父代理指定的轻量 Prototype Artifact，只修改 artifact/**。')}`,
-    `developer_instructions = ${JSON.stringify('只完成父代理委派的 Artifact 构建。只创建或修改指定 Prototype 的 artifact/**；不要写 brief.md、prototype.json、feedback.json 或 verdict.md；不要替用户决定。完成后返回路径、查看方式、摘要和限制。')}`,
-    '',
-  ].join('\n'), { flag: 'wx' });
-}
-
 export async function prepareBuilderWorkflow(input) {
   const evalCase = parseCase(input.case);
-  await materializeBuilderRole(input.paths.workspace);
   return {
     version: 1,
     prompt: evalCase.prompt,
@@ -255,11 +241,7 @@ export async function prepareBuilderWorkflow(input) {
       'This evaluation has no interactive user reply; do not call a user-input tool.',
       'Keep any unresolved decision open in the final response.',
     ].join(' '),
-    roles: [{
-      name: BUILDER_ROLE,
-      description: '构建父代理指定的轻量 Prototype Artifact，只修改 artifact/**。',
-      configFile: BUILDER_CONFIG,
-    }],
+    roles: [],
     multiAgent: {
       protocol: 'v2',
       maxDepth: 1,
@@ -278,6 +260,7 @@ async function readEvidence(file) {
   const termination = record(evidence.termination, 'workflow evidence.termination');
   const cleanup = record(evidence.cleanup, 'workflow evidence.cleanup');
   const diff = record(evidence.workspaceDiff, 'workflow evidence.workspaceDiff');
+  // Incomplete engine evidence cannot be graded as a Skill behavior result.
   if (
     completion.status !== 'completed'
     || termination.reason !== 'completed'
@@ -676,13 +659,6 @@ export async function gradeBuilderWorkflow(input) {
       `label=${label}`,
     );
   }
-  add(
-    assertions,
-    'engine_cleanup',
-    evidence.termination.appServerProcessTreeCleanupConfirmed === true
-      && evidence.cleanup.isolatedCodexHomeRemoved === true,
-    'confirmed=true',
-  );
   const passed = assertions.every((assertion) => assertion.passed === true);
   return {
     passed,
