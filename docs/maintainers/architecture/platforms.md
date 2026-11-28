@@ -152,6 +152,8 @@ Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与�
 
 Codex 的固定 5 秒 scoped plugin list 探测在 Windows 上遇到已确认清理的超时时，可以在同一工作目录、同一入口和 marketplace 再执行一次，每次期限均为 5 秒。设置了 `AW_NATIVE_CLI_TIMEOUT_MS` 时只执行原有的单次探测。同一观察会话中的同范围消费者共享最终结果。取消、清理未确认或持续失败沿用现有诊断，缺少成功清单的范围保持未知。
 
+Intel macOS 的 Claude Code Project 观察中，只有 `plugin list --json` 和 `plugin marketplace list --json` 遇到已确认清理的超时，才可在同一入口、工作目录和作用域下各再读一次，每次期限均为 5 秒。同一观察会话共享最终读回；User 观察、用户指定时限、取消、清理未确认和其它失败不重试。重新读回仍须通过原有计划、身份与归属复核；不重试写入或放宽保护。
+
 Codex Instructions 不写顶层 developer_instructions 或共享 AGENTS；角色本身的 prompt 仍属于 Agent。直接注入覆盖受支持的 Startup/Fork，接受子代理压缩后不再注入的限制。Hook 禁用、trust 或管理策略受限时保持未满足，不回退其他载体。Claude 主会话和子代理分别核验，不能用一条事件推定另一条。
 
 Cursor 的受管 `workspaceOpen` Hook 必须位于对应范围的 `hooks.json`。包与精确 Hook 都到位才满足目录交付。入口缺失或位于其他范围显示待同步。读取失败保留未知。读取 workspace_roots 与现有 AW 需求、偏好和精确 owned 包证据，返回当前工作区有效绝对 pluginPaths，不建立另一启用表。用户/项目分别限定 scope；无工作区窗口、Cloud 不在路径承诺内，Remote/WSL 单独取证。不会切换到 local 插件目录或单次 --plugin-dir 作为普通安装。
