@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-investigate"
+  short_description: "调查机制、历史理由与运行材料。"
+  default_prompt: "使用 $dev-investigate 说明导入流程如何处理重复记录，引用实际路径和证据。"
+policy:
+  allow_implicit_invocation: true

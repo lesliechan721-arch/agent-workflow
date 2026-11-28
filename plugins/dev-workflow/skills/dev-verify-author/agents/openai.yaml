@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-verify-author"
+  short_description: "创建或维护完整项目验证资产。"
+  default_prompt: "$dev-verify-author 为项目建立可复跑的验证入口和功能地图。"
+policy:
+  allow_implicit_invocation: false

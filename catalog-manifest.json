@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.86",
+  "catalogVersion": "0.1.0-beta.87",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "1f2d1bbf06aad7bb655703d1911ed26a678c5f8d"
+    "sourceHead": "07ab901bd054f690546effc0ac8d0f8a4f58fbf2"
   },
   "entries": [
     {
@@ -408,15 +408,21 @@
     {
       "name": "decision-kit",
       "source": "./plugins/decision-kit",
-      "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",
+      "description": "通过真实访谈、体验原型及反馈形成有界产品决定和接受范围。",
       "interface": {
         "displayName": "Decision Kit",
-        "shortDescription": "对齐重要选择，验证原型，维护领域语言与决定",
+        "shortDescription": "通过真实访谈、体验原型及反馈形成有界产品决定和接受范围。",
         "capabilities": [
           "Skills"
         ]
       },
       "category": "workflow",
+      "tags": [
+        "decision",
+        "requirements",
+        "prototype",
+        "interview"
+      ],
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
@@ -426,7 +432,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.13",
+      "version": "0.1.0-beta.14",
       "dependencies": [
         "human-content"
       ],
@@ -439,17 +445,17 @@
           ]
         }
       },
-      "artifactDigest": "sha256:75d7fd6208ce228b865a06b8da2be980aa1aaf820be11db71d606b8048606a41",
-      "manifestDigest": "sha256:1e3fdadd7eecfa163632e4ecf9696d39f7cc177faa1f4dbbe7e71589209fc121",
-      "contentDigest": "sha256:8a62dac440e5f576424fccecfc113a3640bbf91d1122d86368f007169f015440"
+      "artifactDigest": "sha256:e185ae0f2abd25f5348e4992e375a47b38749ee27925e0b80ad6970e3ac4ad35",
+      "manifestDigest": "sha256:1c45a81e19f91177af4940247673b7d948d2261f4a4bf07b2f1d1f567a4a793a",
+      "contentDigest": "sha256:22e9738552b8a93f2179c01733ae9c90fc3b1710282f25d5ed383c2aaab3fe7a"
     },
     {
       "name": "dev-workflow",
       "source": "./plugins/dev-workflow",
-      "description": "从需求设计到实现交付的可组合工作流，项目规范与本地过程资料分工清楚。",
+      "description": "统一开发工作流与工程验证插件：整合开发路线、调查调试、架构竞争、条件 TDD、统一分层审查、真实表面与性能验证及仓库防呆硬化，支持零必填可选跨模型面板动态渲染。",
       "interface": {
         "displayName": "Dev Workflow",
-        "shortDescription": "先设计或完整交付；本地恢复、独立审查和有界修复",
+        "shortDescription": "统一开发工作流、核心工程能力、真实验证与可选多模型面板路由。",
         "capabilities": [
           "Skills"
         ]
@@ -457,9 +463,12 @@
       "category": "workflow",
       "tags": [
         "development",
-        "spec",
-        "implementation",
-        "review"
+        "workflow",
+        "design",
+        "debugging",
+        "review",
+        "verification",
+        "benchmark"
       ],
       "strict": true,
       "policy": {
@@ -470,24 +479,37 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.23",
+      "version": "0.1.0-beta.24",
       "dependencies": [
+        "agent-subagent",
         "decision-kit",
         "human-content"
       ],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-build-config.v1",
+            "aw.platform-components.v3",
+            "aw.platform-render-context.v3",
+            "aw.plugin-config-array.v1",
+            "aw.plugin-config-clears-on-change.v1",
+            "aw.plugin-config-cross-plugin-value-ref.v1",
+            "aw.plugin-config-platform-only.v1",
+            "aw.plugin-config-ref-override.v1",
+            "aw.plugin-config-suggestions.v2",
+            "aw.plugin-config-summary.v1",
+            "aw.plugin-config-value-ref.v1",
+            "aw.plugin-config.v2",
+            "aw.plugin-config.v3",
+            "aw.plugin-config.v4",
+            "aw.plugin-config.v5",
             "aw.plugin-manifest.v4",
-            "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:70a7f2eb849575a78b4a06d659ba8ce68d41599702014ea40499ddb1a8de2880",
-      "manifestDigest": "sha256:747a40d40f54044e47680bd6bb951baeda526dba6ad9852ad1d37b3da9943db1",
-      "contentDigest": "sha256:90d86037b4a5fc3208b028b2b43d9ee16e02cf7b541018f53cb0067101b2d375"
+      "artifactDigest": "sha256:868a0df39ccb9d7e50bdbdcdca57ea6154d1af1bdb7ed9a1c79c957ee4a30fcf",
+      "manifestDigest": "sha256:393fc40b0101793c3ef1a4ff68e4b47a9f745afac940ed2711e8c93e0e2b8aa6",
+      "contentDigest": "sha256:9f9b6f1fb956247004c36ca3a2203666c09eb7fd42ffd945efc823da53617862"
     },
     {
       "name": "frontend-design",

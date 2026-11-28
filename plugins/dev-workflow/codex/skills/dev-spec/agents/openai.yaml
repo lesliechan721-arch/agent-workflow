@@ -1,6 +1,0 @@
-interface:
-  display_name: dev-spec
-  short_description: "将已确认需求写成可直接人审的完整规格，保留必要设计与实施自由"
-  default_prompt: "使用 $dev-spec 处理当前请求，遵循实际范围、资料和授权。"
-policy:
-  allow_implicit_invocation: true

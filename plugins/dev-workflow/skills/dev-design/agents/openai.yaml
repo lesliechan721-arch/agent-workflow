@@ -1,6 +1,6 @@
 interface:
-  display_name: dev-design
-  short_description: "协调需求对齐、人审规格和有界修订，交付设计而不启动实施"
-  default_prompt: "使用 $dev-design 处理当前请求，遵循实际范围、已有资料和授权。"
+  display_name: "dev-design"
+  short_description: "形成可实施设计，按请求交付完整规格。"
+  default_prompt: "$dev-design 为当前需求形成可实施设计，说明依据与未决项。"
 policy:
   allow_implicit_invocation: false
