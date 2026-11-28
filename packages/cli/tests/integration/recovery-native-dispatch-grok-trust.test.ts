@@ -21,7 +21,7 @@ import { createCommandTestTiming } from '../helpers/command-timing.js';
 
 const createEmptyGitRepository = useEmptyGitRepositoryFixture();
 
-async function grokTrustFixture({ failProject = false, baseHook = false, commandPermissions = false, permissionOnly = false } = {}) {
+async function grokTrustFixture({ failProject = false, baseHook = false, commandPermissions = false, permissionOnly = false, grokOnly = false } = {}) {
   installNativeTestDiscovery({ platforms: ['grok'], executable: process.execPath });
   const { env, layout } = getCurrentSourceTestIsolation();
   const cwd = layout.fixtureCwd;
@@ -30,6 +30,7 @@ async function grokTrustFixture({ failProject = false, baseHook = false, command
   const host = resolvePlatformConfigRoot('grok', { cwd, env });
   const projectScript = path.join(cwd, 'project-preapply');
   const names = ['base', 'bundle'];
+  const platforms = grokOnly ? ['grok'] as const : ['grok', 'generic'] as const;
   for (const name of permissionOnly ? [] : names) {
     const skill = path.join(catalog, 'plugins', name, 'skills', name);
     await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: Use ${name}.\n---\nUse ${name}.\n`);
@@ -43,7 +44,7 @@ async function grokTrustFixture({ failProject = false, baseHook = false, command
   ].join('\n'));
   await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({
     name, dependencies: name === 'bundle' ? ['base'] : [], configureManifest(manifest) {
-      manifest.platforms = ['grok', 'generic'];
+      manifest.platforms = [...platforms];
       if (!permissionOnly) manifest.skills = './skills';
       delete manifest.extensions;
       if (commandPermissions && name === 'base') manifest.extensions = { permissions: [{
@@ -58,7 +59,7 @@ async function grokTrustFixture({ failProject = false, baseHook = false, command
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: catalog }] },
     expectedDigest: config.digest, env });
   await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
-  await setTargets({ cwd, env, scope: 'user' }, failProject ? ['grok'] : ['grok', 'generic']);
+  await setTargets({ cwd, env, scope: 'user' }, failProject ? ['grok'] : platforms);
 
   const registered = new Map<string, { name: string; path: string; source: string }>();
   // Only the simulated interactive Grok invocation below may grant new-source trust.
@@ -267,6 +268,8 @@ describe('Grok native recovery and trust', () => {
       // to distinguish fixture/trust setup from the guarded Project writes.
       const timing = createCommandTestTiming(test);
       const { cwd, env, aw, trustAndRetry, runner, registered } = await timing.measure('fixture', 'grok-trust', () => grokTrustFixture({
+        // These commands only select Grok; the separate recovery test covers the Generic sibling.
+        grokOnly: true,
         baseHook: ['owned hook', 'foreign hook', 'reordered hooks'].includes(change),
       }));
       const first = await timing.measure('command', 'user-install', () => aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user', '--target', 'grok']));

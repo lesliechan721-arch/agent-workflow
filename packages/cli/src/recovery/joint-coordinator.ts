@@ -262,8 +262,13 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
     preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
   const { snapshot, catalogReadScope, manifestReads } = preparation ?? await readJointPreparation(options, false, runtime.catalogReadScope);
   const prepare = async (current: RebuildCommandRuntime) => {
-    const read = (nativeObservationBatch?: NativeObservationBatch) => prepareJointRecoveryInSession(
-      command, selectors, options, current, snapshot, { catalogReadScope, nativeObservationBatch }, manifestReads);
+    const read = (nativeObservationBatch?: NativeObservationBatch) => {
+      if (nativeObservationBatch && command === 'install' && !preparation && !current.awHomeMutationToken) {
+        nativeObservationBatch.initialInstallPreview = true;
+      }
+      return prepareJointRecoveryInSession(
+        command, selectors, options, current, snapshot, { catalogReadScope, nativeObservationBatch }, manifestReads);
+    };
     const plan = isInstallBatch(command)
       ? await withNativeObservationBatch({ runner: current.nativeCliRunner, signal: options.signal }, read) : await read();
     plan.joint!.originalNativeRunner = originalRunner;

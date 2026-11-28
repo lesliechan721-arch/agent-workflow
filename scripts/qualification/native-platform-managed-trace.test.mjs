@@ -443,6 +443,68 @@ test('projects Windows Grok probes and Darwin Claude removal cleanup from the or
   }
 });
 
+// Test Value Gate: Intel Copilot timeouts need distinct cleanup evidence, but
+// the existing full trace must not expose the cleanup message or native CWD.
+test('projects bounded finish metadata only for exact Intel Darwin Copilot inventories', async (t) => {
+  const { entry, other, root } = await fixture(t);
+  const pluginList = ['plugin', 'list', '--json'];
+  const marketplaceList = ['plugin', 'marketplace', 'list', '--json'];
+  const sentinel = 'private-inventory-value';
+  const differentCwd = path.join(root, sentinel);
+  const timeout = cleanupError => Object.assign(new Error(sentinel), {
+    name: 'NativeCliError', reason: 'timeout', exitCode: 124, cleanupError, stderr: sentinel,
+    operationDiagnostic: { code: 'nativeCliTimedOut' },
+  });
+  const marker = timeout(new Error(`Process tree cleanup unconfirmed: POSIX process marker lookup failed (stage=${sentinel}).`));
+  const identity = timeout(new Error('Process tree cleanup unconfirmed: POSIX process identity lookup failed.'));
+  const unrecognized = timeout(new Error(`unrecognized cleanup failure: ${sentinel}`));
+  const unreadable = timeout({ get message() { throw new Error(sentinel); } });
+  const cleaned = timeout();
+  const success = { exitCode: 0, stdout: sentinel };
+  for (const [command, args, value, cwd, cwdKind, cleanupKind, host] of [
+    [entry, pluginList, marker, process.cwd(), 'same-as-aw-cwd', 'marker-lookup'],
+    [process.execPath, [entry, ...marketplaceList], identity, differentCwd, 'different-path', 'identity-lookup'],
+    [entry, pluginList, unrecognized, undefined, 'unknown', 'unknown'],
+    [entry, pluginList, unreadable, sentinel, 'unknown', 'unknown'],
+    [entry, marketplaceList, cleaned, process.cwd(), 'same-as-aw-cwd'],
+    [entry, marketplaceList, success, process.cwd(), 'same-as-aw-cwd'],
+    [entry, [...pluginList, '--extra'], marker, differentCwd],
+    [entry, ['plugin', 'list'], marker, differentCwd],
+    [entry, ['--version'], marker, differentCwd],
+    [other, [entry, ...pluginList], marker, differentCwd],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { arch: 'arm64' }],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { platform: 'win32' }],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { client: 'claude' }],
+  ]) {
+    const records = [];
+    const invocation = { command, args, cwd, env: { [PUBLIC_MARKER]: sentinel } };
+    const wrapped = createManagedTraceRunner(async received => {
+      assertTracedInvocation(received, invocation);
+      received.onSpawn({ pid: 789 });
+      if (value instanceof Error) throw value;
+      return value;
+    }, { entries: [entry], client: 'copilot', platform: 'darwin', arch: 'x64', env: {},
+      ...host, emit: record => records.push(record) });
+    if (value instanceof Error) await assert.rejects(wrapped(invocation), error => error === value);
+    else assert.equal(await wrapped(invocation), value);
+    assert.deepEqual(records.map(record => record.phase), ['start', 'spawn', 'finish']);
+    const [start, spawn, finish] = records;
+    assert.equal(finish.operationId, start.operationId);
+    assert.equal(finish.operationId, spawn.operationId);
+    assert.equal(finish.childPid, 789);
+    assert.equal(finish.exitCode, value.exitCode);
+    assert.equal(finish.cleanupError, Boolean(value.cleanupError));
+    for (const [record, expectedCwd, expectedCleanup] of [[start], [spawn], [finish, cwdKind, cleanupKind]]) {
+      assert.equal(Object.hasOwn(record, 'cwdKind'), expectedCwd !== undefined);
+      assert.equal(Object.hasOwn(record, 'cleanupKind'), expectedCleanup !== undefined);
+      assert.equal(record.cwdKind, expectedCwd);
+      assert.equal(record.cleanupKind, expectedCleanup);
+      assert(!('cwd' in record));
+    }
+    assert(!JSON.stringify(records).includes(sentinel));
+  }
+});
+
 // Test Value Gate: private diagnostics retain the invocation fields, including
 // stdin exchange and cancellation, and return/reject the original native objects.
 test('preserves native invocation fields and returns the same successful or nonzero result', async (t) => {

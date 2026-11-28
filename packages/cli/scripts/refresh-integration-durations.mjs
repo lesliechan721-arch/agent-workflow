@@ -8,8 +8,8 @@ import { partitionByDuration } from './integration-sequencer.mjs';
 
 const cliRoot = fileURLToPath(new URL('../', import.meta.url));
 const repoRoot = path.resolve(cliRoot, '../..');
-const shardCounts = { win32: 6, darwin: 2, linux: 2 };
-const acceptedCounts = { win32: [3, 4, 6], darwin: [2], linux: [1, 2] };
+const shardCounts = { win32: 8, darwin: 2, linux: 2 };
+const acceptedCounts = { win32: [3, 4, 6, 8], darwin: [2], linux: [1, 2] };
 const jobPrefixes = { win32: 'win32 x64', darwin: 'darwin arm64', linux: 'Linux x64' };
 const timingHeader = 'run_id\tjob_id\tplatform\tshard\tfile\tseconds';
 const integrationFile = /^tests\/integration\/.+\.test\.tsx?$/u;
@@ -384,7 +384,7 @@ function main() {
       + 'Do not mix a bare ID with explicit attempts of the same run, or reuse job IDs.\n'
       + 'Local logs must be complete successful job logs, named SAMPLE_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log;\n'
       + 'TSV keeps its original run_id column, containing the sample ID.\n'
-      + 'Each run must include Windows (3, 4 or 6 shards), macOS (2), and Linux Node 24 (1 or 2).\n'
+      + `Each run must include Windows (${acceptedCounts.win32.join(', ')} shards), macOS (2), and Linux Node 24 (1 or 2).\n`
       + 'Without --write, print estimates without replacing integration-durations.json.');
     return;
   }

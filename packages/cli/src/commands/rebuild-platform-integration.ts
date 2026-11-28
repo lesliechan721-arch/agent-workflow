@@ -922,6 +922,11 @@ export class PlatformRebuildSession {
     return result.prepared;
   }
   private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
+    const { command: pluginCommand, scripts } = input.plugin.manifest;
+    const cursorPreviewBatch = input.platform === 'cursor'
+      && this.context.nativeObservationBatch?.initialInstallPreview === true
+      && pluginCommand?.mode !== 'dynamic' && !scripts?.artifacts?.render && !scripts?.preApply && !scripts?.node?.build
+      ? this.context.nativeObservationBatch : undefined;
     const confirmedCatalogRetirement = this.retirementMode(input);
     const ctx = readContext(this.context, input.cwd, confirmedCatalogRetirement);
     const ordinaryCtx = confirmedCatalogRetirement ? ctx : input.readOnlyInspectionPlan && input.observationBatch ? { ...ctx, ...input.observationBatch }
@@ -1345,7 +1350,8 @@ export class PlatformRebuildSession {
         return 'deploymentObservationChanged';
       };
       checks.set(entry.binding.id, (batch) => check(undefined, batch));
-      if (resolution.bindings.length === 1 && entry.binding.route === 'pi-package') {
+      if (resolution.bindings.length === 1 && (entry.binding.route === 'pi-package'
+        || cursorPreviewBatch && entry.binding.route === 'cursor-workspace-hook')) {
         initialDiscoveryCheck = () => check({ value: initialParts.discovery });
       }
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
@@ -1919,7 +1925,9 @@ export class PlatformRebuildSession {
     };
     if (initialDiscoveryCheck) {
       const firstCheck = initialDiscoveryCheck;
-      const canReuseDiscovery = () => this.targets.size === 1 && deployments.length === 1 && plans.length === 1
+      const canReuseDiscovery = () => (cursorPreviewBatch
+        ? this.context.nativeObservationBatch === cursorPreviewBatch : this.targets.size === 1)
+        && deployments.length === 1 && plans.length === 1
         && plans[0] === deployments[0]!.plan && !blockedReceipts.length && plans[0]!.operation === 'ensure'
         && plans[0]!.expected.components.length > 0 && !plans[0]!.expected.unmet.length;
       receiveInitialVerifier?.(async () => {

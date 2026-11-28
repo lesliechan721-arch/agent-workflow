@@ -3478,7 +3478,7 @@ describe('authoring tools', () => {
       id: 'command-routes', target: 'aw.command-routes', kind: 'commandRoutes', refreshKeys: ['mode'],
       routes: { subcommands: [{ name: 'check', runner: 'node', entry: 'check.mjs' }] },
     };
-    const renderer = (artifacts: unknown[]) => [
+    const renderer = (artifacts: unknown[], requestTrace: string) => [
       'import assert from "node:assert/strict";',
       'import fs from "node:fs";',
       'import path from "node:path";',
@@ -3500,11 +3500,11 @@ describe('authoring tools', () => {
       'assert.deepEqual(Object.keys(c.commandSources[0]), ["sourceDir"]);',
       'assert.ok(path.isAbsolute(c.commandSources[0].sourceDir));',
       'assert.ok(fs.statSync(path.join(c.commandSources[0].sourceDir, "check.mjs")).isFile());',
-      `fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(c.requestedArtifactIds) + "\\n");`,
+      `fs.appendFileSync(${JSON.stringify(requestTrace)}, JSON.stringify(c.requestedArtifactIds) + "\\n");`,
       `console.log(JSON.stringify({ version: 2, artifacts: ${JSON.stringify(artifacts)} }));`,
     ].join('\n');
     const { pluginDir } = await writeSourcePlugin(root, 'managed-author', manifest, {
-      'scripts/render.mjs': renderer([artifact]),
+      'scripts/render.mjs': renderer([artifact], trace),
       'tools/check.mjs': 'console.log("ready");\n',
       'skills/helper/SKILL.md': '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command}} check\n',
       'skills/helper/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
@@ -3519,27 +3519,38 @@ describe('authoring tools', () => {
     });
     expect((await fs.readFile(trace, 'utf8')).trim().split('\n')).toHaveLength(2);
 
-    const rendererPath = path.join(pluginDir, 'scripts', 'render.mjs');
-    const malformed: Array<[unknown[], RegExp]> = [
-      [[], /exactly one command-routes artifact/u],
-      [[{ ...artifact, platform: 'codex' }], /unknown field.*platform/u],
-      [[{ ...artifact, refreshKeys: ['unrelated'] }], /must match the declared refreshKeys/u],
-      [[{ ...artifact, routes: { fallback: { runner: 'node', entry: 'missing.mjs' } } }], /Invalid command entry/u],
+    // Only the source/bundle pair above shares a trace for its cumulative counts.
+    const writeVariantRenderer = (variant: string, artifacts: unknown[]) => fs.writeFile(
+      path.join(variant, 'scripts', 'render.mjs'),
+      renderer(artifacts, path.join(path.dirname(variant), 'requests.jsonl')),
+    );
+    const malformed: Array<[string, unknown[], RegExp]> = [
+      ['missing', [], /exactly one command-routes artifact/u],
+      ['platform-field', [{ ...artifact, platform: 'codex' }], /unknown field.*platform/u],
+      ['refresh-keys', [{ ...artifact, refreshKeys: ['unrelated'] }], /must match the declared refreshKeys/u],
+      ['missing-entry', [{ ...artifact, routes: { fallback: { runner: 'node', entry: 'missing.mjs' } } }], /Invalid command entry/u],
     ];
-    for (const [artifacts, diagnostic] of malformed) {
-      await fs.writeFile(rendererPath, renderer(artifacts));
-      await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({ stdout: expect.stringMatching(diagnostic) });
+    const variants: Record<string, (variant: string) => Promise<void>> = {};
+    for (const [name, artifacts, diagnostic] of malformed) {
+      variants[name] = async (variant) => {
+        await writeVariantRenderer(variant, artifacts);
+        await expect(runValidatePlugin(variant, ['--json'])).rejects.toMatchObject({ stdout: expect.stringMatching(diagnostic) });
+      };
     }
-    await fs.writeFile(rendererPath, renderer([{ ...artifact, routes: {} }]));
-    const empty = JSON.parse((await runValidatePlugin(pluginDir, ['--json'])).stdout);
-    expect(empty).toMatchObject({ ok: true, errors: [] });
-    expect(empty.warnings).toContain('component unmet (codex/user): skill:helper [command-route-unreachable] []');
-
-    await fs.writeFile(rendererPath, renderer([artifact]));
-    await writeAuthoringPluginManifest(pluginDir, { ...manifest, platforms: ['codex', 'claude', 'generic'] });
-    await expect(runValidatePlugin(pluginDir, ['--json'])).rejects.toMatchObject({
-      stdout: expect.stringContaining('generic is outside command.platforms'),
-    });
+    variants.empty = async (variant) => {
+      await writeVariantRenderer(variant, [{ ...artifact, routes: {} }]);
+      const empty = JSON.parse((await runValidatePlugin(variant, ['--json'])).stdout);
+      expect(empty).toMatchObject({ ok: true, errors: [] });
+      expect(empty.warnings).toContain('component unmet (codex/user): skill:helper [command-route-unreachable] []');
+    };
+    variants['outside-platforms'] = async (variant) => {
+      await writeVariantRenderer(variant, [artifact]);
+      await writeAuthoringPluginManifest(variant, { ...manifest, platforms: ['codex', 'claude', 'generic'] });
+      await expect(runValidatePlugin(variant, ['--json'])).rejects.toMatchObject({
+        stdout: expect.stringContaining('generic is outside command.platforms'),
+      });
+    };
+    await validateFixtureVariants(pluginDir, variants);
     expect(await fs.pathExists(commandRoot)).toBe(false);
   });
 
@@ -3805,15 +3816,9 @@ describe('authoring tools', () => {
       'scripts/render.mjs': renderer([component]),
     });
     await fs.writeFile(path.join(fixture.pluginDir, 'templates/icon.bin'), Buffer.from([0,255,1]));
-    await mapWithConcurrency([
-      ...platformValidations,
-      async () => {
-        await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
-      },
-    ], authoringBatchConcurrency, (validate) => validate());
     const variants = ['duplicate-source','noncanonical-reference','missing-skill','path-collision',
       'missing-skill-entry','author-only-output','runtime-evals-source','symlink-source','duplicate-owner','wrong-skill-name'] as const;
-    await mapWithConcurrency(variants, authoringBatchConcurrency, async (variant) => {
+    const resourceValidations = variants.map((variant) => async () => {
       const root = path.join(tempRoot, 'variants', variant, 'resource-closure');
       await fs.copy(fixture.pluginDir, root);
       const input = structuredClone(manifest) as typeof manifest & { artifacts: {configKeys:string[];sourceDirs:string[]} };
@@ -3851,6 +3856,14 @@ describe('authoring tools', () => {
       if (expected) await expect(runValidatePlugin(root)).rejects.toMatchObject({stdout:expect.stringMatching(expected)});
       else await expect(runValidatePlugin(root)).resolves.toMatchObject({stdout:expect.stringContaining('[PASS]')});
     });
+    // Resource copies only need the fully written source fixture, not its validation result.
+    await mapWithConcurrency([
+      ...platformValidations,
+      async () => {
+        await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
+      },
+      ...resourceValidations,
+    ], authoringBatchConcurrency, (validate) => validate());
   });
 
   it('validate_plugin.mjs uses production component batches and excludes sensitive Skill inputs', async () => {

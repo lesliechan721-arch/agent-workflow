@@ -85,7 +85,7 @@ test('job speed normalization uses multiple runs and reports discovery gaps with
   assert.ok(!Object.hasOwn(table.seconds.win32, removed));
   assert.deepEqual(report.win32.unmeasuredFiles.sort(), [newFile, once]);
   assert.ok(report.win32.ignoredFiles.includes(removed));
-  for (const [platform, count] of [['win32', 6], ['darwin', 2], ['linux', 2]]) {
+  for (const [platform, count] of [['win32', 8], ['darwin', 2], ['linux', 2]]) {
     assert.equal(report[platform].shards.length, count);
     assert.equal(report[platform].shards.reduce((total, shard) => total + shard.files, 0), files.length);
   }
@@ -200,18 +200,17 @@ test('refresh retains whole pending split groups per platform until all children
 // retain independent identities all the way through logs and calibration.
 function attemptFixture() {
   const headSha = 'a'.repeat(40);
-  const names = [
-    'win32 x64 / Node 24 / integration 1 of 6', 'win32 x64 / Node 24 / integration 2 of 6',
-    'win32 x64 / Node 24 / integration 3 of 6', 'win32 x64 / Node 24 / integration 4 of 6',
-    'win32 x64 / Node 24 / integration 5 of 6', 'win32 x64 / Node 24 / integration 6 of 6',
-    'darwin arm64 / Node 24 / integration 1 of 2', 'darwin arm64 / Node 24 / integration 2 of 2',
-    'Linux x64 / Node 24 / integration 1 of 2', 'Linux x64 / Node 24 / integration 2 of 2',
-    'Linux x64 / Node 24 / unit', 'beta',
-  ];
   const metadata = new Map();
   const jobs = new Map();
   const logs = new Map();
   for (const [runId, attempt] of [[77, 1], [77, 2], [77, 3], [88, 1]]) {
+    const windowsCount = runId === 88 ? 6 : 8;
+    const names = [
+      ...Array.from({ length: windowsCount }, (_, index) => 'win32 x64 / Node 24 / integration ' + (index + 1) + ' of ' + windowsCount),
+      'darwin arm64 / Node 24 / integration 1 of 2', 'darwin arm64 / Node 24 / integration 2 of 2',
+      'Linux x64 / Node 24 / integration 1 of 2', 'Linux x64 / Node 24 / integration 2 of 2',
+      'Linux x64 / Node 24 / unit', 'beta',
+    ];
     const key = runId + '@' + attempt;
     const start = Date.UTC(2026, 10, 27, 12, attempt);
     metadata.set(key, {
@@ -220,9 +219,11 @@ function attemptFixture() {
     });
     jobs.set(key, names.map((name, index) => {
       const id = runId * 10000 + attempt * 100 + index;
+      // Non-Windows jobs keep the same files when Windows adds two shards.
+      const fileIndex = index < windowsCount ? index : 8 + index - windowsCount;
       logs.set(String(id), {
         runId: String(runId), attempt: String(attempt),
-        log: '✓ integration tests/integration/file-' + index + '.test.ts (1 test) 10ms\n Test Files  1 passed (1)\n',
+        log: '✓ integration tests/integration/file-' + fileIndex + '.test.ts (1 test) 10ms\n Test Files  1 passed (1)\n',
       });
       return {
         id, name, run_id: runId, run_attempt: attempt, head_sha: headSha,
@@ -262,10 +263,13 @@ test('exact successful attempts of one run and legacy remote IDs retain distinct
   const files = [...new Set(rows.map((row) => row.file))];
   const { table, report, sourceCoverage } = calibrateDurations(rows, files);
   assert.deepEqual(table.sourceRuns, ['77@1', '77@2', '77@3', '88@1']);
-  assert.equal(report.win32.normalizationFactors.length, 24);
-  for (const sample of sourceCoverage) {
-    assert.deepEqual(sample.shards, { win32: 6, darwin: 2, linux: 2 });
-  }
+  assert.equal(report.win32.normalizationFactors.length, 30);
+  assert.deepEqual(sourceCoverage, [
+    { runId: '77@1', shards: { win32: 8, darwin: 2, linux: 2 } },
+    { runId: '77@2', shards: { win32: 8, darwin: 2, linux: 2 } },
+    { runId: '77@3', shards: { win32: 8, darwin: 2, linux: 2 } },
+    { runId: '88@1', shards: { win32: 6, darwin: 2, linux: 2 } },
+  ]);
 });
 
 test('full reruns may expand an initially skipped reusable workflow into fresh descendant jobs', () => {
@@ -276,7 +280,7 @@ test('full reruns may expand an initially skipped reusable workflow into fresh d
     name: 'beta / candidates', conclusion: 'success',
     started_at: fresh.started_at, completed_at: fresh.completed_at,
   });
-  assert.equal(readCiSampleJobs('77@2', fixture.invokeGh).jobs.length, 10);
+  assert.equal(readCiSampleJobs('77@2', fixture.invokeGh).jobs.length, 12);
   beta.started_at = fixture.jobs.get('77@1')[0].started_at;
   beta.completed_at = fixture.jobs.get('77@1')[0].completed_at;
   assert.throws(() => readCiSampleJobs('77@2', fixture.invokeGh), /reused or invalid job execution times/u);
@@ -325,8 +329,8 @@ test('attempt collection rejects composite, partial, unsuccessful and duplicate 
   partial.jobs.set('77@2', partial.jobs.get('77@2').filter((job) => !job.name.endsWith('/ unit'))); // Timing matrix itself still complete.
   assert.throws(() => request(keys, partial), /partial rerun/u);
   const missing = attemptFixture();
-  missing.jobs.get('77@1').splice(5, 1);
-  assert.throws(() => readCiSampleJobs('77@1', missing.invokeGh), /missing.*win32.*6\/6/u);
+  missing.jobs.set('77@1', missing.jobs.get('77@1').filter((job) => !job.name.endsWith('8 of 8')));
+  assert.throws(() => readCiSampleJobs('77@1', missing.invokeGh), /missing.*win32.*8\/8/u);
 
   const reusedId = attemptFixture();
   reusedId.jobs.get('77@2')[0].id = reusedId.jobs.get('77@1')[0].id;

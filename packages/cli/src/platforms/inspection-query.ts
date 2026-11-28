@@ -14,6 +14,8 @@ export interface NativeQuerySession {
 export interface NativeObservationBatch {
   /** The complete joint placement, including its peers, has no executable author scripts. */
   scriptFreePlacement?: true;
+  /** The unlocked install preview, not the joint recheck before saving state. */
+  initialInstallPreview?: true;
   discoveryCache: NonNullable<ReadContext['discoveryCache']>;
   nativeQuerySession: NativeQuerySession;
   runner: NativeCliRunner;

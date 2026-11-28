@@ -59,12 +59,14 @@ const REQUIRED_MAIN_CI_JOBS = [
   'native-windows-job / Windows Job / Windows arm64 source qualification',
   'darwin arm64 / Node 24 / integration 1 of 2',
   'darwin arm64 / Node 24 / integration 2 of 2',
-  'win32 x64 / Node 24 / integration 1 of 6',
-  'win32 x64 / Node 24 / integration 2 of 6',
-  'win32 x64 / Node 24 / integration 3 of 6',
-  'win32 x64 / Node 24 / integration 4 of 6',
-  'win32 x64 / Node 24 / integration 5 of 6',
-  'win32 x64 / Node 24 / integration 6 of 6',
+  'win32 x64 / Node 24 / integration 1 of 8',
+  'win32 x64 / Node 24 / integration 2 of 8',
+  'win32 x64 / Node 24 / integration 3 of 8',
+  'win32 x64 / Node 24 / integration 4 of 8',
+  'win32 x64 / Node 24 / integration 5 of 8',
+  'win32 x64 / Node 24 / integration 6 of 8',
+  'win32 x64 / Node 24 / integration 7 of 8',
+  'win32 x64 / Node 24 / integration 8 of 8',
 ];
 
 export async function canReuseMainCi(candidate, options = {}) {

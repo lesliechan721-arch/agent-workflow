@@ -48,6 +48,8 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
+静态 Cursor 安装的首次未持锁预览，可以在同一目标的构建结束校验中复用刚取得的客户端发现结果。现场部署、路径、配置、staging 和所有权仍重新核对；后续校验、锁内重查和真实写入不使用这个结果。
+
 历史 Portable 物化的两种摘要使用同一次真实目录读取，分别保留全树内容与生产文件范围、执行权限的原有规则；紧接的 Skill 内容检查使用这次捕获的文件和目录信息。运行时引用闭包、当前目标的 ownership 和独立写前检查仍分别核验实际现场，不把历史结果当成后续窗口的证明。
 
 `OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。命中声明平台的部署共用一个命令包候选及其冻结路由。最终回执按计划顺序归并，各目标保留实际执行和读回结果。命令包撤销和显式维护见[包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。

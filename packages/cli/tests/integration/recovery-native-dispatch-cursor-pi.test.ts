@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
+import { observeIntent } from '../../src/intent/intent-store.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
@@ -22,6 +23,54 @@ import { useEmptyGitRepositoryFixture } from '../helpers/git-repository-fixture.
 const createEmptyGitRepository = useEmptyGitRepositoryFixture();
 
 describe('Cursor and Pi native recovery', () => {
+  // The preview is read-only; a new client at execution must stop both intent and output writes.
+  it('blocks a reviewed static Cursor batch before saving intent when discovery changes', async () => {
+    const { env: isolatedEnv, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    const catalog = path.join(cwd, 'catalog');
+    const bin = path.join(cwd, 'bin');
+    const env = { ...isolatedEnv, PATH: bin };
+    const names = ['guide', 'check'];
+    await createEmptyGitRepository(cwd);
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'cursor-agent.exe' : 'cursor-agent'), 'fixture entry', { mode: 0o755 });
+    await Promise.all(names.flatMap((name) => {
+      const skill = path.join(catalog, 'plugins', name, 'skills', name);
+      return [
+        fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: A fixture skill.\n---\nUse the fixture.\n`),
+        fs.outputFile(path.join(skill, 'README.md'), 'A fixture skill.\n'),
+      ];
+    }));
+    await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({ name, configureManifest(manifest) {
+      manifest.platforms = ['cursor'];
+      manifest.skills = './skills';
+    } })));
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: catalog }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['cursor']);
+
+    const scope = 'project' as const;
+    const options = { cwd, env, scope, context: scope, targets: ['cursor' as const], cliVersion: '1.0.0', yes: true };
+    let version = '2026.11.05-86047df';
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      expect(args).toEqual(['--version']);
+      return { exitCode: 0, stderr: '', stdout: 'Cursor Agent ' + version };
+    };
+    const plan = await prepareRecovery('install', names.map((name) => 'local/' + name), options, { nativeCliRunner });
+    try {
+      expect(plan.receipt.blockers).toEqual([]);
+      expect(plan.receipt.targetResults.map(({ pluginId }) => pluginId).sort()).toEqual(['local/check', 'local/guide']);
+      expect((await observeIntent(options)).state).toBe('absent');
+
+      version = '2026.11.06-86047df';
+      expect(await executeRecovery(plan)).toMatchObject({ ok: false, outputsMayHaveChanged: false,
+        blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+      expect((await observeIntent(options)).state).toBe('absent');
+      expect(await fs.pathExists(path.join(cwd, '.cursor'))).toBe(false);
+    } finally { await plan.context.dispose(); }
+  });
+
   // Test Value Gate: a concrete Agent failure must not fall back to scattered Skills or block the independent generic writer.
   it('keeps an unavailable Cursor native target separate from a successful generic output', async () => {
     const isolation = getCurrentSourceTestIsolation();

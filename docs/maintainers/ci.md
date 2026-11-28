@@ -37,36 +37,36 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 
 ### 2.2 Windows 独立测试分片与长时任务（CI1）
 
-为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套独立的 Runner、分片算法与超时配置。九个 job 都用固定 Go 工具链独立准备本次源码候选，不等待 `native-windows-job`。原生构建采用隔离临时 Go 缓存，`setup-go` 的 `cache` 保持 `false`，有真实净收益证据时再调整。
+为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套独立的 Runner、分片算法与超时配置。十一个 job 都用固定 Go 工具链独立准备本次源码候选，不等待 `native-windows-job`。原生构建采用隔离临时 Go 缓存，`setup-go` 的 `cache` 保持 `false`，有真实净收益证据时再调整。
 
-#### 2.2.1 Windows 普通集成测试六路分片（Vitest Runner）
+#### 2.2.1 Windows 普通集成测试八路分片（Vitest Runner）
 
-- **Job 名称**：`win32 x64 / Node 24 / integration 1 of 6` 至 `6 of 6`。
+- **Job 名称**：`win32 x64 / Node 24 / integration 1 of 8` 至 `8 of 8`。
 - **工作目录**：`packages/cli`。
 - **执行命令**：
   ```bash
-  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/6"
+  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/8"
   ```
-- **并发与 Runner**：采用六个独立的 Vitest runner，普通 CI 使用固定 1 worker（不受仓库变量覆盖）。普通平台集成步骤由 `.github/actions/platform-integration` 共享，Windows 最后一片的 process-lifecycle、command-runtime-config 仍串行。
-- **2 workers 准入**：[独立 Windows integration 对照工作流](../../.github/workflows/windows-integration-workers.yml) 使用同一真实平台准备、分片与串行尾步骤。工作流仅支持 `workflow_dispatch`，可指定 1 或 2 workers；该工作流需先存在于默认分支，才可对指定 ref 手动触发，不再因 PR 标签产生跳过记录。每个样本核对精确源码 SHA 与实际生效 workers，完整执行六片。固定同一 SHA 至少 3 次完整 2 workers 样本与同拓扑 1 worker 基线对照，所有样本零失败、文件锁错误或超时且逐次最慢片实际执行时长的中位数净降至少 15%，才允许切换普通 CI；排队单独记录。对照运行不是发布或普通 CI 必需证据；历史三片或四片对照不能作为六片的准入依据。
+- **并发与 Runner**：采用八个独立的 Vitest runner，普通 CI 使用固定 1 worker（不受仓库变量覆盖）。普通平台集成步骤由 `.github/actions/platform-integration` 共享，Windows 最后一片的 process-lifecycle、command-runtime-config 仍串行。
+- **2 workers 准入**：[独立 Windows integration 对照工作流](../../.github/workflows/windows-integration-workers.yml) 使用同一真实平台准备、分片与串行尾步骤。工作流仅支持 `workflow_dispatch`，可指定 1 或 2 workers；该工作流需先存在于默认分支，才可对指定 ref 手动触发，不再因 PR 标签产生跳过记录。每个样本核对精确源码 SHA 与实际生效 workers，完整执行八片。固定同一 SHA 至少 3 次完整 2 workers 样本与同拓扑 1 worker 基线对照，所有样本零失败、文件锁错误或超时且逐次最慢片实际执行时长的中位数净降至少 15%，才允许切换普通 CI；排队单独记录。对照运行不是发布或普通 CI 必需证据；其他分片拓扑的历史对照不能作为八片的准入依据。
 - **完整互斥校验入口**：
   为验证各分片在测试文件分配上的严格互斥与完整性，在 `packages/cli` 目录下执行：
   ```bash
-  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/6" --json
+  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/8" --json
   ```
   **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
-- **分片 6 附加任务**：
-  除集成测试外，分片 6 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
+- **分片 8 附加任务**：
+  除集成测试外，分片 8 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
   同一 Windows runner 运行 `tests/unit/command-runtime-config.test.ts`，验证托管命令通过原生、正斜杠和混合路径读取已安装的配置。
 - **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
 
 #### 普通集成测试的耗时分配
 
-Windows 六片、macOS 两片与 Linux 每个 Node 版本两片均使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
+Windows 八片、macOS 两片与 Linux 每个 Node 版本两片均使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
 
-`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run，Linux profile 取 Node 24 实测文件级样本，同样供 Node 22 分配。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。重测试拆分后的每个子文件必须使用不同于原文件的新文件名，避免旧的整文件实测耗时被误认为子文件耗时。暂缺新 CI 样本时，可按同一次本机实际文件耗时的相对份额分配原文件的历史权重；`splitEstimates` 记录估计来源（包括原始父文件权重的 `sourceRuns`，与本次刷新使用的 run 独立）。刷新时每个平台独立判断：仍存在的所有子文件均有至少两次实际样本后，才用实测耗时替换该组全部估计值；否则保留该组原有权重，继续刷新其他文件。所有平台均完成替换时才移除该组估计来源。观察到持续失衡或重测试发生变化时，从 3–5 次独立、完整成功的 CI attempt 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。从仓库根目录运行 `node packages/cli/scripts/refresh-integration-durations.mjs --help` 查看参数，可输入多个成功的 `--run RUN_ID@ATTEMPT` 样本（允许同一 run 的多个完整 attempt）、完整 job 日志目录 `--log-dir` 或 `--tsv`。远端 bare run ID 解析为当前 attempt，记录的来源统一为 `RUN_ID@ATTEMPT`；历史本地 bare run ID 仍可读取。本地日志文件名为 `SAMPLE_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log`，TSV 沿用 `run_id` 列记录 sample ID。不能混用同一 run 的 bare ID 与明确 attempt，也不能复用 job ID。远端来源必须是指定 attempt 的成功 CI，核对该 attempt 的 job 归属、完整性及执行时间（非 skipped job 必须实际开始于本次 attempt），拒绝部分重跑或混入前次 job 的记录，即使 GitHub 为旧执行分配新 job ID。每个样本必须完整覆盖 Windows（历史 3 或 4 片，当前 6 片）、macOS（2 片）及 Linux Node 24（历史未分片或当前 2 片），同一平台在单个样本内禁止混合分片数或重复覆盖。先查看来源 run 覆盖、当前 6/2/2 预计分片分布、实测文件数（`measuredFiles`）、保留的估计文件（`retainedEstimateFiles`）及使用 fallback 的文件（`unmeasuredFiles`），再加 `--write` 更新表。脚本按实际发现集保留有多次测量的文件，以各 job 相对共同文件中位耗时的比例校正机型速度，再取多次样本的中位数。未测或完全跳过的文件继续使用已有 fallback。表中的值用于相对分配，不是性能门槛或 wall-clock 保证。
+`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run，Linux profile 取 Node 24 实测文件级样本，同样供 Node 22 分配。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。重测试拆分后的每个子文件必须使用不同于原文件的新文件名，避免旧的整文件实测耗时被误认为子文件耗时。暂缺新 CI 样本时，可按同一次本机实际文件耗时的相对份额分配原文件的历史权重；`splitEstimates` 记录估计来源（包括原始父文件权重的 `sourceRuns`，与本次刷新使用的 run 独立）。刷新时每个平台独立判断：仍存在的所有子文件均有至少两次实际样本后，才用实测耗时替换该组全部估计值；否则保留该组原有权重，继续刷新其他文件。所有平台均完成替换时才移除该组估计来源。观察到持续失衡或重测试发生变化时，从 3–5 次独立、完整成功的 CI attempt 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。从仓库根目录运行 `node packages/cli/scripts/refresh-integration-durations.mjs --help` 查看参数，可输入多个成功的 `--run RUN_ID@ATTEMPT` 样本（允许同一 run 的多个完整 attempt）、完整 job 日志目录 `--log-dir` 或 `--tsv`。远端 bare run ID 解析为当前 attempt，记录的来源统一为 `RUN_ID@ATTEMPT`；历史本地 bare run ID 仍可读取。本地日志文件名为 `SAMPLE_ID-JOB_ID-PLATFORM-INDEX-of-COUNT.log`，TSV 沿用 `run_id` 列记录 sample ID。不能混用同一 run 的 bare ID 与明确 attempt，也不能复用 job ID。远端来源必须是指定 attempt 的成功 CI，核对该 attempt 的 job 归属、完整性及执行时间（非 skipped job 必须实际开始于本次 attempt），拒绝部分重跑或混入前次 job 的记录，即使 GitHub 为旧执行分配新 job ID。每个样本必须完整覆盖 Windows（历史 3、4 或 6 片，当前 8 片）、macOS（2 片）及 Linux Node 24（历史未分片或当前 2 片），同一平台在单个样本内禁止混合分片数或重复覆盖。先查看来源 run 覆盖、当前 8/2/2 预计分片分布、实测文件数（`measuredFiles`）、保留的估计文件（`retainedEstimateFiles`）及使用 fallback 的文件（`unmeasuredFiles`），再加 `--write` 更新表。脚本按实际发现集保留有多次测量的文件，以各 job 相对共同文件中位耗时的比例校正机型速度，再取多次样本的中位数。未测或完全跳过的文件继续使用已有 fallback。表中的值用于相对分配，不是性能门槛或 wall-clock 保证。
 
-Linux 两个 Node 版本和 macOS 使用相同命令，将分片参数改为 `<index>/2`。macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`。Windows 分片 6、macOS 和 Linux 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
+Linux 两个 Node 版本和 macOS 使用相同命令，将分片参数改为 `<index>/2`。macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`。Windows 分片 8、macOS 和 Linux 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
 
 CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32`、`darwin` 或 `linux`；本地未设置时使用宿主平台。跨平台检查分配时可显式选择对应 profile，这只检查分配，不能代替该平台实际测试。自定义 sequencer 只允许 `--project integration`；不指定分片 config 的本地完整测试入口保持原行为。
 
@@ -109,7 +109,7 @@ CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32`、`darwin` 或 `linux`；�
 
 ### 3.2 检查清单同步与 API 容错
 
-- **Job 名称硬性同步**：CI job 名称发生变更时，**必须同步更新 `scripts/release/actions-inspection.mjs` 中的必要检查列表**和 `scripts/release/source-candidate.test.mjs` 中对应的验证。发布检查要求 `Linux x64 / Node 24 / release delivery` 和 `Linux x64 / Node 24 / release native evidence` 两项成功。缺少任一项（包括只有旧 `release verification` 的 main CI 证据）均安全回退至完整验证。`native-windows-job / qualified` 由 `release native evidence` 对整个 reusable workflow 的成功依赖与同次 `windows-job-qualified` 制品校验传递保护，不重复列为独立必要项；当前完整普通 CI 的 25 个非跳过作业对应 24 个显式必要检查。
+- **Job 名称硬性同步**：CI job 名称发生变更时，**必须同步更新 `scripts/release/actions-inspection.mjs` 中的必要检查列表**和 `scripts/release/source-candidate.test.mjs` 中对应的验证。发布检查要求 `Linux x64 / Node 24 / release delivery` 和 `Linux x64 / Node 24 / release native evidence` 两项成功。缺少任一项（包括只有旧 `release verification` 的 main CI 证据）均安全回退至完整验证。`native-windows-job / qualified` 由 `release native evidence` 对整个 reusable workflow 的成功依赖与同次 `windows-job-qualified` 制品校验传递保护，不重复列为独立必要项；当前完整普通 CI 的 27 个非跳过作业对应 26 个显式必要检查。
 - **历史快照 Transport 校验**：自动 Beta 比较 Catalog 时，当前候选执行完整校验；历史基线快照只执行 transport 校验（检查快照布局、摘要与 marketplace 投影），不按当前插件合同重新校验旧插件。历史快照无法读取或完整性校验失败时，按生产内容有变化选择新版本。
 
 ---
@@ -252,7 +252,7 @@ Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_PROCESS_NAMES=1` 时，Cop
 
 同一 Hosted 开关下，采用 `ps` 的 Linux 资格命令在原 marker 查询回调中保存有限 negative 行的 PID/PPID/PGID/state/启动时间、查询序号及开始/回调时间，并将 command 仅分类为空、defunct、括号、方括号、方括号加 defunct 或其他。精确标记匹配和标记变量是否出现仅保留布尔；不保存原 command、环境、marker 或其摘要。行形态记录不增加进程、查询或 await，原 error/stdout/回调与截止不变；解析有少量 CPU 成本，不能作无插桩性能证据。无法解析的续行不留原文，只记录数量；最多缓存32行，原失败按 PID/启动身份及回调早于诊断筛选最多8行，注明缓存丢弃及输出省略数。同一身份可能对应多次查询，因此保留候选并明确关联歧义，不把最近一条当作原判定查询证明。该形态只作私有补证，不改变 unreadable、归属、失败或 cleanup 判定。 同一开关也为 Linux Grok 原生管理命令记录上述行形态，仅从 root 的唯一有效随机标记赋值学习本次标记。上述 `ps` 观察中重复出现的缺标记行，包括普通 command 形态，可异步读取该 PID 的 `/proc/PID/environ`，每条命令最多8个 PID/启动身份候选；每次读取共用原命令与该次查询截止的较早值，停止时取消，原 `ps` 回调不等待读取。环境物理读取最多64KiB加一个溢出字节，前后读取有限 `stat` 并比较 starttime；只保存固定状态、精确 NUL 项匹配布尔、字节数、时间及身份比较，不保存环境、标记、摘要或原始 ticks。空值、权限、截断、身份变化及截止仍为未知。这个身份比较只绑定该次文件读取，不能证明它与原 `ps` 属于同一次 exec 或原判定查询；原查询序号、关联歧义和失败均保留。读取结果不参与资格通过、归属或信号判定。 观察器在 Linux 运行期对单次 marker 复查后仍不可读的候选进行独立的新身份确认时，资格工具可在同一 Hosted 开关下记录 `markerIdentityConfirmations`：每命令最多8个候选的 PID/启动时间、查询开始/完成/原截止与 absent/present/unknown，以及省略数。事件来自观察器实际确认分支，和形态补证分开；不保留 argv、环境或标记，不进入原失败诊断首尾队列，回调错误不改变门禁，也不把 absent 写成过去 marker 成功。
 
-Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_MANAGED_TRACE=1` 时，仅 Linux/macOS/Windows 的 Codex/Pi/Claude/Copilot 公开 AW 进程通过 Node `--import` 加载私有托管调用取证。它复用既有 NativeCliRunner 接口并保留正式默认后端与 Windows helper 准备判定；只记录本次固定客户端入口匹配的逻辑命令、有限参数、操作序号、开始/结束、AW 父 PID、正式后端启动回调提供的子 PID、退出/错误类别、是否有清理错误和宿主公开标记是否提供；子 PID 不证明最终 marker 可读性。同一包装还在实际插件脚本 runner 的临时环境副本中补入当前公开 AW 随机管理标记，并记录固定 plugin-script 角色、操作序号、父子 PID 和开始/结束，不记录脚本参数或其他环境值。生产脚本环境白名单不变；这是资格 fixture 的显式环境前提，不是纯被动取证。脚本清理失败保留首末 ProcessTreeDiagnostic 的有限查询开始、原绝对截止、回调及完成状态和尝试次数，用于区分截止耗尽与查询失败；不增加查询、重试、等待或宽限。仅 Codex Marketplace 清单保留有限成功输出，失败保留有限 stderr；不记录环境，清除 marker 值与 UUID 形状。JSONL 只在本 scope 临时根新建，最多256条、256KiB，随后按原报告规则脱敏并随 scope 删除。记录错误不替代真实结果、对象或异常；这些调用仍受原截止，附加 IO/时间使其不构成无插桩性能证据。
+Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_MANAGED_TRACE=1` 时，仅 Linux/macOS/Windows 的 Codex/Pi/Claude/Copilot 公开 AW 进程通过 Node `--import` 加载私有托管调用取证。它复用既有 NativeCliRunner 接口并保留正式默认后端与 Windows helper 准备判定；只记录本次固定客户端入口匹配的逻辑命令、有限参数、操作序号、开始/结束、AW 父 PID、正式后端启动回调提供的子 PID、退出/错误类别、是否有清理错误和宿主公开标记是否提供；子 PID 不证明最终 marker 可读性。Intel macOS Copilot 的两条精确 JSON 清单命令（`plugin list --json`、`plugin marketplace list --json`）另在原有完成记录中附加工作目录字符串与 AW 是否相同的类别、清理错误类别；缺少依据记为未知，不保存原路径或清理错误文本、不推断作用域，原判定不变。同一包装还在实际插件脚本 runner 的临时环境副本中补入当前公开 AW 随机管理标记，并记录固定 plugin-script 角色、操作序号、父子 PID 和开始/结束，不记录脚本参数或其他环境值。生产脚本环境白名单不变；这是资格 fixture 的显式环境前提，不是纯被动取证。脚本清理失败保留首末 ProcessTreeDiagnostic 的有限查询开始、原绝对截止、回调及完成状态和尝试次数，用于区分截止耗尽与查询失败；不增加查询、重试、等待或宽限。仅 Codex Marketplace 清单保留有限成功输出，失败保留有限 stderr；不记录环境，清除 marker 值与 UUID 形状。JSONL 只在本 scope 临时根新建，最多256条、256KiB，随后按原报告规则脱敏并随 scope 删除。记录错误不替代真实结果、对象或异常；这些调用仍受原截止，附加 IO/时间使其不构成无插桩性能证据。
 
 Windows Codex 的共享 User 提供者场景在 Project 安装依赖时记录原 60 秒时限、外层 Job 调用开始至返回、AW 正常退出时刻和最多 64 个系统 PowerShell 完成样本。资格脚本从该命令的私有 debug 日志最多读取 256 KiB，报告仅保留固定的准备、写入及状态阶段与时间。超时后在还原配置前另读已选原生入口的插件清单和项目公开 status，命令回执保留原超时。
 
