@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { prepareWindowsGrokBinary } from './native-platform-grok-distribution.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
@@ -57,11 +58,16 @@ export function isolatedEnvironment(root, network = false) {
   return env;
 }
 
-export async function prepareEnvironment(root) {
+export async function prepareEnvironment(root, grokBinary) {
   const env = isolatedEnvironment(root);
   for (const [key, value] of Object.entries(env)) {
     if (['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TMPDIR', 'TMP', 'TEMP'].includes(key)
       || key.endsWith('_HOME') || key === 'CLAUDE_CONFIG_DIR' || key === 'PI_CODING_AGENT_DIR') await fs.mkdir(value, { recursive: true });
+  }
+  if (grokBinary) {
+    const bin = path.join(env.GROK_HOME, 'bin');
+    await fs.mkdir(bin);
+    await fs.copyFile(grokBinary, path.join(bin, 'grok.exe'), constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
   }
   for (const name of ['gitconfig', 'npmrc', 'npmrc-global']) await fs.writeFile(path.join(root, name), '');
   return env;
@@ -313,12 +319,16 @@ export async function acquireClient(platform, root) {
       if (record?.version !== client.version || !/^sha512-[A-Za-z0-9+/]+=*$/u.test(record?.integrity ?? '')) throw new Error('client-lock-integrity-missing');
     }
   }
+  const grok = platform === 'grok' && process.platform === 'win32' && process.arch === 'x64' && client.version === '1.0.77'
+    ? await prepareWindowsGrokBinary(prefix, metadata, lock) : undefined;
   return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] }, binDirectory: prefix,
+    ...(grok ? { grokBinary: grok.binary } : {}),
     acquisition: { package: client.package, version: client.version, source: client.source, download,
       integrity: lock.packages?.[`node_modules/${client.package}`]?.integrity ?? null,
       executablePackage, executablePackageVersion: metadata.version,
       executablePackageIntegrity: lock.packages?.[`node_modules/${executablePackage}`]?.integrity ?? null,
       lockSha256: sha256(JSON.stringify(lock)), entrySha256: sha256(bytes), scripts: 'disabled',
+      ...(grok ? { preparedWindowsBinary: grok.evidence } : {}),
       ...(platform === 'opencode' ? { lockFileSha256: sha256(lockBytes), entrySelection: 'fixed-official-optional-native-package; parent-placeholder-not-executed' } : {}) } };
 }
 

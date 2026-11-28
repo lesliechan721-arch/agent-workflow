@@ -37,7 +37,9 @@
       "tests/integration/joint-native-observation.test.ts": 11.79,
       "tests/integration/joint-native-removal.test.ts": 18.563,
       "tests/integration/joint-recovery-install.test.ts": 122.107,
-      "tests/integration/joint-recovery-removal.test.ts": 149.998,
+      "tests/integration/joint-recovery-removal-dependencies.test.ts": 25.975,
+      "tests/integration/joint-recovery-removal-project-consumers.test.ts": 51.093,
+      "tests/integration/joint-recovery-removal-user-providers.test.ts": 72.93,
       "tests/integration/joint-recovery-review.test.ts": 70.638,
       "tests/integration/managed-command-cli.test.ts": 7.754,
       "tests/integration/managed-command-native-source-sync.test.ts": 1.542,
@@ -68,7 +70,8 @@
       "tests/integration/tui-catalog-source-v4.test.tsx": 84.276,
       "tests/integration/workspace-authoring.test.ts": 14.778,
       "tests/integration/write-commands-catalog.test.ts": 17.911,
-      "tests/integration/write-commands-cleanup-retirement.test.ts": 175.809,
+      "tests/integration/write-commands-cleanup-dependencies.test.ts": 60.321,
+      "tests/integration/write-commands-cleanup-ownership.test.ts": 51.42,
       "tests/integration/write-commands-cli-runtime.test.ts": 47.729,
       "tests/integration/write-commands-config-native-execution.test.ts": 60.537,
       "tests/integration/write-commands-config-preapply-execution.test.ts": 72.44,
@@ -79,6 +82,7 @@
       "tests/integration/write-commands-native-commands.test.ts": 35.505,
       "tests/integration/write-commands-native-recovery.test.ts": 106.497,
       "tests/integration/write-commands-public-plugins.test.ts": 129.201,
+      "tests/integration/write-commands-retirement.test.ts": 64.068,
       "tests/integration/write-commands-tui.test.ts": 28.652
     },
     "darwin": {
@@ -113,7 +117,9 @@
       "tests/integration/joint-native-observation.test.ts": 8.4,
       "tests/integration/joint-native-removal.test.ts": 13.693,
       "tests/integration/joint-recovery-install.test.ts": 142.917,
-      "tests/integration/joint-recovery-removal.test.ts": 99.927,
+      "tests/integration/joint-recovery-removal-dependencies.test.ts": 17.305,
+      "tests/integration/joint-recovery-removal-project-consumers.test.ts": 34.038,
+      "tests/integration/joint-recovery-removal-user-providers.test.ts": 48.584,
       "tests/integration/joint-recovery-review.test.ts": 69.117,
       "tests/integration/managed-command-cli.test.ts": 7.661,
       "tests/integration/managed-command-native-source-sync.test.ts": 1.263,
@@ -145,7 +151,8 @@
       "tests/integration/tui-subagent-guided-setup.test.tsx": 39.242,
       "tests/integration/workspace-authoring.test.ts": 15.621,
       "tests/integration/write-commands-catalog.test.ts": 15.451,
-      "tests/integration/write-commands-cleanup-retirement.test.ts": 88.846,
+      "tests/integration/write-commands-cleanup-dependencies.test.ts": 30.483,
+      "tests/integration/write-commands-cleanup-ownership.test.ts": 25.985,
       "tests/integration/write-commands-cli-runtime.test.ts": 32.99,
       "tests/integration/write-commands-config-native-execution.test.ts": 53.328,
       "tests/integration/write-commands-config-preapply-execution.test.ts": 43.688,
@@ -156,6 +163,7 @@
       "tests/integration/write-commands-native-commands.test.ts": 33.815,
       "tests/integration/write-commands-native-recovery.test.ts": 81.192,
       "tests/integration/write-commands-public-plugins.test.ts": 99.102,
+      "tests/integration/write-commands-retirement.test.ts": 32.378,
       "tests/integration/write-commands-tui.test.ts": 32.6
     },
     "linux": {
@@ -190,7 +198,9 @@
       "tests/integration/joint-native-observation.test.ts": 11.861,
       "tests/integration/joint-native-removal.test.ts": 23.646,
       "tests/integration/joint-recovery-install.test.ts": 172.67,
-      "tests/integration/joint-recovery-removal.test.ts": 61.115,
+      "tests/integration/joint-recovery-removal-dependencies.test.ts": 10.583,
+      "tests/integration/joint-recovery-removal-project-consumers.test.ts": 20.817,
+      "tests/integration/joint-recovery-removal-user-providers.test.ts": 29.715,
       "tests/integration/joint-recovery-review.test.ts": 92.848,
       "tests/integration/managed-command-cli.test.ts": 5.643,
       "tests/integration/managed-command-native-source-sync.test.ts": 1.48,
@@ -222,7 +232,8 @@
       "tests/integration/tui-subagent-guided-setup.test.tsx": 64.424,
       "tests/integration/workspace-authoring.test.ts": 22.238,
       "tests/integration/write-commands-catalog.test.ts": 17.486,
-      "tests/integration/write-commands-cleanup-retirement.test.ts": 135.745,
+      "tests/integration/write-commands-cleanup-dependencies.test.ts": 46.575,
+      "tests/integration/write-commands-cleanup-ownership.test.ts": 39.702,
       "tests/integration/write-commands-cli-runtime.test.ts": 41.817,
       "tests/integration/write-commands-config-native-execution.test.ts": 81.288,
       "tests/integration/write-commands-config-preapply-execution.test.ts": 28.749,
@@ -233,7 +244,28 @@
       "tests/integration/write-commands-native-commands.test.ts": 38.174,
       "tests/integration/write-commands-native-recovery.test.ts": 44.779,
       "tests/integration/write-commands-public-plugins.test.ts": 72.58,
+      "tests/integration/write-commands-retirement.test.ts": 49.468,
       "tests/integration/write-commands-tui.test.ts": 41.741
+    }
+  },
+  "splitEstimates": {
+    "basis": "Relative file durations from one local darwin arm64, Node 24.14.1, AW_TEST_WORKERS=1 run of all six split children. Proportions conserve each platform historical parent weight; not child CI measurements.",
+    "sourceRuns": [
+      "45996401530@1",
+      "45996401530@2",
+      "45996401530@4"
+    ],
+    "localSecondsByParent": {
+      "tests/integration/joint-recovery-removal.test.ts": {
+        "tests/integration/joint-recovery-removal-dependencies.test.ts": 12.508,
+        "tests/integration/joint-recovery-removal-project-consumers.test.ts": 24.603,
+        "tests/integration/joint-recovery-removal-user-providers.test.ts": 35.118
+      },
+      "tests/integration/write-commands-cleanup-retirement.test.ts": {
+        "tests/integration/write-commands-cleanup-dependencies.test.ts": 16.434,
+        "tests/integration/write-commands-cleanup-ownership.test.ts": 14.009,
+        "tests/integration/write-commands-retirement.test.ts": 17.455
+      }
     }
   }
 }

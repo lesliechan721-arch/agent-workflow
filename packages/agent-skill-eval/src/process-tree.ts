@@ -125,6 +125,8 @@ export interface ProcessTreeDependencies {
     options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
   ) => unknown;
+  /** Physical executor for shared ps samples. Private queries still use execFile. */
+  posixSamplerExecFile?: ProcessTreeDependencies['execFile'];
   windowsJobHelperPath?: string;
   windowsProcessTable?: (requiredPids: readonly number[]) => Promise<WindowsNativeProcessRow[]>;
   createSentinel?: (
@@ -228,8 +230,14 @@ interface ObservationState {
   excludedInitialMarkerQuery?: Promise<void>;
   initialFreshMarkerRead?: Promise<void>;
   preFreshIdentityQuery?: Promise<void>;
+  deferredSamplerDelivery?: Promise<void>;
   finalSamplerQueries?: ReadonlySet<Promise<void> | undefined>;
   disposed: boolean;
+}
+
+interface SamplerDeliveries {
+  byState: ReadonlyMap<ObservationState, Promise<void>>;
+  shared: Promise<void>[];
 }
 
 interface PosixProcessSampler {
@@ -240,22 +248,22 @@ interface PosixProcessSampler {
   identityTable?: Map<number, ProcessEntry>;
   identityFailure?: ProcessCommandFailure;
   identityQuery?: ProcessQueryDiagnostic;
-  identityScannedAt: number;
+  identityCompletedAt: number;
   identityInFlight?: Promise<void>;
-  identityDeliveries?: Promise<ReadonlyMap<ObservationState, Promise<void>>>;
+  identityDeliveries?: Promise<SamplerDeliveries>;
   identityDelivering?: boolean;
   markerScan?: PosixMarkerScan;
   markerFailure?: ProcessCommandFailure;
   markerQuery?: ProcessQueryDiagnostic;
-  markerScannedAt: number;
+  markerCompletedAt: number;
   markerInFlight?: Promise<void>;
-  markerDeliveries?: Promise<ReadonlyMap<ObservationState, Promise<void>>>;
+  markerDeliveries?: Promise<SamplerDeliveries>;
   markerDelivering?: boolean;
   timer?: NodeJS.Timeout;
 }
 
 const observationStates = new WeakMap<ProcessTreeObservation, ObservationState>();
-const posixSamplers = new WeakMap<object, PosixProcessSampler>();
+const posixSamplers = new Map<NodeJS.Platform, WeakMap<object, PosixProcessSampler>>();
 const linuxInspectionLeases = new WeakMap<ProcessTreeInspectionLease, string>();
 const preLeaseMarkerQueries = new WeakMap<ProcessTreeInspectionLease, Promise<void>>();
 
@@ -552,6 +560,7 @@ function readPosixMarkerOutput(
 function usesLinuxProcfs(state: ObservationState): boolean {
   if (state.dependencies.linuxProcessInspection === 'procfs') return true;
   return state.platform === 'linux' && process.platform === 'linux' && state.dependencies.execFile === undefined
+    && state.dependencies.posixSamplerExecFile === undefined
     && state.marker !== undefined && state.markerEnvironmentVariable === DEFAULT_PROCESS_MARKER_ENV
     && !state.lease && !state.dependencies.enforceProcessMarker && !state.dependencies.enforceCooperativeProcessGroup;
 }
@@ -828,7 +837,7 @@ export async function acquireProcessTreeInspectionLease(
   const markerEnvironmentVariable =
     dependencies.markerEnvironmentVariable ?? DEFAULT_PROCESS_MARKER_ENV;
   const procfs = dependencies.linuxProcessInspection === 'procfs';
-  if (procfs && (platform !== 'linux' || process.platform !== 'linux' || dependencies.execFile
+  if (procfs && (platform !== 'linux' || process.platform !== 'linux' || dependencies.execFile || dependencies.posixSamplerExecFile
     || !dependencies.enforceProcessMarker || dependencies.enforceCooperativeProcessGroup)) {
     throw cleanupUnconfirmed('Linux procfs inspection requires native leased marker observation.');
   }
@@ -874,7 +883,7 @@ export async function acquireProcessTreeInspectionLease(
     else {
       // A shared ps scan already launched before preflight succeeded may
       // predate this sentinel. It is not observation evidence for this lease.
-      const pending = posixSamplers.get(dependencies.execFile ?? defaultExecFile)?.markerInFlight;
+      const pending = posixSamplers.get(platform)?.get(dependencies.posixSamplerExecFile ?? dependencies.execFile ?? defaultExecFile)?.markerInFlight;
       if (pending) preLeaseMarkerQueries.set(lease, pending);
     }
     return lease;
@@ -1693,20 +1702,25 @@ async function acceptPosixSnapshot(
 
 function getPosixProcessSampler(state: ObservationState): PosixProcessSampler {
   const { platform } = state;
-  const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
+  const execFileImpl = state.dependencies.posixSamplerExecFile ?? state.dependencies.execFile ?? defaultExecFile;
   const procfs = state.dependencies.linuxProcessInspection === 'procfs';
   const key = procfs ? state.lease! : execFileImpl;
-  const existing = posixSamplers.get(key);
+  let samplers = posixSamplers.get(platform);
+  if (!samplers) {
+    samplers = new WeakMap();
+    posixSamplers.set(platform, samplers);
+  }
+  const existing = samplers.get(key);
   if (existing) return existing;
   const sampler: PosixProcessSampler = {
     platform,
     execFile: execFileImpl,
     ...(procfs ? { linuxMarker: { name: state.markerEnvironmentVariable, value: state.marker! } } : {}),
     states: new Set(),
-    identityScannedAt: Number.NEGATIVE_INFINITY,
-    markerScannedAt: Number.NEGATIVE_INFINITY,
+    identityCompletedAt: Number.NEGATIVE_INFINITY,
+    markerCompletedAt: Number.NEGATIVE_INFINITY,
   };
-  posixSamplers.set(key, sampler);
+  samplers.set(key, sampler);
   return sampler;
 }
 
@@ -1714,11 +1728,12 @@ function snapshotFromSampler(
   state: ObservationState,
   sampler: PosixProcessSampler,
 ): PosixProcessSnapshot | undefined {
+  const query = state.marker === undefined ? sampler.identityQuery : sampler.markerQuery;
   const markerLookupSucceeded = state.marker === undefined || sampler.markerFailure === undefined;
   const table = state.marker === undefined || !markerLookupSucceeded
     ? sampler.identityTable
     : sampler.markerScan?.table;
-  if (!table) return undefined;
+  if (!table || !query) return undefined;
   const markerPids =
     state.marker === undefined || !markerLookupSucceeded || sampler.markerScan === undefined
       ? new Set<number>()
@@ -1733,10 +1748,9 @@ function snapshotFromSampler(
     unreadableMarkerPids: unreadableMarkerPids(sampler.markerScan, state.platform, markerPids),
     markerLookupSucceeded,
     markerLookupAttempts: state.marker === undefined ? 0 : 1,
-    markerScanStartedAt: sampler.markerScannedAt,
-    snapshotStartedAt: state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt,
-    snapshotDeadline: (state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt)
-      + posixInspectionTimeout(state.platform),
+    markerScanStartedAt: sampler.markerQuery?.startedAt,
+    snapshotStartedAt: query.startedAt,
+    snapshotDeadline: query.startedAt + posixInspectionTimeout(state.platform),
     queries: [sampler.identityQuery, sampler.markerQuery]
       .filter((query): query is ProcessQueryDiagnostic => query !== undefined),
     ...(sampler.markerFailure ? { markerLookupFailure: sampler.markerFailure } : {}),
@@ -1833,34 +1847,42 @@ function settleLinuxPsGroupDeparture(
   );
 }
 
+// Preserve every applicable table while a late lease establishes its first
+// identities. Only that observer waits; cleanup drains its own tail.
+function deferSamplerDelivery(state: ObservationState, previous: Promise<void>, apply: () => Promise<void>): Promise<void> {
+  const delivery = previous.then(() => { if (!state.disposed) return apply(); }).finally(() => {
+    if (state.deferredSamplerDelivery === delivery) state.deferredSamplerDelivery = undefined;
+  });
+  state.deferredSamplerDelivery = delivery;
+  return delivery;
+}
+
 function deliverSamplerIdentity(
   sampler: PosixProcessSampler,
   states: readonly ObservationState[] = [...sampler.states],
-): ReadonlyMap<ObservationState, Promise<void>> {
-  const identityTable = sampler.identityTable;
-  type Sample = GroupDepartureSample & { state: ObservationState };
-  const accept = (state: ObservationState): Sample | undefined => {
-    if (state.disposed || state.finalSamplerQueries?.has(sampler.identityInFlight) === false) return;
-    if (sampler.identityFailure) {
+): SamplerDeliveries {
+  const { identityTable, identityFailure, identityQuery, identityInFlight } = sampler;
+  const accept = (state: ObservationState): GroupDepartureSample | undefined => {
+    if (identityFailure) {
       latchObservationFailure(
         state,
         cleanupUnconfirmed('POSIX process identity lookup failed.'),
         {
           ...posixDiagnostic(state, undefined, 'observation', 'identity-lookup-failed'),
-          lookupFailure: sampler.identityFailure,
-          ...(sampler.identityQuery ? {
-            snapshotStartedAt: sampler.identityQuery.startedAt,
-            snapshotDeadline: sampler.identityQuery.deadline,
-            queries: [sampler.identityQuery],
+          lookupFailure: identityFailure,
+          ...(identityQuery ? {
+            snapshotStartedAt: identityQuery.startedAt,
+            snapshotDeadline: identityQuery.deadline,
+            queries: [identityQuery],
           } : {}),
         },
       );
       return;
     }
     if (state.marker !== undefined) {
-      if (sampler.identityTable) {
-        retainProcfsRootReuse(state, sampler.identityTable);
-        refreshDescendants(state.root, state.descendants, sampler.identityTable);
+      if (identityTable) {
+        retainProcfsRootReuse(state, identityTable);
+        refreshDescendants(state.root, state.descendants, identityTable);
       }
       const expectedPgid = state.rootPgidMode === 'owned'
         ? state.rootPgid
@@ -1875,7 +1897,7 @@ function deliverSamplerIdentity(
             ? changedPids.filter(pid => !isLinuxPsDeadTaskPlaceholder(identityTable.get(pid)))
             : changedPids;
           if (proven.length > 0) latchIdentityGroupDeparture(state, identityTable, proven);
-          else if (!state.failure) return { state, table: identityTable, expectedPgid, pids: changedPids };
+          else if (!state.failure) return { table: identityTable, expectedPgid, pids: changedPids };
         }
       }
       return;
@@ -1883,21 +1905,9 @@ function deliverSamplerIdentity(
     const snapshot = snapshotFromSampler(state, sampler);
     if (snapshot) acceptPosixSnapshot(state, snapshot, 'observation');
   };
-  const pending = new Map<ObservationState, Sample | undefined>();
-  const deferred = new Map<ObservationState, Promise<Sample | undefined>>();
-  for (const state of states) {
-    if (state.initialFreshMarkerRead && sampler.identityInFlight !== state.preFreshIdentityQuery) {
-      // A later table must see the identities established by the private
-      // initial marker sample. Other subscribers can accept this table now.
-      deferred.set(state, state.initialFreshMarkerRead.then(() => accept(state)));
-    } else {
-      pending.set(state, accept(state));
-    }
-  }
   // All subscribers of this delivery share one independent confirmation,
   // including those waiting for their initial marker. Its deadline is fixed.
-  const originalQuery = sampler.identityQuery;
-  const deadline = originalQuery?.deadline ?? Date.now();
+  const deadline = identityQuery?.deadline ?? Date.now();
   const confirm = async () => {
     const remaining = deadline - Date.now();
     const result: ProcessCommandResult = remaining > 0
@@ -1906,59 +1916,66 @@ function deliverSamplerIdentity(
     return {
       confirmed: result.output === null ? undefined : parseCompletePosixIdentityTable(result.output),
       metadata: {
-        snapshotStartedAt: originalQuery?.startedAt,
-        snapshotDeadline: originalQuery?.deadline,
-        queries: [originalQuery, result.query].filter((query): query is ProcessQueryDiagnostic => query !== undefined),
+        snapshotStartedAt: identityQuery?.startedAt,
+        snapshotDeadline: identityQuery?.deadline,
+        queries: [identityQuery, result.query].filter((query): query is ProcessQueryDiagnostic => query !== undefined),
         ...(result.failure ? { lookupFailure: result.failure } : {}),
       },
     };
   };
   let confirmation: ReturnType<typeof confirm> | undefined;
-  const settle = async (samples: Sample[]): Promise<void> => {
-    if (!samples.length) return;
-    const { confirmed, metadata } = await (confirmation ??= confirm());
-    for (const { state, ...sample } of samples) {
-      settleLinuxPsGroupDeparture(state, sample, confirmed, deadline, metadata);
-    }
-  };
   // A cleanup waits for its own delivery, not the other subscribers'
   // independent initial reads or marker confirmations.
   const deliveries = new Map<ObservationState, Promise<void>>();
-  for (const [state, sample] of pending) deliveries.set(state, settle(sample ? [sample] : []));
-  for (const [state, delivery] of deferred) deliveries.set(state, delivery.then(sample => settle(sample ? [sample] : [])));
-  return deliveries;
+  const shared: Promise<void>[] = [];
+  for (const state of states) {
+    if (state.disposed || state.finalSamplerQueries?.has(identityInFlight) === false) continue;
+    const apply = async () => {
+      const sample = accept(state);
+      if (!sample) return;
+      const { confirmed, metadata } = await (confirmation ??= confirm());
+      settleLinuxPsGroupDeparture(state, sample, confirmed, deadline, metadata);
+    };
+    const previous = identityInFlight === state.preFreshIdentityQuery
+      ? undefined : state.deferredSamplerDelivery ?? state.initialFreshMarkerRead;
+    const delivery = previous ? deferSamplerDelivery(state, previous, apply) : apply();
+    deliveries.set(state, delivery);
+    if (!previous) shared.push(delivery);
+  }
+  return { byState: deliveries, shared };
 }
 
-function deliverSamplerMarkers(sampler: PosixProcessSampler, stage: string): ReadonlyMap<ObservationState, Promise<void>> {
-  const deliver = async (state: ObservationState): Promise<void> => {
-    const eligible = () => !state.disposed && state.marker !== undefined &&
-      (state.excludedInitialMarkerQuery === undefined || state.excludedInitialMarkerQuery !== sampler.markerInFlight) &&
-      state.finalSamplerQueries?.has(sampler.markerInFlight) !== false;
-    if (!eligible()) return;
-    // Keep later shared marker evidence in delivery order for this observer.
-    if (state.initialFreshMarkerRead) await state.initialFreshMarkerRead;
-    if (!eligible()) return;
-    if (sampler.markerFailure) {
-      recordMarkerLookupFailure(state, stage, sampler.markerFailure, {
-        snapshotStartedAt: sampler.markerScannedAt,
-        snapshotDeadline: sampler.markerScannedAt + posixInspectionTimeout(state.platform),
-        markerLookupAttempts: 1,
-        queries: sampler.markerQuery ? [sampler.markerQuery] : [],
-      });
-      return;
-    }
+function deliverSamplerMarkers(sampler: PosixProcessSampler, stage: string): SamplerDeliveries {
+  const { markerInFlight, markerFailure, markerQuery } = sampler;
+  const deliveries = new Map<ObservationState, Promise<void>>();
+  const shared: Promise<void>[] = [];
+  for (const state of sampler.states) {
+    if (state.disposed || state.marker === undefined || state.finalSamplerQueries?.has(markerInFlight) === false ||
+      (state.excludedInitialMarkerQuery !== undefined && state.excludedInitialMarkerQuery === markerInFlight)) continue;
     const snapshot = snapshotFromSampler(state, sampler);
-    if (snapshot) await acceptPosixSnapshot(state, snapshot, stage);
-  };
-  return new Map([...sampler.states].map(state => [state, deliver(state)] as const));
+    const apply = async () => {
+      if (markerFailure) {
+        recordMarkerLookupFailure(state, stage, markerFailure, {
+          snapshotStartedAt: markerQuery?.startedAt,
+          snapshotDeadline: (markerQuery?.startedAt ?? Date.now()) + posixInspectionTimeout(state.platform),
+          markerLookupAttempts: 1, queries: markerQuery ? [markerQuery] : [],
+        });
+      } else if (snapshot) await acceptPosixSnapshot(state, snapshot, stage);
+    };
+    const previous = state.deferredSamplerDelivery ?? state.initialFreshMarkerRead;
+    const delivery = previous ? deferSamplerDelivery(state, previous, apply) : apply();
+    deliveries.set(state, delivery);
+    if (!previous) shared.push(delivery);
+  }
+  return { byState: deliveries, shared };
 }
 
 function waitForSamplerDelivery(
   state: ObservationState,
-  deliveries: Promise<ReadonlyMap<ObservationState, Promise<void>>> | undefined,
+  deliveries: Promise<SamplerDeliveries> | undefined,
   query: Promise<void>,
 ): Promise<void> {
-  return deliveries ? deliveries.then(async values => { await values.get(state); }) : query;
+  return deliveries ? deliveries.then(async values => { await values.byState.get(state); }) : query;
 }
 
 function scanSamplerIdentity(
@@ -1969,15 +1986,15 @@ function scanSamplerIdentity(
   const now = Date.now();
   if (
     !force &&
-    Number.isFinite(sampler.identityScannedAt) &&
-    now - sampler.identityScannedAt < PROCESS_TREE_IDENTITY_INTERVAL_MS
+    Number.isFinite(sampler.identityCompletedAt) &&
+    now - sampler.identityCompletedAt < PROCESS_TREE_IDENTITY_INTERVAL_MS
   ) return Promise.resolve();
-  sampler.identityScannedAt = now;
   const timeoutMs = posixCommandTimeout(sampler.platform);
   const query: ProcessCommandPromise<MarkerOutput> = sampler.linuxMarker ? queryLinuxMarkers(timeoutMs, new Set())
     : readPosixIdentityTable(sampler.execFile, timeoutMs);
   sampler.identityDeliveries = query
     .then((result) => {
+      sampler.identityCompletedAt = Date.now();
       sampler.identityFailure = result.failure;
       sampler.identityQuery = result.query;
       sampler.identityTable = result.output === null
@@ -1987,7 +2004,7 @@ function scanSamplerIdentity(
       return deliverSamplerIdentity(sampler);
     });
   sampler.identityInFlight = sampler.identityDeliveries
-    .then(async deliveries => { await Promise.all(deliveries.values()); })
+    .then(async deliveries => { await Promise.all(deliveries.shared); })
     .finally(() => {
       sampler.identityInFlight = undefined;
       sampler.identityDeliveries = undefined;
@@ -1999,13 +2016,13 @@ function scanSamplerIdentity(
 function runMarkerScan(
   sampler: PosixProcessSampler,
 ): Promise<void> {
-  sampler.markerScannedAt = Date.now();
   const timeoutMs = posixCommandTimeout(sampler.platform);
   const query: ProcessCommandPromise<MarkerOutput> = sampler.linuxMarker
     ? queryLinuxMarkers(timeoutMs, new Set([sampler.linuxMarker.value]), sampler.linuxMarker.name)
     : readPosixMarkerOutput(sampler.execFile, timeoutMs);
   sampler.markerDeliveries = query
     .then((result) => {
+      sampler.markerCompletedAt = Date.now();
       sampler.markerFailure = result.failure;
       sampler.markerQuery = result.query;
       sampler.markerScan = result.output === null ? undefined : parsePosixMarkerScan(result.output);
@@ -2013,7 +2030,7 @@ function runMarkerScan(
       return deliverSamplerMarkers(sampler, 'observation');
     });
   sampler.markerInFlight = sampler.markerDeliveries
-    .then(async deliveries => { await Promise.all(deliveries.values()); })
+    .then(async deliveries => { await Promise.all(deliveries.shared); })
     .finally(() => {
       sampler.markerInFlight = undefined;
       sampler.markerDeliveries = undefined;
@@ -2030,8 +2047,8 @@ function scanSamplerMarkers(
   const now = Date.now();
   if (
     !force &&
-    Number.isFinite(sampler.markerScannedAt) &&
-    now - sampler.markerScannedAt < PROCESS_TREE_MARKER_INTERVAL_MS
+    Number.isFinite(sampler.markerCompletedAt) &&
+    now - sampler.markerCompletedAt < PROCESS_TREE_MARKER_INTERVAL_MS
   ) return Promise.resolve();
   return runMarkerScan(sampler);
 }
@@ -2044,22 +2061,22 @@ function schedulePosixSampler(sampler: PosixProcessSampler): void {
   const now = Date.now();
   const identityDelay = Math.max(
     0,
-    PROCESS_TREE_IDENTITY_INTERVAL_MS - (now - sampler.identityScannedAt),
+    PROCESS_TREE_IDENTITY_INTERVAL_MS - (now - sampler.identityCompletedAt),
   );
   const markerDelay = activeStates.some((state) => state.marker !== undefined)
-    ? Math.max(0, PROCESS_TREE_MARKER_INTERVAL_MS - (now - sampler.markerScannedAt))
+    ? Math.max(0, PROCESS_TREE_MARKER_INTERVAL_MS - (now - sampler.markerCompletedAt))
     : Number.POSITIVE_INFINITY;
   const delayMs = Math.min(identityDelay, markerDelay);
   sampler.timer = setTimeout(() => {
     sampler.timer = undefined;
     const current = Date.now();
     const scans: Promise<void>[] = [];
-    if (current - sampler.identityScannedAt >= PROCESS_TREE_IDENTITY_INTERVAL_MS) {
+    if (current - sampler.identityCompletedAt >= PROCESS_TREE_IDENTITY_INTERVAL_MS) {
       scans.push(scanSamplerIdentity(sampler, false));
     }
     if (
       markerDelay !== Number.POSITIVE_INFINITY &&
-      current - sampler.markerScannedAt >= PROCESS_TREE_MARKER_INTERVAL_MS
+      current - sampler.markerCompletedAt >= PROCESS_TREE_MARKER_INTERVAL_MS
     ) {
       scans.push(scanSamplerMarkers(sampler, false));
     }
@@ -2302,7 +2319,7 @@ function createProcessTreeObservation(
   // The identity table is already available for a subscriber joining an
   // ongoing delivery. Deliver it explicitly, including any lookup failure.
   const initialIdentity = identityQuery && periodic
-    ? lateIdentity ? deliverSamplerIdentity(sampler, [state]).get(state)!
+    ? lateIdentity ? deliverSamplerIdentity(sampler, [state]).byState.get(state)!
       : waitForSamplerDelivery(state, sampler.identityDeliveries, identityQuery)
     : identityQuery;
   const markerQuery = marker === undefined ? undefined : state.initialFreshMarkerRead ?? scanSamplerMarkers(sampler, true);
@@ -2333,7 +2350,7 @@ export function observeProcessTree(
   if (dependencies.linuxProcessInspection === 'procfs' || (lease && linuxInspectionLeases.has(lease))) {
     if (!lease || linuxInspectionLeases.get(lease) !== (dependencies.markerEnvironmentVariable ?? DEFAULT_PROCESS_MARKER_ENV)
       || marker !== lease.marker || dependencies.linuxProcessInspection !== 'procfs'
-      || dependencies.execFile || !dependencies.enforceProcessMarker || dependencies.enforceCooperativeProcessGroup
+      || dependencies.execFile || dependencies.posixSamplerExecFile || !dependencies.enforceProcessMarker || dependencies.enforceCooperativeProcessGroup
       || (dependencies.platform ?? process.platform) !== 'linux') throw cleanupUnconfirmed('Linux procfs inspection lease is incompatible.');
   }
   return createProcessTreeObservation(pid, marker, dependencies, true, lease);
@@ -2575,11 +2592,13 @@ async function terminatePosixProcessTree(
   const markerQuery = sampler?.markerInFlight !== state.excludedInitialMarkerQuery ? sampler?.markerInFlight : undefined;
   const pendingObservations = [
     state.initialLookup,
+    ...(state.deferredSamplerDelivery ? [state.deferredSamplerDelivery] : []),
     ...(identityQuery ? [waitForSamplerDelivery(state, sampler?.identityDeliveries, identityQuery)] : []),
     ...(markerQuery ? [waitForSamplerDelivery(state, sampler?.markerDeliveries, markerQuery)] : []),
   ];
   const deadline = Date.now() + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
-  const overlappingProcfsQuery = Boolean(sampler?.linuxMarker && (sampler.identityInFlight || sampler.markerInFlight));
+  const overlappingProcfsQuery = Boolean(sampler?.linuxMarker && (sampler.identityInFlight || sampler.markerInFlight
+    || state.initialFreshMarkerRead || state.deferredSamplerDelivery));
   if (sampler) {
     // Freeze this observer's delivery set at the completion boundary. Other
     // subscribers may keep sampling, but only these deliveries are drained.

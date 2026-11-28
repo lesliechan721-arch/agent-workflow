@@ -71,9 +71,8 @@ runs:
         node --input-type=module - <<'JS'
         import { appendFileSync } from 'node:fs';
         import path from 'node:path';
-        import { clients, sha256 } from './scripts/qualification/native-platform-runtime.mjs';
-        const manifest = Object.values(clients).map(({ package: name, version }) => [name, version]);
-        const identity = sha256(JSON.stringify([manifest, process.env.SELECTED_CLIENTS]));
+        import { clientCacheIdentity } from './scripts/qualification/native-platforms.mjs';
+        const identity = clientCacheIdentity(process.env.SELECTED_CLIENTS);
         appendFileSync(process.env.GITHUB_OUTPUT, `identity=${identity}\n`);
         appendFileSync(process.env.GITHUB_ENV, `AW_QUALIFICATION_NPM_CACHE=${path.join(process.env.RUNNER_TEMP, 'native-client-npm-cache')}\n`);
         JS
@@ -84,6 +83,5 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: ${{ runner.temp }}/native-client-npm-cache/_cacache
-        # Hash the whole group identity as well as the fixed version manifest.
         # Even the implicit primary-key prefix match cannot cross client groups.
-        key: native-qualification-npm-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.identity }}
+        key: native-qualification-npm-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.client-cache.outputs.identity }}

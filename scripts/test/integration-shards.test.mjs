@@ -40,12 +40,12 @@ test('Vitest list applies all platform profiles with complete, disjoint shards',
   export default {
     test: { sequence: { sequencer: Sequencer }, projects: [{ test: { name: 'integration', include: ['tests/integration/**/*.test.{ts,tsx}'] } }] }
   };`);
-  const names = ['catalog-git-publisher-journal.test.ts', 'write-commands-config-values.test.ts', 'write-commands-dependency-scope-placement.test.ts', 'new.test.tsx'];
+  const names = ['catalog-git-publisher-journal.test.ts', 'write-commands-config-values.test.ts', 'write-commands-dependency-scope-placement.test.ts', 'new.test.tsx', 'joint-recovery-install.test.ts', 'portable-scope.test.ts'];
   await fs.mkdir(path.join(root, 'tests/integration'), { recursive: true });
   for (const name of names) {
     await fs.writeFile(path.join(root, 'tests/integration', name), "import { test } from 'vitest'; test('is discovered', () => {});\n");
   }
-  for (const [platform, count] of [['win32', 4], ['darwin', 2], ['linux', 2]]) {
+  for (const [platform, count] of [['win32', 6], ['darwin', 2], ['linux', 2]]) {
     const all = [];
     for (let index = 1; index <= count; index++) {
       const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/test/run-vitest.mjs'),

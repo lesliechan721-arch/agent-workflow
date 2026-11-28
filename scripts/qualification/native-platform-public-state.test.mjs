@@ -8,7 +8,7 @@ import { preparePublicClientEntry, preparePublicClientPath, preparePublicClientP
 import { qualifyRemainingPlugins } from './native-platform-public-catalog.mjs';
 import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
-import { componentReceiptEvidence, componentTraceMode, grokTrustTargets, runComponentQualification, runComponentSuites } from './native-platform-public-components.mjs';
+import { componentReceiptEvidence, componentTraceMode, grokTrustTargets, recordComponentTrace, runComponentQualification, runComponentSuites } from './native-platform-public-components.mjs';
 import { confirmedSharedRetention, verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 import { qualificationGroup } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
@@ -565,6 +565,7 @@ test('copies the correct component fixture into every independent scope', async 
   assert.deepEqual([...catalogs.values()].map(({ plugins }) => plugins.join('/')).sort(), expected);
   assert.deepEqual(outcomes.map(({ platform, scope, suite }) => [platform, scope, suite]), cases.map(row => row.slice(0, 3)));
   assert(outcomes.every(row => row.status === 'failed' && row.commandFailures.at(-1).command === 'source.add'));
+  assert(outcomes.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0));
   assert.equal(new Set(outcomes.map(row => row.candidateSha256)).size, 1);
   for (const { directory } of catalogs.values()) await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
 });
@@ -966,6 +967,45 @@ test('selects the Claude cleanup trace only for each individual Project matrix h
     { ...command, pluginIds: [] }, { ...command, pluginIds: ['matrix/single-hook', 'matrix/hook-only'] },
     { ...command, pluginIds: ['matrix/single-agent'] }, { ...command, pluginIds: ['other/single-hook'] },
   ]) assert.equal(componentTraceMode(ineligible, unit), undefined);
+});
+
+// Removal may return exit 0 before a retained-file assertion fails. Its native
+// evidence must survive; the install trace must bind to the selected candidate.
+test('binds Copilot traces to the two hosted User commands', () => {
+  for (const [suite, command, pluginIds, mode] of [
+    ['matrix', 'plugin.remove', ['matrix/single-skill'], 'copilot-component-remove'],
+    ['candidate', 'plugin.install', ['qualification-official/agent-skill-toolkit', 'qualification-official/aw-skill-eval-runner'], 'copilot-component-install'],
+  ]) {
+    const unit = { traceEntry: process.execPath, platform: 'copilot', scope: 'user', suite };
+    const request = { command, scope: 'user', pluginIds };
+    assert.equal(componentTraceMode(request, unit), mode);
+    for (const other of [{ ...unit, scope: 'project' }, { ...unit, suite: 'frozen' }, { ...unit, traceEntry: undefined }]) {
+      assert.equal(componentTraceMode(request, other), undefined);
+    }
+    for (const other of [{ ...request, scope: 'project' }, { ...request, pluginIds: ['other/single-skill'] },
+      { ...request, pluginIds: ['matrix/single-skill', 'matrix/single-hook'] }]) assert.equal(componentTraceMode(other, unit), undefined);
+  }
+});
+
+test('retains bounded Copilot evidence across a zero-exit remove and a partial batch install', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-copilot-trace-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'trace.jsonl');
+  const sentinel = 'private_trace_payload';
+  const timeout = { category: 'copilot-plugin-list', elapsedMs: 5001, threw: true, exitCode: 124, reason: 'timeout',
+    timedOut: true, cleanupUnconfirmed: false };
+  const install = { category: 'copilot-plugin-install', elapsedMs: 4001, threw: false, exitCode: 1 };
+  await fs.writeFile(file, [timeout, install, { ...timeout, category: sentinel }].map(record =>
+    JSON.stringify({ phase: 'finish', ...record, stdout: sentinel, argv: [sentinel], errorCode: sentinel })).join('\n'));
+  const removal = { command: 'plugin.remove', scope: 'user', pluginIds: ['matrix/single-skill'] };
+  const report = { status: 'failed' };
+  await recordComponentTrace(report, removal, undefined, file, 'copilot-component-remove');
+  assert.deepEqual(report, { status: 'failed', nativeCommandTrace: { ...removal, state: 'captured', records: [timeout] } });
+  const failure = { command: 'plugin.install', exitCode: 4, awReceipt: { status: 'partial' } };
+  const batch = { commandFailures: [failure] };
+  await recordComponentTrace(batch, { command: 'plugin.install' }, failure, file, 'copilot-component-install');
+  assert.deepEqual(failure, { command: 'plugin.install', exitCode: 4, awReceipt: { status: 'partial' },
+    nativeCommandTrace: { state: 'captured', records: [timeout, install] } });
 });
 
 // Test Value Gate: an explicit write scope is independent of the context used to inspect status.

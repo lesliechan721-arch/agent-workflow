@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { executePublicAw } from './native-platform-public-process.mjs';
 import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
 import { createProcessNameDiagnostic } from './native-platform-process-names.mjs';
 
@@ -138,4 +143,97 @@ test('preserves original exceptions even when diagnostic capture fails', () => {
     callbacks++; assert.equal(error, badCode); assert.equal(stdout, 'original');
   }), handle);
   assert.equal(callbacks, 2);
+});
+
+
+// Exercise the hosted public command entry itself. Hold the first runtime ps
+// callbacks until all real Node children have started; preflights remain private.
+test('Darwin hosted public commands share physical ps only on the same executor', {
+  skip: process.platform !== 'darwin', timeout: 15_000,
+}, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'aw-darwin-ps-'));
+  const settings = ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'];
+  const previous = settings.map(key => process.env[key]);
+  const finished = path.join(root, 'finish');
+  const controller = new AbortController();
+  const script = `const fs = require('node:fs'); fs.writeFileSync(process.argv[1], '');
+    const timer = setInterval(() => { if (fs.existsSync(process.argv[2])) clearInterval(timer); }, 10);
+    setTimeout(() => process.exit(1), 6000).unref();`;
+  function backend(firstPid, commandCount) {
+    const allSentinels = Promise.withResolvers();
+    const sentinels = new Map();
+    const pending = [];
+    const counts = { identity: 0, marker: 0 };
+    let released = false;
+    return {
+      counts,
+      dependencies: {
+        createSentinel: async (name, marker) => {
+          const pid = firstPid + sentinels.size;
+          sentinels.set(pid, `${name}=${marker}`);
+          if (sentinels.size === commandCount) allSentinels.resolve();
+          await allSentinels.promise;
+          return { pid, stop: async () => { sentinels.delete(pid); } };
+        },
+        execFile(command, args, _options, callback) {
+          assert.equal(command, 'ps');
+          const kind = args[0] === 'eww' ? 'marker' : 'identity';
+          if (kind === 'identity') assert.match(args.at(-1), /,ucomm=$/u);
+          const count = ++counts[kind];
+          // Lose exactly one sentinel only in the first shared marker table.
+          const missing = commandCount === 2 && kind === 'marker' && count === commandCount + 1;
+          const rows = [...sentinels].filter(([pid]) => !missing || pid !== firstPid).map(([pid, assignment]) =>
+            `${pid} 1 ${pid} S Fri Nov 27 08:05:29 2026 node${kind === 'marker' ? ` ${assignment}` : ''}`).join('\n');
+          const reply = () => callback(null, rows);
+          if (count <= commandCount || released) reply();
+          else pending.push(reply);
+        },
+      },
+      release() { allSentinels.resolve(); released = true; for (const reply of pending.splice(0)) reply(); },
+    };
+  }
+  const together = backend(900_100, 2);
+  const isolated = backend(900_300, 1);
+  let results;
+  try {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES = '1';
+    const readyFiles = [0, 1, 2].map(index => path.join(root, String(index)));
+    results = Promise.allSettled(readyFiles.map((ready, index) => executePublicAw({
+      executable: process.execPath, prefix: ['-e', script],
+    }, [ready, finished], { cwd: root, env: {}, timeoutMs: 6_000, signal: controller.signal },
+    (index < 2 ? together : isolated).dependencies)));
+    const until = Date.now() + 3_000;
+    while (!(await Promise.all(readyFiles.map(file => access(file).then(() => true, () => false)))).every(Boolean)) {
+      assert(Date.now() < until, 'expected all three independent children to start');
+      await delay(10);
+    }
+    // Two private preflights plus one shared sample, versus one of each.
+    assert.deepEqual({ ...together.counts }, { identity: 3, marker: 3 });
+    assert.deepEqual({ ...isolated.counts }, { identity: 2, marker: 2 });
+    together.release(); isolated.release();
+    await writeFile(finished, '');
+    const completed = await results;
+    assert.equal(completed[2].status, 'fulfilled');
+    const failures = completed.filter(r => r.status === 'rejected');
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].reason.publicAwProcessDiagnostics[0].reason, 'inspection-lease-invalid');
+    for (const result of completed.filter(r => r.status === 'fulfilled')) {
+      assert.equal(result.value.exitCode, 0);
+      assert.equal(result.value.containmentMode, 'observed');
+    }
+    const receipts = completed.slice(0, 2).flatMap(r => r.status === 'fulfilled'
+      ? r.value.processQueryTimings.records : r.reason.publicAwProcessQueryTimings.records);
+    assert(receipts.every(record => record.status === 'callback-success'));
+    for (const kind of ['identity', 'marker']) {
+      assert.equal(receipts.filter(r => r.queryKind === `${kind}-ps`).length, together.counts[kind]);
+    }
+  } finally {
+    controller.abort(); together.release(); isolated.release();
+    await results;
+    for (const [index, key] of settings.entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });

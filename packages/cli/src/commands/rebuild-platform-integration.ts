@@ -246,16 +246,60 @@ export function nativeDeploymentHasVerifiedComponentWrite(plan: FrozenDeployment
   });
 }
 
-function recheckCopilotMarketplaceTimeout(receipt: DeploymentReceipt, fresh: DeploymentObservation): void {
+function recheckCopilotMarketplaceTimeout(receipt: DeploymentReceipt, fresh: DeploymentObservation): boolean {
   const { ownership, registration, diagnostics } = receipt.after;
   const [timeout] = diagnostics;
   if (ownership !== 'unknown' || registration !== 'present' || diagnostics.length !== 1
-    || timeout?.code !== 'nativeMarketplaceUnconfirmed' || timeout.detail?.reasonCode !== 'nativeCliTimedOut') return;
+    || timeout?.code !== 'nativeMarketplaceUnconfirmed' || timeout.detail?.reasonCode !== 'nativeCliTimedOut') return false;
   // Keep the local owner, marketplace, registration and activation from the same
   // read. Postcheck may annotate the receipt's components independently of rebase.
   receipt.after = structuredClone(fresh);
   receipt.diagnostics = receipt.diagnostics.filter((entry) => entry !== timeout);
   receipt.diagnostics.push(...receipt.after.diagnostics);
+  return true;
+}
+
+function checkRetainedCopilotDeactivation(prepared: PreparedDeployment<PlatformDriverState>, receipt: DeploymentReceipt,
+  fresh?: DeploymentObservation): void {
+  const { binding, operation, effects, evidence } = prepared.plan;
+  if (binding.route !== 'copilot-marketplace' || operation !== 'remove' || evidence.sharedReferences === 'none') return;
+  const deactivate = effects.find((effect) => effect.kind === 'deactivate');
+  if (!deactivate) return;
+  const outcome = receipt.effects.find((effect) => effect.id === deactivate.id);
+  const unchanged = outcome?.status === 'unchanged' && outcome.mutation === 'none';
+  if (!unchanged && !(outcome?.status === 'applied' && outcome.mutation === 'confirmed')) return;
+
+  const disabled = (after: DeploymentObservation) => after.physicalKey === binding.physicalKey
+    && after.package === 'present' && after.registration === 'present' && after.copilotRegistration?.source === 'canonical'
+    && after.configuration?.activation === 'disabled' && after.consumers.length > 0
+    && after.consumers.every((consumer) => consumer.activationKey === deactivate.activationKey && consumer.activation === 'disabled'
+      && binding.consumers.some((product) => product.id === consumer.productId && product.product === 'cli'));
+  const confirmed = (after: DeploymentObservation) => disabled(after) && after.copilotRegistration?.marketplace === 'canonical'
+    && ['aw', 'shared'].includes(after.ownership) && after.ownership === prepared.driverState.before.ownership;
+  const sourceConflict = (after: DeploymentObservation) => after.ownership === 'foreign'
+    || after.copilotRegistration?.source === 'foreign' || after.copilotRegistration?.marketplace === 'foreign';
+  const firstConflict = sourceConflict(receipt.after);
+  if (fresh) {
+    if (confirmed(fresh)) {
+      if (!unchanged && disabled(receipt.after) && recheckCopilotMarketplaceTimeout(receipt, fresh)) return;
+      if (confirmed(receipt.after)) {
+        receipt.after = structuredClone(fresh);
+        return;
+      }
+      // A healthy rebase cannot clear a different failure in the first read.
+    } else {
+      // Retain the first diagnostics alongside the latest independent observation.
+      receipt.after = structuredClone(fresh);
+      receipt.diagnostics.push(...fresh.diagnostics);
+    }
+  } else if (unchanged && confirmed(receipt.after)) return;
+  // Even if the more recent read fails, do not erase a confirmed source conflict.
+  const reasonCode = firstConflict || sourceConflict(receipt.after) ? 'deploymentOwnershipConflict'
+    : receipt.after.copilotRegistration?.source === 'unknown' ? 'nativeIdentityUnconfirmed' : undefined;
+  receipt.diagnostics.push({ code: 'nativeMutationPostcheckFailed', severity: 'error',
+    message: 'The retained Copilot package or its scoped deactivation could not be confirmed. Check status before retrying.',
+    subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
+    ...(reasonCode ? { detail: { reasonCode } } : {}) });
 }
 
 /** Fingerprints are operation-local evidence; they confer no ownership or deletion rights. */
@@ -1779,6 +1823,7 @@ export class PlatformRebuildSession {
           const publish = prepared.plan.effects.find((effect) => effect.kind === 'publish-package');
           const publication = receipt.effects.find((result) => result.id === publish?.id && result.status === 'applied');
           try {
+            let copilotRebase: DeploymentObservation | undefined;
             if (receipt.effects.some((effect) => effect.mutation !== 'none')) {
               for (const [bindingId, check] of this.mutableChecks) if (check.physicalKey === prepared.plan.binding.physicalKey) {
                 const { observation: fresh, verifiedSupplementIds } = await check.rebase(bindingId === receipt.bindingId ? writtenFiles : undefined);
@@ -1788,12 +1833,13 @@ export class PlatformRebuildSession {
                     ...verifiedSupplementIds.map((id) => ({ id, presence: 'present' as const, reasonCodes: [] })),
                   ];
                 }
-                if (bindingId === receipt.bindingId && prepared.plan.binding.route === 'copilot-marketplace'
-                  && publication?.mutation === 'confirmed') {
-                  recheckCopilotMarketplaceTimeout(receipt, fresh);
+                if (bindingId === receipt.bindingId && prepared.plan.binding.route === 'copilot-marketplace') {
+                  copilotRebase = fresh;
                 }
               }
             }
+            if (copilotRebase && publication?.mutation === 'confirmed') recheckCopilotMarketplaceTimeout(receipt, copilotRebase);
+            else checkRetainedCopilotDeactivation(prepared, receipt, copilotRebase);
           } catch (error) {
             receipt.diagnostics.push({ code: recoveryInterruptionCode(error) ?? 'operationPlanStale', severity: 'error', message: error instanceof Error ? error.message : String(error),
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });

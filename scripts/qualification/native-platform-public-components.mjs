@@ -168,6 +168,12 @@ export function componentTraceMode(command, { traceEntry, platform, scope, suite
     && command.pluginIds[0] === 'matrix/single-hook';
   if (platform === 'codex' && command.command === 'plugin.install'
     && (scope === 'project' && (suite === 'candidate' || matrixInstall) || userHookInstall)) return 'codex-component-install';
+  if (platform === 'copilot' && scope === 'user' && command.scope === 'user') {
+    if (suite === 'matrix' && command.command === 'plugin.remove' && command.pluginIds?.length === 1
+      && command.pluginIds[0] === 'matrix/single-skill') return 'copilot-component-remove';
+    if (suite === 'candidate' && command.command === 'plugin.install'
+      && command.pluginIds?.includes('qualification-official/aw-skill-eval-runner')) return 'copilot-component-install';
+  }
   if (platform === 'grok' && command.command === 'target.set') return 'grok-component-discovery';
   if (platform === 'claude' && scope === 'project' && suite === 'matrix'
     && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
@@ -175,6 +181,8 @@ export function componentTraceMode(command, { traceEntry, platform, scope, suite
 }
 
 const componentTraceCategories = {
+  'copilot-component-remove': ['copilot-plugin-list', 'copilot-marketplace-list', 'copilot-plugin-uninstall'],
+  'copilot-component-install': ['copilot-plugin-list', 'copilot-marketplace-list', 'copilot-plugin-install'],
   'codex-component-install': ['codex-version', 'codex-plugin-list', 'codex-marketplace-list', 'windows-system-powershell'],
   'grok-component-discovery': ['grok-version', 'grok-help', 'grok-plugin-help', 'grok-plugin-list-help'],
   'claude-component-remove': ['claude-version', 'claude-plugin-list', 'claude-marketplace-list', 'claude-plugin-disable', 'claude-plugin-uninstall'],
@@ -198,6 +206,14 @@ async function readComponentTrace(file, mode) {
         'process-group-sigterm', 'process-group-sigkill', 'process-group-exit-check', 'child-pid-unavailable'].includes(row.cleanupKind)
       ? { cleanupKind: row.cleanupKind } : {}),
   })) };
+}
+
+export async function recordComponentTrace(report, command, failure, file, mode) {
+  if (failure && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(file, mode);
+  else if (!failure && (mode === 'copilot-component-remove' || mode === 'copilot-component-install')) {
+    // Zero-exit commands can fail the independent byte or registration checks.
+    report.nativeCommandTrace = { ...command, ...await readComponentTrace(file, mode) };
+  }
 }
 
 // These snapshots carry identities, states and timing metadata. Select their
@@ -764,11 +780,14 @@ export async function runComponentQualification(options, dependencies) {
 export async function runComponentSuites(units, dependencies, group) {
   const session = group ?? await qualificationGroup();
   const outcomes = await Promise.all(units.map(unit => session.runUnit(async () => {
-    try { return await runSuite(unit, session, dependencies); }
+    const started = performance.now();
+    let report;
+    try { report = await runSuite(unit, session, dependencies); }
     catch (error) {
-      return { platform: unit.platform, scope: unit.scope, suite: unit.suite ?? 'matrix', status: 'failed',
+      report = { platform: unit.platform, scope: unit.scope, suite: unit.suite ?? 'matrix', status: 'failed',
         candidateSha256: session.candidate.artifactSha256, reason: error.code ?? 'component-suite-setup-failed' };
     }
+    return { ...report, elapsedMs: Math.round(performance.now() - started) };
   })));
   if (!group) {
     try { await session.finish(); }
@@ -782,7 +801,7 @@ export async function runComponentSuites(units, dependencies, group) {
   return outcomes;
 }
 
-async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matrix', catalog }, group,
+async function runSuite({ platform, scope, clientPath, traceEntry, grokBinary, suite = 'matrix', catalog }, group,
   { executeAw = executePublicAw, executeCommand = execute } = {}) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
   assert(['matrix', 'pi-seven', 'candidate', 'frozen', 'project-inheritance'].includes(suite) || pairPrerequisites.has(suite));
@@ -796,7 +815,7 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
     ...(suite === 'matrix' ? { cells: specs.filter(spec => spec.name.startsWith('single-')).map(spec => ({
       kind: spec.kinds[0], expected: expectedKinds(platform, spec).length ? 'installed' : 'skipped', observed: 'unverified' })) } : {}) };
   try {
-    const env = await prepareEnvironment(root);
+    const env = await prepareEnvironment(root, grokBinary);
     if (clientPath) env.PATH = clientPath;
     else if (process.platform !== 'win32') {
       const bin = path.join(root, 'bin');
@@ -883,7 +902,7 @@ async function runSuite({ platform, scope, clientPath, traceEntry, suite = 'matr
             elapsedMs, ...(stageLog ? { awStages: await readPublicAwStages(stageLog, { retainTail: true }) } : {}) };
         }
         if (discoveryTrace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
-        if (traceMode && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(traceFile, traceMode);
+        if (traceMode) await recordComponentTrace(report, command, failure, traceFile, traceMode);
       }
       const { value, exitCode } = outcome;
       const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)

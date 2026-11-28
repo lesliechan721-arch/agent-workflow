@@ -38,6 +38,8 @@ function repository(options) {
 
 // Job names come from ci.yml. A renamed or missing check requires full release
 // verification until this list is updated. The beta job itself can still run.
+// release native evidence requires the entire native-windows-job workflow and
+// validates its qualified artifact, transitively covering its aggregation job.
 const REQUIRED_MAIN_CI_JOBS = [
   'Linux x64 / Node 22 / unit',
   'Linux x64 / Node 22 / integration 1 of 2',
@@ -57,10 +59,12 @@ const REQUIRED_MAIN_CI_JOBS = [
   'native-windows-job / Windows Job / Windows arm64 source qualification',
   'darwin arm64 / Node 24 / integration 1 of 2',
   'darwin arm64 / Node 24 / integration 2 of 2',
-  'win32 x64 / Node 24 / integration 1 of 4',
-  'win32 x64 / Node 24 / integration 2 of 4',
-  'win32 x64 / Node 24 / integration 3 of 4',
-  'win32 x64 / Node 24 / integration 4 of 4',
+  'win32 x64 / Node 24 / integration 1 of 6',
+  'win32 x64 / Node 24 / integration 2 of 6',
+  'win32 x64 / Node 24 / integration 3 of 6',
+  'win32 x64 / Node 24 / integration 4 of 6',
+  'win32 x64 / Node 24 / integration 5 of 6',
+  'win32 x64 / Node 24 / integration 6 of 6',
 ];
 
 export async function canReuseMainCi(candidate, options = {}) {

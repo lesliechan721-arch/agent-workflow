@@ -32,6 +32,64 @@ function processScans() {
   return { pending, kill, observe, terminate };
 }
 
+it('rejects Darwin preflight when identity ps fails even though marker ps verified the sentinel', async () => {
+  const stop = vi.fn(async () => {});
+  let markerRow = '';
+  let markerQueries = 0;
+  await expect(acquireProcessTreeInspectionLease({
+    platform: 'darwin',
+    createSentinel: async (name, value) => {
+      markerRow = `101 1 101 S Fri Nov 27 08:05:29 2026 node ${name}=${value}`;
+      return { pid: 101, stop };
+    },
+    execFile: (_command, args, _options, callback) => {
+      if (args[0] === 'eww') { markerQueries++; callback(null, markerRow); }
+      else callback(new Error('identity ps denied'), '');
+    },
+  })).rejects.toThrow('identity lookup failed');
+  expect(markerQueries).toBe(1);
+  expect(stop).toHaveBeenCalledOnce();
+});
+
+it('isolates the Darwin and Linux deadline contracts on the same injected transport', async () => {
+  vi.useFakeTimers();
+  const budgets: number[] = [];
+  const execFile: NonNullable<ProcessTreeDependencies['execFile']> = (_cmd, args, options, callback) => {
+    if (args[0] === 'eww') budgets.push(options.timeout);
+    callback(options.timeout === 5_000 ? new Error('Darwin query denied') : null, '');
+  };
+  const darwin = observeProcessTree(101, 'a', { platform: 'darwin', execFile, enforceProcessMarker: true });
+  const linux = observeProcessTree(201, 'b', { platform: 'linux', execFile, enforceProcessMarker: true });
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(budgets).toEqual([5_000, 2_000]);
+    expect(darwin.diagnostics[0]?.reason).toMatch(/lookup-failed$/u);
+    expect(linux.diagnostics).toEqual([]);
+  } finally { darwin.dispose(); linux.dispose(); vi.useRealTimers(); }
+});
+
+it('waits a full polling interval after a slow physical query returns', async () => {
+  vi.useFakeTimers();
+  const started = Date.now();
+  const queries: { kind: string; time: number }[] = [];
+  const observation = observeProcessTree(101, 'a', {
+    platform: 'darwin', enforceProcessMarker: true,
+    execFile: (_cmd, args, _options, callback) => {
+      queries.push({ kind: args[0], time: Date.now() - started });
+      if (Date.now() === started) setTimeout(() => callback(null, ''), 1_100);
+      else callback(null, '');
+    },
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(1_349);
+    expect(queries).toEqual([{ kind: '-A', time: 0 }, { kind: 'eww', time: 0 }]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(queries.at(-1)).toEqual({ kind: '-A', time: 1_350 });
+    await vi.advanceTimersByTimeAsync(750);
+    expect(queries.filter(q => q.kind === 'eww').map(q => q.time)).toEqual([0, 2_100]);
+  } finally { observation.dispose(); vi.useRealTimers(); }
+});
+
 // A new lease can be created while another observer's ps is still pending.
 // That previously launched table cannot prove the new sentinel's presence.
 it.each(['late-lease', 'fresh-invalid', 'first-invalid', 'already-ready', 'old-pending', 'fresh-pending', 'darwin-fresh-pending'] as const)(
@@ -157,10 +215,12 @@ it.each([
       const rows = [...sentinels].map(([pid, value]) => `${pid} 1 ${pid} S ${start}${marker ? ` node ${markerName}=${value}` : ''}`);
       const markerB = sentinels.get(900_002);
       if (!cleanup && markerB && (hold === 'first' || later)) {
-        const departed = later && (kind === 'marker' ? marker : !marker);
+        const sampled = later && (kind === 'marker' ? marker : !marker);
+        // Only the first of the queued tables contains the departure.
+        const departed = sampled && laterReads === 0;
         rows.push(`201 1 201 S ${start}${marker ? ` node ${markerName}=${markerB}` : ''}`);
         rows.push(`${departed ? '202 1 400 R' : '202 201 201 S'} ${start}${marker ? departed ? ' node PATH=/bin' : ` node ${markerName}=${markerB}` : ''}`);
-        if (departed) laterReads += 1;
+        if (sampled) laterReads += 1;
       }
       const output = rows.join('\n');
       if (marker && hold) {
@@ -197,6 +257,9 @@ it.each([
     await vi.advanceTimersByTimeAsync(kind === 'marker' ? 0 : 250);
     expect(laterReads).toBeGreaterThan(0);
     if (order === 'later-first') {
+      const firstLaterCount = laterReads;
+      await vi.advanceTimersByTimeAsync(kind === 'marker' ? 1_000 : 250);
+      expect(laterReads).toBeGreaterThan(firstLaterCount);
       firstRead!();
       await vi.advanceTimersByTimeAsync(0);
     }

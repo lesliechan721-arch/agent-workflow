@@ -48,10 +48,21 @@ runs:
           args+=(--mixed-native-aw)
         fi
         node scripts/qualification/native-platforms.mjs "${args[@]}"
-    # Downloads remain useful even if a later qualification assertion failed.
-    # Saving only npm content never reuses an installed client or its logs.
-    - name: Save npm content downloads for the exact fixed-client group
+    - name: Check that every selected npm download was acquired
       if: ${{ !cancelled() && steps.setup.outputs.client-cache-key != '' && steps.setup.outputs.client-cache-hit != 'true' && (steps.verify-clients.outcome == 'success' || steps.verify-clients.outcome == 'failure') }}
+      id: check-downloads
+      continue-on-error: true
+      shell: bash
+      run: |
+        node --input-type=module - <<'JS'
+        import { appendFileSync, readFileSync } from 'node:fs';
+        import path from 'node:path';
+        import { clientCacheComplete } from './scripts/qualification/native-platforms.mjs';
+        const report = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'native-results/report.json'), 'utf8'));
+        if (clientCacheComplete(process.env.QUALIFICATION_CLIENT, report)) appendFileSync(process.env.GITHUB_OUTPUT, 'complete=true\n');
+        JS
+    - name: Save npm content downloads for the exact fixed-client group
+      if: ${{ !cancelled() && steps.check-downloads.outputs.complete == 'true' }}
       continue-on-error: true
       uses: actions/cache/save@v6
       with:

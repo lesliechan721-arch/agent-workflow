@@ -181,10 +181,12 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     'Windows x64 / Node 24 / plugins 3 of 3',
     'darwin arm64 / Node 24 / integration 1 of 2',
     'darwin arm64 / Node 24 / integration 2 of 2',
-    'win32 x64 / Node 24 / integration 1 of 4',
-    'win32 x64 / Node 24 / integration 2 of 4',
-    'win32 x64 / Node 24 / integration 3 of 4',
-    'win32 x64 / Node 24 / integration 4 of 4',
+    'win32 x64 / Node 24 / integration 1 of 6',
+    'win32 x64 / Node 24 / integration 2 of 6',
+    'win32 x64 / Node 24 / integration 3 of 6',
+    'win32 x64 / Node 24 / integration 4 of 6',
+    'win32 x64 / Node 24 / integration 5 of 6',
+    'win32 x64 / Node 24 / integration 6 of 6',
     'native-windows-job / Windows Job / fixed-toolchain candidate',
     'native-windows-job / Windows Job / Windows x64 source qualification',
     'native-windows-job / Windows Job / Windows arm64 source qualification',
@@ -207,6 +209,14 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     ...options, githubRequest: async (endpoint) => endpoint.includes('/jobs')
       ? { json: async () => ({ jobs: legacyJobs }) } : options.githubRequest(endpoint),
   }), false, 'Legacy main CI evidence must require full release verification.');
+  const oldShardJobs = jobs.filter((job) => !job.name.startsWith('win32 x64 / Node 24 / integration '));
+  for (let index = 1; index <= 4; index++) {
+    oldShardJobs.push({ name: `win32 x64 / Node 24 / integration ${index} of 4`, status: 'completed', conclusion: 'success' });
+  }
+  assert.equal(await canReuseMainCi(candidate, {
+    ...options, githubRequest: async (endpoint) => endpoint.includes('/jobs')
+      ? { json: async () => ({ jobs: oldShardJobs }) } : options.githubRequest(endpoint),
+  }), false, 'Four-shard main CI evidence cannot substitute for all six required shards.');
   assert.equal(await canReuseMainCi({ ...candidate, channel: 'stable' }, options), false);
   assert.equal(await canReuseMainCi(candidate, {
     ...options, env: { ...options.env, GITHUB_EVENT_NAME: 'workflow_dispatch' },

@@ -360,7 +360,7 @@ async function observePublicComponentSuites(ctx, publicClientEntry) {
       if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
         traceEntry = publicClientEntry;
       }
-      return { platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH, traceEntry,
+      return { platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH, traceEntry, grokBinary: ctx.grokBinary,
         ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) };
     });
   });

@@ -1,9 +1,7 @@
 name: Windows integration worker comparison
-run-name: Windows integration / ${{ inputs.workers || (github.event.label.name == 'windows-integration-2-workers' && '2' || '1') }} workers / ${{ github.event.pull_request.head.sha || github.sha }}
+run-name: Windows integration / ${{ inputs.workers }} workers / ${{ github.sha }}
 
 on:
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       workers:
@@ -19,20 +17,18 @@ permissions:
 
 jobs:
   platform:
-    # Before merge, a same-repository PR label starts a new full sample of its
-    # exact head SHA. No required CI or release evidence comes from this run.
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && (github.event.label.name == 'windows-integration-1-worker' || github.event.label.name == 'windows-integration-2-workers'))
-    name: Windows integration comparison / ${{ matrix.index }} of 4
+    # Dispatch only: no required CI or release evidence comes from this run.
+    name: Windows integration comparison / ${{ matrix.index }} of 6
     runs-on: windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        index: [1, 2, 3, 4]
+        index: [1, 2, 3, 4, 5, 6]
     env:
       AW_TEST_WORKERS: '1'
-      INTEGRATION_WORKERS: ${{ inputs.workers || (github.event.label.name == 'windows-integration-2-workers' && '2' || '1') }}
-      EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      INTEGRATION_WORKERS: ${{ inputs.workers }}
+      EXPECTED_SOURCE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,9 +44,9 @@ jobs:
         with:
           os: win32
           arch: x64
-          shard: ${{ matrix.index }}/4
+          shard: ${{ matrix.index }}/6
           workers: ${{ env.INTEGRATION_WORKERS }}
-          process-lifecycle: ${{ matrix.index == 4 }}
+          process-lifecycle: ${{ matrix.index == 6 }}
       - name: Save failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

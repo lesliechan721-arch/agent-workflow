@@ -283,6 +283,53 @@ describe('native deployment state authority', () => {
       expect(reads).toBe(['canonical after timeout', 'foreign after timeout', 'persistent timeout'].includes(scenario) ? 2 : 1);
     });
 
+  // Write-side observations lack a session. Only the two local inventories may
+  // retry a clean timeout, and each new inspection must read the client again.
+  it.each(['recovered', 'persistent', 'override', 'cleanup', 'abort', 'bad JSON', 'exit', 'other host'] as const)(
+    'reads both independent Copilot inventories without a session on %s', async (scenario) => {
+      const item = await fixture('copilot');
+      const binding = { ...item.binding, consumers: [{ ...item.binding.consumers[0]!, entry: {
+        kind: 'cli' as const, executable: path.join(item.ctx.cwd, 'npm-loader.js'), configRoot: item.host } }] };
+      const counts = new Map<string, number>();
+      const runner = async (invocation: NativeCliInvocation) => {
+        const command = invocation.args.slice(1).join(' ');
+        const count = (counts.get(command) ?? 0) + 1;
+        counts.set(command, count);
+        expect(invocation.timeoutMs).toBe(5_000);
+        if (scenario === 'bad JSON') return { exitCode: 0, stdout: '{', stderr: '' };
+        if (scenario === 'exit') return { exitCode: 124, stdout: '', stderr: '' };
+        if (count === 1 || scenario === 'persistent') throw new NativeCliError({ invocation,
+          reason: scenario === 'abort' ? 'aborted' : 'timeout', exitCode: 124, stdout: '', stderr: '',
+          ...(scenario === 'cleanup' ? { cleanupError: new Error('unconfirmed') } : {}) });
+        return item.ctx.runner!(invocation);
+      };
+      const ctx = { ...item.ctx, runner, platform: scenario === 'other host' ? 'darwin' as const : 'win32' as const,
+        env: { ...item.ctx.env, ...(scenario === 'override' ? { Aw_Native_Cli_Timeout_Ms: '1200' } : {}) } };
+      const inventories = () => Promise.all([
+        inspectCopilotMarketplaceSource(ctx, binding, item.layout.marketplaceName!, item.layout.marketplaceRoot!),
+        queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json']).then(JSON.parse),
+      ]);
+      if (scenario === 'recovered') {
+        for (let i = 0; i < 2; i++) await expect(inventories()).resolves.toEqual(['canonical', [expect.objectContaining({ enabled: true })]]);
+      } else await expect(inventories()).rejects.toBeInstanceOf(Error);
+      const count = scenario === 'recovered' ? 3 : scenario === 'persistent' ? 2 : 1;
+      expect(Object.fromEntries(counts)).toEqual({ 'plugin marketplace list --json': count, 'plugin list --json': count });
+    });
+
+  it('does not retry a Copilot mutation or a differently shaped query after a timeout', async () => {
+    const item = await fixture('copilot');
+    const binding = { ...item.binding, consumers: [{ ...item.binding.consumers[0]!, entry: {
+      kind: 'cli' as const, executable: path.join(item.ctx.cwd, 'npm-loader.js'), configRoot: item.host } }] };
+    const calls: string[][] = [];
+    const ctx = { ...item.ctx, platform: 'win32' as const, runner: async (invocation: NativeCliInvocation) => {
+      calls.push(invocation.args.slice(1));
+      throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '' });
+    } };
+    const requests = [['plugin', 'install', 'subject'], ['plugin', 'marketplace list', '--json'], ['plugin', 'list', '--json', '--all']];
+    for (const args of requests) await expect(queryNativeDeployment(ctx, binding, args)).rejects.toMatchObject({ reason: 'timeout' });
+    expect(calls).toEqual(requests);
+  });
+
   // Test Value Gate: a native identity with an absent source cannot authorize shared package removal.
   it.each(['claude', 'copilot'] as const)('keeps %s ownership unknown when the native source is absent', async (platform) => {
     const item = await fixture(platform);

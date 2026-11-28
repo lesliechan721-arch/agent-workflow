@@ -1,12 +1,50 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { execute, repoRoot } from './native-platform-runtime.mjs';
-import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
+import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic, runProcessNameQuery } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
+
+// Only the Darwin hosted qualification command uses this projected ps schema.
+// Keep private preflight, confirmation and cleanup queries on their own recorder.
+const darwinSamplerGroups = new WeakMap();
+function createDarwinPublicProcessDiagnostics(runCommand = execFile) {
+  const timings = createProcessQueryTimingDiagnostic(runCommand);
+  const names = createProcessNameDiagnostic(timings.execFile);
+  let group = darwinSamplerGroups.get(runCommand);
+  if (!group) {
+    const observers = new Set();
+    // Count a shared physical invocation exactly once, in the earliest still
+    // observing command. Each root captures its own bounded names from that table.
+    group = { observers, execFile(...args) {
+      const participants = [...observers].filter(observer => observer.sampling);
+      const timed = participants[0]?.timings.execFile ?? runCommand;
+      return runProcessNameQuery(timed, table => {
+        // Include commands joining an in-flight identity query. A command
+        // already finishing can still be draining this pre-completion query.
+        for (const observer of observers) {
+          if (observer.sampling || participants.includes(observer)) observer.names.capture(table);
+        }
+      }, ...args);
+    } };
+    darwinSamplerGroups.set(runCommand, group);
+  }
+  const observer = { timings, names, sampling: false };
+  group.observers.add(observer);
+  return {
+    names, timings, samplerExecFile: group.execFile,
+    onSpawn() { observer.sampling = true; },
+    finishing() { observer.sampling = false; },
+    stop() {
+      group.observers.delete(observer);
+      if (group.observers.size === 0) darwinSamplerGroups.delete(runCommand);
+    },
+  };
+}
 
 // The historical installation is a separate package with its own runner
 // singleton. Bind its known entry and module, not an arbitrary entry's imports.
@@ -58,10 +96,11 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const hostedDiagnostics = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
   const procfs = process.platform === 'linux' && processTree.execFile === undefined && launcher.executable === process.execPath
     && launcher.prefix.at(-1) === path.join(repoRoot, 'packages/cli/dist/index.js');
-  const queryTimings = hostedDiagnostics && process.platform === 'darwin'
-    ? createProcessQueryTimingDiagnostic(processTree.execFile) : undefined;
-  const names = hostedDiagnostics && !procfs && ['linux', 'darwin'].includes(process.platform)
-    ? createProcessNameDiagnostic(queryTimings?.execFile ?? processTree.execFile) : undefined;
+  const darwin = hostedDiagnostics && process.platform === 'darwin'
+    ? createDarwinPublicProcessDiagnostics(processTree.execFile) : undefined;
+  const queryTimings = darwin?.timings;
+  const names = darwin?.names ?? (hostedDiagnostics && !procfs && process.platform === 'linux'
+    ? createProcessNameDiagnostic(processTree.execFile) : undefined);
   const markerRows = names && process.platform === 'linux'
     ? createProcessMarkerRowDiagnostic(names.execFile, {
       environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 60_000) }),
@@ -70,6 +109,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
     enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
     ...(procfs ? { linuxProcessInspection: 'procfs' } : {}),
+    ...(darwin ? { posixSamplerExecFile: darwin.samplerExecFile } : {}),
     ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}),
     ...(confirmations ? { onLinuxMarkerIdentityConfirmation: confirmations.capture } : {}) };
   const controller = new AbortController();
@@ -96,6 +136,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     }, {
       onSpawn({ pid }) {
         names?.onSpawn({ pid });
+        darwin?.onSpawn();
         markerRows?.onSpawn({ pid });
         observation = observeProcessTree(pid, lease.marker, dependencies, lease);
         stopFailureListener = observation.onFailure((error) => {
@@ -104,6 +145,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
         });
       },
       async terminateProcessTree({ pid }, reason) {
+        darwin?.finishing();
         if (!observation) throw new Error('public-aw-inspection-not-started');
         // The provider runner owns the ChildProcess handle and its fallback.
         // This hook signals only identities revalidated by the observation.
@@ -154,6 +196,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     throw error;
   } finally {
     options.signal?.removeEventListener('abort', abort);
+    darwin?.stop();
     names?.stop();
     markerRows?.stop();
     confirmations?.stop();

@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { installClientPackage, prepareEnvironment } from './native-platform-runtime.mjs';
+import { clientCacheIdentity, clientCacheComplete } from './native-platforms.mjs';
+import { clients, sha256, installClientPackage, prepareEnvironment } from './native-platform-runtime.mjs';
 
 // Test Value Gate: acquisition reports must retain elapsed time and fixed npm
 // phases on success and failure without exporting private npm log data.
@@ -72,7 +73,7 @@ test('shares npm downloads but keeps prefixes and success/failure timing separat
     await fs.mkdir(path.join(cache, '_logs'), { recursive: true });
     await fs.writeFile(path.join(cache, '_logs', 'unrelated-timing.json'), JSON.stringify({ timers: { npm: 999 } }));
     const roots = [path.join(root, 'first'), path.join(root, 'second')];
-    await Promise.all(roots.map(prepareEnvironment));
+    await Promise.all(roots.map(installRoot => prepareEnvironment(installRoot)));
     const results = await Promise.allSettled(roots.map((installRoot, index) =>
       installClientPackage({ package: 'fixture-client', version: '1.0.0' }, installRoot,
         { executable: process.execPath, prefix: [] }, async (_command, args, options) => {
@@ -95,4 +96,57 @@ test('shares npm downloads but keeps prefixes and success/failure timing separat
     else process.env.AW_QUALIFICATION_NPM_CACHE = previousCache;
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+// Only the selected fixed packages invalidate a cache key, regardless of selection order.
+test('binds the content cache identity to the selected fixed package manifest', () => {
+  const expected = sha256(JSON.stringify([
+    ['claude', '@anthropic-ai/claude-code', clients.claude.version],
+    ['pi', '@earendil-works/pi-coding-agent', clients.pi.version],
+  ]));
+  assert.equal(clientCacheIdentity('pi,claude'), expected);
+  assert.equal(clientCacheIdentity('claude,pi'), expected);
+  assert.equal(clientCacheIdentity('all'), clientCacheIdentity(Object.keys(clients).join(',')));
+  assert.notEqual(clientCacheIdentity('pi'), expected);
+  assert.throws(() => clientCacheIdentity('pi,unknown'), /invalid-arguments/);
+});
+
+// npm prefix/entry validation completes before acquisition is attached. An immutable
+// cache may survive later business failures, but a partial group must remain refillable.
+test('saves downloads only after all applicable selected acquisitions succeeded', () => {
+  function acquired(platform) {
+    const { package: name, version, source } = clients[platform];
+    return { platform, status: 'failed', acquisition: { package: name, version, source, download: { status: 'completed' } } };
+  }
+  const copilot = acquired('copilot');
+  const grok = acquired('grok');
+  const excluded = { platform: 'grok', status: 'excluded', reason: 'official-client-distribution-unavailable' };
+  const host = { platform: 'win32', arch: 'x64' };
+  const complete = (rows, arch = 'x64') => clientCacheComplete('copilot,grok', { clients: rows }, { ...host, arch });
+  assert(complete([grok, copilot]));
+  assert(complete([copilot, excluded], 'arm64'));
+  for (const rows of [[copilot], [copilot, copilot], [copilot, excluded], [copilot, acquired('claude')],
+    [copilot, { platform: 'grok', evidence: { download: { status: 'completed' } } }],
+    ...[{ source: 'foreign' }, { version: 'unknown' }, { download: { status: 'failed' } }, { download: {} }]
+      .map(override => [copilot, { ...grok, acquisition: { ...grok.acquisition, ...override } }])]) {
+    assert.equal(complete(rows), false);
+  }
+  assert.equal(clientCacheComplete('grok', { clients: [excluded] }, { platform: 'darwin', arch: 'x64' }), false);
+});
+
+test('prepares independent canonical Grok executables in fresh isolated homes', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-grok-homes-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const binary = path.join(root, 'verified.exe');
+  await fs.writeFile(binary, 'acquired bytes');
+  const prepare = async name => {
+    const env = await prepareEnvironment(path.join(root, name), binary);
+    return path.join(env.GROK_HOME, 'bin', 'grok.exe');
+  };
+  const [a, b] = await Promise.all([prepare('user'), prepare('project')]);
+  assert.equal(await fs.readFile(a, 'utf8'), 'acquired bytes');
+  await fs.writeFile(a, 'changed private copy');
+  assert.equal(await fs.readFile(b, 'utf8'), 'acquired bytes');
+  assert.equal(await fs.readFile(binary, 'utf8'), 'acquired bytes');
+  await assert.rejects(prepare('user'), { code: 'EEXIST' });
 });

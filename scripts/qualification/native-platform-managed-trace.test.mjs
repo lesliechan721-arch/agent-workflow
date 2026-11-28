@@ -232,6 +232,22 @@ test('retains plugin errors and projects bounded snapshot timing without secrets
   await assert.rejects(wrapped({ env: {} }, { timeoutMs: 1234 }), received => received === error);
 });
 
+// The candidate performs many healthy reads before installing its later roots.
+test('keeps late Copilot inventory failures inside the bounded batch trace', async t => {
+  const { entry } = await fixture(t);
+  const records = [];
+  let exitCode = 0;
+  const run = createManagedTraceRunner(async () => ({ exitCode }), { entries: [entry], client: 'copilot',
+    platform: 'win32', mode: 'copilot-component-install', emit: row => records.push(row) });
+  const query = { command: entry, args: ['plugin', 'list', '--json'] };
+  for (let i = 0; i < 40; i++) await run(query);
+  exitCode = 124;
+  for (let i = 0; i < 40; i++) await run(query);
+  assert(records.some(row => row.exitCode === 0));
+  assert(records.some(row => row.exitCode === 124));
+  assert(records.length <= 24);
+});
+
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-managed-trace-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -359,6 +375,19 @@ test('projects Windows Grok probes and Darwin Claude removal cleanup from the or
   const timeout = nativeError(undefined, 'timeout');
   const success = { exitCode: 0, stdout: sentinel, stderr: sentinel };
   for (const { client, platform, mode, calls } of [
+    { client: 'copilot', platform: 'win32', mode: 'copilot-component-remove', calls: [
+      [process.execPath, [entry, 'plugin', 'list', '--json'], timeout, 'copilot-plugin-list'],
+      [entry, ['plugin', 'marketplace', 'list', '--json'], success, 'copilot-marketplace-list'],
+      [entry, ['plugin', 'uninstall', 'single-skill@aw-matrix'], success, 'copilot-plugin-uninstall'],
+      [entry, ['plugin', 'uninstall', 'other@aw-matrix'], success],
+      [other, [entry, 'plugin', 'list', '--json'], success],
+    ] },
+    { client: 'copilot', platform: 'win32', mode: 'copilot-component-install', calls: [
+      [process.execPath, [entry, 'plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official'], timeout, 'copilot-plugin-install'],
+      [entry, ['plugin', 'install', 'other@aw-qualification-official'], success],
+      [entry, ['plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official', '--extra'], success],
+      [entry, ['plugin', 'uninstall', 'single-skill@aw-matrix'], success],
+    ] },
     { client: 'grok', platform: 'win32', mode: 'grok-component-discovery', calls: [
       [process.execPath, [entry, '--version'], timeout, 'grok-version'],
       [process.execPath, [entry, 'plugin', '--help'], success, 'grok-plugin-help'],
@@ -677,6 +706,8 @@ test('does not install by default and requires every hosted guard', async (t) =>
   const grok = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'grok' };
   assert.equal(managedTraceConfiguration(grok, 'win32'), undefined);
   for (const [client, mode, host, otherHost] of [
+    ['copilot', 'copilot-component-remove', 'win32', 'linux'],
+    ['copilot', 'copilot-component-install', 'win32', 'darwin'],
     ['grok', 'grok-component-discovery', 'win32', 'darwin'],
     ['claude', 'claude-component-remove', 'darwin', 'win32'],
   ]) {

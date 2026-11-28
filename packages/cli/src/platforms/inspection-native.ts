@@ -461,10 +461,9 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       const row = matches[0];
       result.registration = row ? 'present' : 'absent';
       if (!row) break;
-      if (retirement && row.source !== 'live' && [row.source, row.installedFrom].some((value) =>
-        typeof value === 'string' && path.isAbsolute(value) && !pathMatches(value, layout.marketplaceRoot!))) {
-        result.ownership = 'foreign';
-      }
+      const sources = row.source === 'live' ? [row.installedFrom] : [row.source, row.installedFrom].filter((value) => value !== undefined);
+      const foreignSource = sources.some((value) => typeof value === 'string' && path.isAbsolute(value) && !pathMatches(value, layout.marketplaceRoot!));
+      if (retirement && row.source !== 'live' && foreignSource) result.ownership = 'foreign';
       if (row.source === 'live') {
         const location = row.installedFrom;
         const exactSource = pathMatches(location, layout.marketplaceRoot!);
@@ -499,6 +498,12 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         // Unrecognized source shapes remain unknown and cannot authorize mutation.
         result.ownership = 'unknown';
       }
+      // An incomplete row can denote the same identity even though the exact-name filter skipped it.
+      const ambiguous = inventory.some((other) => other !== row
+        && (typeof other.name !== 'string' || !other.name.trim() || other.name === row.name)
+        && (typeof other.marketplace !== 'string' || !other.marketplace.trim() || other.marketplace === row.marketplace));
+      const canonical = !ambiguous && sources.length > 0 && sources.every((value) => pathMatches(value, layout.marketplaceRoot!));
+      result.copilotRegistration = { marketplace, source: foreignSource ? 'foreign' : canonical ? 'canonical' : 'unknown' };
       setActivation(result, row.enabled === true ? 'enabled' : row.enabled === false ? 'disabled' : 'unknown');
       break;
     }

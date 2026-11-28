@@ -4,6 +4,7 @@ import path from 'node:path';
 const PUBLIC_MARKER = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 const UUID = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/giu;
 const componentTraceModes = new Map([
+  ['copilot-component-remove', 'copilot:win32'], ['copilot-component-install', 'copilot:win32'],
   ['codex-component-install', 'codex:win32'], ['grok-component-discovery', 'grok:win32'], ['claude-component-remove', 'claude:darwin'],
 ]);
 const usesComponentTrace = (mode, client, platform) => componentTraceModes.get(mode) === `${client}:${platform}`;
@@ -18,8 +19,19 @@ function codexComponentCategory(args) {
   }
 }
 
-function nativeComponentCategory(client, args) {
+function nativeComponentCategory(client, args, mode) {
   if (client === 'codex') return codexComponentCategory(args);
+  if (client === 'copilot') {
+    if (matchesArgs(args, ['plugin', 'list', '--json'])) return 'copilot-plugin-list';
+    if (matchesArgs(args, ['plugin', 'marketplace', 'list', '--json'])) return 'copilot-marketplace-list';
+    if (mode === 'copilot-component-install' && matchesArgs(args, ['plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official'])) {
+      return 'copilot-plugin-install';
+    }
+    if (mode === 'copilot-component-remove' && matchesArgs(args, ['plugin', 'uninstall', 'single-skill@aw-matrix'])) {
+      return 'copilot-plugin-uninstall';
+    }
+    return undefined;
+  }
   if (matchesArgs(args, ['--version'])) return `${client}-version`;
   if (client === 'grok') {
     if (matchesArgs(args, ['--help'])) return 'grok-help';
@@ -139,7 +151,8 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   const componentTrace = usesComponentTrace(mode, client, platform);
   if (mode !== undefined && !componentTrace) return base;
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
-  const grokNodeEntry = mode === 'grok-component-discovery' ? canonicalFile(process.execPath) : undefined;
+  const requireNodePrefix = componentTrace && (client === 'grok' || client === 'copilot');
+  const nodeEntry = requireNodePrefix ? canonicalFile(process.execPath) : undefined;
   function sameFile(file, target) {
     if (file === target && typeof file === 'string') return true;
     if (platform !== 'win32' || typeof file !== 'string' || typeof target !== 'string'
@@ -178,10 +191,10 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       const direct = matchesTarget(commandFile);
       // The Windows npm shim resolves to the current Node and the known script.
       const prefixed = !direct && matchesTarget(argumentFile)
-        && (mode !== 'grok-component-discovery' || sameFile(commandFile, grokNodeEntry));
+        && (!requireNodePrefix || sameFile(commandFile, nodeEntry));
       const validArgs = Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string');
       if (componentTrace) {
-        if (validArgs && (direct || prefixed)) componentCategory = nativeComponentCategory(client, prefixed ? invocation.args.slice(1) : invocation.args);
+        if (validArgs && (direct || prefixed)) componentCategory = nativeComponentCategory(client, prefixed ? invocation.args.slice(1) : invocation.args, mode);
         if (validArgs && invocation.args.length === 5 && matchesArgs(invocation.args.slice(0, 4), powerShellArgs)
           && sameFile(commandFile, queryEntry)) componentCategory = 'windows-system-powershell';
       } else if ((direct || prefixed) && validArgs) {
@@ -215,11 +228,19 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
     if (componentCategory) {
       const count = componentSamples.get(componentCategory) ?? 0;
       if (count >= (componentCategory === 'windows-system-powershell' ? 64 : 24)) return base(invocation);
-      componentSamples.set(componentCategory, count + 1);
+      // Batch installation reaches the selected root after many healthy lists.
+      // Reserve eight of each inventory's 24 records for later failures.
+      const reserveFailures = mode === 'copilot-component-install' && componentCategory.endsWith('-list');
+      if (!reserveFailures) componentSamples.set(componentCategory, count + 1);
       const start = performance.now();
       return observeCompletion(base, invocation, (value, threw) => {
         try {
           const exitCode = Number.isSafeInteger(value?.exitCode) ? value.exitCode : null;
+          if (reserveFailures) {
+            const completed = componentSamples.get(componentCategory) ?? 0;
+            if (completed >= (threw || exitCode !== 0 ? 24 : 16)) return;
+            componentSamples.set(componentCategory, completed + 1);
+          }
           const reason = value?.name === 'NativeCliError' && ['timeout', 'aborted', 'exit'].includes(value.reason)
             ? value.reason : undefined;
           const errorCode = value?.operationDiagnostic?.code;

@@ -72,6 +72,17 @@ describe('authoring subprocess batch scheduling', () => {
     });
     expect(peak).toBe(2);
   });
+
+  it('settles remaining tasks and propagates a failed batch', async () => {
+    const failure = new Error('fixture validation failed');
+    const completed: number[] = [];
+    await expect(mapWithConcurrency([1, 2, 3, 4], 2, async (value) => {
+      if (value === 1) throw failure;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      completed.push(value);
+    })).rejects.toBe(failure);
+    expect(completed.sort((left, right) => left - right)).toEqual([2, 3, 4]);
+  });
 });
 
 function fixturePath(...segments: string[]): string {
@@ -2307,64 +2318,70 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const pluginsRoot = path.join(tempRoot, 'plugins');
 
-    const oldSchemaDir = path.join(pluginsRoot, 'old-schema');
-    await writeAuthoringPluginManifest(
-      oldSchemaDir,
-      {
-        schemaVersion: 1,
-        name: 'old-schema',
-        version: '0.1.0',
-        description: 'Old schema contract.',
-        marketplace: {
-          category: 'workflow',
-          strict: true,
-          policy: {
-            installation: 'AVAILABLE',
-            authentication: 'ON_INSTALL',
+    await mapWithConcurrency([
+      async () => {
+        const oldSchemaDir = path.join(pluginsRoot, 'old-schema');
+        await writeAuthoringPluginManifest(
+          oldSchemaDir,
+          {
+            schemaVersion: 1,
+            name: 'old-schema',
+            version: '0.1.0',
+            description: 'Old schema contract.',
+            marketplace: {
+              category: 'workflow',
+              strict: true,
+              policy: {
+                installation: 'AVAILABLE',
+                authentication: 'ON_INSTALL',
+              },
+            },
           },
-        },
+        );
+        await expect(runValidatePlugin(oldSchemaDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining('Unsupported plugin manifest schemaVersion: expected 4'),
+        });
       },
-    );
-    await expect(runValidatePlugin(oldSchemaDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('Unsupported plugin manifest schemaVersion: expected 4'),
-    });
-
-    const futureCapabilityDir = path.join(pluginsRoot, 'future-capability');
-    await writeAuthoringPluginManifest(futureCapabilityDir, {
-      ...createBaseManifest('future-capability'),
-      requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
-    });
-    await expect(runValidatePlugin(futureCapabilityDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('awCapabilityUnsupported'),
-    });
-
-    const invalidPluginVersionDir = path.join(pluginsRoot, 'invalid-plugin-version');
-    await writeAuthoringPluginManifest(invalidPluginVersionDir, {
-      ...createBaseManifest('invalid-plugin-version'),
-      version: 'v0.1.0',
-    });
-    await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('/version must match pattern'),
-    });
-
-    const invalidAuthenticationDir = path.join(pluginsRoot, 'invalid-authentication');
-    await writeAuthoringPluginManifest(invalidAuthenticationDir, {
-      ...createBaseManifest('invalid-authentication'),
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'NONE',
-        },
+      async () => {
+        const futureCapabilityDir = path.join(pluginsRoot, 'future-capability');
+        await writeAuthoringPluginManifest(futureCapabilityDir, {
+          ...createBaseManifest('future-capability'),
+          requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
+        });
+        await expect(runValidatePlugin(futureCapabilityDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining('awCapabilityUnsupported'),
+        });
       },
-    });
-    await expect(runValidatePlugin(invalidAuthenticationDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        '/marketplace/policy/authentication must be equal to one of the allowed values',
-      ),
-    });
-
+      async () => {
+        const invalidPluginVersionDir = path.join(pluginsRoot, 'invalid-plugin-version');
+        await writeAuthoringPluginManifest(invalidPluginVersionDir, {
+          ...createBaseManifest('invalid-plugin-version'),
+          version: 'v0.1.0',
+        });
+        await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining('/version must match pattern'),
+        });
+      },
+      async () => {
+        const invalidAuthenticationDir = path.join(pluginsRoot, 'invalid-authentication');
+        await writeAuthoringPluginManifest(invalidAuthenticationDir, {
+          ...createBaseManifest('invalid-authentication'),
+          marketplace: {
+            category: 'workflow',
+            strict: true,
+            policy: {
+              installation: 'AVAILABLE',
+              authentication: 'NONE',
+            },
+          },
+        });
+        await expect(runValidatePlugin(invalidAuthenticationDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining(
+            '/marketplace/policy/authentication must be equal to one of the allowed values',
+          ),
+        });
+      },
+    ], authoringBatchConcurrency, (validate) => validate());
   });
 
   it('supports explicit skill UI metadata without changing the trigger description', async () => {
@@ -2795,150 +2812,163 @@ describe('authoring tools', () => {
 
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      scripts: {
-        postApply: { path: './scripts/lifecycle.mjs' },
-      },
-    }, { spaces: 2 });
-
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('/scripts must NOT have additional properties'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      scripts: {
-        preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 1_800_001 },
-      },
-    }, { spaces: 2 });
-
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        '/scripts/preApply/timeoutMs must be <= 1800000',
-      ),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      scripts: {
-        helpers: {
-          config: './scripts/aw-config.txt',
-        },
-        preApply: { path: './scripts/lifecycle.mjs' },
-        node: {
-          packageRoot: './scripts/pkg',
-        },
-      },
-      config: {
-        fields: {
-          badMin: {
-            type: 'string',
-            min: 1,
+    await validateFixtureVariants(pluginDir, {
+      'post-apply': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          scripts: {
+            postApply: { path: './scripts/lifecycle.mjs' },
           },
-        },
+        }, { spaces: 2 });
+
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('/scripts must NOT have additional properties'),
+        });
       },
-    }, { spaces: 2 });
-
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('/config/fields/badMin'),
-    });
-
-    const helperOnlyManifest = await fs.readJson(manifestPath);
-    helperOnlyManifest.config = { fields: { goodKey: { type: 'string' } } };
-    await fs.writeJson(manifestPath, helperOnlyManifest, { spaces: 2 });
-    await expect(execFileAsync('node', [scriptPath, pluginDir], {
-      cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.helpers.config: expected a Node runnable file extension'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      scripts: {
-        helpers: {
-          config: './scripts/aw-config.mjs',
-        },
-        preApply: { path: './scripts/lifecycle.py' },
-        node: {
-          packageRoot: './scripts/pkg',
-        },
-      },
-      config: {
-        fields: {
-          goodKey: {
-            type: 'string',
+      'timeout': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          scripts: {
+            preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 1_800_001 },
           },
-        },
-      },
-    }, { spaces: 2 });
+        }, { spaces: 2 });
 
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.preApply.path: expected a Node runnable file extension'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      scripts: {
-        helpers: {
-          config: './scripts/aw-config.mjs',
-        },
-        preApply: { path: './scripts/lifecycle.mjs' },
-        node: {
-          packageRoot: './scripts/pkg',
-        },
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining(
+            '/scripts/preApply/timeoutMs must be <= 1800000',
+          ),
+        });
       },
-      config: {
-        fields: {
-          goodKey: {
-            type: 'string',
+      'helper': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          scripts: {
+            helpers: {
+              config: './scripts/aw-config.txt',
+            },
+            preApply: { path: './scripts/lifecycle.mjs' },
+            node: {
+              packageRoot: './scripts/pkg',
+            },
           },
-        },
-      },
-    }, { spaces: 2 });
+          config: {
+            fields: {
+              badMin: {
+                type: 'string',
+                min: 1,
+              },
+            },
+          },
+        }, { spaces: 2 });
 
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.node.packageRoot: missing pnpm-lock.yaml'),
-    });
-    await fs.writeFile(path.join(pluginDir, 'scripts', 'pkg', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('file:../local.tgz'),
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('/config/fields/badMin'),
+        });
+
+        const helperOnlyManifest = await fs.readJson(manifestPath);
+        helperOnlyManifest.config = { fields: { goodKey: { type: 'string' } } };
+        await fs.writeJson(manifestPath, helperOnlyManifest, { spaces: 2 });
+        await expect(execFileAsync('node', [scriptPath, pluginDir], {
+          cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024,
+        })).rejects.toMatchObject({
+          stdout: expect.stringContaining('scripts.helpers.config: expected a Node runnable file extension'),
+        });
+      },
+      'pre-apply': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          scripts: {
+            helpers: {
+              config: './scripts/aw-config.mjs',
+            },
+            preApply: { path: './scripts/lifecycle.py' },
+            node: {
+              packageRoot: './scripts/pkg',
+            },
+          },
+          config: {
+            fields: {
+              goodKey: {
+                type: 'string',
+              },
+            },
+          },
+        }, { spaces: 2 });
+
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('scripts.preApply.path: expected a Node runnable file extension'),
+        });
+      },
+      'lockfile': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          scripts: {
+            helpers: {
+              config: './scripts/aw-config.mjs',
+            },
+            preApply: { path: './scripts/lifecycle.mjs' },
+            node: {
+              packageRoot: './scripts/pkg',
+            },
+          },
+          config: {
+            fields: {
+              goodKey: {
+                type: 'string',
+              },
+            },
+          },
+        }, { spaces: 2 });
+
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('scripts.node.packageRoot: missing pnpm-lock.yaml'),
+        });
+        await fs.writeFile(path.join(pluginDir, 'scripts', 'pkg', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('file:../local.tgz'),
+        });
+      },
     });
   });
 
@@ -2986,119 +3016,134 @@ describe('authoring tools', () => {
       'validate-plugin.mjs',
     );
 
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: { fields },
-    }, { spaces: 2 });
-    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        fields: {
-          ...fields,
-          token: {
-            ...fields.token,
-            sensitive: false,
-            choices: {
-              allowCustom: true,
-              presets: [{ id: 'private', title: 'Private', value: 'private' }],
+    await validateFixtureVariants(pluginDir, {
+      'fields': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: { fields },
+        }, { spaces: 2 });
+        await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        })).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      },
+      'private-choice': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: {
+            fields: {
+              ...fields,
+              token: {
+                ...fields.token,
+                sensitive: false,
+                choices: {
+                  allowCustom: true,
+                  presets: [{ id: 'private', title: 'Private', value: 'private' }],
+                },
+              },
             },
           },
-        },
+        }, { spaces: 2 });
+        await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        })).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
       },
-    }, { spaces: 2 });
-    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        fields,
-        presentation: {
-          groups: [
-            { id: 'general', title: 'General', fields: ['mode', 'limit'] },
-            { id: 'advanced', title: 'Advanced', fields: ['trace'], advanced: true },
-          ],
-        },
+      'groups': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: {
+            fields,
+            presentation: {
+              groups: [
+                { id: 'general', title: 'General', fields: ['mode', 'limit'] },
+                { id: 'advanced', title: 'Advanced', fields: ['trace'], advanced: true },
+              ],
+            },
+          },
+        }, { spaces: 2 });
+        await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        })).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
       },
-    }, { spaces: 2 });
-    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        fields,
-        presentation: {
-          groups: [
-            { id: 'general', title: 'General', fields: ['mode', 'missing'] },
-            { id: 'general', title: 'Duplicate', fields: ['mode'] },
-          ],
-        },
+      'unknown-key': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: {
+            fields,
+            presentation: {
+              groups: [
+                { id: 'general', title: 'General', fields: ['mode', 'missing'] },
+                { id: 'general', title: 'Duplicate', fields: ['mode'] },
+              ],
+            },
+          },
+        }, { spaces: 2 });
+        let invalidStdout = '';
+        try {
+          await execFileAsync(process.execPath, [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+        } catch (caught) {
+          invalidStdout = (caught as { stdout?: string }).stdout ?? '';
+        }
+        expect(invalidStdout).toContain('unknown config key "missing"');
       },
-    }, { spaces: 2 });
-    let invalidStdout = '';
-    try {
-      await execFileAsync(process.execPath, [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-    } catch (caught) {
-      invalidStdout = (caught as { stdout?: string }).stdout ?? '';
-    }
-    expect(invalidStdout).toContain('unknown config key "missing"');
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        fields,
-        presentation: {
-          groups: [
-            { id: 'general', title: 'General', fields: ['mode'] },
-            { id: 'general', title: 'Duplicate', fields: ['limit'] },
-          ],
-        },
+      'duplicate-group': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: {
+            fields,
+            presentation: {
+              groups: [
+                { id: 'general', title: 'General', fields: ['mode'] },
+                { id: 'general', title: 'Duplicate', fields: ['limit'] },
+              ],
+            },
+          },
+        }, { spaces: 2 });
+        await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        })).rejects.toMatchObject({
+          stdout: expect.stringContaining('duplicate group id "general"'),
+        });
       },
-    }, { spaces: 2 });
-    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('duplicate group id "general"'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        fields,
-        presentation: { presets: [] },
+      'presets': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(manifestPath, {
+          ...manifest,
+          config: {
+            fields,
+            presentation: { presets: [] },
+          },
+        }, { spaces: 2 });
+        await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        })).rejects.toMatchObject({
+          stdout: expect.stringContaining('must NOT have additional properties'),
+        });
       },
-    }, { spaces: 2 });
-    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-      cwd: repoRoot(),
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('must NOT have additional properties'),
     });
   });
 
@@ -3143,22 +3188,27 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
-    await fs.appendFile(path.join(pluginDir, 'scripts', 'entry.mjs'), '\nimport "undeclared-package";\n');
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'bare import "undeclared-package" from "scripts/entry.mjs" requires scripts.node.packageRoot',
-      ),
-    });
-
-    await fs.writeFile(
-      path.join(pluginDir, 'scripts', 'entry.mjs'),
-      'require.resolve("../../outside.cjs");\n',
-      'utf8',
-    );
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root',
-      ),
+    await validateFixtureVariants(pluginDir, {
+      'bare-import': async (pluginDir) => {
+        await fs.appendFile(path.join(pluginDir, 'scripts', 'entry.mjs'), '\nimport "undeclared-package";\n');
+        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining(
+            'bare import "undeclared-package" from "scripts/entry.mjs" requires scripts.node.packageRoot',
+          ),
+        });
+      },
+      'escaping-import': async (pluginDir) => {
+        await fs.writeFile(
+          path.join(pluginDir, 'scripts', 'entry.mjs'),
+          'require.resolve("../../outside.cjs");\n',
+          'utf8',
+        );
+        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+          stdout: expect.stringContaining(
+            'relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root',
+          ),
+        });
+      },
     });
   });
 
@@ -3725,7 +3775,7 @@ describe('authoring tools', () => {
   it('validate_plugin.mjs validates fixed profiles and dynamic resource closure', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
     tempDirs.push(tempRoot);
-    await mapWithConcurrency([null, [], ['claude']] as const, authoringBatchConcurrency, async (platforms) => {
+    const platformValidations = ([null, [], ['claude']] as const).map((platforms) => async () => {
       const fixture = await writeDynamicArtifactPlugin(path.join(tempRoot, `platforms-${JSON.stringify(platforms)}`),
         { platforms: platforms === null ? null : [...platforms] });
       if (platforms === null) {
@@ -3755,7 +3805,12 @@ describe('authoring tools', () => {
       'scripts/render.mjs': renderer([component]),
     });
     await fs.writeFile(path.join(fixture.pluginDir, 'templates/icon.bin'), Buffer.from([0,255,1]));
-    await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
+    await mapWithConcurrency([
+      ...platformValidations,
+      async () => {
+        await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS]') });
+      },
+    ], authoringBatchConcurrency, (validate) => validate());
     const variants = ['duplicate-source','noncanonical-reference','missing-skill','path-collision',
       'missing-skill-entry','author-only-output','runtime-evals-source','symlink-source','duplicate-owner','wrong-skill-name'] as const;
     await mapWithConcurrency(variants, authoringBatchConcurrency, async (variant) => {
@@ -3894,18 +3949,24 @@ describe('authoring tools', () => {
     const component = {id:'dynamic-review',kind:'skill',name:'review',content:{files:{
       'SKILL.md':{text:'---\nname: review\ndescription: Review.\n---\n'},'README.md':{text:'# Review\n'},
     }}};
-    const writePlan = (components:unknown[])=>fs.writeFile(path.join(fixture.pluginDir,'scripts/render.mjs'),
+    const writePlan = (pluginDir: string, components:unknown[])=>fs.writeFile(path.join(pluginDir,'scripts/render.mjs'),
       `console.log(JSON.stringify(${JSON.stringify({version:3,components,omitted:[],unmet:[]})}));\n`);
-    await writePlan([component]);
+    await writePlan(fixture.pluginDir, [component]);
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({stdout:expect.stringMatching(/duplicate|conflict/u)});
     const manifest = await fs.readJson(fixture.manifestPath);
     delete manifest.skills;
     await fs.writeJson(fixture.manifestPath,manifest);
     await fs.remove(path.join(fixture.pluginDir,'skills'));
-    await writePlan([component,{...component,id:'other-review'}]);
-    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({stdout:expect.stringContaining('duplicate component name')});
-    await writePlan([component,{...component,name:'other-review'}]);
-    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({stdout:expect.stringContaining('duplicate component ID')});
+    await validateFixtureVariants(fixture.pluginDir, {
+      'duplicate-name': async (pluginDir) => {
+        await writePlan(pluginDir, [component,{...component,id:'other-review'}]);
+        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({stdout:expect.stringContaining('duplicate component name')});
+      },
+      'duplicate-id': async (pluginDir) => {
+        await writePlan(pluginDir, [component,{...component,name:'other-review'}]);
+        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({stdout:expect.stringContaining('duplicate component ID')});
+      },
+    });
   });
 
   it('accepts shared user Skills when a common Hook explicitly disables Codex', async () => {
@@ -4002,84 +4063,93 @@ describe('authoring tools', () => {
 
     const validManifest = await fs.readJson(manifestPath);
 
-    await fs.writeJson(
-      manifestPath,
-      {
-        ...validManifest,
-        extensions: {
-          nativeHooks: {
-            codex: [
-              { id: 'fixture-hook-6', feedback: 'notify',
-                event: 'Notification',
-                command: 'echo wrong platform',
+    await validateFixtureVariants(pluginDir, {
+      'wrong-platform': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(
+          manifestPath,
+          {
+            ...validManifest,
+            extensions: {
+              nativeHooks: {
+                codex: [
+                  { id: 'fixture-hook-6', feedback: 'notify',
+                    event: 'Notification',
+                    command: 'echo wrong platform',
+                  },
+                ],
               },
-            ],
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('/extensions/nativeHooks/codex/0/event'),
-    });
-
-    await fs.writeJson(
-      manifestPath,
-      {
-        ...validManifest,
-        extensions: {
-          nativeHooks: {
-            codex: [
-              { id: 'fixture-hook-7', feedback: 'notify',
-                event: 'Stop',
-                matcher: '*',
-                command: 'echo invalid matcher',
-              },
-            ],
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('does not allow matcher'),
-    });
-
-    await fs.writeJson(
-      manifestPath,
-      {
-        ...validManifest,
-        extensions: {
-          hooks: [
-            { id: 'fixture-hook-8', feedback: 'notify',
-              event: 'session_stop',
-              command: 'echo old stop',
             },
-          ],
-        },
+          },
+          { spaces: 2 },
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('/extensions/nativeHooks/codex/0/event'),
+        });
       },
-      { spaces: 2 },
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('/extensions/hooks/0/event'),
+      'forbidden-matcher': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(
+          manifestPath,
+          {
+            ...validManifest,
+            extensions: {
+              nativeHooks: {
+                codex: [
+                  { id: 'fixture-hook-7', feedback: 'notify',
+                    event: 'Stop',
+                    matcher: '*',
+                    command: 'echo invalid matcher',
+                  },
+                ],
+              },
+            },
+          },
+          { spaces: 2 },
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('does not allow matcher'),
+        });
+      },
+      'old-event': async (pluginDir) => {
+        const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+        await fs.writeJson(
+          manifestPath,
+          {
+            ...validManifest,
+            extensions: {
+              hooks: [
+                { id: 'fixture-hook-8', feedback: 'notify',
+                  event: 'session_stop',
+                  command: 'echo old stop',
+                },
+              ],
+            },
+          },
+          { spaces: 2 },
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('/extensions/hooks/0/event'),
+        });
+      },
     });
   });
 
@@ -4506,34 +4576,50 @@ describe('authoring tools', () => {
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.platforms = ['codex', 'claude'];
-    for (const installation of getPluginAuthoringAcceptedValues(
+    const installations = getPluginAuthoringAcceptedValues(
       'manifest',
       'marketplace.policy.installation',
-    )) {
-      manifest.marketplace.policy.installation = installation;
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    );
+    const variants: Record<string, (pluginDir: string) => Promise<void>> = {};
+    for (const installation of installations) {
+      variants[installation] = async (pluginDir) => {
+        await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+          ...manifest,
+          marketplace: {
+            ...manifest.marketplace,
+            policy: { ...manifest.marketplace.policy, installation },
+          },
+        }, { spaces: 2 });
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      };
+    }
+    variants['invalid-installation'] = async (pluginDir) => {
+      await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+        ...manifest,
+        marketplace: {
+          ...manifest.marketplace,
+          policy: { ...manifest.marketplace.policy, installation: 'UNKNOWN' },
+        },
+      }, { spaces: 2 });
       await expect(
         execFileAsync('node', [scriptPath, pluginDir], {
           cwd: repoRoot(),
           env: process.env,
           maxBuffer: 10 * 1024 * 1024,
         }),
-      ).resolves.toMatchObject({
-        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      ).rejects.toMatchObject({
+        stdout: expect.stringContaining('/marketplace/policy/installation'),
       });
-    }
-
-    manifest.marketplace.policy.installation = 'UNKNOWN';
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('/marketplace/policy/installation'),
-    });
+    };
+    await validateFixtureVariants(pluginDir, variants);
   });
 
   it('validate_plugin.mjs accepts and validates Codex policy products', async () => {
@@ -4571,46 +4657,51 @@ describe('authoring tools', () => {
 
     const scriptPath = validatePluginScriptPath();
 
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'policy-products-test', 'agents', 'openai.yaml'),
-      [
-        'policy:',
-        '  allow_implicit_invocation: false',
-        '  products: codex',
-      ].join('\n'),
-      'utf8',
-    );
     await ensureFixtureReadmes(pluginDir);
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('policy.products must be an array'),
-    });
-
-    await fs.writeFile(
-      path.join(pluginDir, 'skills', 'policy-products-test', 'agents', 'openai.yaml'),
-      [
-        'policy:',
-        '  allow_implicit_invocation: false',
-        '  products:',
-        '    - codex',
-        '    - CHATGPT',
-        '    - atlas',
-      ].join('\n'),
-      'utf8',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    await validateFixtureVariants(pluginDir, {
+      'scalar': async (pluginDir) => {
+        await fs.writeFile(
+          path.join(pluginDir, 'skills', 'policy-products-test', 'agents', 'openai.yaml'),
+          [
+            'policy:',
+            '  allow_implicit_invocation: false',
+            '  products: codex',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).rejects.toMatchObject({
+          stdout: expect.stringContaining('policy.products must be an array'),
+        });
+      },
+      'array': async (pluginDir) => {
+        await fs.writeFile(
+          path.join(pluginDir, 'skills', 'policy-products-test', 'agents', 'openai.yaml'),
+          [
+            'policy:',
+            '  allow_implicit_invocation: false',
+            '  products:',
+            '    - codex',
+            '    - CHATGPT',
+            '    - atlas',
+          ].join('\n'),
+          'utf8',
+        );
+        await expect(
+          execFileAsync('node', [scriptPath, pluginDir], {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          }),
+        ).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      },
     });
   });
 

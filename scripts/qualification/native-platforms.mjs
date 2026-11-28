@@ -25,6 +25,35 @@ function selectPlatforms(selection) {
   return platforms;
 }
 
+export function clientCacheIdentity(selection) {
+  const manifest = selectPlatforms(selection).sort().map(platform => {
+    const client = clients[platform];
+    return [platform, client.package, client.version];
+  });
+  return sha256(JSON.stringify(manifest));
+}
+
+function distributionExcluded(platform, host) {
+  return platform === 'grok' && (host.platform === 'darwin' && host.arch === 'x64'
+    || host.platform === 'win32' && host.arch === 'arm64');
+}
+
+// Each acquisition is attached only after the fixed package and its entry have been resolved.
+export function clientCacheComplete(selection, report, host = process) {
+  const selected = selectPlatforms(selection);
+  if (!Array.isArray(report?.clients) || report.clients.length !== selected.length
+    || selected.every(platform => distributionExcluded(platform, host))) return false;
+  return selected.every(platform => {
+    const result = report.clients.find(item => item?.platform === platform);
+    if (distributionExcluded(platform, host)) {
+      return result?.status === 'excluded' && result.reason === 'official-client-distribution-unavailable';
+    }
+    const acquisition = result?.acquisition;
+    return acquisition?.package === clients[platform].package && acquisition.version === clients[platform].version
+      && acquisition.source === clients[platform].source && acquisition.download?.status === 'completed';
+  });
+}
+
 export function parseArgs(args) {
   const options = {};
   const names = new Set(['candidate', 'client', 'report', 'executable', 'write-candidate', 'source-sha']);
@@ -187,7 +216,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
   const redactScope = value => redact(value, root, privateClientPaths);
   try {
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
-    const env = await prepareEnvironment(root);
+    const env = options.grokBinary ? await runUnit(() => prepareEnvironment(root, options.grokBinary)) : await prepareEnvironment(root);
     const project = path.join(root, 'project');
     const neutral = path.join(root, 'neutral');
     const marketplace = path.join(root, 'source');
@@ -196,7 +225,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
       ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env })));
     await fs.mkdir(neutral);
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
-      preparedClient: options.preparedClient, group: options.group,
+      preparedClient: options.preparedClient, group: options.group, grokBinary: options.grokBinary,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       recordCommand(command) { report.commands.push(redactScope(command)); },
@@ -500,13 +529,13 @@ export async function run(options, acquire = acquireClient) {
     await Promise.all(selectedPlatforms.map(async platform => {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
       report.clients.push(result);
-      if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
-        || process.platform === 'win32' && process.arch === 'arm64')) {
+      if (distributionExcluded(platform, process)) {
         result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; return;
       }
       let installRoot;
       try {
         let launcher;
+        let grokBinary;
         let clientBin;
         let preparedClient;
         let publicClientError;
@@ -515,6 +544,7 @@ export async function run(options, acquire = acquireClient) {
             installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
             return acquire(platform, installRoot);
           });
+          grokBinary = acquired.grokBinary;
           launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
           if (options['public-aw']) {
             try { preparedClient = await group.runUnit(() => preparePublicClientEntry({ root: installRoot, launcher, platform, clientBin })); }
@@ -530,9 +560,9 @@ export async function run(options, acquire = acquireClient) {
         }
         const scopesToRun = ['user', 'project'];
         const [direct, publicAw] = await Promise.all([
-          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group, nativeClientVersion: result.acquisition?.version }))),
+          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group, grokBinary, nativeClientVersion: result.acquisition?.version }))),
           options['public-aw'] && Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher,
-            { publicAw: true, clientBin, preparedClient, publicClientError, group, nativeClientVersion: result.acquisition?.version }))),
+            { publicAw: true, clientBin, preparedClient, publicClientError, group, grokBinary, nativeClientVersion: result.acquisition?.version }))),
         ]);
         result.scopes = direct;
         if (publicAw) result.publicAw = publicAw;
