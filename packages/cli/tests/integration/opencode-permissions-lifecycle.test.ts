@@ -127,30 +127,30 @@ async function createPermissionFixture(secondRestriction?: 'exact' | 'unrepresen
   return { catalog, env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
 }
 
-async function fixture(...args: Parameters<typeof createPermissionFixture>) {
-  const setup = await createPermissionFixture(...args);
-  const { catalog, projectA, success } = setup;
-  await success(projectA, ['source', 'add', 'local', '--path', catalog, '--primary', '--no-auto-check', '--yes']);
-  await success(projectA, ['source', 'sync', 'local', '--yes']);
-  await success(projectA, ['target', 'set', 'opencode', '--context', 'user', '--force']);
-  return setup;
+function fixture(...args: Parameters<typeof createPermissionFixture>) {
+  return preparePermissionFixture(() => createPermissionFixture(...args));
 }
 
-async function preparePermissionMergeFixture(timing: ReturnType<typeof createCommandTestTiming>) {
-  const setup = await timing.measure('fixture-step', 'catalog.snapshot', () => createPermissionFixture());
+async function preparePermissionFixture(
+  createFixture: () => ReturnType<typeof createPermissionFixture>,
+  timing?: ReturnType<typeof createCommandTestTiming>,
+) {
+  const measure = <T>(name: string, action: () => Promise<T>) =>
+    timing ? timing.measure('fixture-step', name, () => action()) : action();
+  const setup = await measure('catalog.snapshot', createFixture);
   const { catalog, env, projectA: cwd } = setup;
   // Source registration and target selection are prerequisites, not part of the permission lifecycle under test.
-  await timing.measure('fixture-step', 'source.configure', async () => {
+  await measure('source.configure', async () => {
     const { config, digest } = await readCatalogSourcesConfigSnapshot(env);
     const nextConfig = await addCatalogSource(config, {
       id: 'local', type: 'path', path: catalog, primary: true, autoCheck: false,
     }, cwd);
     await replaceCatalogSourcesConfig({ config: nextConfig, expectedDigest: digest, env });
   });
-  await timing.measure('fixture-step', 'source.sync', () => syncCatalogSourceGeneration({
+  await measure('source.sync', () => syncCatalogSourceGeneration({
     sourceId: 'local', cliVersion: cliPackage.version, cwd, env, impactConfirmed: true,
   }));
-  await timing.measure('fixture-step', 'target.preferences', () => setTargets({ cwd, env, scope: 'user' }, ['opencode']));
+  await measure('target.preferences', () => setTargets({ cwd, env, scope: 'user' }, ['opencode']));
   return setup;
 }
 
@@ -158,7 +158,7 @@ async function preparePermissionMergeFixture(timing: ReturnType<typeof createCom
 it('merges two OpenCode owners and preserves manual rules through scoped sync and removal', async (test) => {
   const timing = createCommandTestTiming(test);
   const { projectA, projectB, userConfig, projectConfig, success } = await timing.measure(
-    'fixture', 'opencode-permissions', () => preparePermissionMergeFixture(timing),
+    'fixture', 'opencode-permissions', () => preparePermissionFixture(createPermissionFixture, timing),
   );
   const run = (phase: string, args: string[]) => timing.measure('command', phase, () => success(projectA, args));
   const userRules = [shellRule('*', 'allow'), shellRule('aw-other personal', 'ask')];
