@@ -389,33 +389,34 @@ describe('authoring tools', () => {
       ).resolves.toBe(false);
     }
 
-    await expect(
-      execFileAsync(
-        'node',
-        [
-          scriptPath,
-          'invalid-skill-metadata',
-          '--description',
-          '用于验证 skill UI metadata 长度约束的示例插件。',
-          '--skill-description',
-          '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
-          '--skill-short-description',
-          '仓库诊断',
-          '--workspace-root',
-          tempRepo,
-        ],
-        {
-          cwd: repoRoot(),
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      ),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining('--skill-short-description must be 25-64 characters'),
-    });
-    await expect(
-      fs.pathExists(path.join(tempRepo, 'plugins', 'invalid-skill-metadata')),
-    ).resolves.toBe(false);
+    for (const shortDescription of ['', '界'.repeat(65)]) {
+      await expect(
+        execFileAsync(
+          'node',
+          [
+            scriptPath,
+            'invalid-skill-metadata',
+            '--description',
+            '用于验证 skill UI metadata 长度约束的示例插件。',
+            '--skill-description',
+            '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
+            `--skill-short-description=${shortDescription}`,
+            '--workspace-root',
+            tempRepo,
+          ],
+          {
+            cwd: repoRoot(),
+            env: process.env,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+        ),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining('--skill-short-description must be 1-64 characters'),
+      });
+      await expect(
+        fs.pathExists(path.join(tempRepo, 'plugins', 'invalid-skill-metadata')),
+      ).resolves.toBe(false);
+    }
 
     await execFileAsync(
       'node',
@@ -848,6 +849,8 @@ describe('authoring tools', () => {
       'release-notes',
       '--skill-description',
       '根据当前分支变更生成结构化发布说明并核对风险与遗漏',
+      '--skill-short-description',
+      '生成发布说明',
       '--skill-invocation',
       'manual',
       '--workspace-root',
@@ -874,9 +877,9 @@ describe('authoring tools', () => {
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
       expect.stringContaining('disable-model-invocation: true'),
     );
-    await expect(
-      fs.readFile(path.join(dualSkillRoot, 'agents', 'openai.yaml'), 'utf8'),
-    ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: false'));
+    const dualOpenAiYaml = await fs.readFile(path.join(dualSkillRoot, 'agents', 'openai.yaml'), 'utf8');
+    expect(dualOpenAiYaml).toContain('short_description: "生成发布说明"');
+    expect(dualOpenAiYaml).toContain('allow_implicit_invocation: false');
     const scaffoldManifest = await fs.readJson(path.join(dualSkillRoot, 'evals', 'manifest.json'));
     expect(scaffoldManifest).toMatchObject({
       version: 1,
@@ -2385,7 +2388,7 @@ describe('authoring tools', () => {
         '--skill-description',
         '检查仓库状态并输出诊断结论',
         '--skill-short-description',
-        '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
+        '仓库诊断',
         '--workspace-root',
         tempRepo,
       ],
@@ -2412,7 +2415,7 @@ describe('authoring tools', () => {
     expect(skillMdContent).toContain('name: repo-diagnose');
     expect(skillMdContent).toContain('description: "检查仓库状态并输出诊断结论"');
     expect(skillMdContent).toContain(
-      'metadata:\n  short-description: "检查仓库状态、配置、依赖与风险并输出可执行的诊断结论"',
+      'metadata:\n  short-description: "仓库诊断"',
     );
 
     const openaiYamlContent = await fs.readFile(
@@ -2429,10 +2432,10 @@ describe('authoring tools', () => {
     );
     expect(openaiYamlContent).toContain('display_name: "Repo Diagnose"');
     expect(openaiYamlContent).toContain(
-      'short_description: "检查仓库状态、配置、依赖与风险并输出可执行的诊断结论"',
+      'short_description: "仓库诊断"',
     );
     expect(openaiYamlContent).toContain(
-      'default_prompt: "使用 $repo-diagnose：检查仓库状态、配置、依赖与风险并输出可执行的诊断结论。"',
+      'default_prompt: "使用 $repo-diagnose：仓库诊断。"',
     );
     expect(openaiYamlContent).not.toContain('display_name: "Automation Suite"');
     expect(openaiYamlContent).not.toContain(
@@ -4280,6 +4283,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
+    await ensureFixtureReadmes(pluginDir);
     const scriptPath = validatePluginScriptPath();
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -4374,7 +4378,7 @@ describe('authoring tools', () => {
       path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
       [
         'interface:',
-        '  short_description: "Too short"',
+        '  short_description: "界"',
         '  default_prompt: "Use $metadata-test to validate metadata."',
         'policy:',
         '  allow_implicit_invocation: false',
@@ -4387,8 +4391,26 @@ describe('authoring tools', () => {
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
       }),
+    ).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
+      [
+        'interface:',
+        '  short_description: "  "',
+        'policy:',
+        '  allow_implicit_invocation: false',
+      ].join('\n'),
+      'utf8',
+    );
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('interface.short_description [string-too-short]'),
+      stdout: expect.stringContaining('interface.short_description [invalid-string]'),
     });
 
     await fs.writeFile(

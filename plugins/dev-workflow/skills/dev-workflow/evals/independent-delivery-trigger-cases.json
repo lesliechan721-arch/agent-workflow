@@ -7,12 +7,14 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+      "rationale": "判断用户是否显式选择手动总入口，不能用综合任务意图替代用户选择。"
     },
     "runtime": {
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [],
+      "strictNegativeSplits": [
+        "validation"
+      ],
       "forbidMultipleSkillLoads": false
     }
   },
@@ -24,7 +26,7 @@
         "boundary"
       ],
       "input": {
-        "query": "$dev-workflow 把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
+        "query": "$dev-workflow 把需求从当前共识推进到交付，帮我确定下一步该做什么。",
         "expectedLoad": true
       },
       "audit": {
@@ -45,7 +47,7 @@
       },
       "audit": {
         "rationale": "区分本能力的明确用户结果与相邻意图。",
-        "minimalCounterexample": "$dev-workflow 把需求从当前共识推进到交付，帮我决定各阶段该做什么。",
+        "minimalCounterexample": "$dev-workflow 把需求从当前共识推进到交付，帮我确定下一步该做什么。",
         "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
       }
     }

@@ -347,8 +347,6 @@ describe('build smoke', () => {
     }
     for (const [pluginName, skillName] of [
       ['decision-kit', 'decision-grill'],
-      ['decision-kit', 'project-context'],
-      ['dev-workflow', 'dev-design'],
       ['git-toolkit', 'git-commit'],
     ]) {
       for (const platform of ['claude', 'codex']) {
@@ -372,6 +370,7 @@ describe('build smoke', () => {
       ['agent-explore', 'explore-facts'],
       ['agent-advisor', 'consult-advisor'],
       ['agent-subagent', 'spawn-subagent'],
+      ['dev-workflow', 'dev-design'],
     ]) {
       await expect(fs.pathExists(path.join(
         outputRoot,

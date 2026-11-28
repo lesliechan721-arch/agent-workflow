@@ -15,7 +15,6 @@ const MAX_SKILL_COMPATIBILITY_LENGTH = 500;
 const MAX_SKILL_SHORT_DESCRIPTION_LENGTH = 1024;
 const MAX_SKILL_LINES = 500;
 const MAX_OPENAI_INTERFACE_NAME_LENGTH = 64;
-const MIN_OPENAI_SHORT_DESCRIPTION_LENGTH = 25;
 const MAX_OPENAI_SHORT_DESCRIPTION_LENGTH = 64;
 const MAX_OPENAI_DEFAULT_PROMPT_LENGTH = 1024;
 const MAX_OPENAI_DEPENDENCY_LENGTH = 1024;
@@ -122,16 +121,13 @@ export function parseSkillFrontmatter(
 function validateBoundedString(
   value: unknown,
   fieldPath: string,
-  options: { required?: boolean; minLength?: number; maxLength?: number },
+  options: { required?: boolean; maxLength?: number },
 ): SkillValidationDiagnostic[] {
   if (value === undefined && !options.required) return [];
   if (!nonEmptyString(value)) {
     return [diagnostic('invalid-string', fieldPath, `${fieldPath} must be a non-empty string.`)];
   }
   const length = Array.from(value.trim()).length;
-  if (options.minLength !== undefined && length < options.minLength) {
-    return [diagnostic('string-too-short', fieldPath, `${fieldPath} must be at least ${options.minLength} characters.`)];
-  }
   if (options.maxLength !== undefined && length > options.maxLength) {
     return [diagnostic('string-too-long', fieldPath, `${fieldPath} must be at most ${options.maxLength} characters.`)];
   }
@@ -266,7 +262,6 @@ export function validateCodexMetadata(
         maxLength: MAX_OPENAI_INTERFACE_NAME_LENGTH,
       }));
       errors.push(...validateBoundedString(root.interface.short_description, `${fieldPath}.short_description`, {
-        minLength: MIN_OPENAI_SHORT_DESCRIPTION_LENGTH,
         maxLength: MAX_OPENAI_SHORT_DESCRIPTION_LENGTH,
       }));
       errors.push(...validateBoundedString(root.interface.default_prompt, `${fieldPath}.default_prompt`, {

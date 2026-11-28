@@ -1337,20 +1337,21 @@ describe('runtime Skill resource closure', () => {
     return skillRoot;
   }
 
-  it('allows current manifest-declared projected and generated runtime files in source Skills', async () => {
+  it('allows current manifest-declared projected and generated runtime files in static source Skills', async () => {
     const pluginsRoot = path.resolve(import.meta.dirname, '../../../../plugins');
     const entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       if (!entry.isDirectory()) continue;
-      const skillsRoot = path.join(pluginsRoot, entry.name, 'skills');
+      const pluginRoot = path.join(pluginsRoot, entry.name);
+      const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+      if (!(await fs.pathExists(manifestPath))) continue;
+      const manifest = await fs.readJson(manifestPath) as PluginManifest;
+      // Dynamic Skill source directories are renderer inputs, not final Skill
+      // trees. Their closure is checked on rendered components instead.
+      if (!manifest.skills) continue;
+      const skillsRoot = path.resolve(pluginRoot, manifest.skills);
       const stats = await fs.stat(skillsRoot).catch(() => undefined);
       if (!stats?.isDirectory()) continue;
-      const manifest = await fs.readJson(path.join(
-        pluginsRoot,
-        entry.name,
-        '.agents-plugin',
-        'plugin.json',
-      )) as PluginManifest;
       const declaredTargets = new Map<string, Set<string>>();
       for (const runtimeFile of [
         ...(manifest.buildConfig?.skillRuntimeFiles ?? []),

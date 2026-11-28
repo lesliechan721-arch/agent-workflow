@@ -47,7 +47,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "请用一个可操作的最小原型帮我理解草稿、提交和撤回的关系。只在 prototypes/request-state/ 保存第一轮：我需要自己操作和重置，不是选配色。为以后的标准网页 Review 准备 schema v2 的 prototype.json，但本轮不启动服务。请求已完成：成员提交后进入待审，待审可撤回，审批完成后不能撤回。不要修改 src/requests.ts，也不替我作最终决定。 本轮只交付第一版和查看方法，不提问，然后结束。本轮不要创建 verdict.md。",
+      "prompt": "草稿、提交和撤回的候选规则还没接受。请用一个可操作的最小原型让我判断这些关系是否符合预期。只在 prototypes/request-state/ 保存第一轮：我需要自己操作和重置，不是选配色。为以后的标准网页 Review 准备 schema v2 的 prototype.json，但本轮不启动服务。当前候选规则：成员提交后进入待审，待审可撤回，审批完成后不能撤回。不要修改 src/requests.ts，也不替我作最终决定。 本轮只交付第一版和查看方法，不提问，然后结束。本轮不要创建 verdict.md。",
       "assertions": [
         "构造一个展示相关状态和最近操作结果的可重置模型，而非多个配色候选",
         "保存配置时 selectionMode 为 none、htmlExecution 为 sandboxed，不承诺同源 DOM 标注",
@@ -145,7 +145,7 @@
         "technical-evidence",
         "platform-codex"
       ],
-      "prompt": "只在 prototypes/crypto-probe/ 做并运行一个最小 Node.js Web Crypto 探针，验证当前运行环境可以完成 digest。运行记录保存在 artifact/result.txt。暂时没有浏览器环境，不需要评审页面，不询问用户，也不生成采用路线的最终结论。本轮不要创建 verdict.md。",
+      "prompt": "为判断是否向用户提供浏览器离线加密草稿，本轮先只在 prototypes/crypto-probe/ 做并运行一个最小 Node.js Web Crypto 探针，验证当前运行环境可以完成 digest。运行记录保存在 artifact/result.txt。暂时没有浏览器环境，不需要评审页面，不询问用户，也不生成采用路线的最终结论。本轮不要创建 verdict.md。",
       "assertions": [
         "实际创建并运行探针，保存当前环境与运行结果，而非只写结论",
         "明确 Node 结果不能证明目标浏览器兼容",

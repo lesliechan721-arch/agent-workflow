@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-architect"
+  short_description: "从真实使用过程设计模型与边界。"
+  default_prompt: "使用 $dev-architect 为这个已确认需求设计状态所有权和接口边界，检查失败与恢复。"
+policy:
+  allow_implicit_invocation: true

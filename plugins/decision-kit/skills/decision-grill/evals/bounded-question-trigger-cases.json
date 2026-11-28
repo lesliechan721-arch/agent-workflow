@@ -10,7 +10,6 @@
       "rationale": "以实际用户答案、需求保真、文档生命周期及结果判定；方法加载只说明路由，不单独证明对齐完成。"
     },
     "participants": [
-      "decision-shape",
       "decision-prototype"
     ],
     "runtime": {
@@ -46,7 +45,7 @@
         "boundary"
       ],
       "input": {
-        "query": "当前Shape把一个材料选择交给你：确认导出空选择时应返回空结果还是全部结果。采用decision-grill的方法。",
+        "query": "当前协调者把一个尚未确认的产品选择交给你：确认导出空选择时应返回空结果还是全部结果。采用decision-grill的方法。",
         "expectedLoad": true
       },
       "audit": {
@@ -68,7 +67,7 @@
       "audit": {
         "rationale": "普通概念解释不是产品决策问答。",
         "allowedVariance": "允许等价表述、主题结构与实现；以实际资料、权限、用户答复和结果为准。未取得真实工具或独立性证据的部分明确保留限制。",
-        "minimalCounterexample": "请求围绕一个真实架构取舍问答时需相应方法。"
+        "minimalCounterexample": "如果用户希望逐轮决定什么架构后果可以接受，而非只解释概念，则访谈适用。"
       }
     },
     {

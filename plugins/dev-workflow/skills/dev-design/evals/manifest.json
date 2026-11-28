@@ -8,7 +8,12 @@
       "plugins": {
         "dev-workflow": {},
         "decision-kit": {},
-        "human-content": {}
+        "human-content": {},
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        }
       }
     }
   },
@@ -17,7 +22,9 @@
       "id": "alignment-handoff",
       "kind": "conversation",
       "cases": "alignment-handoff-cases.json",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "runs": 1,
       "timeoutMs": 300000
     },

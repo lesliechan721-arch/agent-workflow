@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { addOfficialCatalog, qualifyShippedGitInstall, ordinaryGitSkills as ordinarySkills } from './native-platform-shipped-git.mjs';
-import { shippedRoles, shippedSkills } from './native-platform-public-catalog.mjs';
+import { shippedDynamicPlugins } from './native-platform-public-catalog.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { prepareEnvironment, repoRoot, sha256 } from './native-platform-runtime.mjs';
 import { getAgentPluginAdapters } from '../../packages/cli/dist/src/platforms/registry.js';
@@ -210,17 +210,16 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
           }
           if (!staticOnly && manifest.scripts?.artifacts?.render) {
             // Each shipped renderer needs an independent output expectation.
-            const skill = shippedSkills[manifest.name];
-            assert(skill, `Add an independent output expectation for shipped renderer ${manifest.name}`);
-            assert.deepEqual(components.filter(c => c.kind === 'skill').map(c => c.name), [skill], label);
+            const expectedRenderer = shippedDynamicPlugins[manifest.name];
+            assert(expectedRenderer, `Add an independent output expectation for shipped renderer ${manifest.name}`);
+            assert.deepEqual(components.filter(c => c.kind === 'skill').map(c => c.name).sort(),
+              [...expectedRenderer.skills].sort(), label);
             assert.deepEqual(unmet.filter(c => c.kind === 'skill'), [], label);
-            if (!subagent) {
-              const trigger = `${skill}-trigger`;
-              assert.deepEqual(components.filter(c => c.kind === 'instruction').map(c => c.name), platform === 'generic' ? [] : [trigger], label);
-              assert.deepEqual(unmet.filter(c => c.kind === 'instruction'), [], label);
-              assert.deepEqual(omitted.map(c => c.id), platform === 'generic' ? [`${trigger}-instruction`] : [], label);
-            } else assert.deepEqual(omitted, [], label);
-            const roles = shippedRoles[manifest.name];
+            assert.deepEqual(components.filter(c => c.kind === 'instruction').map(c => c.name).sort(),
+              platform === 'generic' ? [] : [...expectedRenderer.instructions].sort(), label);
+            assert.deepEqual(unmet.filter(c => c.kind === 'instruction'), [], label);
+            assert.deepEqual(omitted.map(c => c.id).sort(),
+              platform === 'generic' ? expectedRenderer.instructions.map(name => `${name}-instruction`).sort() : [], label);
             let roleSet = prepared.expected;
             if (subagent && scope === 'project' && platform === 'codex') {
               const roleUnit = resolution.renderUnits.find(unit => unit.output === 'supplement');
@@ -232,7 +231,8 @@ export async function qualifyShippedCatalog({ staticOnly = false } = {}) {
                 renderScope: 'project', kinds: roleUnit.kinds, staticResourceRoot, commandEnv: ctx.env })).expected;
               inventory.platforms[platform].projectSupplement = roleSet.components.map(component => component.id);
             }
-            assert.deepEqual(roleSet.components.filter(c => c.kind === 'agent').map(c => c.name).sort(), roles, label);
+            assert.deepEqual(roleSet.components.filter(c => c.kind === 'agent').map(c => c.name).sort(),
+              [...expectedRenderer.roles].sort(), label);
             assert.deepEqual(roleSet.unmet.filter(c => c.kind === 'agent').map(c => c.name).sort(), [], label);
             if (claudeSubagent) {
               const stage = path.join(root, 'projection', label);

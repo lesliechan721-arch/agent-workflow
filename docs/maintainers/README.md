@@ -20,7 +20,7 @@
 - plugin config、catalog source config 和 catalog state 是强配置，写入必须原子提交。version-scoped publication journal 是强恢复和门禁状态，也必须原子写入。plugin outputs、依赖现场、lifecycle snapshot、Catalog store snapshot 和 prepared release 是可删除、可重建的弱状态。
 - 插件安装依赖第三方工具，且用户可能手动修改其结果。动作应尽力完成，并允许部分成功；不要为不可控现场承诺完全正确或补偿回滚。
 - 每条失败链必须保留 `cleanup`、`cleanup --force`、`reinstall`、source sync 或发布新版本中的至少一种恢复方式。安全边界不得删除 foreign 或 shared 内容；弱状态损坏也不得永久阻止清理。
-- 新增 ledger、持久合同、摘要协议、锁层级、事务、补偿或迁移状态机前，必须证明高概率或高影响的可观察风险，且简单恢复渠道不足。低概率且低影响的问题不得增加代码复杂度；代码评审也忽略这类会增加复杂度的建议。
+- 新增 ledger、持久合同、摘要协议、锁层级、事务、补偿或迁移状态机前，必须证明高概率或高影响的可观察风险，且简单恢复渠道不足。不为假想边界或简单恢复即可处理的边缘情形增设额外状态、抽象或防御性兜底分支；代码评审不将此类扩张升格为阻塞项（不引入新机制的局部契约缺口可按非阻塞记录）。
 - 发布操作与恢复分别遵循 [CLI 发布与修复](release.md#61-cli-远端失败普通升级-vs-显式修复repair)和 [Catalog 发布计划与恢复门禁](../reference/catalog.md#publication-recovery)。普通发布、绑定原始证据的修复及同计划续跑不能互相替代。
 
 ## 同步规则与所有权约束

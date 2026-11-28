@@ -261,7 +261,7 @@ Options:
   --skill-name <name>           Initial skill directory name.
   --skill-description <text>    What the initial skill does and when to use it.
   --skill-short-description <text>
-                                Initial skill UI summary (25-64 characters). Default: --skill-description.
+                                Initial skill UI summary (1-64 characters). Default: --skill-description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
   --version <semver>            Plugin version. Default: 0.1.0
   --workspace-root <path>            Workspace root. Default: current directory.
@@ -412,7 +412,7 @@ function main() {
   const initialSkillShortDescription = args.noSkills
     ? undefined
     : requireCharacterRange(
-      args.skillShortDescription || args.skillDescription,
+      args.skillShortDescription ?? args.skillDescription,
       '--skill-short-description',
       MIN_CODEX_SHORT_DESCRIPTION_LEN,
       MAX_CODEX_SHORT_DESCRIPTION_LEN,

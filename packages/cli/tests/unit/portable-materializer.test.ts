@@ -623,4 +623,29 @@ console.log(JSON.stringify({version:3,components:[{id:key,kind:'skill',name:key,
     }
     expect(await fs.pathExists(path.join(plugin.rootDir, 'render.log'))).toBe(false);
   });
+
+  // Test Value Gate: Portable materialization must reject leaked AW template tokens
+  // without false-positively blocking non-AW prose placeholders in Skill templates.
+  it('rejects unresolved AW template tokens while allowing non-AW prose placeholders in Skill assets', async () => {
+    const root = await tempRoot('aw-portable-template-guard-');
+    const plugin = await pluginFixture(root, baseManifest('template-guard'));
+    await writeSkill(plugin.rootDir, 'portable', 'Read assets/prompt.md.');
+    const assetPath = path.join(plugin.rootDir, 'skills', 'portable', 'assets', 'prompt.md');
+    await fs.outputFile(assetPath, '- 目标：{{本次工作服务的最终用户目标}}\n- Note: {{describe the goal}}\n');
+
+    const env = { ...process.env, AW_HOME: path.join(root, 'home') };
+    const materialized = await materializePortableSkills({
+      platform: 'generic', plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root, env,
+    });
+    expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'portable', 'assets', 'prompt.md'), 'utf8'))
+      .toContain('{{本次工作服务的最终用户目标}}');
+    await materialized.cleanup();
+
+    for (const token of ['{{agent_name}}', '{{#if thinking_support}}', '{{/if}}', '{{aw.future}}']) {
+      await fs.outputFile(assetPath, `Unresolved ${token}\n`);
+      await expect(materializePortableSkills({
+        platform: 'generic', plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root, env,
+      })).rejects.toThrow('Portable Skill "portable" has an unresolved template in assets/prompt.md.');
+    }
+  });
 });

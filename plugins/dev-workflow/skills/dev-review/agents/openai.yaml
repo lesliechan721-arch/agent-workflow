@@ -1,0 +1,6 @@
+interface:
+  display_name: "dev-review"
+  short_description: "只读审查代码、设计与影响面，高危可运行变更自动升级多代理实测破防。"
+  default_prompt: "使用 $dev-review 审查当前改动的需求符合度、影响面与核心安全前提，高危运行时路径做实测验证。"
+policy:
+  allow_implicit_invocation: true

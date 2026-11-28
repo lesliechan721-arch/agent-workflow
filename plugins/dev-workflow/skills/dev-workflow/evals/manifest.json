@@ -6,24 +6,14 @@
       "platform": "codex",
       "scope": "project",
       "plugins": {
-        "dev-workflow": {}
-      }
-    },
-    "project-composed": {
-      "platform": "codex",
-      "scope": "project",
-      "plugins": {
-        "dev-workflow": {},
-        "decision-kit": {}
-      }
-    },
-    "project-lifecycle": {
-      "platform": "codex",
-      "scope": "project",
-      "plugins": {
         "dev-workflow": {},
         "decision-kit": {},
-        "browser-use": {}
+        "human-content": {},
+        "agent-subagent": {
+          "generalTaskProfile": {
+            "executor": "native"
+          }
+        }
       }
     }
   },
@@ -39,61 +29,11 @@
       "timeoutMs": 180000
     },
     {
-      "id": "router-composed",
-      "kind": "trigger",
-      "cases": "cross-plugin-routing-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 3,
-      "timeoutMs": 180000
-    },
-    {
-      "id": "composition-composed",
-      "kind": "conversation",
-      "cases": "composition-behavior-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
-      "id": "decision-experience-composed",
-      "kind": "conversation",
-      "cases": "decision-experience-composition-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
-      "id": "fast-build-routing",
-      "kind": "trigger",
-      "cases": "fast-build-routing-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 3,
-      "timeoutMs": 180000
-    },
-    {
-      "id": "fast-build-behavior",
-      "kind": "conversation",
-      "cases": "fast-build-behavior-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
       "id": "independent-delivery-trigger",
       "kind": "trigger",
       "cases": "independent-delivery-trigger-cases.json",
       "profiles": [
-        "project-composed"
+        "project-default"
       ],
       "runs": 1,
       "timeoutMs": 180000
@@ -103,122 +43,20 @@
       "kind": "conversation",
       "cases": "independent-delivery-behavior-cases.json",
       "profiles": [
-        "project-composed"
+        "project-default"
       ],
       "runs": 1,
       "timeoutMs": 300000
     },
     {
       "id": "continuous-alignment",
-      "kind": "codex-workflow",
+      "kind": "conversation",
       "cases": "continuous-alignment-cases.json",
       "profiles": [
-        "project-composed"
+        "project-default"
       ],
       "runs": 1,
-      "timeoutMs": 600000,
-      "provider": {
-        "type": "codex-workflow",
-        "command": [
-          "node",
-          "runtime/workflow-evaluation.mjs"
-        ],
-        "allowedModels": []
-      }
-    },
-    {
-      "id": "spec-adaptive-revision",
-      "kind": "conversation",
-      "cases": "spec-adaptive-revision-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
-      "id": "continuous-alignment-workflow",
-      "kind": "codex-workflow",
-      "cases": "continuous-alignment-workflow.cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 600000,
-      "provider": {
-        "type": "codex-workflow",
-        "command": [
-          "node",
-          "runtime/workflow-evaluation.mjs"
-        ],
-        "allowedModels": []
-      }
-    },
-    {
-      "id": "stage-entry",
-      "kind": "trigger",
-      "cases": "stage-entry-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 3,
-      "timeoutMs": 180000
-    },
-    {
-      "id": "stage-progress",
-      "kind": "conversation",
-      "cases": "stage-progress-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
-      "id": "stage-and-fidelity-workflow",
-      "kind": "codex-workflow",
-      "cases": "stage-and-fidelity-workflow.cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 600000,
-      "provider": {
-        "type": "codex-workflow",
-        "command": [
-          "node",
-          "runtime/workflow-evaluation.mjs"
-        ],
-        "allowedModels": []
-      }
-    },
-    {
-      "id": "shape-entry-behavior",
-      "kind": "conversation",
-      "cases": "shape-entry-behavior-cases.json",
-      "profiles": [
-        "project-composed"
-      ],
-      "runs": 1,
-      "timeoutMs": 300000
-    },
-    {
-      "id": "method-lifecycle-workflow",
-      "kind": "codex-workflow",
-      "cases": "method-lifecycle-workflow.cases.json",
-      "profiles": [
-        "project-lifecycle"
-      ],
-      "runs": 1,
-      "timeoutMs": 900000,
-      "provider": {
-        "type": "codex-workflow",
-        "command": [
-          "node",
-          "method-lifecycle-workflow.mjs"
-        ],
-        "allowedModels": []
-      }
+      "timeoutMs": 600000
     }
   ]
 }

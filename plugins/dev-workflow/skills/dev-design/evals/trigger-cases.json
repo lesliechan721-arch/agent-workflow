@@ -10,11 +10,9 @@
       "rationale": "按显式入口与未选入口区分触发；完整工作意图或 caller 委派不能代替用户选择，实际共享方法与结果由行为用例检查。"
     },
     "participants": [
-      "decision-shape",
-      "dev-build",
-      "dev-spec",
       "decision-grill",
-      "dev-implement"
+      "dev-architect",
+      "dev-workflow"
     ],
     "runtime": {
       "observeSpawnAgent": false,
@@ -38,8 +36,8 @@
       },
       "audit": {
         "rationale": "用户显式选择本宏；是否加载与实际任务完成分开判断。",
-        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
-        "minimalCounterexample": "已有充分设计且只要代码实现时用Build或Implement。"
+        "allowedVariance": "只观测当前入口是否加载；允许其他适用能力，不推断最终任务是否完成。",
+        "minimalCounterexample": "相同设计请求未显式选择 $dev-design 时不会自动加载。"
       }
     },
     {
@@ -54,7 +52,7 @@
       },
       "audit": {
         "rationale": "未由用户显式选择本宏；完整任务意图或上层委派不等于启动手动入口。已启动的上层可采用自带共享方法。",
-        "allowedVariance": "不加载本手动宏，仍可完成普通处理或使用可达的叶子能力；方法执行质量由行为用例检查。",
+        "allowedVariance": "只观测当前入口是否加载；允许其他适用能力，不推断最终任务是否完成。",
         "minimalCounterexample": "用户明确调用 $dev-design，且请求未仅讨论该能力时应加载。"
       }
     },
@@ -65,13 +63,13 @@
         "boundary"
       ],
       "input": {
-        "query": "按这个已批准且边界完整的Ticket实现一个函数并验证。",
+        "query": "按这个已有明确调用示例的有界工作项实现一个函数并验证。",
         "expectedLoad": false
       },
       "audit": {
         "rationale": "没有设计缺口的有界实施无需先加载Design。",
-        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
-        "minimalCounterexample": "发现材料行为或风险需要变更时回到设计。"
+        "allowedVariance": "只观测当前入口是否加载；允许其他适用能力，不推断最终任务是否完成。",
+        "minimalCounterexample": "用户明确选择 $dev-design 时才加载。"
       }
     },
     {
@@ -86,8 +84,8 @@
       },
       "audit": {
         "rationale": "直接Grill仍然独立。",
-        "allowedVariance": "允许等价命名、布局和局部方法；按实际内容、写入范围、用户回答及结果核对，不以文件数量、目录名或自述完成代替。",
-        "minimalCounterexample": "要求形成并维护可交接设计才是Design入口。"
+        "allowedVariance": "只观测当前入口是否加载；允许其他适用能力，不推断最终任务是否完成。",
+        "minimalCounterexample": "用户显式调用 $dev-design 才加载手动设计入口。"
       }
     },
     {
@@ -102,7 +100,7 @@
       },
       "audit": {
         "rationale": "自然设计请求不自动启动重型设计宏。",
-        "allowedVariance": "允许直接对齐或普通写作，不加载 dev-design。",
+        "allowedVariance": "只观测当前入口是否加载；允许其他适用能力，不推断最终任务是否完成。",
         "minimalCounterexample": "显式选择 $dev-design 时加载。"
       }
     }

@@ -22,7 +22,7 @@
         "interactive-ui-decision",
         "platform-codex"
       ],
-      "prompt": "审批页面的单栏和双栏布局只靠描述判断不了。请只在 prototypes/approval-layout/ 下制作轻量原型：创建 brief.md、schema v2 的 prototype.json，以及 artifact/single-column.html 和 artifact/two-column.html；双栏候选的右侧展示审批历史，两个候选都明确是临时原型。不要修改 src/approval-page.ts，也不要继续生产实现。本用例使用聊天反馈，不启动网页 Review。展示后让我选择，并在确认后把当前结论写入 verdict.md。",
+      "prompt": "审批页面的单栏和双栏布局只靠描述判断不了。请只在 prototypes/approval-layout/ 下制作轻量原型：创建 brief.md、供后续网页 Review 使用的 schema v2 prototype.json，以及 artifact/single-column.html 和 artifact/two-column.html；双栏候选的右侧展示审批历史，两个候选都明确是临时原型。不要修改 src/approval-page.ts，也不要继续生产实现。本用例使用聊天反馈，不启动网页 Review。展示后让我选择，并在确认后把当前结论写入 verdict.md。",
       "assertions": [
         "使用 brief.md、prototype.json、artifact/ 和 verdict.md 的 canonical 布局",
         "prototype.json 符合 schema v2，问题、目标、优先级、约束和停止条件与本决定一致",
@@ -131,7 +131,7 @@
         "technical-evidence-decision",
         "platform-codex"
       ],
-      "prompt": "隔离的 Web Crypto spike 证据已保存在 prototypes/encryption-spike/。读取 brief.md、schema v2 的 prototype.json、artifact/spike.mjs 和 artifact/result.txt，根据已保存证据让我决定是否采用；不要修改既有 Prototype 工件或 src/crypto.ts。收到我的选择后，只把当前结论、支持证据和未覆盖风险写入 verdict.md。",
+      "prompt": "隔离的 Web Crypto spike 证据已保存在 prototypes/encryption-spike/。读取 brief.md、schema v2 的 prototype.json、artifact/spike.mjs 和 artifact/result.txt，根据已保存证据让我决定是否接受以 Web Crypto 为候选来支持浏览器离线加密草稿的产品方向；不要修改既有 Prototype 工件或 src/crypto.ts。收到我的选择后，只把当前结论、支持证据和未覆盖风险写入 verdict.md。",
       "assertions": [
         "选择前说明已保存证据显示代表性受支持浏览器中的 crypto.subtle 结果为 true，并说明旧版浏览器、性能和密钥生命周期不在验证范围",
         "用户选择后写 verdict.md，其中包含当前结论、等价的已保存证据和仍未解决风险",
@@ -142,15 +142,15 @@
           {
             "expectedQuestionCount": 1,
             "answersByIndex": [
-              "接受 Web Crypto 路线。请记录支持证据和未覆盖风险，然后停止。"
+              "接受支持浏览器离线加密草稿的方向，以 Web Crypto 为候选；旧版浏览器等未覆盖风险仍待验证。请记录支持证据和未覆盖风险，然后停止。"
             ],
-            "unexpectedQuestionAnswer": "只基于 spike 证据让我选择路线。"
+            "unexpectedQuestionAnswer": "只基于 spike 已保存证据让我决定是否接受当前产品方向。"
           }
         ],
         "workspaceFiles": {
           "src/crypto.ts": "export const cryptoProvider = 'existing-provider';\n",
           "prototypes/encryption-spike/brief.md": "# Web Crypto 兼容性 Prototype Brief\n\n这是隔离的临时 spike，不是生产实现。\n",
-          "prototypes/encryption-spike/prototype.json": "{\"schemaVersion\":2,\"id\":\"encryption-spike\",\"revision\":1,\"question\":\"Web Crypto 是否满足当前浏览器兼容目标？\",\"decisionContext\":{\"goal\":\"判断是否采用 Web Crypto 路线\",\"priorities\":[\"兼容目标可验证\",\"证据可重复\"],\"constraints\":[\"只做隔离 spike\",\"不修改生产加密模块\"]},\"selectionMode\":\"single\",\"options\":[{\"id\":\"web-crypto-result\",\"label\":\"Web Crypto spike 结果\",\"kind\":\"metrics\",\"artifact\":\"artifact/result.txt\"}],\"stopCondition\":\"用户根据运行证据接受、拒绝或要求补充验证\"}\n",
+          "prototypes/encryption-spike/prototype.json": "{\"schemaVersion\":2,\"id\":\"encryption-spike\",\"revision\":1,\"question\":\"当前证据是否足以接受浏览器离线加密草稿的产品方向？\",\"decisionContext\":{\"goal\":\"判断是否支持浏览器离线加密草稿体验\",\"priorities\":[\"兼容目标可验证\",\"证据可重复\"],\"constraints\":[\"只做隔离 spike\",\"不修改生产加密模块\"]},\"selectionMode\":\"single\",\"options\":[{\"id\":\"web-crypto-result\",\"label\":\"Web Crypto spike 结果\",\"kind\":\"metrics\",\"artifact\":\"artifact/result.txt\"}],\"stopCondition\":\"用户根据运行证据接受、拒绝或要求补充验证\"}\n",
           "prototypes/encryption-spike/artifact/spike.mjs": "const supported = Boolean(globalThis.crypto?.subtle);\nconsole.log(`Web Crypto supported: ${supported}`);\n",
           "prototypes/encryption-spike/artifact/result.txt": "Web Crypto supported: true\nRuntime: representative supported browser\n未覆盖：旧版浏览器、性能和密钥生命周期。\n"
         }

@@ -87,7 +87,9 @@ for (const platform of platforms) {
           assert.match(metadata, /allow_implicit_invocation:\s*true/u);
         }
         const body = files['SKILL.md'].text;
-        assert.doesNotMatch(body, /<!--|@@[A-Z0-9_]+@@|Antigravity|swarm|\bbrief\b|--instructions-file|assets\/[^\s]*-instructions\.md|codex-(?:enhance|advisor|explore)|dev-workflow|decision-kit|dev-review-(?:code|spec)|dev-implement|decision-(?:shape|grill|prototype)/u);
+        assert.doesNotMatch(body, /<!--|@@[A-Z0-9_]+@@|Antigravity|swarm|\bbrief\b|--instructions-file|assets\/[^\s]*-instructions\.md|codex-(?:enhance|advisor|explore)/u);
+        // Static contract exception: a reference to undeclared workflow or decision capabilities would misroute the consumer; behavior test is not suitable because the delivered prompt itself must be free of these references.
+        assert.doesNotMatch(body, /dev-(?:workflow|design|correct|verify(?:-author)?|investigate|debug|architect|arena|tdd|review(?:-code|-spec)?|benchmark|implement)|decision-(?:kit|shape|grill|prototype)/u);
         assert.match(body, /^name: consult-advisor$/mu);
         assert.match(body, /^description: .+通过 spawn-subagent 委派[^\n]+$/mu);
         assert.match(body, /^> 你已经是本次只读咨询的执行者/mu);

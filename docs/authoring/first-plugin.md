@@ -48,12 +48,12 @@ workspace=/path/to/my-workspace
 plugin=my-first-plugin
 
 # 初始化插件骨架与首个 Skill
-# 注意：--skill-short-description 必须为 25-64 个字符
+# 注意：--skill-short-description 必须非空且不超过 64 个字符
 aw dev plugin create "$plugin" \
   --description "我的首个可组合 Agent 工作流插件" \
   --skill-name "$plugin" \
   --skill-description "提供工作区文件完整性检查与依赖配置核验能力" \
-  --skill-short-description "用于检查工作区文件完整性与依赖配置项的辅助开发技能示例" \
+  --skill-short-description "检查工作区文件与依赖配置" \
   --workspace-root "$workspace"
 ```
 
@@ -119,13 +119,13 @@ aw dev plugin create "$plugin" \
 
 ### 添加更多静态 Skill
 
-使用 `aw dev skill create --plugin` 向现有插件追加新的静态 Skill（同样须提供 25-64 字符的简述）：
+使用 `aw dev skill create --plugin` 向现有插件追加新的静态 Skill（同样须提供非空且不超过 64 字符的简述）：
 
 ```bash
 aw dev skill create --plugin "$plugin" \
   --skill-name second-skill \
   --skill-description "执行辅助代码格式化与规范检查任务" \
-  --skill-short-description "提供自动化代码排版格式化与项目静态规范核验辅助功能" \
+  --skill-short-description "代码格式化与规范检查" \
   --workspace-root "$workspace"
 ```
 

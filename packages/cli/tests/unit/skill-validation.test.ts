@@ -70,7 +70,7 @@ describe('standalone Skill validation', () => {
     const skillRoot = await createSkill('demo-skill', {
       openai: [
         'interface:',
-        '  short_description: Validate one standalone Agent Skill directory.',
+        '  short_description: 校验技能',
         '  icon_small: assets/icon.svg',
         '  default_prompt: Use $demo-skill to validate this Skill.',
         'policy:',
@@ -162,5 +162,59 @@ describe('standalone Skill validation', () => {
       codexMetadata: 'optional',
     });
     expect(result.errors).not.toContainEqual(expect.objectContaining({ code: 'string-too-long' }));
+  });
+
+  // Test Value Gate: Codex interface.short_description allows 1-64 code points and rejects blank or overlong values.
+  it('enforces 1-64 code points for Codex interface.short_description', async () => {
+    const withShortDescription = (value: string) => [
+      'interface:',
+      `  short_description: ${JSON.stringify(value)}`,
+      'policy:',
+      '  allow_implicit_invocation: true',
+      '',
+    ].join('\n');
+
+    const validOneChar = await createSkill('short-one', {
+      openai: withShortDescription('界'),
+    });
+    await expect(validateSkillDirectory({
+      skillDirectory: validOneChar,
+      frontmatterProfile: 'portable-agent-skills',
+      codexMetadata: 'required',
+    })).resolves.toMatchObject({ ok: true, errors: [] });
+
+    const blank = await createSkill('short-blank', {
+      openai: withShortDescription('   '),
+    });
+    await expect(validateSkillDirectory({
+      skillDirectory: blank,
+      frontmatterProfile: 'portable-agent-skills',
+      codexMetadata: 'required',
+    })).resolves.toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'invalid-string',
+          path: 'agents/openai.yaml.interface.short_description',
+        }),
+      ]),
+    });
+
+    const tooLong = await createSkill('short-too-long', {
+      openai: withShortDescription('界'.repeat(65)),
+    });
+    await expect(validateSkillDirectory({
+      skillDirectory: tooLong,
+      frontmatterProfile: 'portable-agent-skills',
+      codexMetadata: 'required',
+    })).resolves.toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'string-too-long',
+          path: 'agents/openai.yaml.interface.short_description',
+        }),
+      ]),
+    });
   });
 });
