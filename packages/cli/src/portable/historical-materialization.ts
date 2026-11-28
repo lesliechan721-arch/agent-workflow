@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 
-import { computeSkillDigest } from '@lesliechan721/agent-skill-eval';
+import { computeSkillDigestFromTree } from '@lesliechan721/agent-skill-eval';
+import { validateCapturedPortableSkillDirectory, type PortableSkillTree } from '@lesliechan721/aw-plugin-core/manifest';
 import fs from 'fs-extra';
 
 import { readAwSourceBinding, type AwSourceBindingV2 } from '../review/source-binding.js';
@@ -14,6 +15,9 @@ export interface HistoricalPortableMaterialization {
   rootDir: string;
   marker: PortableMaterializeReceipt;
   binding: AwSourceBindingV2;
+  /** Content validation for the immediately following skill-validation stage,
+   * using only the bytes from this historical observation. */
+  validateSkillDirectory(name: string): PortableSkillTree;
 }
 
 export function portableJsonDigest(value: unknown): string {
@@ -41,9 +45,14 @@ export async function assertPortablePath(root: string, target: string): Promise<
   return true;
 }
 
-/** The materializer's digest includes every regular file, including hidden files. */
-export async function portableSkillTreeDigest(root: string): Promise<string> {
-  const files: Array<[string, Buffer]> = [];
+interface CapturedPortableSkill {
+  files: Array<{ relativePath: string; mode: number; bytes: Buffer }>;
+  directories: string[];
+}
+
+async function capturePortableSkill(root: string): Promise<CapturedPortableSkill> {
+  const files: CapturedPortableSkill['files'] = [];
+  const directories: string[] = [];
   const visit = async (directory: string, prefix: string): Promise<void> => {
     const info = await fs.lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('portableOutputConflict');
@@ -51,17 +60,31 @@ export async function portableSkillTreeDigest(root: string): Promise<string> {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolute = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) throw new Error('portableOutputConflict');
-      if (entry.isDirectory()) await visit(absolute, relative);
-      else if (entry.isFile()) files.push([relative, await fs.readFile(absolute)]);
-      else throw new Error('portableOutputConflict');
+      if (entry.isDirectory()) {
+        directories.push(relative);
+        await visit(absolute, relative);
+      } else if (entry.isFile()) {
+        const fileInfo = await fs.lstat(absolute);
+        if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) throw new Error('portableOutputConflict');
+        files.push({ relativePath: relative, mode: fileInfo.mode, bytes: await fs.readFile(absolute) });
+      } else throw new Error('portableOutputConflict');
     }
   };
   await visit(root, '');
+  return { files, directories };
+}
+
+/** The materializer's digest includes every regular file, including hidden files. */
+function digestPortableSkillFiles(files: CapturedPortableSkill['files']): string {
   const hash = crypto.createHash('sha256');
-  for (const [name, bytes] of files.sort(([left], [right]) => left.localeCompare(right))) {
-    hash.update(name).update('\0').update(bytes).update('\0');
+  for (const { relativePath, bytes } of [...files].sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
+    hash.update(relativePath).update('\0').update(bytes).update('\0');
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+export async function portableSkillTreeDigest(root: string): Promise<string> {
+  return digestPortableSkillFiles((await capturePortableSkill(root)).files);
 }
 
 /** Validate the old generation itself without applying current Workspace inputs. */
@@ -104,6 +127,7 @@ export async function readHistoricalPortableMaterialization(options: {
     throw new Error('portableOutputConflict');
   }
   const names = new Set<string>();
+  const capturedSkills = new Map<string, CapturedPortableSkill>();
   for (const candidate of marker.selectedSkills) {
     if (typeof candidate.name !== 'string' || names.has(candidate.name)) throw new Error('portableOutputConflict');
     validatePortableSkillName(candidate.name);
@@ -117,8 +141,12 @@ export async function readHistoricalPortableMaterialization(options: {
     }
     const skillPath = path.join(rootDir, artifact.path);
     await assertPortablePath(rootDir, skillPath);
-    if (await portableSkillTreeDigest(skillPath) !== candidate.filesDigest
-      || await computeSkillDigest(skillPath) !== artifact.digest) throw new Error('portableOutputConflict');
+    // The two digests have different inclusion, ordering and mode rules.
+    // Hash the same observation with both algorithms, not the same file set.
+    const captured = await capturePortableSkill(skillPath);
+    if (digestPortableSkillFiles(captured.files) !== candidate.filesDigest
+      || computeSkillDigestFromTree(captured.files) !== artifact.digest) throw new Error('portableOutputConflict');
+    capturedSkills.set(candidate.name, captured);
   }
   const children = await fs.readdir(path.join(rootDir, 'skills'));
   if (children.length !== names.size || children.some((name) => !names.has(name))
@@ -131,5 +159,9 @@ export async function readHistoricalPortableMaterialization(options: {
   if (rootChildren.some((name) => !['skills', '.aw-materialization.json', 'aw-source-binding.json'].includes(name))) {
     throw new Error('portableOutputConflict');
   }
-  return { rootDir, marker, binding };
+  return { rootDir, marker, binding, validateSkillDirectory(name) {
+    const captured = capturedSkills.get(name);
+    if (!captured) throw new Error('portableOutputConflict');
+    return validateCapturedPortableSkillDirectory(path.join(rootDir, 'skills', name), captured);
+  } };
 }

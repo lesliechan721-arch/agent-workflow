@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const enableName = 'AW_NATIVE_QUALIFICATION_MANAGED_TRACE';
 const previousEnable = process.env[enableName];
@@ -103,6 +106,103 @@ test('supervises a Linux public AW renderer across its private environment', {
   assert.deepEqual(records.filter(row => row.role === 'plugin-script').map(row => row.phase), ['start', 'spawn', 'finish']);
 });
 
+// Test Value Gate: a separately installed package owns its own runner singleton.
+// Use a copy of the real runner and its relative imports, rather than substituting
+// a runner mock or requiring the historical npm registry during harness tests.
+test('forwards the outer marker to the bound historical AW runner only', {
+  skip: !['linux', 'darwin'].includes(process.platform), timeout: 30_000,
+}, async (t) => {
+  const { prepareEnvironment } = await import('./native-platform-runtime.mjs');
+  const { executePublicAw, publicAwNodeLauncher } = await import('./native-platform-public-process.mjs');
+  const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-frozen-marker-')));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const root = path.join(cwd, 'frozen aw');
+  const candidateRoot = new URL('../../packages/cli/', import.meta.url);
+  const candidateRuntime = new URL('dist/src/utils/plugin-scripts.js', candidateRoot);
+  const manifest = { name: '@lesliechan721/aw', version: '0.1.0-beta.85', type: 'module', bin: { aw: 'dist/index.js' } };
+  await fs.mkdir(path.join(root, 'dist'), { recursive: true });
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(manifest));
+  await fs.cp(new URL('dist', candidateRoot), path.join(root, 'dist'), { recursive: true });
+  await fs.symlink(fileURLToPath(new URL('node_modules', candidateRoot)), path.join(root, 'node_modules'), 'dir');
+  const entry = path.join(root, 'dist/index.js');
+  const script = path.join(cwd, 'renderer.mjs');
+  await fs.writeFile(script, `
+    import assert from 'node:assert/strict';
+    import { createHash } from 'node:crypto';
+    const outer = process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER;
+    const inner = process.env.AW_NATIVE_CLI_PROCESS_MARKER;
+    assert(inner);
+    if (process.argv[2] === 'unbound') assert.equal(outer, undefined);
+    else {
+      assert(outer && outer !== inner);
+      assert.equal(createHash('sha256').update(outer).digest('hex'), process.argv[2]);
+    }
+    assert.equal(process.env.PRIVATE_PARENT_VALUE, undefined);
+    assert.equal(process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT, undefined);
+  `);
+  await fs.writeFile(entry, `
+    import assert from 'node:assert/strict';
+    import { createHash } from 'node:crypto';
+    import { defaultPluginProcessRunner as candidateRunner } from ${JSON.stringify(candidateRuntime.href)};
+    import { buildPluginScriptSpawnEnv, defaultPluginProcessRunner } from './src/utils/plugin-scripts.js';
+    assert.notEqual(candidateRunner, defaultPluginProcessRunner);
+    const cwd = process.cwd();
+    const env = buildPluginScriptSpawnEnv({ commandEnv: process.env, contextPath: '', tempDir: cwd,
+      plugin: {name:'fixture', version:'1.0.0'}, event:'install', scope:'user', bundleRoot:cwd });
+    const digest = createHash('sha256').update(process.env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER).digest('hex');
+    const invocation = { command: process.execPath, args: [process.argv[2], digest], cwd, env };
+    if (process.argv[3] === 'verify-candidate') {
+      const unbound = await candidateRunner.run({ ...invocation, args: [process.argv[2], 'unbound'] }, {timeoutMs:5000});
+      assert.equal(unbound.exitCode, 0, unbound.stderr);
+    }
+    const result = await defaultPluginProcessRunner.run(invocation, {timeoutMs:5000});
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(env.AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER, undefined);
+    assert.throws(() => defaultPluginProcessRunner.run({ ...invocation,
+      env: { ...env, AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER: 'conflicting-lease' } }, { timeoutMs: 5000 }),
+      /conflicting public process marker/);
+    console.log('historical renderer completed');
+  `);
+  const preload = new URL('./native-platform-public-plugin-marker.mjs', import.meta.url);
+  preload.searchParams.set('frozenRoot', root);
+  const env = { ...await prepareEnvironment(cwd), [PUBLIC_MARKER]: 'fixture-outer-marker',
+    PRIVATE_PARENT_VALUE: 'private-parent', AW_QUALIFICATION_FROZEN_CLI_ROOT: root };
+  const run = promisify(execFile);
+  const launch = (entry) => run(process.execPath, ['--import', preload.href, entry, script, 'verify-candidate'],
+    { cwd, env, timeout: 10_000 });
+  assert.equal((await launch(entry)).stdout.trim(), 'historical renderer completed');
+
+  // On the actual target platform, exercise the production launcher together
+  // with the outer observation and its real cleanup gate.
+  if (process.platform === 'linux') {
+    const result = await executePublicAw(publicAwNodeLauncher(entry, false, root), [script],
+      { cwd, env, timeoutMs: 10_000 });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.terminationReason, 'complete');
+  }
+
+  const otherEntry = path.join(cwd, 'other.mjs');
+  await fs.writeFile(otherEntry, 'console.log("should not launch")');
+  assert.throws(() => publicAwNodeLauncher(otherEntry, false, root), /Historical AW entry does not match/);
+  await assert.rejects(launch(otherEntry), error => error.stdout === '' && /Historical AW entry does not match/.test(error.stderr));
+  await assert.rejects(run(process.execPath, ['--import', preload.href, '-e', 'console.log("should not launch")'],
+    { cwd, env, timeout: 10_000 }), error => error.stdout === '' && /Historical AW preload requires its package entry/.test(error.stderr));
+  for (const [invalid, expected] of [
+    [{ ...manifest, name: '@example/aw' }, /@lesliechan721\/aw/],
+    [{ ...manifest, version: '0.1.0-beta.86' }, /0\.1\.0-beta\.85/],
+    [{ ...manifest, bin: { aw: '../other.mjs' } }, /Unexpected historical AW entry/],
+  ]) {
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(invalid));
+    await assert.rejects(launch(entry), error => error.stdout === '' && expected.test(error.stderr));
+  }
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(manifest));
+  const runner = path.join(root, 'dist/src/utils/plugin-scripts.js');
+  const escapedRunner = path.join(cwd, 'outside-runner.js');
+  await fs.rename(runner, escapedRunner);
+  await fs.symlink(escapedRunner, runner);
+  await assert.rejects(launch(entry), error => error.stdout === '' && /Historical AW package file is not contained/.test(error.stderr));
+});
+
 test('retains plugin errors and projects bounded snapshot timing without secrets', async () => {
   const diagnostics = Array.from({ length: 5 }, (_, index) => ({
     rootPid: 456, reason: 'marker-lookup-failed', stage: 'observation', markerLookupAttempts: 2,
@@ -130,6 +230,22 @@ test('retains plugin errors and projects bounded snapshot timing without secrets
   const wrapped = createManagedPluginTraceRunner(() => Promise.reject(error),
     { env: { [PUBLIC_MARKER]: 'private-marker' }, emit() { throw new Error('trace failure'); } });
   await assert.rejects(wrapped({ env: {} }, { timeoutMs: 1234 }), received => received === error);
+});
+
+// The candidate performs many healthy reads before installing its later roots.
+test('keeps late Copilot inventory failures inside the bounded batch trace', async t => {
+  const { entry } = await fixture(t);
+  const records = [];
+  let exitCode = 0;
+  const run = createManagedTraceRunner(async () => ({ exitCode }), { entries: [entry], client: 'copilot',
+    platform: 'win32', mode: 'copilot-component-install', emit: row => records.push(row) });
+  const query = { command: entry, args: ['plugin', 'list', '--json'] };
+  for (let i = 0; i < 40; i++) await run(query);
+  exitCode = 124;
+  for (let i = 0; i < 40; i++) await run(query);
+  assert(records.some(row => row.exitCode === 0));
+  assert(records.some(row => row.exitCode === 124));
+  assert(records.length <= 24);
 });
 
 async function fixture(t) {
@@ -259,6 +375,19 @@ test('projects Windows Grok probes and Darwin Claude removal cleanup from the or
   const timeout = nativeError(undefined, 'timeout');
   const success = { exitCode: 0, stdout: sentinel, stderr: sentinel };
   for (const { client, platform, mode, calls } of [
+    { client: 'copilot', platform: 'win32', mode: 'copilot-component-remove', calls: [
+      [process.execPath, [entry, 'plugin', 'list', '--json'], timeout, 'copilot-plugin-list'],
+      [entry, ['plugin', 'marketplace', 'list', '--json'], success, 'copilot-marketplace-list'],
+      [entry, ['plugin', 'uninstall', 'single-skill@aw-matrix'], success, 'copilot-plugin-uninstall'],
+      [entry, ['plugin', 'uninstall', 'other@aw-matrix'], success],
+      [other, [entry, 'plugin', 'list', '--json'], success],
+    ] },
+    { client: 'copilot', platform: 'win32', mode: 'copilot-component-install', calls: [
+      [process.execPath, [entry, 'plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official'], timeout, 'copilot-plugin-install'],
+      [entry, ['plugin', 'install', 'other@aw-qualification-official'], success],
+      [entry, ['plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official', '--extra'], success],
+      [entry, ['plugin', 'uninstall', 'single-skill@aw-matrix'], success],
+    ] },
     { client: 'grok', platform: 'win32', mode: 'grok-component-discovery', calls: [
       [process.execPath, [entry, '--version'], timeout, 'grok-version'],
       [process.execPath, [entry, 'plugin', '--help'], success, 'grok-plugin-help'],
@@ -309,6 +438,68 @@ test('projects Windows Grok probes and Darwin Claude removal cleanup from the or
         assert.equal(record.cleanupUnconfirmed, Boolean(value.cleanupError));
         assert.equal(record.cleanupKind, cleanupKind);
       }
+    }
+    assert(!JSON.stringify(records).includes(sentinel));
+  }
+});
+
+// Test Value Gate: Intel Copilot timeouts need distinct cleanup evidence, but
+// the existing full trace must not expose the cleanup message or native CWD.
+test('projects bounded finish metadata only for exact Intel Darwin Copilot inventories', async (t) => {
+  const { entry, other, root } = await fixture(t);
+  const pluginList = ['plugin', 'list', '--json'];
+  const marketplaceList = ['plugin', 'marketplace', 'list', '--json'];
+  const sentinel = 'private-inventory-value';
+  const differentCwd = path.join(root, sentinel);
+  const timeout = cleanupError => Object.assign(new Error(sentinel), {
+    name: 'NativeCliError', reason: 'timeout', exitCode: 124, cleanupError, stderr: sentinel,
+    operationDiagnostic: { code: 'nativeCliTimedOut' },
+  });
+  const marker = timeout(new Error(`Process tree cleanup unconfirmed: POSIX process marker lookup failed (stage=${sentinel}).`));
+  const identity = timeout(new Error('Process tree cleanup unconfirmed: POSIX process identity lookup failed.'));
+  const unrecognized = timeout(new Error(`unrecognized cleanup failure: ${sentinel}`));
+  const unreadable = timeout({ get message() { throw new Error(sentinel); } });
+  const cleaned = timeout();
+  const success = { exitCode: 0, stdout: sentinel };
+  for (const [command, args, value, cwd, cwdKind, cleanupKind, host] of [
+    [entry, pluginList, marker, process.cwd(), 'same-as-aw-cwd', 'marker-lookup'],
+    [process.execPath, [entry, ...marketplaceList], identity, differentCwd, 'different-path', 'identity-lookup'],
+    [entry, pluginList, unrecognized, undefined, 'unknown', 'unknown'],
+    [entry, pluginList, unreadable, sentinel, 'unknown', 'unknown'],
+    [entry, marketplaceList, cleaned, process.cwd(), 'same-as-aw-cwd'],
+    [entry, marketplaceList, success, process.cwd(), 'same-as-aw-cwd'],
+    [entry, [...pluginList, '--extra'], marker, differentCwd],
+    [entry, ['plugin', 'list'], marker, differentCwd],
+    [entry, ['--version'], marker, differentCwd],
+    [other, [entry, ...pluginList], marker, differentCwd],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { arch: 'arm64' }],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { platform: 'win32' }],
+    [entry, pluginList, marker, differentCwd, undefined, undefined, { client: 'claude' }],
+  ]) {
+    const records = [];
+    const invocation = { command, args, cwd, env: { [PUBLIC_MARKER]: sentinel } };
+    const wrapped = createManagedTraceRunner(async received => {
+      assertTracedInvocation(received, invocation);
+      received.onSpawn({ pid: 789 });
+      if (value instanceof Error) throw value;
+      return value;
+    }, { entries: [entry], client: 'copilot', platform: 'darwin', arch: 'x64', env: {},
+      ...host, emit: record => records.push(record) });
+    if (value instanceof Error) await assert.rejects(wrapped(invocation), error => error === value);
+    else assert.equal(await wrapped(invocation), value);
+    assert.deepEqual(records.map(record => record.phase), ['start', 'spawn', 'finish']);
+    const [start, spawn, finish] = records;
+    assert.equal(finish.operationId, start.operationId);
+    assert.equal(finish.operationId, spawn.operationId);
+    assert.equal(finish.childPid, 789);
+    assert.equal(finish.exitCode, value.exitCode);
+    assert.equal(finish.cleanupError, Boolean(value.cleanupError));
+    for (const [record, expectedCwd, expectedCleanup] of [[start], [spawn], [finish, cwdKind, cleanupKind]]) {
+      assert.equal(Object.hasOwn(record, 'cwdKind'), expectedCwd !== undefined);
+      assert.equal(Object.hasOwn(record, 'cleanupKind'), expectedCleanup !== undefined);
+      assert.equal(record.cwdKind, expectedCwd);
+      assert.equal(record.cleanupKind, expectedCleanup);
+      assert(!('cwd' in record));
     }
     assert(!JSON.stringify(records).includes(sentinel));
   }
@@ -577,6 +768,8 @@ test('does not install by default and requires every hosted guard', async (t) =>
   const grok = { ...valid, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'grok' };
   assert.equal(managedTraceConfiguration(grok, 'win32'), undefined);
   for (const [client, mode, host, otherHost] of [
+    ['copilot', 'copilot-component-remove', 'win32', 'linux'],
+    ['copilot', 'copilot-component-install', 'win32', 'darwin'],
     ['grok', 'grok-component-discovery', 'win32', 'darwin'],
     ['claude', 'claude-component-remove', 'darwin', 'win32'],
   ]) {

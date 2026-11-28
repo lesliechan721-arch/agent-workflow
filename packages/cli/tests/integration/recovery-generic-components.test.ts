@@ -4,18 +4,102 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
-import { materializePortableSkillsToDirectory } from '../../src/portable/commands.js';
+import { materializePortableSkillsToDirectory, setPortableCommandTestHooksForTests } from '../../src/portable/commands.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('generic complete component expectations', () => {
   const plans: Awaited<ReturnType<typeof prepareRecovery>>[] = [];
   afterEach(async () => { await Promise.all(plans.splice(0).map((plan) => plan.context.dispose())); });
+  // Shared dependency rendering must not launch one subprocess per requested root.
+  it('prepares one render per dependency batch across generic install roots', async () => {
+    const { layout, env } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    const source = path.join(cwd, 'shared-renderer-catalog');
+    const calls = path.join(cwd, 'shared-renderer-calls.jsonl');
+    await fs.outputFile(path.join(source, 'plugins/provider/render.mjs'), `import fs from 'node:fs';
+const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+const skill = c.allowedOutputKinds.includes('skill');
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({skill, hasToken: Object.hasOwn(c.config.values, 'token')}) + '\\n');
+console.log(JSON.stringify({version:3, components: skill ? [{
+  id:'provider', name:'provider', kind:'skill', content:{files:{
+    'SKILL.md':{text:'---\\nname: provider\\ndescription: Provider fixture.\\n---\\nProvider body.\\n'},
+    'README.md':{text:'Provider fixture.'}
+  }}
+}] : [], omitted:[], unmet:[]}));
+`);
+    for (const name of ['left', 'right']) {
+      await fs.outputFile(path.join(source, 'plugins', name, 'skills', name, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: Fixture ${name}.\n---\nConsumer body.\n`);
+      await fs.outputFile(path.join(source, 'plugins', name, 'skills', name, 'README.md'), `Fixture ${name}.`);
+    }
+    await createDependencyCatalogSnapshotFixture(source, ['provider', 'left', 'right'].map((name) => ({
+      name, ...(name === 'provider' ? {} : { dependencies: ['provider'] }),
+      configureManifest: (manifest) => {
+        manifest.platforms = ['generic'];
+        delete manifest.extensions;
+        if (name === 'provider') {
+          manifest.artifacts = { configKeys: ['token'] };
+          manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+          manifest.config = { schemaVersion: 5, fields: { token: { type: 'string', sensitive: true } } };
+        } else manifest.skills = './skills';
+      },
+    })));
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const active = (await readCatalogGenerationState(env)).sources.local!.active!;
+    await writePluginConfigStore({ sourceId: 'local', sourceIdentity: active.sourceIdentity,
+      pluginName: 'provider', scope: 'user', cwd, env, values: { token: 'fixture-private-token' } });
+    await setTargets({ cwd, env, scope: 'user' }, ['generic']);
+    const plan = await prepareRecovery('install', ['local/left', 'local/right'], {
+      context: 'user', cwd, env, cliVersion: '1.0.0', targets: ['generic'], yes: true,
+    });
+    plans.push(plan);
+    expect(await fs.pathExists(calls), JSON.stringify(plan.receipt)).toBe(true);
+    const records = (await fs.readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(records).toEqual([{ skill: true, hasToken: false }, { skill: false, hasToken: true }]);
+    const receipt = await executeRecovery(plan, { yes: true });
+    expect(receipt.ok, JSON.stringify(receipt)).toBe(true);
+    for (const name of ['left', 'right', 'provider']) {
+      await expect(fs.readFile(path.join(env.HOME!, '.agents/skills', name, 'SKILL.md'), 'utf8')).resolves.toContain(`name: ${name}`);
+    }
+    expect((await fs.readFile(calls, 'utf8')).trim().split('\n')).toHaveLength(2);
+
+    // A reused render result does not authorize a second generation commit.
+    // Give both export requests one preparation read window, then mutate the
+    // dependency on disk after the cached render has produced the staged bytes.
+    const readScope = new CatalogPreparationReadScope({ env });
+    const catalogOperationContext = await readScope.resolve({ sourceIds: ['local'] }, true);
+    const exportOptions = { platform: 'generic' as const, scope: 'user' as const, cwd, env,
+      cliVersion: '1.0.0', allowUnmet: true, preparedResults: new Map(), catalogOperationContext };
+    const firstOutput = path.join(cwd, 'left-export');
+    const secondOutput = path.join(cwd, 'right-export');
+    await materializePortableSkillsToDirectory({ ...exportOptions, selector: 'local/left', out: firstOutput }, readScope);
+    const location = resolveCatalogStoreLocation({ ...active, env });
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => fs.appendFile(
+        path.join(location.snapshotRoot, 'plugins/provider/render.mjs'), '\n// changed while staged\n'),
+    });
+    try {
+      await expect(materializePortableSkillsToDirectory({ ...exportOptions, selector: 'local/right', out: secondOutput }, readScope))
+        .rejects.toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+    } finally { setPortableCommandTestHooksForTests(undefined); }
+    expect((await fs.readFile(calls, 'utf8')).trim().split('\n')).toHaveLength(4);
+    await expect(fs.pathExists(secondOutput)).resolves.toBe(false);
+    await expect(fs.readFile(path.join(firstOutput, 'skills/provider/SKILL.md'), 'utf8')).resolves.toContain('Provider body.');
+
+  });
+
   // Test Value Gate: valid capability gaps must preserve old owned bytes, allow independent supported work,
   // and remain visible through Review, execution and read-only status; only intentional empty permits removal.
   it('keeps unmet Skills distinct from supported work and intentional empty output', async () => {

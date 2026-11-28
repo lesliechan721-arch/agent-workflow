@@ -258,7 +258,7 @@ Adapter 端使用 v6 的 start、ready 和 session 结构。升级前通过原�
 
 ### 插件专属测试与 Windows 原生验证边界
 
-Agent Subagent 的 Adapter 原生集成测试分为四个文件，Runtime 原生集成测试按通信、初始化、故障恢复、会话恢复、恢复输出、报告和结果分为七个文件。在 CI 中随 Node 文件分片执行（Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片）。Node 按文件路径排序后轮流分配；Windows 作业超时上限为 90 分钟。Windows 第一片额外运行真实文件占用与跨卷资格，真实 30 分钟用例保持显式启用。
+Agent Subagent 的 Adapter 原生集成测试分为四个文件，Runtime 原生集成测试按通信、初始化、故障恢复、会话恢复、恢复输出、报告和结果分为七个文件。在 CI 中随 Node 文件分片执行（Windows 通过 `pnpm plugin:test:built --all --test-concurrency 1 --test-shard <index/total> --test-shard-profile windows-ci` 分为三片）。runner 先按完整文件路径集合排序分片，再按源端 `.agents-plugin/test-platform-agnostic.json` 划分目标平台无关批次，不减少 manifest 所要求的原生后端覆盖；Windows 作业超时上限为 90 分钟。Windows 第一片额外运行真实文件占用与跨卷资格，真实 30 分钟用例保持显式启用。
 
 #### 1. Runtime 与 Adapter 分层验证
 

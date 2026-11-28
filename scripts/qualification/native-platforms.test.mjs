@@ -7,9 +7,11 @@ import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { aggregateQualificationStatus, parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, removeQualificationRoot,
-  readPublicAwEnvelope, readQualificationCodexSources, observeQualification, readSharedProviderStages } from './native-platforms.mjs';
+  readPublicAwEnvelope, readQualificationCodexSources, observeQualification } from './native-platforms.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
+import { qualificationGroup, qualificationPool } from './native-platform-qualification-group.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
+import { repoRoot, isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate, usesCopilotInventoryObservation } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
@@ -27,6 +29,35 @@ import './native-platform-opencode.test.mjs';
 import './native-platform-opencode-public.test.mjs';
 import './native-platform-codex-behavior.test.mjs';
 
+// A failed unit must release its slot, even when a sibling has not finished.
+test('bounds active qualification units and drains independent work after a failure', async () => {
+  for (const limit of [1, 2]) {
+    const runUnit = qualificationPool(limit);
+    const started = [];
+    const cleaned = [];
+    const first = Promise.withResolvers();
+    const full = Promise.withResolvers();
+    let active = 0;
+    const units = [0, 1, 2].map(id => runUnit(async () => {
+      started.push(id);
+      assert(++active <= limit);
+      if (active === limit) full.resolve();
+      try {
+        if (id === 0) await first.promise;
+        if (id === 1) throw new Error('fixture-failure');
+        return id;
+      } finally { active--; cleaned.push(id); }
+    }));
+    const results = Promise.allSettled(units);
+    await full.promise;
+    first.resolve();
+    const outcomes = await results;
+    assert.deepEqual(started, [0, 1, 2]);
+    assert.deepEqual(cleaned.sort(), [0, 1, 2]);
+    assert.deepEqual(outcomes.map(outcome => outcome.value ?? outcome.reason.message), [0, 'fixture-failure', 2]);
+  }
+});
+
 test('retains only fixed shared-provider stages before an interrupted debug record', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-stage-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -35,9 +66,30 @@ test('retains only fixed shared-provider stages before an interrupted debug reco
   const row = (name) => JSON.stringify({ time, event: { type: 'performance:stage', message: 'private',
     data: { name, phase: 'success', durationMs: 12, detail: 'private' } } });
   await fs.writeFile(file, [row('recovery.child.plan'), row('private'), '{"partial"'].join('\n'));
-  assert.deepEqual(await readSharedProviderStages(file), { state: 'partial', records: [
+  assert.deepEqual(await readPublicAwStages(file), { state: 'partial', records: [
     { time, name: 'recovery.child.plan', phase: 'success', durationMs: 12 },
   ] });
+});
+
+// Test Value Gate: a timed-out batch can emit more than the bounded log window.
+// Preserve its final fixed progress without copying arbitrary debug content.
+test('retains the last fixed AW stages in a bounded batch debug log', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-batch-stage-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'stages');
+  const time = '2026-11-19T00:00:00.000Z';
+  const row = name => JSON.stringify({ time, event: { type: 'performance:stage',
+    message: 'private debug message', data: { name, phase: 'success', durationMs: 12, detail: 'private detail' } } });
+  const noise = JSON.stringify({ unrelated: 'private'.repeat(100) }) + '\n';
+  await fs.writeFile(file, row('recovery.plan') + '\n' + noise.repeat(500)
+    + row('recovery.child.execute') + '\n' + '{"partial"');
+  const evidence = await readPublicAwStages(file, { retainTail: true });
+  assert.equal(evidence.state, 'limited');
+  assert.deepEqual(evidence.records, [
+    { time, name: 'recovery.plan', phase: 'success', durationMs: 12 },
+    { time, name: 'recovery.child.execute', phase: 'success', durationMs: 12 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(evidence), /private|partial"/u);
 });
 
 // Test Value Gate: a runner using different runtime schema bytes cannot produce
@@ -55,7 +107,13 @@ test('binds actual runtime schema bytes to the candidate', async t => {
   await fs.writeFile(schema, '{"type":"object"}\n');
   await writeCandidate(manifest, sourceSha, root);
   assert.equal((await verifyCandidate(manifest, root)).sourceSha, sourceSha);
+  const group = await qualificationGroup({ manifest, candidateRoot: root });
+  const standalone = await qualificationGroup({ candidateRoot: root });
+  await fs.writeFile(path.join(root, 'scripts/qualification/harness.mjs'), 'changed harness');
+  await assert.rejects(standalone.finish(), /candidate-content-mismatch/u);
+  await fs.unlink(path.join(root, 'scripts/qualification/harness.mjs'));
   await fs.writeFile(schema, '{"type":"string"}\n');
+  await assert.rejects(group.finish(), /candidate-content-mismatch/u);
   await assert.rejects(verifyCandidate(manifest, root), /candidate-content-mismatch/u);
 });
 
@@ -226,13 +284,15 @@ test('qualifies the selected group with the same candidate and scope requirement
   const acquire = async (platform, installRoot) => {
     acquired.push({ platform, installRoot });
     if (platform !== 'pi') throw new Error('client-install-failed');
-    return { launcher: { executable: process.execPath, prefix: [client] }, binDirectory: root };
+    const entry = path.join(installRoot, 'client.mjs');
+    await fs.copyFile(client, entry);
+    return { launcher: { executable: process.execPath, prefix: [entry] }, binDirectory: installRoot };
   };
 
   const report = await run(options('codex,pi,claude', '--mixed-native-aw'), acquire);
   assert.equal(report.candidate?.sourceSha, sourceSha);
   assert.deepEqual(report.clients.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
-  assert.deepEqual(acquired.map(({ platform }) => platform), ['codex', 'pi', 'claude']);
+  assert.deepEqual(acquired.map(({ platform }) => platform).sort(), ['claude', 'codex', 'pi']);
   assert.equal(report.status, 'failed');
   assert.equal(report.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), true);
   assert.equal(report.boundary.modelRequests, 'loopback qualification fixtures only');
@@ -250,7 +310,7 @@ test('qualifies the selected group with the same candidate and scope requirement
   assert.deepEqual(second.clients.map(({ platform, status }) => [platform, status]), [
     ['copilot', 'failed'], ['grok', grokUnavailable ? 'excluded' : 'failed'], ['opencode', 'failed'],
   ]);
-  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
+  assert.deepEqual(acquired.slice(3).map(({ platform }) => platform).sort(), grokUnavailable ? ['copilot', 'opencode'] : ['copilot', 'grok', 'opencode']);
   assert.equal(second.status, 'failed');
   assert.equal(second.acceptancePolicy.required.includes('codex-manual-skill-and-native-role-resolution'), false);
   assert.equal(second.boundary.modelRequests, 'loopback qualification fixtures only');
@@ -627,9 +687,43 @@ test('Darwin native execution retains query timing and strict marker failures', 
   }
 });
 
-// Test Value Gate: the approved ordinary-client contract is limited to Copilot
-// Darwin; other native clients retain their existing qualification contract.
-test('selects ordinary observation only for Copilot Darwin native commands', { timeout: 30_000 }, async () => {
+// The Linux exception is fixed to the approved version and two exact
+// inventory commands; neither a general client flag nor extra arguments suffice.
+test('limits Linux Copilot inventory observation to the approved version and commands', () => {
+  const options = { nativeClient: 'copilot', nativeClientVersion: '1.0.95' };
+  for (const arch of ['x64', 'arm64']) {
+    const host = { platform: 'linux', arch };
+    for (const kind of ['plugin', 'skill']) assert(usesCopilotInventoryObservation([kind, 'list', '--json'], options, host));
+    for (const args of [['plugin', 'list'], ['plugin', 'list', '--json', '--extra'], ['plugin', 'install', '--json'], ['skill', 'run', '--json'], ['--version']]) {
+      assert.equal(usesCopilotInventoryObservation(args, options, host), false);
+    }
+    for (const patch of [{ nativeClient: 'pi' }, { nativeClientVersion: undefined }, { nativeClientVersion: '1.0.96' }]) {
+      assert.equal(usesCopilotInventoryObservation(['skill', 'list', '--json'], { ...options, ...patch }, host), false);
+    }
+  }
+  for (const platform of ['darwin', 'win32']) assert.equal(usesCopilotInventoryObservation(['plugin', 'list', '--json'], options, { platform }), false);
+});
+
+test('Linux approved Copilot inventory commands use ordinary observation without changing other commands', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const script = 'console.log(JSON.stringify(process.argv.slice(1)))';
+    const launcher = { executable: process.execPath, prefix: ['-e', script, '--'] };
+    for (const args of [['plugin', 'list', '--json'], ['skill', 'list', '--json'], ['plugin', 'install', '--json']]) {
+      const result = await execute(launcher, args, { ...options, nativeClient: 'copilot', nativeClientVersion: '1.0.95' });
+      assertCommand(result);
+      assert.deepEqual(JSON.parse(result.stdout), args);
+      const inventory = args[1] === 'list';
+      assert.equal(result.containmentMode, inventory ? 'observed' : 'verified-observed');
+      assert.equal(result.gradingEvidenceAccepted, !inventory);
+      if (inventory) assert.equal(result.descendantCleanupGuaranteed, false);
+    }
+  });
+});
+
+// Other native clients retain their existing qualification contract.
+test('retains the existing Copilot Darwin native command observation', { timeout: 30_000 }, async () => {
   await publicProcessFixture(async (options) => {
     for (const nativeClient of ['copilot', 'pi']) {
       const result = await execute(nodeLauncher, ['-e', 'console.log("native observation fixture")'], { ...options, nativeClient });
@@ -983,7 +1077,13 @@ test('public AW rejects a zero-exit root that leaves an independently grouped ch
       const {spawn}=require('node:child_process');
       spawn(process.execPath,['-e','setTimeout(()=>{},5000)'],{detached:true,stdio:'ignore'}).unref();
       setTimeout(()=>process.exit(0),1400);
-    `], options), /all provider descendants must exit before completion/);
+    `], options), error => {
+      assert.match(error.message, /all provider descendants must exit before completion/);
+      assert.equal(error.result?.exitCode, 0);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'process-execution', reason: 'process-cleanup-unconfirmed',
+        processCleanup: 'unconfirmed', leaseCleanup: 'confirmed' });
+      return true;
+    });
   });
 });
 
@@ -994,6 +1094,8 @@ test('public AW rejects timeout, output limit and cancellation despite a zero ex
       assert.match(error.message, /public-aw-process-timeout/);
       assert.equal(error.result.stdout, 'started');
       assert.equal(error.result.terminationReason, 'timeout');
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'process-result', reason: 'process-result-rejected',
+        processCleanup: 'confirmed', leaseCleanup: 'confirmed' });
       return true;
     });
     await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'process.stdout.write("x".repeat(3*1024*1024));setTimeout(()=>{},10000)'],
@@ -1013,7 +1115,13 @@ test('public AW inspection preflight failure prevents command launch', posixOnly
     const marker = path.join(options.cwd, 'launched');
     await assert.rejects(executePublicAw(nodeLauncher, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes')`],
       options, { execFile(_command, _args, _options, callback) { callback(new Error('inspection unavailable'), ''); } }),
-    /process identity lookup failed|process marker lookup failed/);
+    error => {
+      assert.match(error.message, /process identity lookup failed|process marker lookup failed/);
+      assert.equal(error.result, undefined);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'inspection-lease-acquire', reason: 'inspection-lease-acquisition-failed',
+        processCleanup: 'not-needed', leaseCleanup: 'unconfirmed' });
+      return true;
+    });
     await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
   });
 });
@@ -1049,8 +1157,15 @@ test('public AW lease release failure cannot become success', posixOnly, async (
         const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},10000)'],
           { env: { PATH: process.env.PATH, [name]: marker }, stdio: 'ignore' });
         const closed = once(child, 'close');
+        await once(child, 'spawn');
         return { pid: child.pid, async stop() { child.kill('SIGTERM'); await closed; throw new Error('release failed'); } };
       },
-    }), /public-aw-inspection-lease-release-failed/);
+    }), error => {
+      assert.match(error.message, /public-aw-inspection-lease-release-failed/);
+      assert.equal(error.result?.exitCode, 0);
+      assert.deepEqual(error.publicAwProcessFailure, { stage: 'inspection-lease-release', reason: 'inspection-lease-release-failed',
+        processCleanup: 'confirmed', leaseCleanup: 'unconfirmed' });
+      return true;
+    });
   });
 });

@@ -5,11 +5,13 @@ import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, readManagedTrace, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
+  acquireClient, readManagedTrace, renderPackage, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
-import { qualifyPublicAw } from './native-platform-public-aw.mjs';
+import { qualificationGroup } from './native-platform-qualification-group.mjs';
+import { qualifyPublicAw, preparePublicClientEntry } from './native-platform-public-aw.mjs';
 import { mixedNativeInstallIntervals, mixedNativePlatforms, qualifyMixedPublicAw } from './native-platform-public-batch.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
 
 const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|client[,client...]> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--mixed-native-aw]'
   + `\nClients are ${Object.keys(clients).join(', ')}.`;
@@ -21,6 +23,35 @@ function selectPlatforms(selection) {
   if (!platforms.length || platforms.some(platform => !Object.hasOwn(clients, platform))
     || new Set(platforms).size !== platforms.length) throw new Error('invalid-arguments');
   return platforms;
+}
+
+export function clientCacheIdentity(selection) {
+  const manifest = selectPlatforms(selection).sort().map(platform => {
+    const client = clients[platform];
+    return [platform, client.package, client.version];
+  });
+  return sha256(JSON.stringify(manifest));
+}
+
+function distributionExcluded(platform, host) {
+  return platform === 'grok' && (host.platform === 'darwin' && host.arch === 'x64'
+    || host.platform === 'win32' && host.arch === 'arm64');
+}
+
+// Each acquisition is attached only after the fixed package and its entry have been resolved.
+export function clientCacheComplete(selection, report, host = process) {
+  const selected = selectPlatforms(selection);
+  if (!Array.isArray(report?.clients) || report.clients.length !== selected.length
+    || selected.every(platform => distributionExcluded(platform, host))) return false;
+  return selected.every(platform => {
+    const result = report.clients.find(item => item?.platform === platform);
+    if (distributionExcluded(platform, host)) {
+      return result?.status === 'excluded' && result.reason === 'official-client-distribution-unavailable';
+    }
+    const acquisition = result?.acquisition;
+    return acquisition?.package === clients[platform].package && acquisition.version === clients[platform].version
+      && acquisition.source === clients[platform].source && acquisition.download?.status === 'completed';
+  });
 }
 
 export function parseArgs(args) {
@@ -150,35 +181,6 @@ export function readPublicAwEnvelope(stdout, expectedStatus) {
   return value;
 }
 
-// Project only fixed stage names and times from this fixture's own debug log.
-// A timeout can interrupt its final JSON line.
-export async function readSharedProviderStages(file) {
-  const records = [];
-  let handle;
-  try {
-    handle = await fs.open(file, 'r');
-    const limit = 256 * 1024;
-    const input = Buffer.alloc(limit + 1);
-    const { bytesRead } = await handle.read(input);
-    const text = input.toString('utf8', 0, Math.min(bytesRead, limit));
-    for (const line of text.split('\n').slice(0, -1)) {
-      const { time, event } = JSON.parse(line);
-      if (typeof time !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(time)
-        || !['performance:stage', 'rebuild:action'].includes(event?.type)) continue;
-      const { name, phase, durationMs } = event.data ?? {};
-      if (!['recovery.plan', 'recovery.lock.wait', 'recovery.locked.demand', 'recovery.locked.recheck',
-        'recovery.child.plan', 'recovery.child.execute', 'recovery.status', 'status.discovery',
-        'status.adapter.inspect', 'status.inventory', 'status.demand', 'target.build', 'inspect',
-        'native.write', 'artifacts.write', 'postcheck.inspect'].includes(name)
-        || !['start', 'success', 'failure'].includes(phase)) continue;
-      records.push({ time, name, phase, ...(Number.isSafeInteger(durationMs) && durationMs >= 0 ? { durationMs } : {}) });
-      if (records.length === 256) return { state: 'limited', records };
-    }
-    return { state: bytesRead > limit || !text.endsWith('\n') ? 'partial' : 'captured', records };
-  } catch { return { state: 'unavailable', records }; }
-  finally { await handle?.close().catch(() => {}); }
-}
-
 // Observe only this isolated fixture's generated marketplace entry, using
 // the same parser as ownership inspection. Never retain the complete config.
 export async function readQualificationCodexSources(home) {
@@ -205,32 +207,39 @@ export async function readQualificationCodexSources(home) {
 }
 
 export async function runScope(platform, scope, launcher, options = {}) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
+  let root;
+  const runUnit = options.group?.runUnit ?? (action => action());
   const mixedClients = options.mixedClients;
   const report = { scope, product: 'cli', input: mixedClients ? 'public-aw-mixed-native-cli' : options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate',
     status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
   const privateClientPaths = mixedClients ? [...mixedClients.values()].map(({ installRoot }) => installRoot) : options.clientBin;
   const redactScope = value => redact(value, root, privateClientPaths);
   try {
-    const env = await prepareEnvironment(root);
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
+    const env = options.grokBinary ? await runUnit(() => prepareEnvironment(root, options.grokBinary)) : await prepareEnvironment(root);
     const project = path.join(root, 'project');
     const neutral = path.join(root, 'neutral');
     const marketplace = path.join(root, 'source');
     await fs.mkdir(project);
-    assertCommand(await execute({ executable: 'git', prefix: [] },
-      ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
+    await runUnit(async () => assertCommand(await execute({ executable: 'git', prefix: [] },
+      ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env })));
     await fs.mkdir(neutral);
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
+      preparedClient: options.preparedClient, group: options.group, grokBinary: options.grokBinary,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       recordCommand(command) { report.commands.push(redactScope(command)); },
       async command(args, cwd = project, commandOptions = {}) {
         const nativeClient = commandOptions.nativeClient ?? platform;
+        // Only the default launcher of the acquired fixed distribution has
+        // this version evidence. Provided or alternate entries stay strict.
+        const nativeClientVersion = nativeClient === platform && !commandOptions.entry && !commandOptions.launcher
+          ? options.nativeClientVersion : undefined;
         let result;
         try {
           result = await execute(commandOptions.entry ? { executable: commandOptions.entry, prefix: [] } : commandOptions.launcher ?? launcher, args,
             { cwd, env, stdin: commandOptions.input,
-            nativeClient, captureProcessNames: nativeClient === 'copilot' });
+            nativeClient, nativeClientVersion, captureProcessNames: nativeClient === 'copilot' });
         } catch (error) {
           report.commands.push(redactScope({ args, cwd, ...(mixedClients ? { nativeClient } : {}), processFailure: error?.message,
             processDiagnostics: error?.processTreeDiagnostics ?? error?.publicAwProcessDiagnostics ?? [],
@@ -331,7 +340,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           const nativeManagedTrace = await readManagedTrace(traceFile);
           report.commands.push(redactScope({ aw: args, cwd, processFailure: error?.message,
             ...(mixedClients ? { jobTiming: jobTiming() } : {}),
-            ...(stageLog ? { jobTiming: jobTiming(), awStages: await readSharedProviderStages(stageLog) } : {}),
+            ...(stageLog ? { jobTiming: jobTiming(), awStages: await readPublicAwStages(stageLog) } : {}),
             ...(trace ? { nativeManagedTrace } : {}),
             ...(mixedInstall && nativeManagedTrace ? { nativeInstallIntervals: mixedNativeInstallIntervals(nativeManagedTrace) } : {}),
             ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}),
@@ -349,7 +358,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const nativeManagedTrace = trace ? await readManagedTrace(traceFile) : undefined;
         report.commands.push(redactScope({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
           ...(mixedClients ? { jobTiming: jobTiming() } : {}),
-          ...(stageLog ? { jobTiming: timing, awStages: await readSharedProviderStages(stageLog) } : {}),
+          ...(stageLog ? { jobTiming: timing, awStages: await readPublicAwStages(stageLog) } : {}),
           ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(trace ? { nativeManagedTrace } : {}),
@@ -409,25 +418,26 @@ export async function runScope(platform, scope, launcher, options = {}) {
           : ctx.check('aw-candidate-refresh-projection', () => renderPackage(ctx, revision));
       },
     };
-    if (mixedClients) await qualifyMixedPublicAw(ctx, mixedClients);
+    if (mixedClients) await runUnit(() => qualifyMixedPublicAw(ctx, mixedClients));
     else {
-      await ctx.check('client-version', async () => {
+      await runUnit(() => ctx.check('client-version', async () => {
         const result = await ctx.command(['--version']);
         const actual = versionFrom(result.stdout);
         if (actual !== fixedClientVersion(platform)) throw new Error('client-version-mismatch');
         return { version: actual };
-      });
+      }));
       if (options.publicAw) {
+        if (options.publicClientError) throw options.publicClientError;
         await qualifyPublicAw(ctx, { components: process.env.AW_QUALIFICATION_PUBLIC_COMPONENTS === '1' });
         for (const id of requiredPublicChecks(platform, scope)) {
           if (!report.checks.some(check => check.id === id && check.status === 'passed')) throw new Error(`missing-public-check:${id}`);
         }
       }
-      else {
+      else await runUnit(async () => {
         const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
         if (platform === 'opencode') ctx.initialProjection = initialProjection;
         await qualifyClient(ctx);
-      }
+      });
     }
     report.status = 'passed';
   } catch (error) {
@@ -435,7 +445,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     report.reason = redactScope(error?.message ?? 'qualification-failed');
     report.remaining = 'not-run-after-incomplete-scenario';
   } finally {
-    try { await removeQualificationRoot(root); report.cleanup = 'completed'; }
+    try { if (root) await removeQualificationRoot(root); report.cleanup = 'completed'; }
     catch (error) {
       report.cleanup = 'failed'; report.status = 'failed';
       report.cleanupError = redactScope({ code: error?.code, syscall: error?.syscall, path: error?.path });
@@ -510,25 +520,36 @@ export async function run(options, acquire = acquireClient) {
     uncoveredReasons: { cursor: 'separate-fixed-interface-probe',
       antigravity: 'public-user-scope-runs-through-dedicated-qualification' },
   };
+  let group;
   try {
-    report.candidate = await verifyCandidate(options.candidate);
+    group = await qualificationGroup({ manifest: options.candidate });
+    report.candidate = group.candidate;
     report.processManagement = await processManagementInfo();
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
-    for (const platform of selectedPlatforms) {
+    await Promise.all(selectedPlatforms.map(async platform => {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
       report.clients.push(result);
-      if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
-        || process.platform === 'win32' && process.arch === 'arm64')) {
-        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; continue;
+      if (distributionExcluded(platform, process)) {
+        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; return;
       }
       let installRoot;
       try {
         let launcher;
+        let grokBinary;
         let clientBin;
+        let preparedClient;
+        let publicClientError;
         if (options.install) {
-          installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
-          const acquired = await acquire(platform, installRoot);
+          const acquired = await group.runUnit(async () => {
+            installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
+            return acquire(platform, installRoot);
+          });
+          grokBinary = acquired.grokBinary;
           launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
+          if (options['public-aw']) {
+            try { preparedClient = await group.runUnit(() => preparePublicClientEntry({ root: installRoot, launcher, platform, clientBin })); }
+            catch (error) { publicClientError = error; }
+          }
           if (mixedPublicAwRequested && mixedNativePlatforms.includes(platform)) {
             mixedClients.set(platform, { ...acquired, installRoot, result });
           }
@@ -537,11 +558,14 @@ export async function run(options, acquire = acquireClient) {
           launcher = { executable: entry, prefix: [] };
           result.acquisition = { method: 'provided-executable', entrySha256: sha256(await fs.readFile(entry)) };
         }
-        for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
-        if (options['public-aw']) {
-          result.publicAw = [];
-          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
-        }
+        const scopesToRun = ['user', 'project'];
+        const [direct, publicAw] = await Promise.all([
+          Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher, { group, grokBinary, nativeClientVersion: result.acquisition?.version }))),
+          options['public-aw'] && Promise.all(scopesToRun.map(scope => runScope(platform, scope, launcher,
+            { publicAw: true, clientBin, preparedClient, publicClientError, group, grokBinary, nativeClientVersion: result.acquisition?.version }))),
+        ]);
+        result.scopes = direct;
+        if (publicAw) result.publicAw = publicAw;
         const scopes = [...result.scopes, ...(result.publicAw ?? [])];
         result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));
       } catch (error) {
@@ -550,14 +574,14 @@ export async function run(options, acquire = acquireClient) {
       } finally {
         if (installRoot && !mixedClients.has(platform)) await cleanupClientAcquisition(installRoot, result);
       }
-    }
+    }));
     if (mixedPublicAwRequested) {
       const platforms = mixedNativePlatforms.map((platform) => ({ platform, version: fixedClientVersion(platform) }));
       const unavailable = mixedNativePlatforms.filter((platform) => !mixedClients.has(platform));
       report.mixedPublicAw = unavailable.length
         ? { platforms, status: 'failed', scope: 'user', checks: [], reason: 'mixed-native-clients-unavailable', unavailable }
         : { platforms, ...await runScope(mixedNativePlatforms[0], 'user', mixedClients.get(mixedNativePlatforms[0]).launcher,
-          { publicAw: true, mixedClients }) };
+          { publicAw: true, mixedClients, group }) };
     }
     report.status = aggregateQualificationStatus([...report.clients.map(client => client.status),
       ...(mixedPublicAwRequested ? [report.mixedPublicAw.status] : [])]);
@@ -567,6 +591,13 @@ export async function run(options, acquire = acquireClient) {
     for (const { installRoot, result } of mixedClients.values()) {
       await cleanupClientAcquisition(installRoot, result);
       if (result.acquisitionCleanup === 'failed') report.status = 'failed';
+    }
+    if (group) {
+      try { await group.finish(); }
+      catch (error) {
+        report.status = 'failed';
+        report.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'candidate-final-verification-failed';
+      }
     }
   }
   await fs.mkdir(path.dirname(path.resolve(options.report)), { recursive: true });

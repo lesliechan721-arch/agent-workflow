@@ -8,12 +8,14 @@ import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator
 import { installNativeTestDiscovery } from '../helpers/native-execution-fixture.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { runCli } from '../../src/index.js';
+import { resolvePortableCatalogBindingInput } from '../../src/portable/materializer.js';
 import { executePortableRecovery, inspectPortableRecovery, preparePortableCleanup, preparePortableRecovery } from '../../src/portable/recovery.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { createCatalogManifestV7, createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -77,6 +79,39 @@ async function apply(options: Awaited<ReturnType<typeof fixture>>['options'], au
 }
 
 describe('Portable writer through real Catalog and renderer', () => {
+  // Test Value Gate: one preparation shares transport across binding and cold
+  // materialization, but recovery's own prewrite fallback must read it afresh.
+  it('reuses prepared Catalog transport and rejects damage before writing', async () => {
+    const value = await fixture();
+    const { options, active } = value;
+    const { snapshotRoot } = resolveCatalogStoreLocation({ ...active, env: options.env });
+    const marketplace = path.join(snapshotRoot, '.claude-plugin', 'marketplace.json');
+    const original = await fs.readFile(marketplace);
+    const readScope = new CatalogPreparationReadScope({ env: options.env });
+    const reads = vi.spyOn(fs, 'readFile');
+    const transportReads = () => reads.mock.calls.filter(([file]) => file === marketplace).length;
+    try {
+      await resolvePortableCatalogBindingInput({ ...options, platform: 'generic',
+        cwd: options.context.executionCwd, catalogReadScope: readScope });
+      const prepared = await preparePortableRecovery(options, readScope);
+      expect(prepared.blockers).toEqual([]);
+      expect(transportReads()).toBe(1);
+      await fs.appendFile(marketplace, '\n');
+      const execute = () => withAwHomeMutationLock({ env: options.env, action: (token) =>
+        executePortableRecovery({ prepared, token }) });
+      expect(await execute()).toMatchObject({ execution: 'not-run', globalBlockers: ['operationReviewStale'], outputsMayHaveChanged: false });
+      expect(transportReads()).toBe(2);
+      expect(await fs.pathExists(prepared.targets[0]!.physicalPath)).toBe(false);
+      await fs.writeFile(marketplace, original);
+      expect(await execute()).toMatchObject({ execution: 'applied' });
+      expect(transportReads()).toBe(3);
+      expect(await fs.readFile(path.join(prepared.targets[0]!.physicalPath, 'SKILL.md'), 'utf8')).toContain('Tone: first');
+    } finally {
+      reads.mockRestore();
+      await options.context.dispose();
+    }
+  }, 30_000);
+
   // Test Value Gate: two mixed-install children encountering the same cold generation must share both renderer batches.
   it('materializes the shared cold generic generation once for a mixed install', async () => {
     installNativeTestDiscovery({ platforms: ['opencode'] });

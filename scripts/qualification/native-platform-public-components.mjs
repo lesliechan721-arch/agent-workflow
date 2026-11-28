@@ -7,10 +7,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
+import { receiptDiagnostics, targetReceiptBlockers, nativePath, readInstalled, targetOf, nativePackage, checkSettled, writeGrokFixtureFolderDecisions, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { qualifyCatalog, qualifyProjectDependencies } from './native-platform-public-catalog.mjs';
 import { executePublicAw, publicAwNodeLauncher } from './native-platform-public-process.mjs';
-import { prepareEnvironment, readManagedTrace, repoRoot, sha256, execute, assertCommand, candidateFiles, clients } from './native-platform-runtime.mjs';
+import { readPublicAwStages } from './native-platform-stage-evidence.mjs';
+import { prepareEnvironment, readManagedTrace, repoRoot, sha256, execute, assertCommand, clients } from './native-platform-runtime.mjs';
+import { prepareTemplateEnvironment, qualificationGroup } from './native-platform-qualification-group.mjs';
 import { verifyFixtureRemoval } from './native-platform-public-removal.mjs';
 
 export const componentPlatforms = ['codex', 'claude', 'cursor', 'antigravity', 'opencode', 'pi', 'copilot', 'grok', 'generic'];
@@ -38,26 +40,7 @@ const componentCommands = new Set(['target.set', 'source.add', 'source.sync', 'd
 const publicStatusByExitCode = new Map([[0, 'success'], [1, 'failed'], [2, 'failed'], [3, 'blocked'], [4, 'partial']]);
 const publicStatuses = new Set(publicStatusByExitCode.values());
 const rows = (value, limit) => Array.isArray(value) ? value.slice(0, limit) : [];
-const receiptCodes = new Set(['commandFailed', 'operationInterrupted', 'operationPlanStale', 'operationReviewStale',
-  'platformPreparationFailed', 'platformExecutionFailed', 'platformMutationFailed', 'platformComponentsUnmet',
-  'processCleanupUnconfirmed', 'pluginProcessCleanupFailed', 'nativeCliExecutableMissing', 'nativeCliFailed', 'nativeCliTimedOut',
-  'nativeObservationFailed', 'nativeObservationUnconfirmed',
-  'preApplyExecutableMissing', 'preApplyInputFailed', 'preApplyStartFailed', 'preApplyTimedOut', 'preApplyExited']);
-const deploymentStaleReasons = new Set(['deploymentInputsChanged', 'clientDiscoveryChanged', 'deploymentObservationChanged',
-  'deploymentReferencesChanged', 'deploymentPathsChanged', 'marketplaceChanged', 'deploymentEvidenceReadFailed']);
-// A few existing reasons distinguish stale checks and cleanup failures without publishing free-form messages.
-const receiptReasons = new Set(['operationPlanStale: client discovery changed after the ordinary observation.',
-  'operationPlanStale: deployment evidence changed after the ordinary observation.',
-  'operationPlanStale: deployment evidence changed before source registration.',
-  'operationPlanStale: deployment evidence changed during source registration.',
-  'operationPlanStale: deployment evidence changed.',
-  'The deployment evidence changed. Prepare and confirm a new operation.',
-  'Process cleanup could not be confirmed.',
-  'Process cleanup could not be confirmed. Check the client before retrying.',
-  'Process cleanup could not be confirmed. Check status before retrying.',
-  'The preApply process cleanup could not be confirmed.']);
-
-function componentCommand(args, dependencies) {
+function componentCommand(args, dependencies = new Map()) {
   const command = args.slice(0, args[0] === 'dev' || args[0] === 'plugin' && args[1] === 'config' ? 3 : 2).join('.');
   const fields = {};
   for (const field of ['scope', 'context']) {
@@ -93,16 +76,6 @@ function readComponentReceipt(result, command) {
   if (result.exitCode === 250 || (cleanupFailure ? result.exitCode === 1 : value.status === publicStatusByExitCode.get(result.exitCode))) return value;
 }
 
-function receiptDiagnostics(value) {
-  const facts = rows(value, 64).filter(item => receiptCodes.has(item?.code)).slice(0, 8).map(item => {
-    const reasonCode = item.detail?.reasonCode;
-    const safeReason = receiptCodes.has(reasonCode) || item.code === 'operationPlanStale' && deploymentStaleReasons.has(reasonCode);
-    return { code: item.code, ...(['error', 'warning', 'info'].includes(item.severity) ? { severity: item.severity } : {}),
-      ...(safeReason ? { reasonCode } : {}), ...(receiptReasons.has(item.message) ? { reason: item.message } : {}) };
-  });
-  return facts.length ? { diagnostics: facts } : {};
-}
-
 const grokAvailabilityStates = ['available', 'missing', 'unsupported', 'unknown'];
 const grokDiscoveryReasons = ['clientDiscoveryIncomplete', 'clientEntryUnresolved', 'clientIdentityUnconfirmed',
   'clientInstallInterfaceUnsupported', 'clientNotFound', 'clientProbeFailed', 'clientVersionUnknown', 'clientVersionUnsupported'];
@@ -123,17 +96,93 @@ export function componentReceiptEvidence(value, command, platform) {
   const targets = rows(value.data?.targetResults, 64).filter(target => command.pluginIds?.includes(target?.pluginId)
     && target.target === platform && ['user', 'project'].includes(target.scope)
     && (!requestedScope || target.scope === requestedScope)).slice(0, 16).map(target => {
-    const diagnostics = rows(target.deploymentReceipts, 8).flatMap(receipt => rows(receipt?.diagnostics, 8));
     return { pluginId: target.pluginId, target: platform, scope: target.scope,
       ...(['not-run', 'no-op', 'applied', 'partial', 'failed'].includes(target.execution) ? { execution: target.execution } : {}),
-      blockerCodes: rows(target.blockerCodes, 16).filter(code => receiptCodes.has(code)), ...receiptDiagnostics(diagnostics) };
+      ...targetReceiptBlockers(target) };
   });
   const targetAvailability = platform === 'grok' && command.command === 'target.set' ? grokTargetAvailability(value) : undefined;
-  return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics), ...(targets.length ? { targets } : {}),
+  return { awReceipt: { status: value.status, ...receiptDiagnostics(value.diagnostics, command.pluginIds, platform, requestedScope), ...(targets.length ? { targets } : {}),
     ...(targetAvailability ? { targetAvailability } : {}) } };
 }
 
+class ComponentCommandError extends Error {
+  constructor(failure) {
+    super(failure.stage === 'command' ? `${failure.command} failed (exit ${failure.exitCode})`
+      : `${failure.command} ${failure.stage} failed (${failure.error})`);
+    this.failure = failure;
+  }
+}
+
+function publicAwFailureReason(error) {
+  return error instanceof ComponentCommandError ? error.message : undefined;
+}
+
+function recordCommandFailure(report, failure) {
+  const failures = report.commandFailures ??= [];
+  if (failures.length < 16) failures.push(failure);
+  else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
+}
+
+const componentCommandTimeoutMs = 180000;
+
+// Shared authoring and scope commands use the same receipt and process evidence
+// boundary. The result is data, not a callback into a suite's report.
+async function executeComponentCommand(executeAw, args, { command, platform, cwd, env, cliEntry = cli, trace = false, stageLog, frozenRoot }) {
+  let response;
+  let value;
+  let stage = 'execute';
+  const failure = (stage, kind, error, receipt) => ({
+    ...command, stage, error: kind, ...componentProcessEvidence(error, response), ...componentReceiptEvidence(receipt, command, platform),
+  });
+  try {
+    response = await executeAw(publicAwNodeLauncher(cliEntry, trace, frozenRoot),
+      [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
+      { cwd, env, timeoutMs: componentCommandTimeoutMs });
+    // A Windows Job failure can return 250 even after AW has printed a receipt.
+    // Only AW's public exit codes carry command results in this suite.
+    assert(awCommandCompleted(response), 'Public AW process did not complete');
+    stage = 'response';
+    value = readComponentReceipt(response, command.command);
+    assert(value, 'Public AW receipt does not match its command and exit code');
+  } catch (error) {
+    const kind = stage === 'response' ? 'invalid-public-receipt'
+      : error?.name === 'ProviderProcessCleanupError' ? 'ProviderProcessCleanupError' : 'process-failed';
+    throw new ComponentCommandError(failure(stage, kind, error,
+      stage === 'execute' ? readComponentReceipt(error?.result ?? response, command.command) : undefined));
+  }
+  return { exitCode: response.exitCode, value, failure: response.exitCode === 0 ? undefined : failure('command', 'public-aw-failed', undefined, value) };
+}
+
+async function authoringAw(executeAw, args, cwd, env) {
+  const outcome = await executeComponentCommand(executeAw, args, { command: componentCommand(args), cwd, env });
+  if (outcome.failure) throw new ComponentCommandError(outcome.failure);
+  return outcome.value;
+}
+
+// A traceEntry is supplied only for Hosted suites with a selected native entry.
+// Retain separate per-command files and the existing bounded evidence modes.
+export function componentTraceMode(command, { traceEntry, platform, scope, suite }) {
+  if (!traceEntry) return undefined;
+  const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
+  const userHookInstall = scope === 'user' && matrixInstall && command.scope === 'user'
+    && command.pluginIds[0] === 'matrix/single-hook';
+  if (platform === 'codex' && command.command === 'plugin.install'
+    && (scope === 'project' && (suite === 'candidate' || matrixInstall) || userHookInstall)) return 'codex-component-install';
+  if (platform === 'copilot' && scope === 'user' && command.scope === 'user') {
+    if (suite === 'matrix' && command.command === 'plugin.remove' && command.pluginIds?.length === 1
+      && command.pluginIds[0] === 'matrix/single-skill') return 'copilot-component-remove';
+    if (suite === 'candidate' && command.command === 'plugin.install'
+      && command.pluginIds?.includes('qualification-official/aw-skill-eval-runner')) return 'copilot-component-install';
+  }
+  if (platform === 'grok' && command.command === 'target.set') return 'grok-component-discovery';
+  if (platform === 'claude' && scope === 'project' && suite === 'matrix'
+    && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
+    && ['matrix/hook-only', 'matrix/single-hook'].includes(command.pluginIds[0])) return 'claude-component-remove';
+}
+
 const componentTraceCategories = {
+  'copilot-component-remove': ['copilot-plugin-list', 'copilot-marketplace-list', 'copilot-plugin-uninstall'],
+  'copilot-component-install': ['copilot-plugin-list', 'copilot-marketplace-list', 'copilot-plugin-install'],
   'codex-component-install': ['codex-version', 'codex-plugin-list', 'codex-marketplace-list', 'windows-system-powershell'],
   'grok-component-discovery': ['grok-version', 'grok-help', 'grok-plugin-help', 'grok-plugin-list-help'],
   'claude-component-remove': ['claude-version', 'claude-plugin-list', 'claude-marketplace-list', 'claude-plugin-disable', 'claude-plugin-uninstall'],
@@ -157,6 +206,14 @@ async function readComponentTrace(file, mode) {
         'process-group-sigterm', 'process-group-sigkill', 'process-group-exit-check', 'child-pid-unavailable'].includes(row.cleanupKind)
       ? { cleanupKind: row.cleanupKind } : {}),
   })) };
+}
+
+export async function recordComponentTrace(report, command, failure, file, mode) {
+  if (failure && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(file, mode);
+  else if (!failure && (mode === 'copilot-component-remove' || mode === 'copilot-component-install')) {
+    // Zero-exit commands can fail the independent byte or registration checks.
+    report.nativeCommandTrace = { ...command, ...await readComponentTrace(file, mode) };
+  }
 }
 
 // These snapshots carry identities, states and timing metadata. Select their
@@ -187,6 +244,18 @@ function processObservation(row) {
       'kind startedAt deadline callbackAt settledAt callbackState completion failureReason')) } : {}) };
 }
 
+function componentProcessFailure(error, result) {
+  const evidence = error?.publicAwProcessFailure;
+  if (!evidence && result) return {};
+  const fixed = (field, values) => values.includes(evidence?.[field]) ? evidence[field] : 'unknown';
+  const cleanupStates = ['not-needed', 'confirmed', 'unconfirmed'];
+  return { processFailure: { stage: fixed('stage', ['before-launch', 'inspection-lease-acquire', 'process-execution',
+    'process-result', 'inspection-lease-release']), reason: fixed('reason', ['cancelled', 'inspection-lease-acquisition-failed',
+    'process-cleanup-unconfirmed', 'process-observation-failed', 'process-result-rejected', 'provider-process-threw',
+    'inspection-lease-release-failed']), resultAvailable: Boolean(result),
+    processCleanup: fixed('processCleanup', cleanupStates), leaseCleanup: fixed('leaseCleanup', cleanupStates) } };
+}
+
 function componentProcessEvidence(error, response) {
   const result = error?.result ?? response;
   const diagnostics = error?.publicAwProcessDiagnostics?.length ? error.publicAwProcessDiagnostics : error?.processTreeDiagnostics;
@@ -194,6 +263,7 @@ function componentProcessEvidence(error, response) {
   const markerRows = error?.publicAwMarkerRows ?? error?.qualificationMarkerRows;
   const confirmations = error?.qualificationMarkerIdentityConfirmations;
   return {
+    ...componentProcessFailure(error, result),
     ...observationFields(result, 'exitCode timedOut cancelled maxBufferExceeded terminationReason'),
     ...(result?.exitCode === 250 ? {} : observationFields(result, 'descendantCleanupGuaranteed')),
     ...(typeof result?.signal === 'string' && Object.hasOwn(os.constants.signals, result.signal) ? { signal: result.signal } : {}),
@@ -474,23 +544,50 @@ async function readGrokHook(ctx, name, scope, directory) {
   return readInstalled(ctx, hooks[0].target, token('hook', 1));
 }
 
-async function matrix(ctx, report) {
-  const { aw, platform, scope } = ctx;
-  const workspace = path.join(ctx.root, 'workspace');
-  await fs.mkdir(workspace);
-  await aw(['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace);
-  const prerequisite = pairPrerequisites.get(report.suite);
-  const inputs = prerequisite ? [
+function matrixInputs(platform, suite) {
+  const prerequisite = pairPrerequisites.get(suite);
+  return prerequisite ? [
     specs.find(spec => spec.name === prerequisite),
     { ...specs.find(spec => spec.name === 'single-agent'), dependencies: [prerequisite] },
   ] : platform === 'generic' ? specs : specs.filter(spec => spec.name !== 'without-skills');
+}
+
+async function matrixTemplate(group, key, build, report) {
+  try { return await group.template(key, build); }
+  catch (error) {
+    // A cached failure belongs to every consumer, not to the suite that started
+    // the build. Only already-filtered process/receipt evidence is shared.
+    if (error instanceof ComponentCommandError) recordCommandFailure(report, error.failure);
+    throw error;
+  }
+}
+
+async function matrix(ctx, report, group, executeAw) {
+  const { aw, platform, scope } = ctx;
+  const prerequisite = pairPrerequisites.get(report.suite);
+  const inputs = matrixInputs(platform, report.suite);
   for (const spec of inputs) ctx.dependencies.set(source + '/' + spec.name, (spec.dependencies ?? []).map(name => source + '/' + name));
-  await aw(['dev', 'plugin', 'create', inputs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace);
-  const scaffold = JSON.parse(await fs.readFile(path.join(workspace, 'plugins', inputs[0].name, manifestFile), 'utf8'));
-  for (const spec of inputs) await writeFixture(workspace, scaffold, spec, 1);
-  const build = () => aw(['dev', 'catalog', 'build', '--force', '--yes', '--workspace-root', workspace], workspace);
-  await build();
-  await aw(['source', 'add', source, '--path', path.join(workspace, '.aw/catalog'), '--primary', '--no-auto-check', '--yes']);
+  const variant = JSON.stringify([prerequisite ? report.suite : 'matrix', inputs]);
+  // Both revisions must be built at the same authoring path: the generated
+  // marker binds the workspace. Suites only receive copies of its publications.
+  const template = await matrixTemplate(group, variant, async () => {
+    const root = await fs.mkdtemp(path.join(group.root, 'template-'));
+    const workspace = path.join(root, 'workspace');
+    const env = await prepareTemplateEnvironment(root);
+    await fs.mkdir(workspace);
+    await authoringAw(executeAw, ['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace, env);
+    await authoringAw(executeAw, ['dev', 'plugin', 'create', inputs[0].name, '--description', 'Local component qualification.', '--no-skills', '--workspace-root', workspace], workspace, env);
+    const scaffold = JSON.parse(await fs.readFile(path.join(workspace, 'plugins', inputs[0].name, manifestFile), 'utf8'));
+    for (const spec of inputs) await writeFixture(workspace, scaffold, spec, 1);
+    await authoringAw(executeAw, ['dev', 'catalog', 'build', '--force', '--yes', '--workspace-root', workspace], workspace, env);
+    const publication = path.join(workspace, '.aw/catalog');
+    const initial = path.join(root, 'revision-1');
+    await fs.cp(publication, initial, { recursive: true });
+    return { workspace, env, scaffold, initial, publication };
+  }, report);
+  const catalog = path.join(ctx.root, 'catalog');
+  await fs.cp(template.initial, catalog, { recursive: true });
+  await aw(['source', 'add', source, '--path', catalog, '--primary', '--no-auto-check', '--yes']);
   const ids = inputs.map(spec => source + '/' + spec.name);
   const installArgs = ids => ['plugin', 'install', ...ids, '--scope', scope, '--context', scope, '--target', platform, '--yes'];
   const install = ids => aw(installArgs(ids));
@@ -612,8 +709,13 @@ async function matrix(ctx, report) {
   const unchangedGrokFiles = platform === 'grok'
     ? report.cases.filter(item => item.id !== mixedId).flatMap(item => item.installed.map(file => path.join(ctx.root, file.path))) : [];
   const unchangedFiles = await fingerprints(ctx.root, unchangedGrokFiles);
-  await writeFixture(workspace, scaffold, mixed, 2);
-  await build();
+  const updated = await matrixTemplate(group, variant + '/revision-2', async () => {
+    await writeFixture(template.workspace, template.scaffold, mixed, 2);
+    await authoringAw(executeAw, ['dev', 'catalog', 'build', '--force', '--yes', '--workspace-root', template.workspace], template.workspace, template.env);
+    return template.publication;
+  }, report);
+  await fs.rm(catalog, { recursive: true });
+  await fs.cp(updated, catalog, { recursive: true });
   await aw(['source', 'sync', source, '--yes']);
   const update = platform === 'grok' && scope === 'user' ? await grokUserRefresh(ctx, report, mixed, observed, sync) : await sync();
   if (unchangedGrokFiles.length) {
@@ -670,27 +772,50 @@ async function matrix(ctx, report) {
 }
 
 
-export async function runComponentQualification({ platform, scope, clientPath, traceEntry, suite = 'matrix', catalog },
+export async function runComponentQualification(options, dependencies) {
+  const [report] = await runComponentSuites([options], dependencies);
+  return report;
+}
+
+export async function runComponentSuites(units, dependencies, group) {
+  const session = group ?? await qualificationGroup();
+  const outcomes = await Promise.all(units.map(unit => session.runUnit(async () => {
+    const started = performance.now();
+    let report;
+    try { report = await runSuite(unit, session, dependencies); }
+    catch (error) {
+      report = { platform: unit.platform, scope: unit.scope, suite: unit.suite ?? 'matrix', status: 'failed',
+        candidateSha256: session.candidate.artifactSha256, reason: error.code ?? 'component-suite-setup-failed' };
+    }
+    return { ...report, elapsedMs: Math.round(performance.now() - started) };
+  })));
+  if (!group) {
+    try { await session.finish(); }
+    catch (error) {
+      for (const result of outcomes) {
+        result.status = 'failed';
+        result.groupFailure = error.code ?? error.message;
+      }
+    }
+  }
+  return outcomes;
+}
+
+async function runSuite({ platform, scope, clientPath, traceEntry, grokBinary, suite = 'matrix', catalog }, group,
   { executeAw = executePublicAw, executeCommand = execute } = {}) {
   assert(componentPlatforms.includes(platform) && ['user', 'project'].includes(scope));
   assert(['matrix', 'pi-seven', 'candidate', 'frozen', 'project-inheritance'].includes(suite) || pairPrerequisites.has(suite));
   if (suite === 'project-inheritance') assert.equal(scope, 'project');
   if (suite.startsWith('pi-')) assert.equal(platform, 'pi');
   if (suite.startsWith('grok-')) assert.deepEqual([platform, scope], ['grok', 'project']);
-  const artifactIdentity = async () => {
-    const files = Object.entries(await candidateFiles()).filter(([name]) => name.startsWith('packages/'));
-    return sha256(JSON.stringify(files));
-  };
-  const candidateSha256 = await artifactIdentity();
+  const candidateSha256 = group.candidate.artifactSha256;
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-components-')));
-  const publicAwFailures = new Map();
-  const publicAwFailureReason = error => publicAwFailures.get(error);
   const report = { suite, level: 'public-AW-install-status-and-files', platform, scope,
     host: process.platform + '-' + process.arch, candidateSha256, cases: [], status: 'failed',
     ...(suite === 'matrix' ? { cells: specs.filter(spec => spec.name.startsWith('single-')).map(spec => ({
       kind: spec.kinds[0], expected: expectedKinds(platform, spec).length ? 'installed' : 'skipped', observed: 'unverified' })) } : {}) };
   try {
-    const env = await prepareEnvironment(root);
+    const env = await prepareEnvironment(root, grokBinary);
     if (clientPath) env.PATH = clientPath;
     else if (process.platform !== 'win32') {
       const bin = path.join(root, 'bin');
@@ -739,20 +864,21 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       report.pluginScriptSupervision = 'outer-qualification-marker-at-managed-launch';
     }
     let componentTraceIndex = 0;
-    async function result(args, cwd = project, trustRetry, cliEntry = cli) {
+    async function result(args, cwd = project, trustRetry, cliEntry = cli, frozenRoot) {
       // Trace the first real discovery in this fresh home. A later probe could
       // succeed and lose the reason target selection originally failed.
       const command = componentCommand(args, dependencies);
+      // Large remaining native batches must keep the real command deadline.
+      // On Hosted runs record its final fixed stages before the private home
+      // is cleaned, so a timeout can be distinguished from slow progress.
+      const observedBatch = ['cursor', 'copilot', 'claude'].includes(platform) && suite === 'candidate'
+        && command.command === 'plugin.install' && (command.pluginIds?.length ?? 0) > 3;
+      const batchStarted = observedBatch ? performance.now() : undefined;
+      const stageLog = observedBatch && process.env.GITHUB_ACTIONS === 'true'
+        && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+        ? path.join(root, 'candidate-batch-stages.jsonl') : undefined;
       const discoveryTrace = traceEntry && ['copilot', 'antigravity'].includes(platform) && command.command === 'target.set';
-      const matrixInstall = suite === 'matrix' && command.pluginIds?.length === 1;
-      const installTrace = traceEntry && platform === 'codex' && scope === 'project' && command.command === 'plugin.install'
-        && (suite === 'candidate' || matrixInstall);
-      const grokTrace = traceEntry && platform === 'grok' && command.command === 'target.set';
-      const claudeTrace = traceEntry && platform === 'claude' && scope === 'project' && suite === 'matrix'
-        && command.command === 'plugin.remove' && command.scope === 'project' && command.pluginIds?.length === 1
-        && command.pluginIds[0] === 'matrix/hook-only';
-      const traceMode = installTrace ? 'codex-component-install' : grokTrace ? 'grok-component-discovery'
-        : claudeTrace ? 'claude-component-remove' : undefined;
+      const traceMode = componentTraceMode(command, { traceEntry, platform, scope, suite });
       const trace = Boolean(discoveryTrace || traceMode);
       const traceFile = discoveryTrace ? path.join(root, 'target-discovery.jsonl')
         : traceMode ? path.join(root, `${traceMode}-${++componentTraceIndex}.jsonl`) : undefined;
@@ -760,41 +886,29 @@ export async function runComponentQualification({ platform, scope, clientPath, t
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform, AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         ...(traceMode ? { AW_NATIVE_QUALIFICATION_MANAGED_TRACE_MODE: traceMode } : {}),
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([traceEntry]) } : env;
-      let response;
-      let value;
+      let outcome;
       let failure;
-      let stage = 'execute';
-      const recordFailure = (stage, kind, error, receipt) => {
-        failure = { ...command, stage, error: kind, ...componentProcessEvidence(error, response),
-          ...componentReceiptEvidence(receipt, command, platform) };
-        const failures = report.commandFailures ??= [];
-        if (failures.length < 16) failures.push(failure);
-        else report.omittedCommandFailures = (report.omittedCommandFailures ?? 0) + 1;
-      };
       try {
-        response = await executeAw(publicAwNodeLauncher(cliEntry, trace), [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 180000 });
-        // A Windows Job failure can return 250 even after AW has printed a receipt.
-        // Only AW's public exit codes carry command results in this suite.
-        assert(awCommandCompleted(response), 'Public AW process did not complete');
-        stage = 'response';
-        value = readComponentReceipt(response, command.command);
-        assert(value, 'Public AW receipt does not match its command and exit code');
-        if (response.exitCode !== 0) recordFailure('command', 'public-aw-failed', undefined, value);
+        outcome = await executeComponentCommand(executeAw, args, { command, platform, cwd, env: commandEnv, cliEntry, trace, stageLog, frozenRoot });
+        failure = outcome.failure;
       } catch (error) {
-        const kind = stage === 'response' ? 'invalid-public-receipt'
-          : error?.name === 'ProviderProcessCleanupError' ? 'ProviderProcessCleanupError' : 'process-failed';
-        recordFailure(stage, kind, error, stage === 'execute' ? readComponentReceipt(error?.result ?? response, command.command) : undefined);
-        publicAwFailures.set(error, `${failure.command} ${stage} failed (${kind})`);
+        if (error instanceof ComponentCommandError) failure = error.failure;
         throw error;
       } finally {
+        if (failure) recordCommandFailure(report, failure);
+        if (observedBatch) {
+          const elapsedMs = Math.round(performance.now() - batchStarted);
+          report.candidateBatchTiming = { pluginCount: command.pluginIds.length, timeoutMs: componentCommandTimeoutMs,
+            elapsedMs, ...(stageLog ? { awStages: await readPublicAwStages(stageLog, { retainTail: true }) } : {}) };
+        }
         if (discoveryTrace) report.targetDiscoveryTrace = await readManagedTrace(traceFile);
-        if (traceMode && report.commandFailures?.includes(failure)) failure.nativeCommandTrace = await readComponentTrace(traceFile, traceMode);
+        if (traceMode) await recordComponentTrace(report, command, failure, traceFile, traceMode);
       }
-      const outcome = { exitCode: response.exitCode, value, failure };
+      const { value, exitCode } = outcome;
       const userCommand = scope === 'user' || ['project-inheritance', 'grok-user-hook-pair'].includes(suite)
         && args[args.indexOf('--context') + 1] === 'user';
       if (platform === 'grok' && userCommand && args[0] === 'plugin' && (args[1] === 'install' || trustRetry)
-        && value.status === 'partial' && response.exitCode === 4) {
+        && value.status === 'partial' && exitCode === 4) {
         const retry = trustRetry ?? { roots: value.data.request.plugins, authorized: new Set() };
         const direct = grokTrustTargets(value, dependencies, retry.authorized);
         if (!direct.length) return outcome;
@@ -821,14 +935,9 @@ export async function runComponentQualification({ platform, scope, clientPath, t
       return outcome;
     }
     async function aw(args, cwd) {
-      const { exitCode, value, failure } = await result(args, cwd);
-      if (exitCode !== 0) {
-        const reason = `${failure.command} failed (exit ${exitCode})`;
-        const error = new Error(reason);
-        publicAwFailures.set(error, reason);
-        throw error;
-      }
-      return value;
+      const outcome = await result(args, cwd);
+      if (outcome.failure) throw new ComponentCommandError(outcome.failure);
+      return outcome.value;
     }
     if (platform === 'codex' && scope === 'project')
       await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), '[projects.' + JSON.stringify(project) + ']\ntrust_level = "trusted"\n');
@@ -848,15 +957,15 @@ export async function runComponentQualification({ platform, scope, clientPath, t
     report.products = target.data.availability.find(row => row.id === platform)?.installations.map(({ product, version, availability }) => ({ product, version, availability }));
     const ctx = { root, project, env, aw, result, scope, platform, dependencies, publicAwFailureReason };
     if (suite === 'project-inheritance') await qualifyProjectDependencies(ctx, report);
-    else if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report);
+    else if (suite === 'matrix' || suite === 'pi-seven' || pairPrerequisites.has(suite)) await matrix(ctx, report, group, executeAw);
     else await qualifyCatalog(ctx, report, catalog ?? path.join(repoRoot, 'packages/cli/plugins-dist'), suite === 'frozen');
-    assert.equal(await artifactIdentity(), candidateSha256, 'Candidate bytes changed during qualification');
     report.status = 'passed';
   } catch (error) {
     report.reason = publicAwFailureReason(error)
-      ?? (error.stack ?? error.message).replaceAll(root, '<isolated>').replaceAll(repoRoot, '<repo>').replaceAll(os.homedir(), '<home>');
+      ?? (error.stack ?? error.message).replaceAll(root, '<isolated>').replaceAll(group.root, '<fixture>').replaceAll(repoRoot, '<repo>').replaceAll(os.homedir(), '<home>');
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    try { await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); }
+    catch (error) { report.status = 'failed'; report.cleanupError = error.code ?? 'cleanup-failed'; }
   }
   return report;
 }
@@ -866,12 +975,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     catalog: { type: 'string' }, report: { type: 'string' } } });
   const platforms = values.target ? values.target.split(',') : componentPlatforms;
   const scopes = values.scope ? values.scope.split(',') : ['user', 'project'];
-  const reports = [];
-  for (const platform of platforms) for (const scope of scopes) {
-    const result = await runComponentQualification({ platform, scope, suite: values.suite, catalog: values.catalog });
-    reports.push(result);
-    if (values.report) await fs.writeFile(values.report, JSON.stringify(reports, null, 2) + '\n');
-    console.log(platform, scope, result.status, result.reason ?? '');
-  }
+  const units = platforms.flatMap(platform => scopes.map(scope => ({ platform, scope, suite: values.suite, catalog: values.catalog })));
+  const reports = await runComponentSuites(units);
+  if (values.report) await fs.writeFile(values.report, JSON.stringify(reports, null, 2) + '\n');
+  for (const result of reports) console.log(result.platform, result.scope, result.status, result.reason ?? result.groupFailure ?? '');
   if (reports.some(row => row.status !== 'passed')) process.exitCode = 1;
 }

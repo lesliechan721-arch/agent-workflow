@@ -175,6 +175,11 @@ export interface DeploymentObservation {
     claudeKnownMarketplace?: DeploymentConfigurationObservation['marketplace'];
     claudeRegistrations?: { local: boolean; user: boolean; managed: boolean; unsupported: boolean };
   };
+  /** Source observations from the marketplace inventory and the selected Copilot plugin row. */
+  copilotRegistration?: {
+    marketplace: NonNullable<DeploymentConfigurationObservation['marketplace']>;
+    source: 'canonical' | 'foreign' | 'unknown';
+  };
   /** Historical Project copy at the previous Antigravity namespaced path. */
   antigravityLegacyProjectPackage?: { path: string; state: 'owned' | 'unconfirmed' };
   /** Version read from the verified owned package descriptor; absence means unknown. */

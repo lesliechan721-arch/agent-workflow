@@ -25,9 +25,8 @@ import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, prepareNativeCliE
 import { portableRecoveryLayout, type PortableAgent } from '../portable/recovery-layout.js';
 import { canonicalizePathThroughExistingAncestor, resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { CatalogPreparationReadScope, selectCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, catalogOperationBindingsMatch, selectCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
-import { createCatalogPreparationStoreKey } from '../utils/catalog-generation-resolver.js';
 import {
   activateCatalogSourceGeneration,
   probeCatalogSourceGeneration,
@@ -65,6 +64,7 @@ import { retainedOutputDiagnostic, scopeNativeComponentGaps, uniqueRecoveryCompo
 import { prepareJointRecovery, executeJointRecovery, type JointRecoveryState } from './joint-coordinator.js';
 import { createEmptyNativeDemandView, type NativeSharedReferenceView } from '../utils/native-demand.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import type { PreparedArtifactRenderResults } from '../utils/artifact-renderer.js';
 import { runPreApplyScript } from '../utils/plugin-scripts.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { RebuildInterruptedError, RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
@@ -80,6 +80,7 @@ export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | '
 export interface RecoveryPreparationReads {
   catalogReadScope?: CatalogPreparationReadScope;
   portableGenerations?: Map<string, Promise<void>>;
+  portableRenderResults?: PreparedArtifactRenderResults;
   nativeObservationBatch?: RebuildCommandRuntime['nativeObservationBatch'];
 }
 
@@ -125,6 +126,8 @@ export interface RecoveryOptions {
   /** Preview-only exits which are independently checked by owned cleanup plans. */
   nativePlannedRetirements?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
   sharedReferenceView?: NativeSharedReferenceView;
+  /** Exact active native target authorized by a parent ordinary remove, not outputs-only cleanup. */
+  ordinaryNativeRemoval?: RebuildCommandRuntime['ordinaryNativeRemoval'];
 }
 interface NativeTarget {
   pluginId: string;
@@ -347,6 +350,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
       preserveLegacyNativeSkills: plan.options.existingOnly === true,
       nativeActivationOnlyTargets: plan.options.nativeActivationOnlyTargets,
       nativePlannedRetirements: plan.options.nativePlannedRetirements,
+      ordinaryNativeRemoval: command === 'cleanup' ? plan.options.ordinaryNativeRemoval : undefined,
       ...(preview ? { nativeCliRunner: bindNativeCliRunnerSignal(
         runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), runtime.signal) } : {}),
       env: plan.options.env,
@@ -856,14 +860,14 @@ export async function checkFootprints(plan: RecoveryPlan): Promise<void> {
 
 export async function prepareScopedRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions & { scope: Scope }, runtime: RebuildCommandRuntime = {},
-  { catalogReadScope, nativeObservationBatch, portableGenerations = new Map() }: RecoveryPreparationReads = {}): Promise<RecoveryPlan> {
+  { catalogReadScope = new CatalogPreparationReadScope(options), nativeObservationBatch, portableGenerations = new Map(), portableRenderResults = new Map() }: RecoveryPreparationReads = {}): Promise<RecoveryPlan> {
   runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
   options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
   try {
   options.signal?.throwIfAborted();
   options = { ...options, cwd: context.executionCwd, env: context.env };
-  let demand = options.demandOverride ?? await readDemand({ ...options, preferences: undefined });
+  let demand = options.demandOverride ?? await readDemand({ ...options, catalogReadScope, preferences: undefined });
   const refreshFailures = new Map<string, string>();
   const sourceRefreshes: RecoverySourceRefresh[] = [];
   if (options.refresh && command === 'sync') {
@@ -906,10 +910,10 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
   options.signal?.throwIfAborted();
   const originalIntent = intentEvidence(demand.intent);
   const proposed = command === 'install'
-    ? await addRequirements({ ...options, selectors, dryRun: true, installSelectors: true }) : undefined;
+    ? await addRequirements({ ...options, catalogReadScope, selectors, dryRun: true, installSelectors: true }) : undefined;
   if (proposed?.state && proposed.errors.length === 0) {
     const rawBytes = Buffer.from(JSON.stringify(proposed.state));
-    demand = await readDemand({ ...options, preferences: undefined, intent: {
+    demand = await readDemand({ ...options, catalogReadScope, preferences: undefined, intent: {
       state: 'valid', value: proposed.state, rawBytes,
       digest: calculateIntentDigest(proposed.state), rawDigest: originalIntent,
     } });
@@ -1065,7 +1069,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
         ? await preparePortableCleanup({ scope: options.scope, context, selector: pluginId, agents, force: options.force, signal: options.signal })
         : await preparePortableRecovery({ scope: options.scope, context, selector: pluginId, agents,
           env: options.env, cliVersion: options.cliVersion, signal: options.signal,
-          catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope, portableGenerations);
+          catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope, portableGenerations, portableRenderResults);
       return { ok: true as const, prepared };
     } catch (error) {
       if (recoveryInterruptionCode(error, options.signal)) throw error;
@@ -1090,7 +1094,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
       try {
         const prepared = await preparePortableRecovery({ scope: options.scope, context, selector: root.pluginId,
             env: options.env, agents: portableAgents, cliVersion: options.cliVersion, signal: options.signal,
-            catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope, portableGenerations);
+            catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope, portableGenerations, portableRenderResults);
         if (!prepared.globalBlockers.length) return prepared;
       } catch (error) {
         if (recoveryInterruptionCode(error, options.signal)) throw error;
@@ -1186,20 +1190,33 @@ export async function activateRecoverySourcesAndReprepare(
   }
 }
 
-function portablePrewriteBinding(context: CatalogOperationContext | undefined, sourceId: string): string | undefined {
-  const source = context?.catalog.sources[0]?.resolution;
-  const generation = context?.generationSet.sources[0];
-  if (!context || context.catalog.sources.length !== 1 || context.generationSet.sources.length !== 1
-    || !source || !generation || source.sourceId !== sourceId || generation.sourceId !== sourceId
-    || source.rootDir !== generation.snapshotPath || source.sourceIdentity !== generation.sourceIdentity
-    || source.logicalIdentity !== generation.logicalIdentity || source.resolvedCommit !== generation.resolvedCommit
-    || source.manifestDigest !== generation.manifestDigest || source.snapshotDigest !== generation.snapshotDigest) return;
-  return JSON.stringify([context.generationSetDigest,
-    createCatalogPreparationStoreKey({ ...generation, requestedRef: source.requestedRef })]);
+export function catalogRecheckDiagnostic(error: unknown, signal?: AbortSignal, sourceId?: string): RecoveryDiagnostic {
+  if (recoveryInterruptionCode(error, signal)) {
+    if (error === undefined) signal?.throwIfAborted();
+    throw error;
+  }
+  const reasonCode = error instanceof CatalogGenerationError ? error.code : 'catalogReadFailed';
+  sourceId ??= error instanceof CatalogGenerationError ? error.sourceId : undefined;
+  return { ...diagnostic('operationReviewStale'), ...(sourceId ? { subject: { sourceId } } : {}),
+    detail: { reasonCode } };
+}
+
+/** Report a safety stop without discarding any recorded execution evidence. */
+export function blockScopedRecoveryBeforeExecution(receipt: RecoveryReceipt, blocker: RecoveryDiagnostic): RecoveryReceipt {
+  receipt.blockers.push(blocker);
+  for (const target of receipt.targetResults) {
+    if (target.execution !== 'not-run' || target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') continue;
+    block(target, blocker.code, blocker);
+    target.observation = 'unknown';
+    target.content = 'unknown';
+    target.satisfaction = 'unknown';
+  }
+  return completeReceipt(receipt);
 }
 
 async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly PortablePreparation[] = plan.portableGroups,
-  progress?: CheckedPortableProgress): Promise<RecoveryDiagnostic | undefined> {
+  progress?: CheckedPortableProgress,
+  readScope = new CatalogPreparationReadScope({ env: plan.context.env, signal: plan.runtime.signal })): Promise<RecoveryDiagnostic | undefined> {
   const executable = groups.filter(({ options }) => !options.agents.every((agent) => pair(plan, options.selector, agent)?.blockers.length));
   const providers = new Set(executable.flatMap((group) => plan.options.portableProviderChecks?.get(group.options.selector) ?? []));
   const inspections = [
@@ -1208,7 +1225,6 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
     ...providers,
   ];
   if (!inspections.length) return;
-  const readScope = new CatalogPreparationReadScope({ env: plan.context.env, signal: plan.runtime.signal });
   const active = new Map<string, Promise<CatalogOperationContext>>();
   const problems = await mapInstallReads(inspections, async (prepared) => {
     let current: CatalogOperationContext | undefined;
@@ -1220,13 +1236,11 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
         if (!pending) { pending = readScope.resolve({ sourceIds: [sourceId] }, true); active.set(sourceId, pending); }
         current = await pending;
         const original = selectCatalogOperationContext(reviewed, [sourceId]);
-        if (portablePrewriteBinding(current, sourceId) !== portablePrewriteBinding(original, sourceId)) {
+        if (!catalogOperationBindingsMatch(original, current)) {
           return diagnostic('operationReviewStale');
         }
       } catch (error) {
-        if (recoveryInterruptionCode(error, plan.runtime.signal)) throw error;
-        return { ...diagnostic('operationReviewStale'), subject: { sourceId },
-          detail: { reasonCode: error instanceof CatalogGenerationError ? error.code : 'catalogReadFailed' } };
+        return catalogRecheckDiagnostic(error, plan.runtime.signal, sourceId);
       }
     }
     const checked = await inspectPortableRecovery({ ...prepared.options, catalogOperationContext: current,
@@ -1427,15 +1441,29 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
   }
   return await withAwHomeMutationLock({ env: plan.options.env, token: plan.runtime.awHomeMutationToken,
     action: async (token) => {
+      const catalogReadScope = new CatalogPreparationReadScope({ env: plan.context.env, signal: plan.runtime.signal });
+      const reviewedCatalog = plan.options.catalogOperationContext;
+      let catalogOperationContext = reviewedCatalog;
+      if (plan.command !== 'cleanup' && reviewedCatalog) {
+        try {
+          catalogOperationContext = await catalogReadScope.rebind(reviewedCatalog);
+        } catch (error) {
+          return blockScopedRecoveryBeforeExecution(receipt, catalogRecheckDiagnostic(error, plan.runtime.signal));
+        }
+      }
       const [actualIntent, current] = await Promise.all([
         observeIntent(plan.options),
-        readDemand({ ...plan.options, preferences: undefined,
+        readDemand({ ...plan.options, catalogReadScope, catalogOperationContext, signal: plan.runtime.signal, preferences: undefined,
           ...(plan.declaration || plan.options.demandOverride ? { intent: plan.demand.intent } : {}) }),
       ]);
-      if (intentEvidence(actualIntent) !== plan.originalIntent || preferenceEvidence(current) !== plan.preferencesEvidence
-        || current.catalogOperationContext?.generationSetDigest !== plan.demand.catalogOperationContext?.generationSetDigest) {
-        receipt.blockers.push(diagnostic('operationReviewStale'));
-        return completeReceipt(receipt);
+      if (plan.command !== 'cleanup' && current.errors.some((entry) => entry.code === 'catalogReadFailed')) {
+        return blockScopedRecoveryBeforeExecution(receipt, catalogRecheckDiagnostic(undefined, plan.runtime.signal));
+      }
+      const catalogStable = plan.command === 'cleanup'
+        ? current.catalogOperationContext?.generationSetDigest === plan.demand.catalogOperationContext?.generationSetDigest
+        : catalogOperationBindingsMatch(plan.demand.catalogOperationContext, current.catalogOperationContext);
+      if (intentEvidence(actualIntent) !== plan.originalIntent || preferenceEvidence(current) !== plan.preferencesEvidence || !catalogStable) {
+        return blockScopedRecoveryBeforeExecution(receipt, diagnostic('operationReviewStale'));
       }
       const previewManager = plan.nativeGroups.map((group) => group.preview.codexManagerPreview)
         .find((entry) => entry?.state === 'system');
@@ -1450,19 +1478,22 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
           ?? new Map<string, Promise<CommandProducerResult>>(),
         ...(session ? { codexObservationSession: session } : {}) };
       try {
+      // The lock has supplied fresh, bound Active evidence. Reuse it only for
+      // this recheck, not the subsequent writers or their prewrite checks.
+      const checkedPlan = { ...plan, demand: { ...plan.demand, catalogOperationContext: current.catalogOperationContext } };
       // Freeze every backend before the first declaration or output write.
       const recheckedGroups = await readNativeGroups(plan.nativeGroups, async (group) => {
         const targets = nativeGroupTargets(group);
         const executable = targets.filter(({ pluginId, platform }) =>
           !pair(plan, pluginId, agentForPlatform(platform))!.blockers.length);
         if (!executable.length) return;
-        const checked = await nativeOperation(plan, group.pluginIds, group.platform, true,
-          nativeRuntime, group.command, targets);
+        const checked = await nativeOperation(checkedPlan, group.pluginIds, group.platform, true,
+          nativeRuntime, group.command, targets, catalogReadScope);
         if (checked.operationPlan?.planFingerprint !== group.preview.operationPlan?.planFingerprint) return 'stale' as const;
         const selection = nativeTargetSelection(executable);
         const preview = executable.length === targets.length ? checked
-          : await nativeOperation(plan, selection.pluginIds, selection.platform, true,
-              nativeRuntime, group.command, executable);
+          : await nativeOperation(checkedPlan, selection.pluginIds, selection.platform, true,
+              nativeRuntime, group.command, executable, catalogReadScope);
         return { ...group, ...selection, preview };
       }, nativeRuntime.signal);
       if (recheckedGroups.includes('stale')) {
@@ -1471,7 +1502,7 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
       }
       const executableNativeGroups = recheckedGroups.filter((group) => group !== undefined && group !== 'stale');
       const portableProgress = execution.portableProgress ?? { completed: [], failed: [] };
-      const portableBlocker = await recheckPortableRecovery(plan, plan.portableGroups, portableProgress);
+      const portableBlocker = await recheckPortableRecovery(plan, plan.portableGroups, portableProgress, catalogReadScope);
       if (portableBlocker) {
         receipt.blockers.push(portableBlocker);
         return completeReceipt(receipt);
@@ -1533,6 +1564,12 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
       return completeReceipt(receipt);
       } finally { if (!plan.runtime.codexObservationSession) await session?.dispose(); }
     } });
+  } catch (error) {
+    const code = recoveryInterruptionCode(error, plan.runtime.signal);
+    if (!code) throw error;
+    receipt.blockers.push(diagnostic(code));
+    for (const target of receipt.targetResults) if (target.execution === 'not-run') block(target, code);
+    throw new RecoveryInterruptedError(completeReceipt(receipt), error);
   } finally {
     await plan.context.dispose();
   }

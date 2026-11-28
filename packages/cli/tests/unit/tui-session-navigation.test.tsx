@@ -7,7 +7,7 @@ import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 import { controller, deferred, loadResult as status } from '../helpers/tui-console-app-fixture.js';
-import { input as send, nextTurn as tick } from '../helpers/tui-console-app-input.js';
+import { escape, input as send, nextTurn as tick } from '../helpers/tui-console-app-input.js';
 
 afterEach(() => cleanup());
 
@@ -144,14 +144,8 @@ describe('TUI session navigation', () => {
     expect(save).toHaveBeenCalledOnce();
     expect(instance.lastFrame()).toContain('报告已保存到临时目录');
 
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await tick(2);
-    expect(second.value.snapshot.router.current.route.name).toBe('operationDiagnostic');
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await tick(2);
-    expect(second.value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    await escape(instance, () => expect(second.value.snapshot.router.current.route.name).toBe('operationDiagnostic'));
+    await escape(instance, () => expect(second.value.snapshot.router.current.route).toEqual({ name: 'operationHistory' }));
     expect(second.value.snapshot.phase).toBe('error');
     expect(second.value.snapshot.loadError?.code).toBe('reloadStatusFailed');
     expect(JSON.stringify({ snapshot: second.value.snapshot, history: host.history.list() }))

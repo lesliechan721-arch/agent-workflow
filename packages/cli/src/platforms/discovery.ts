@@ -315,7 +315,7 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const hasVersionReserve = host === 'win32' && (platform === 'copilot'
     || (platform === 'antigravity' && (arch === 'x64' || arch === 'arm64'))
     || (platform === 'grok' && arch === 'x64'));
-  const canRetryFirstVersion = host === 'win32' && platform === 'copilot' && arch === 'x64';
+  const canRetryFirstVersion = host === 'win32' && arch === 'x64' && (platform === 'copilot' || platform === 'grok');
   const versionTimeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS;
   let extraVersionBudgetMs = hasVersionReserve ? versionTimeoutMs : 0;
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',

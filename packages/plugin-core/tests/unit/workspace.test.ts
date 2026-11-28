@@ -14,6 +14,7 @@ import {
   mutateCatalogWorkspaceVersion,
   preparePublishedCatalogWorkspace,
   readCatalogWorkspace,
+  readCatalogSnapshotTransport,
   resolvePublishedPluginVersions,
   resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
@@ -549,6 +550,172 @@ describe('AW Catalog Workspace v1', () => {
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
   })
 
+  it.each(['a-first', 'b-second'])('drains started entry checks and reports the first requested error when %s is delayed', async (delayed) => {
+    // Test Value Gate: independent entry failures must preserve the requested
+    // error order and leave no outstanding checks when callers retry/clean up.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifests = new Map(await Promise.all(['a-first', 'b-second'].map(async (name) =>
+      [name, await writeSourcePlugin(root, name)] as const)))
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot, plugin }) => writeBundle(outputRoot, manifests.get(plugin.manifest.name)!) },
+    })
+    const transport = await readCatalogSnapshotTransport(built.outputRoot)
+    const errors = new Map(['a-first', 'b-second'].map((name) => [name, new Error(`injected read failure: ${name}`)]))
+    const started = new Set<string>()
+    const failed = new Set<string>()
+    const allowDelayed = Promise.withResolvers<void>()
+    const readdir = fs.readdir.bind(fs)
+    const read = vi.spyOn(fs, 'readdir').mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+      const file = args[0]
+      const name = typeof file === 'string' && path.dirname(file) === path.join(transport.rootDir, 'plugins')
+        ? path.basename(file) : ''
+      const error = errors.get(name)
+      if (!error) return readdir(...args)
+      started.add(name)
+      if (name === delayed) await allowDelayed.promise
+      failed.add(name)
+      throw error
+    })
+    let settled = false
+    const pending = transport.validateEntries(['b-second', 'a-first'])
+      .catch((error: unknown) => error)
+      .finally(() => { settled = true })
+    try {
+      await vi.waitFor(() => expect(started.size).toBe(2))
+      expect(failed.size).toBe(1)
+      expect(settled).toBe(false)
+    } finally {
+      allowDelayed.resolve()
+      await pending
+      read.mockRestore()
+    }
+    expect(await pending).toBe(errors.get('b-second'))
+    expect(failed.size).toBe(2)
+    // Failed entries do not poison the same validation scope's retry.
+    await expect(transport.validateEntries(['b-second', 'a-first'])).resolves.toBeUndefined()
+  })
+
+  it('bounds concurrent entry checks across overlapping requests and shares their common entries', async () => {
+    // Test Value Gate: same-scope callers must not multiply complete entry
+    // validations or lose the scope-wide I/O bound when their requests overlap.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const names = ['a-first', 'b-second', 'c-third']
+    const manifests = new Map(await Promise.all(names.map(async (name) =>
+      [name, await writeSourcePlugin(root, name)] as const)))
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot, plugin }) => writeBundle(outputRoot, manifests.get(plugin.manifest.name)!) },
+    })
+    const transport = await readCatalogSnapshotTransport(built.outputRoot)
+    const pluginRoots = new Set(names.map((name) => path.join(transport.rootDir, 'plugins', name)))
+    const started = new Set<string>()
+    const allow = Promise.withResolvers<void>()
+    const lstat = fs.lstat.bind(fs)
+    const stat = vi.spyOn(fs, 'lstat').mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      const file = args[0]
+      if (typeof file === 'string' && pluginRoots.has(file)) {
+        started.add(file)
+        await allow.promise
+      }
+      return lstat(...args)
+    })
+    const manifestReads = vi.spyOn(fs, 'readJson')
+    const requests = [
+      transport.validateEntries(['a-first', 'b-second', 'a-first']),
+      transport.validateEntries(['b-second', 'c-third']),
+    ]
+    try {
+      await vi.waitFor(() => expect(started.size).toBe(2))
+      // The third entry cannot begin while both permits are occupied.
+      expect(started.has(path.join(transport.rootDir, 'plugins', 'c-third'))).toBe(false)
+      allow.resolve()
+      await expect(Promise.all(requests)).resolves.toEqual([undefined, undefined])
+      expect(started.size).toBe(3)
+      for (const pluginRoot of pluginRoots) {
+        expect(manifestReads.mock.calls.filter(([file]) =>
+          file === path.join(pluginRoot, '.agents-plugin', 'plugin.json'))).toHaveLength(1)
+      }
+    } finally {
+      allow.resolve()
+      await Promise.allSettled(requests)
+      stat.mockRestore()
+      manifestReads.mockRestore()
+    }
+  })
+
+  it('drains independent portable platform checks in the original platform order', async () => {
+    // Test Value Gate: complete validation must preserve the earlier platform
+    // error instead of surfacing a faster sibling failure, with all reads
+    // from the started platform batch drained.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const original = await writeSourcePlugin(root)
+    const manifest = { ...original, skills: './skills' }
+    const pluginRoot = path.join(root, 'plugins', 'atomic-plugin')
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), manifest)
+    await fs.outputFile(path.join(pluginRoot, 'skills/example/SKILL.md'),
+      '---\nname: example\ndescription: Example Skill.\n---\n\n# Example\n')
+    await fs.outputFile(path.join(pluginRoot, 'skills/example/README.md'), '# Example\n')
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot }) => writeNativeAndPortableSkillBundle(outputRoot, manifest) },
+    })
+    const transport = await readCatalogSnapshotTransport(built.outputRoot)
+    const platforms = ['antigravity', 'cursor']
+    const errors = new Map(platforms.map((platform) =>
+      [path.join(transport.rootDir, 'plugins/atomic-plugin', platform, 'skills/example/README.md'),
+        new Error(`injected platform read failure: ${platform}`)] as const))
+    const delayed = [...errors.keys()][0]!
+    const started = new Set<string>()
+    const failed = new Set<string>()
+    const allowDelayed = Promise.withResolvers<void>()
+    const readFile = fs.readFile.bind(fs)
+    const read = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      const file = args[0]
+      if (typeof file !== 'string') return readFile(...args)
+      const error = errors.get(file)
+      if (!error) return readFile(...args)
+      started.add(file)
+      if (file === delayed) await allowDelayed.promise
+      failed.add(file)
+      throw error
+    })
+    let settled = false
+    const pending = transport.validateEntries().catch((error: unknown) => error).finally(() => { settled = true })
+    try {
+      await vi.waitFor(() => expect(started.size).toBe(2))
+      expect(failed.size).toBe(1)
+      expect(settled).toBe(false)
+    } finally {
+      allowDelayed.resolve()
+      await pending
+      read.mockRestore()
+    }
+    expect(await pending).toBe(errors.get(delayed))
+    expect(failed.size).toBe(2)
+  })
+
+  it('checks the current bundle inventory for newly added runtime requirements receipts', async () => {
+    // Test Value Gate: previously verified entry digests cannot hide a receipt
+    // that appeared before the first complete check.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const transport = await readCatalogSnapshotTransport(built.outputRoot)
+    const receipt = path.join(transport.rootDir, 'plugins', 'atomic-plugin', 'node_modules', 'aw-plugin-requirements.json')
+    await fs.outputJson(receipt, {})
+    await expect(transport.validateEntries()).rejects.toThrow(/reserved runtime requirements receipt outside a Skill root/u)
+    await fs.remove(receipt)
+    await expect(transport.validateEntries()).resolves.toBeUndefined()
+  })
+
   it('bounds payload reads while validating both Catalog entry digests', async () => {
     // Test Value Gate: Catalog validation must retain both digest checks without duplicate payload I/O.
     const root = await createWorkspace()
@@ -628,6 +795,52 @@ describe('AW Catalog Workspace v1', () => {
     await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
   })
 
+  it('bounds concurrent payload reads across directories without skipping bundle files', async () => {
+    // Test Value Gate: a new directory-read schedule must not skip branches
+    // or multiply open payload reads by the number of independent directories.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const payloads = Array.from({ length: 12 }, (_, index) => path.join('payload', `dir-${index}`, 'bytes.bin'))
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await Promise.all(payloads.map((relative, index) =>
+            fs.outputFile(path.join(outputRoot, relative), Buffer.from([index, 128, 255]))))
+        },
+      },
+    })
+    const plugin = path.join(await fs.realpath(built.outputRoot), 'plugins', 'atomic-plugin')
+    const expected = new Set(payloads.map((relative) => path.join(plugin, relative)))
+    const observed = new Map<string, number>()
+    let active = 0
+    let peak = 0
+    const originalRead = fs.readFile.bind(fs)
+    const read = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      const file = args[0]
+      if (typeof file !== 'string' || !expected.has(file)) return originalRead(...args)
+      observed.set(file, (observed.get(file) ?? 0) + 1)
+      active++
+      peak = Math.max(peak, active)
+      try {
+        await setImmediate()
+        return await originalRead(...args)
+      } finally {
+        active--
+      }
+    })
+    try {
+      await validateCatalogSnapshotTransport(built.outputRoot)
+      expect(observed).toEqual(new Map([...expected].map((file) => [file, 1])))
+      expect(peak).toBeLessThanOrEqual(8)
+      expect(active).toBe(0)
+    } finally {
+      read.mockRestore()
+    }
+  })
+
   it('rejects the first symbolically linked Catalog entry in depth-first order', async () => {
     // Test Value Gate: even if another sibling has already failed, report the
     // first invalid entry a serial depth-first validation would encounter.
@@ -649,26 +862,28 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
-  it('closes every started large Catalog read before returning a failure', async () => {
+  it.each([false, true])('closes every started large Catalog read before returning a failure (separate directories: %s)', async (separateDirectories) => {
     // Test Value Gate: handle errors must keep the original read failure and
     // release those files before the caller can retry or clean up.
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
     const payload = Buffer.alloc(2 * 1024 * 1024, 0x7a)
+    const firstRelative = separateDirectories ? path.join('a', 'large.bin') : 'a-large.bin'
+    const secondRelative = separateDirectories ? path.join('b', 'large.bin') : 'b-large.bin'
     const built = await buildCatalogWorkspace({
       workspaceRoot: root,
       adapter: {
         async build({ outputRoot }) {
           await writeBundle(outputRoot, manifest)
-          await fs.writeFile(path.join(outputRoot, 'a-large.bin'), payload)
-          await fs.writeFile(path.join(outputRoot, 'b-large.bin'), payload)
+          await fs.outputFile(path.join(outputRoot, firstRelative), payload)
+          await fs.outputFile(path.join(outputRoot, secondRelative), payload)
         },
       },
     })
     const plugin = path.join(await fs.realpath(built.outputRoot), 'plugins', 'atomic-plugin')
-    const first = path.join(plugin, 'a-large.bin')
-    const second = path.join(plugin, 'b-large.bin')
+    const first = path.join(plugin, firstRelative)
+    const second = path.join(plugin, secondRelative)
     const failure = new Error('injected stream read failure')
     const closed = new Set<string>()
     const firstClosed = Promise.withResolvers<void>()

@@ -6,10 +6,22 @@ export const CATALOG_EXECUTABLE_FILES_PATH = '.agents-plugin/aw-executable-files
 
 export async function listCatalogBundleFiles(root: string, relative = ''): Promise<string[]> {
   const result: string[] = [];
-  for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
-    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (entry.isDirectory()) result.push(...await listCatalogBundleFiles(root, child));
-    else result.push(child);
+  const directories = [relative];
+  const batchWidth = 8;
+  for (let offset = 0; offset < directories.length;) {
+    const batch = directories.slice(offset, offset + batchWidth);
+    offset += batch.length;
+    const listings = await Promise.allSettled(batch.map((directory) =>
+      fs.readdir(path.join(root, directory), { withFileTypes: true })));
+    for (const [index, listing] of listings.entries()) {
+      if (listing.status === 'rejected') throw listing.reason;
+      const directory = batch[index]!;
+      for (const entry of listing.value) {
+        const child = directory ? path.posix.join(directory, entry.name) : entry.name;
+        if (entry.isDirectory()) directories.push(child);
+        else result.push(child);
+      }
+    }
   }
   return result.sort();
 }

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { prepareWindowsGrokBinary } from './native-platform-grok-distribution.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
@@ -57,11 +58,16 @@ export function isolatedEnvironment(root, network = false) {
   return env;
 }
 
-export async function prepareEnvironment(root) {
+export async function prepareEnvironment(root, grokBinary) {
   const env = isolatedEnvironment(root);
   for (const [key, value] of Object.entries(env)) {
     if (['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TMPDIR', 'TMP', 'TEMP'].includes(key)
       || key.endsWith('_HOME') || key === 'CLAUDE_CONFIG_DIR' || key === 'PI_CODING_AGENT_DIR') await fs.mkdir(value, { recursive: true });
+  }
+  if (grokBinary) {
+    const bin = path.join(env.GROK_HOME, 'bin');
+    await fs.mkdir(bin);
+    await fs.copyFile(grokBinary, path.join(bin, 'grok.exe'), constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
   }
   for (const name of ['gitconfig', 'npmrc', 'npmrc-global']) await fs.writeFile(path.join(root, name), '');
   return env;
@@ -109,8 +115,14 @@ export function usesAntigravityAgentObservation(args, options, host = process, h
     && options.antigravityAgentObservation === true && args.length === 1 && args[0] === 'agents';
 }
 
+export function usesCopilotInventoryObservation(args, options, host = process) {
+  return host.platform === 'linux' && options.nativeClient === 'copilot' && options.nativeClientVersion === '1.0.95'
+    && args.length === 3 && ['plugin', 'skill'].includes(args[0]) && args[1] === 'list' && args[2] === '--json';
+}
+
 export async function execute(launcher, args, options) {
   if (options.nativeClient === 'copilot' && process.platform === 'darwin'
+    || usesCopilotInventoryObservation(args, options)
     || usesAntigravityAgentObservation(args, options)) {
     const { executePublicAw } = await import('./native-platform-public-process.mjs');
     return executePublicAw(launcher, args, { ...options, timeoutMs: options.timeoutMs ?? 30_000 });
@@ -192,10 +204,9 @@ export function getOpenCodeDistribution(parent, host = process) {
   return { packageName, version: clients.opencode.version, entry: `bin/opencode${host.platform === 'win32' ? '.exe' : ''}` };
 }
 
-async function readInstallTiming(root) {
+async function readInstallTiming(directory) {
   const phases = ['npm', 'command:install', 'idealTree', 'reify', 'reify:loadTrees', 'reify:unpack', 'reify:build'];
   try {
-    const directory = path.join(root, 'npm-cache', '_logs');
     const name = (await fs.readdir(directory)).filter(name => name.endsWith('-timing.json')).sort().at(-1);
     if (!name) return { state: 'missing' };
     const file = path.join(directory, name);
@@ -217,6 +228,12 @@ async function readInstallTiming(root) {
 // Download diagnostics use only fixed phase names and numbers, never raw npm logs.
 export async function installClientPackage(client, root, npm, runCommand = promisify(execFile)) {
   const prefix = path.join(root, 'tool');
+  // Only npm content downloads may be shared between acquisitions. Keep npm's
+  // timing logs private so concurrent installs cannot read each other's logs.
+  const env = isolatedEnvironment(root, true);
+  if (process.env.AW_QUALIFICATION_NPM_CACHE) env.npm_config_cache = process.env.AW_QUALIFICATION_NPM_CACHE;
+  const logsDirectory = path.join(root, 'npm-logs');
+  env.npm_config_logs_dir = logsDirectory;
   const timeoutMs = 180_000;
   const startedAt = Date.now();
   const started = performance.now();
@@ -226,7 +243,7 @@ export async function installClientPackage(client, root, npm, runCommand = promi
   try {
     await runCommand(npm.executable, [...npm.prefix, 'install', '--prefix', prefix, '--no-audit', '--no-fund',
     '--ignore-scripts', '--timing', '--package-lock=true', `${client.package}@${client.version}`], {
-      cwd: root, env: isolatedEnvironment(root, true), timeout: timeoutMs,
+      cwd: root, env, timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024, encoding: 'utf8', killSignal: 'SIGKILL', windowsHide: true,
     });
   }
@@ -240,11 +257,11 @@ export async function installClientPackage(client, root, npm, runCommand = promi
     Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(elapsed),
       status: 'failed', deadlineReached: elapsed >= timeoutMs });
     error.evidence = { exitCode: cause.code, signal: cause.signal, killed: cause.killed, stderr,
-      download: { ...download, npmTiming: await readInstallTiming(root) } };
+      download: { ...download, npmTiming: await readInstallTiming(logsDirectory) } };
     throw error;
   }
   Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(performance.now() - started), status: 'completed' });
-  return { ...download, npmTiming: await readInstallTiming(root) };
+  return { ...download, npmTiming: await readInstallTiming(logsDirectory) };
 }
 
 export async function acquireClient(platform, root) {
@@ -302,12 +319,16 @@ export async function acquireClient(platform, root) {
       if (record?.version !== client.version || !/^sha512-[A-Za-z0-9+/]+=*$/u.test(record?.integrity ?? '')) throw new Error('client-lock-integrity-missing');
     }
   }
+  const grok = platform === 'grok' && process.platform === 'win32' && process.arch === 'x64' && client.version === '1.0.77'
+    ? await prepareWindowsGrokBinary(prefix, metadata, lock) : undefined;
   return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] }, binDirectory: prefix,
+    ...(grok ? { grokBinary: grok.binary } : {}),
     acquisition: { package: client.package, version: client.version, source: client.source, download,
       integrity: lock.packages?.[`node_modules/${client.package}`]?.integrity ?? null,
       executablePackage, executablePackageVersion: metadata.version,
       executablePackageIntegrity: lock.packages?.[`node_modules/${executablePackage}`]?.integrity ?? null,
       lockSha256: sha256(JSON.stringify(lock)), entrySha256: sha256(bytes), scripts: 'disabled',
+      ...(grok ? { preparedWindowsBinary: grok.evidence } : {}),
       ...(platform === 'opencode' ? { lockFileSha256: sha256(lockBytes), entrySelection: 'fixed-official-optional-native-package; parent-placeholder-not-executed' } : {}) } };
 }
 
@@ -333,6 +354,10 @@ export async function writeCandidate(output, sourceSha, root = repoRoot) {
   await fs.writeFile(output, JSON.stringify({ schemaVersion: 1, sourceSha, files }, null, 2) + '\n');
 }
 
+export function candidateArtifactSha256(files) {
+  return sha256(JSON.stringify(Object.entries(files).filter(([name]) => name.startsWith('packages/'))));
+}
+
 export async function verifyCandidate(file, root = repoRoot) {
   const bytes = await fs.readFile(file);
   const manifest = JSON.parse(bytes);
@@ -340,7 +365,7 @@ export async function verifyCandidate(file, root = repoRoot) {
   const files = await candidateFiles(root);
   if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error('candidate-content-mismatch');
   if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== manifest.sourceSha) throw new Error('candidate-source-mismatch');
-  return { sourceSha: manifest.sourceSha, manifestSha256: sha256(bytes), files: Object.keys(files).length };
+  return { sourceSha: manifest.sourceSha, manifestSha256: sha256(bytes), artifactSha256: candidateArtifactSha256(files), files: Object.keys(files).length };
 }
 
 export async function renderPackage(ctx, revision) {

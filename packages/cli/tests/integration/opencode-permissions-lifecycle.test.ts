@@ -5,14 +5,19 @@ import { normalizePluginCommand } from '@lesliechan721/aw-plugin-core/manifest';
 import fs from 'fs-extra';
 import { expect, it, onTestFinished, vi } from 'vitest';
 
-import { runCli } from '../../src/index.js';
+import cliPackage from '../../package.json' with { type: 'json' };
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { runCli } from '../../src/index.js';
+import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { renderPublicResult, type CommandResult } from '../../src/output/public-result.js';
 import * as registry from '../../src/platforms/registry.js';
 import { createConsoleTuiV4Controller } from '../../src/tui/controller-runtime.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { addCatalogSource, readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import * as safeFiles from '../../src/utils/safe-fs.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function shellRule(resource: string, effect: 'allow' | 'ask' | 'deny') {
@@ -27,7 +32,7 @@ const managedAllow = shellRule('aw command run local/probe -- show *', 'allow');
 const managedAsk = shellRule('aw command run local/probe -- confirm *', 'ask');
 const managedDeny = shellRule('aw command run local/probe -- blocked *', 'deny');
 
-async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false, userBatch = false, extraPrefixes: string[] = []) {
+async function createPermissionFixture(secondRestriction?: 'exact' | 'unrepresentable', withConfig = false, userBatch = false, extraPrefixes: string[] = []) {
   const { env, layout } = getCurrentSourceTestIsolation();
   const catalog = path.join(layout.fixtureCwd, 'catalog');
   const projectA = path.join(layout.fixtureCwd, 'project-a');
@@ -119,26 +124,54 @@ async function fixture(secondRestriction?: 'exact' | 'unrepresentable', withConf
     expect({ exitCode, status: result.status }, JSON.stringify(result.diagnostics)).toEqual({ exitCode: 0, status: 'success' });
     return result;
   }
-  await success(projectA, ['source', 'add', 'local', '--path', catalog, '--primary', '--no-auto-check', '--yes']);
-  await success(projectA, ['source', 'sync', 'local', '--yes']);
-  await success(projectA, ['target', 'set', 'opencode', '--context', 'user', '--force']);
-  return { env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
+  return { catalog, env, projectA, projectB, userConfig, projectConfig, ownershipRoot, cli, success, writeCatalog, failSecondPreApply };
+}
+
+function fixture(...args: Parameters<typeof createPermissionFixture>) {
+  return preparePermissionFixture(() => createPermissionFixture(...args));
+}
+
+async function preparePermissionFixture(
+  createFixture: () => ReturnType<typeof createPermissionFixture>,
+  timing?: ReturnType<typeof createCommandTestTiming>,
+) {
+  const measure = <T>(name: string, action: () => Promise<T>) =>
+    timing ? timing.measure('fixture-step', name, () => action()) : action();
+  const setup = await measure('catalog.snapshot', createFixture);
+  const { catalog, env, projectA: cwd } = setup;
+  // Source registration and target selection are prerequisites, not part of the permission lifecycle under test.
+  await measure('source.configure', async () => {
+    const { config, digest } = await readCatalogSourcesConfigSnapshot(env);
+    const nextConfig = await addCatalogSource(config, {
+      id: 'local', type: 'path', path: catalog, primary: true, autoCheck: false,
+    }, cwd);
+    await replaceCatalogSourcesConfig({ config: nextConfig, expectedDigest: digest, env });
+  });
+  await measure('source.sync', () => syncCatalogSourceGeneration({
+    sourceId: 'local', cliVersion: cliPackage.version, cwd, env, impactConfirmed: true,
+  }));
+  await measure('target.preferences', () => setTargets({ cwd, env, scope: 'user' }, ['opencode']));
+  return setup;
 }
 
 // Public lifecycle must write strict host config in the selected scope and release only the retiring owner's rules.
-it('merges two OpenCode owners and preserves manual rules through scoped sync and removal', async () => {
-  const { projectA, projectB, userConfig, projectConfig, success } = await fixture();
+it('merges two OpenCode owners and preserves manual rules through scoped sync and removal', async (test) => {
+  const timing = createCommandTestTiming(test);
+  const { projectA, projectB, userConfig, projectConfig, success } = await timing.measure(
+    'fixture', 'opencode-permissions', () => preparePermissionFixture(createPermissionFixture, timing),
+  );
+  const run = (phase: string, args: string[]) => timing.measure('command', phase, () => success(projectA, args));
   const userRules = [shellRule('*', 'allow'), shellRule('aw-other personal', 'ask')];
   const initialProjectRules = [shellRule('aw-other first', 'ask'), manualAllow, shellRule('aw-other last', 'deny')];
   await fs.outputJson(userConfig, { permissions: userRules });
   await fs.outputJson(projectConfig, { permissions: initialProjectRules, snapshots: false });
 
-  await success(projectA, ['plugin', 'install', otherOwner, '--scope', 'user', '--context', 'user', '--target', 'opencode', '--yes']);
+  await run('user-install', ['plugin', 'install', otherOwner, '--scope', 'user', '--context', 'user', '--target', 'opencode', '--yes']);
   const personal = await fs.readJson(userConfig);
   expect(personal).toEqual({ permissions: [expect.anything(), expect.anything(), ...userRules] });
   expect(personal.permissions.slice(0, 2)).toEqual(expect.arrayContaining([sharedAllow, manualAllow]));
   const userBytes = await fs.readFile(userConfig);
-  await success(projectA, ['plugin', 'install', owner, otherOwner, '--scope', 'project', '--context', 'project', '--target', 'opencode', '--yes']);
+  await run('project-install', ['plugin', 'install', owner, otherOwner, '--scope', 'project', '--context', 'project', '--target', 'opencode', '--yes']);
   const installed = await fs.readJson(projectConfig);
   expect(installed).toEqual({ permissions: [expect.anything(), expect.anything(), ...initialProjectRules, managedAsk, managedDeny], snapshots: false });
   const projectGrants = installed.permissions.slice(0, 2);
@@ -148,17 +181,17 @@ it('merges two OpenCode owners and preserves manual rules through scoped sync an
 
   const extraRule = shellRule('aw-other extra', 'ask');
   await fs.writeJson(projectConfig, { ...installed, permissions: [extraRule, ...installed.permissions] });
-  await success(projectA, ['plugin', 'sync', owner, otherOwner, '--context', 'project', '--target', 'opencode', '--yes']);
+  await run('project-sync-after-edit', ['plugin', 'sync', owner, otherOwner, '--context', 'project', '--target', 'opencode', '--yes']);
   const afterEdit = await fs.readJson(projectConfig);
   expect(afterEdit).toEqual({ permissions: [...projectGrants, extraRule, ...initialProjectRules, managedAsk, managedDeny], snapshots: false });
   const syncedBytes = await fs.readFile(projectConfig);
-  const synced = await success(projectA, ['plugin', 'sync', owner, otherOwner, '--context', 'project', '--target', 'opencode', '--yes']);
+  const synced = await run('project-idempotent-sync', ['plugin', 'sync', owner, otherOwner, '--context', 'project', '--target', 'opencode', '--yes']);
   expect(await fs.readFile(projectConfig)).toEqual(syncedBytes);
   expect(synced.diagnostics.filter(({ code }) => code === 'hostPermissionAdditionalImpact')).toEqual([]);
 
-  await success(projectA, ['plugin', 'remove', owner, '--scope', 'project', '--context', 'project', '--yes']);
+  await run('project-remove-first', ['plugin', 'remove', owner, '--scope', 'project', '--context', 'project', '--yes']);
   expect(await fs.readJson(projectConfig)).toEqual({ permissions: [sharedAllow, extraRule, ...initialProjectRules], snapshots: false });
-  await success(projectA, ['plugin', 'remove', otherOwner, '--scope', 'project', '--context', 'project', '--yes']);
+  await run('project-remove-second', ['plugin', 'remove', otherOwner, '--scope', 'project', '--context', 'project', '--yes']);
   expect(await fs.readJson(projectConfig)).toEqual({ permissions: [extraRule, ...initialProjectRules], snapshots: false });
   expect(await fs.readFile(userConfig)).toEqual(userBytes);
 }, 25_000);

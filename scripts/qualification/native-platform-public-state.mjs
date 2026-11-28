@@ -390,6 +390,216 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
     sha256: sha256(actual.content), bytes: actual.content.length };
 }
 
+// Public v2 diagnostics and target.blockerCodes are open strings. Publish only fixed codes
+// from lifecycle producers: backends can also forward error prefixes and system errors.
+const receiptCodes = new Set([
+  // Public lifecycle request, intent, selection and Catalog preparation.
+  'commandFailed', 'lifecycleFailed', 'operationInterrupted', 'operationCancelled', 'operationPlanStale',
+  'operationReviewStale', 'operationReviewRequired', 'reviewStale', 'confirmationRequired', 'awHomeMutationLocked',
+  'awHomeMutationLockTimeout', 'deploymentPreferencesInvalid', 'deploymentPreferencesUnavailable',
+  'deploymentPreferencesWriteFailed', 'pluginIntentStateInvalid', 'pluginIntentStateUnavailable',
+  'pluginIntentRootMissing', 'projectRootUnavailable', 'projectSelectionInvalid', 'projectConfigIgnored', 'scopeEnvironmentAmbiguous',
+  'scopeEnvironmentConflict', 'userNeutralCwdUnavailable', 'userNeutralCwdUnsafe', 'localTargetsRequired',
+  'noTargetsEnabled', 'targetsNotConfigured', 'invalidExactTargets', 'installTargetSelectionUnsupported',
+  'sourceUnavailable', 'sourceMissing', 'sourceActiveUnavailable', 'sourceIdentityMismatch', 'sourceIdentityConflict',
+  'sourceRefreshFailed', 'sourceRefreshConfirmationRequired', 'catalogReadFailed', 'catalogSnapshotInvalid',
+  'catalogSourcesConfigInvalid', 'catalogSourceUnavailable', 'catalogSourceResolutionFailed', 'catalogSourceConflict',
+  'catalogGenerationStateInvalid', 'catalogGenerationMetadataInvalid', 'catalogGenerationUnavailable',
+  'catalogGenerationSourceMissing', 'catalogGenerationIdentityMismatch', 'catalogGenerationReviewStale',
+  'catalogGenerationActiveComparisonUnavailable', 'catalogGenerationFailed', 'catalogGenerationRefreshFailed', 'catalogGenerationPublishFailed',
+  'catalogImpactConfirmationRequired', 'catalogReplaceDamagedRequired', 'catalogLogicalIdentityChanged',
+  'catalogVersionConflict', 'catalogRollbackDetected', 'pluginUnavailable', 'pluginManifestUnavailable', 'syncPluginNotDesired',
+  'pluginSelectorAmbiguous', 'awCapabilityUnsupported', 'stateInventoryFailed', 'statusUnavailable', 'targetSelectionInvalid',
+  // Joint and scoped recovery, dependency placement and preApply.
+  'jointDemandUnknown', 'dependencyExcluded', 'dependencyContractInvalid', 'dependencyGraphInvalid',
+  'dependencyNotReady', 'dependencyInstallFailed', 'dependencyApplyFailed', 'dependencyStillRequired',
+  'dependencyTargetUnsupported', 'dependencyRootScopeUnsupported', 'dependencyScopeOverrideUnsupported', 'dependencyScopeOverrideTooNarrow',
+  'dependencyScopeTooNarrow', 'dependencyScopeConflict', 'targetPlacementConflict', 'userProviderNotSatisfied',
+  'userSkillProviderNotReady', 'projectSkillProviderConflict', 'providerSwitchVerificationFailed',
+  'providerSwitchPreApplyFailed', 'providerSwitchCleanupFailed', 'artifactCollision', 'crossScopeSkillCollision',
+  'requiredConfigMissing', 'configInvalid', 'invalidConfig', 'configUnavailable', 'configSchemaUnavailable',
+  'configApplyRequiresExistingOutput', 'configReadFailed', 'deliveryUnsupported', 'deliverySwitchCleanupRequired',
+  'deliverySwitchObservationFailed', 'deliverySwitchPortableCleanupRequired',
+  'deliverySwitchPortableObservationFailed', 'preApplyAuthorizationRequired', 'preApplyAuthorizationUnavailable',
+  'preApplyTargetUnavailable', 'preApplyFailed', 'preApplyExecutableMissing', 'preApplyInputFailed',
+  'preApplyStartFailed', 'preApplyTimedOut', 'preApplyExited', 'processCleanupUnconfirmed',
+  'pluginProcessCleanupFailed',
+  // Retirement and its confirmed native preparation/cleanup.
+  'removedPluginActiveUnavailable', 'removedPluginOwnershipConflict', 'removedPluginNativeOwnershipUnavailable',
+  'nativeRetireFailed', 'nativeRetirePartial', 'sharedNativePreserved', 'nativeManagedRegistration',
+  // Managed command producers, including their consumers and native tool authorization.
+  'commandPackageProviderNotSatisfied', 'commandPackagePreparationFailed', 'commandPackageApplyFailed',
+  'commandPackageDeclarationMissing', 'commandPackageUnavailable', 'commandBindingInvalid',
+  'commandDefinitionInvalid', 'commandIdentityConflict', 'commandOwnerMismatch', 'commandResourceInvalid',
+  'commandReferenceInvalid', 'commandNotFound', 'commandRuntimeConfigInvalid', 'configApplyVersionMismatch',
+  'managedCommandRecoveryFailed', 'nativeToolAuthorizationRequired', 'nativeToolSyncRequired',
+  // Portable preparation, ownership, publication and readback.
+  'portablePreparationFailed', 'portableEnvironmentUnsupported', 'portableUnsupported',
+  'portableInvalidAgentSelection', 'portableRuntimeImportMissing', 'portableRendererFailed', 'portableNoSkills',
+  'portableSkillNameConflict', 'portableSkillInvalid', 'portableSensitiveOutput', 'portableOutputConflict',
+  'portableOwnerInvalid', 'portableOwnerDamaged', 'portableObservationFailed', 'portableComponentsUnmet',
+  'portableUpdateAuthorizationRequired', 'portableWriteFailed', 'portableVerificationFailed',
+  'previousDeploymentRetained',
+  // Native preparation and execution, including deployment effects and postchecks.
+  'nativePreparationBlocked', 'nativePreparationFailed', 'nativeRecoveryFailed', 'targetPreparationFailed',
+  'legacyStateUnsupported', 'sourceChanged', 'externalOwnershipPresent', 'componentSensitiveConfigExposed',
+  'nativeRouteUnsupported', 'platformPreparationFailed', 'platformExecutionFailed', 'writeFailed', 'clientInstallEntryUnavailable',
+  'nativeTrustRequired', 'nativeIdentityUnconfirmed', 'nativeIdentityMismatch', 'nativeCliExecutableMissing',
+  'nativeCliFailed', 'nativeCliTimedOut', 'deploymentDependencyFailed', 'deploymentEvidenceMismatch',
+  'deploymentOwnerIdentityMismatch', 'deploymentOwnershipConflict', 'deploymentOwnershipUnconfirmed',
+  'deploymentPostcheckFailed', 'deploymentDestinationMismatch', 'deploymentPackageOwnerInvalid',
+  'deploymentRenderUnitUnbound', 'deploymentSourceIdentityMissing', 'deploymentEvidenceInvalid',
+  'deploymentExecutionVerificationUnsupported', 'deploymentCleanupIncomplete', 'platformUnavailable',
+  'platformPreparationPartial', 'platformComponentsUnmet', 'platformProjectionEmpty', 'platformProjectionFailed',
+  'platformProjectionEvidenceFailed', 'platformMutationFailed', 'platformMutationUnknown', 'platformInputDrift',
+  'platformContentDrift', 'platformExpectationUnconfirmed', 'platformPackageMissing',
+  'platformContributionUnsupported', 'packageRetentionEvidenceInvalid', 'packageUpdateBlockedByUnmet',
+  'shared-projection-conflict', 'sharedPackageRetentionUnconfirmed', 'sharedOwnershipUnsupported',
+  'exclusiveOwnerEvidenceInvalid', 'supplementOwnershipUnconfirmed', 'supplementOwnershipConflict',
+  'supplementPhysicalIdentityUnconfirmed', 'nativeObservationFailed', 'nativeObservationUnavailable',
+  'nativeObservationUnconfirmed', 'nativeObservationUnknown', 'nativeMarketplaceUnconfirmed', 'nativeObservationInvalid', 'nativeStateUnreadable',
+  'nativeConfigurationUnreadable', 'targetInspectionFailed', 'componentInspectionFailed', 'componentResourceMissing', 'componentContentDrift', 'nativeActivationBlocked',
+  'nativeActivationDisabled', 'nativeActivationUnconfirmed', 'nativeActivationEvidenceUnknown',
+  'nativeRegistrationMissing', 'nativeRegistrationUnconfirmed', 'nativePackageMissing', 'nativePackageContentDrift',
+  'nativePackageContentUnconfirmed', 'nativeMutationPostcheckFailed', 'nativeInstallContentPostcheckFailed',
+  'nativeUnregisterPostcheckFailed', 'nativeRetirementPostcheckFailed', 'dynamicExpectationUnconfirmed', 'componentOutputMissing',
+  'componentOutputUnconfirmed', 'antigravityLegacyPackageUnconfirmed', 'antigravityProjectPackageConflict',
+  'codexSharedNativeForeign', 'codexSharedNativeCorrupt', 'codexExtensionScopeConflict', 'codexSurfaceOwnerCollision', 'codexSurfaceNativeIdentityMissing',
+  'codexReconcileEvidenceInvalid', 'codexScopePathAlias', 'codexNativeKindUnsupported', 'codexSystemCliUnsupported',
+  'codexCliNotFound', 'codexNativeObservationFailed', 'codexProjectActivationUnconfirmed',
+  'codexActivationPostcheckFailed', 'codexNativeInstallIncomplete', 'codexNativeObservationUnavailable',
+  'cursorWorkspaceOpenMissing', 'cursorWorkspaceOpenUnconfirmed', 'grokProjectAuthorizationDenied',
+  'opencodeNativeObservationRequired', 'opencodePluginLoadFailed', 'permissionRelatedProjectUpdateIncomplete',
+  'permissionOwnershipWriteFailed', 'permissionConfigurationConflict',
+  // Platform projection and marketplace validation errors propagated through native preparation.
+  'cursorWorkspaceHookInvalid', 'marketplaceGenerationNotPrepared', 'marketplaceRootInvalid',
+  'platformMarketplaceNameConflict', 'platformMarketplaceNameInvalid', 'platformMarketplaceProjectionInvalid',
+  'platformMarketplaceRouteUnsupported', 'platformMarketplaceSourceInvalid',
+  'platformProjectionAgentFieldsUnsupported', 'platformProjectionAgentRegistrationUnsupported',
+  'platformProjectionAgentRequiresSupplement', 'platformProjectionCapabilityUnsupported',
+  'platformProjectionCommandResourceConflict', 'platformProjectionCommandResourceUnverified',
+  'platformProjectionConditionalAgentInstructionUnsupported', 'platformProjectionGenericKindUnsupported',
+  'platformProjectionHookEventUnsupported', 'platformProjectionHookFeedbackUnsupported',
+  'platformProjectionHookMatcherUnsupported', 'platformProjectionIdentityConflict',
+  'platformProjectionInputMismatch', 'platformProjectionInstructionAudienceUnsupported',
+  'platformProjectionInstructionCoverageUnsupported', 'platformProjectionInstructionPathsUnsupported',
+  'platformProjectionInstructionScopeUnsupported', 'platformProjectionInstructionTooLarge',
+  'platformProjectionInvocationPolicyUnsupported', 'platformProjectionMcpTransportUnsupported',
+  'platformProjectionNameConflict', 'platformProjectionNameInvalid', 'platformProjectionPathConflict',
+  'platformProjectionPathInvalid', 'platformProjectionPromptModeUnsupported', 'platformProjectionRenderUnitInvalid',
+  'platformProjectionResourceMismatch', 'platformProjectionResourceMissing',
+  'platformProjectionShellArgumentUnsupported', 'platformProjectionSkillMetadataConflict',
+  'platformProjectionSkillMetadataUnsupported', 'platformProjectionSkillPolicyConflict',
+  'platformProjectionSkillPolicyInvalid', 'platformProjectionStagingInvalid',
+  'platformProjectionSupplementKindUnsupported', 'platformProjectionSupplementUnsupported',
+  'sharedConfigurationInvalid', 'agentReferenceInvalid', 'platformPluginIdentityInvalid',
+  'platformEmptyStateStaticSourceInvalid', 'platformEmptyStateConfigInvalid',
+  // Fixed delivery notices and reason codes (not arbitrary runtime text).
+  'piAgentConsumerUnavailable', 'piConfigurationUnconfirmed', 'piProjectTrustRequired',
+  'piAgentConsumerMissing', 'piAgentConsumerDisabled', 'piAgentPackageSourceUnsupported', 'piAgentPackageAccessDenied',
+  'skillInvocationPolicyNotGuaranteed', 'invocationControlUnsupported', 'invocationControlDegraded', 'noBoundExecutor',
+]);
+const deploymentStaleReasons = new Set(['deploymentInputsChanged', 'clientDiscoveryChanged', 'deploymentObservationChanged',
+  'deploymentReferencesChanged', 'deploymentPathsChanged', 'marketplaceChanged', 'deploymentEvidenceReadFailed']);
+// A few existing reasons distinguish stale checks and cleanup failures without publishing free-form messages.
+const receiptReasons = new Set(['operationPlanStale: client discovery changed after the ordinary observation.',
+  'operationPlanStale: deployment evidence changed after the ordinary observation.',
+  'operationPlanStale: deployment evidence changed before source registration.',
+  'operationPlanStale: deployment evidence changed during source registration.',
+  'operationPlanStale: deployment evidence changed.',
+  'The deployment evidence changed. Prepare and confirm a new operation.',
+  'Process cleanup could not be confirmed.',
+  'Process cleanup could not be confirmed. Check the client before retrying.',
+  'Process cleanup could not be confirmed. Check status before retrying.',
+  'The preApply process cleanup could not be confirmed.']);
+
+// Match the subject before filtering codes: an exact but redacted diagnostic
+// must not become a less-specific failure of a different plugin.
+function* matchingReceiptDiagnostics(value, pluginIds, platform, scope, errorsOnly = false) {
+  for (const item of Array.isArray(value) ? value : []) {
+    if (typeof item?.code !== 'string' || !item.code || (errorsOnly && ['warning', 'info'].includes(item.severity))) continue;
+    let subject;
+    if (item.subject !== undefined) {
+      if (!item.subject || typeof item.subject !== 'object' || Array.isArray(item.subject)) continue;
+      const { pluginId, sourceId, target, scope: subjectScope } = item.subject;
+      const requested = pluginId === undefined ? pluginIds : pluginIds?.filter(id => id === pluginId);
+      if (pluginId !== undefined && !requested?.length
+        || sourceId !== undefined && !requested?.some(id => id.split('/')[0] === sourceId)
+        || target !== undefined && target !== platform
+        || subjectScope !== undefined && (!['user', 'project'].includes(subjectScope) || scope && subjectScope !== scope)) continue;
+      subject = Object.fromEntries(Object.entries({ pluginId, sourceId, target, scope: subjectScope }).filter(([, v]) => v !== undefined));
+      if (!Object.keys(subject).length) continue;
+    }
+    yield { item, subject };
+  }
+}
+
+function* receiptFacts(value, pluginIds, platform, scope, errorsOnly = false) {
+  for (const { item, subject } of matchingReceiptDiagnostics(value, pluginIds, platform, scope, errorsOnly)) {
+    if (!receiptCodes.has(item.code)) continue;
+    const reasonCode = item.detail?.reasonCode;
+    const safeReason = receiptCodes.has(reasonCode) || item.code === 'operationPlanStale' && deploymentStaleReasons.has(reasonCode);
+    yield { code: item.code, ...(['error', 'warning', 'info'].includes(item.severity) ? { severity: item.severity } : {}),
+      ...(subject ? { subject } : {}), ...(safeReason ? { reasonCode } : {}), ...(receiptReasons.has(item.message) ? { reason: item.message } : {}) };
+  }
+}
+
+export function receiptDiagnostics(value, pluginIds, platform, scope) {
+  const diagnostics = [];
+  for (const fact of receiptFacts(value, pluginIds, platform, scope)) {
+    diagnostics.push(fact);
+    if (diagnostics.length === 8) break;
+  }
+  return diagnostics.length ? { diagnostics } : {};
+}
+
+function deploymentDiagnostics(target) {
+  const rows = value => Array.isArray(value) ? value : [];
+  return rows(target?.deploymentReceipts).flatMap(receipt => [
+    ...rows(receipt?.diagnostics), ...rows(receipt?.effects).flatMap(effect => rows(effect?.diagnostics)),
+  ]);
+}
+
+export function targetReceiptBlockers(target) {
+  const codes = Array.isArray(target.blockerCodes) ? target.blockerCodes : [];
+  return { blockerCodes: codes.filter(code => receiptCodes.has(code)).slice(0, 16),
+    ...receiptDiagnostics(deploymentDiagnostics(target), [target.pluginId], target.target, target.scope) };
+}
+
+export function installReceiptCodes(value, target, pluginId, platform, scope) {
+  const targetCodes = Array.isArray(target?.blockerCodes) ? target.blockerCodes : [];
+  const tier = () => ({ present: false, codes: new Set() });
+  const add = (entry, code) => {
+    entry.present = true;
+    if (receiptCodes.has(code)) entry.codes.add(code);
+  };
+  const exact = tier();
+  const plugin = tier();
+  const scoped = tier();
+  const batch = tier();
+  for (const code of targetCodes) add(exact, code);
+  for (const { item } of matchingReceiptDiagnostics(deploymentDiagnostics(target), [pluginId], platform, scope, true)) {
+    add(exact, item.code);
+  }
+  // receiptResult emits both target diagnostics and recoverySummaryErrors. The summary
+  // can name a provider on its consumer's error or repeat a target's error without a subject.
+  const localized = new Set((value.data?.targetResults ?? []).flatMap(row => Array.isArray(row?.blockerCodes) ? row.blockerCodes : []));
+  for (const { item, subject } of matchingReceiptDiagnostics(value.diagnostics, [pluginId], platform, scope, true)) {
+    if (subject?.pluginId === pluginId && subject.target === platform && subject.scope === scope) add(exact, item.code);
+    else if (subject?.pluginId) add(plugin, item.code);
+    else if (subject) add(scoped, item.code);
+    else if (!localized.has(item.code)) add(batch, item.code);
+  }
+  for (const entry of [exact, plugin, scoped, batch]) {
+    if (!entry.present) continue;
+    // Explanatory text, not a claimed CLI diagnostic code. Keep the fact that
+    // this target is blocked without leaking the unknown string or borrowing
+    // a less-specific reason.
+    return entry.codes.size ? [...entry.codes].slice(0, 16) : ['unrecognized blocker (redacted)'];
+  }
+  return [];
+}
+
 // Physical outputs of the public single-component and shipped Catalog qualifications.
 export function nativePath(ctx, spec, kind, packageRoot, name) {
   const { platform, scope, project, env } = ctx;
@@ -418,13 +628,15 @@ export function nativePath(ctx, spec, kind, packageRoot, name) {
   return path.join(packageRoot, file);
 }
 
-export async function readInstalled(ctx, file, marker) {
+export async function readInstalled(ctx, file, expected) {
   const real = await fs.realpath(file);
   const relative = path.relative(ctx.root, real);
   assert(relative && !path.isAbsolute(relative) && !relative.startsWith('..'), 'Expected an isolated installation path');
   const bytes = await fs.readFile(real);
-  assert(bytes.toString('utf8').includes(marker), 'Missing authored content in ' + relative);
-  return { path: relative.split(path.sep).join('/'), sha256: sha256(bytes) };
+  const digest = sha256(bytes);
+  if (Buffer.isBuffer(expected)) assert.equal(digest, sha256(expected), 'Installed Skill digest mismatch in ' + relative);
+  else assert(bytes.toString('utf8').includes(expected), 'Missing authored content in ' + relative);
+  return { path: relative.split(path.sep).join('/'), sha256: digest };
 }
 
 export function targetOf(result, ctx, id, allowBlockers = false) {

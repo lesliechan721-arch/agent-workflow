@@ -4,6 +4,7 @@ import path from 'node:path';
 const PUBLIC_MARKER = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 const UUID = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/giu;
 const componentTraceModes = new Map([
+  ['copilot-component-remove', 'copilot:win32'], ['copilot-component-install', 'copilot:win32'],
   ['codex-component-install', 'codex:win32'], ['grok-component-discovery', 'grok:win32'], ['claude-component-remove', 'claude:darwin'],
 ]);
 const usesComponentTrace = (mode, client, platform) => componentTraceModes.get(mode) === `${client}:${platform}`;
@@ -18,8 +19,24 @@ function codexComponentCategory(args) {
   }
 }
 
-function nativeComponentCategory(client, args) {
+function copilotInventoryCategory(args) {
+  if (matchesArgs(args, ['plugin', 'list', '--json'])) return 'copilot-plugin-list';
+  if (matchesArgs(args, ['plugin', 'marketplace', 'list', '--json'])) return 'copilot-marketplace-list';
+}
+
+function nativeComponentCategory(client, args, mode) {
   if (client === 'codex') return codexComponentCategory(args);
+  if (client === 'copilot') {
+    const inventory = copilotInventoryCategory(args);
+    if (inventory) return inventory;
+    if (mode === 'copilot-component-install' && matchesArgs(args, ['plugin', 'install', 'aw-skill-eval-runner@aw-qualification-official'])) {
+      return 'copilot-plugin-install';
+    }
+    if (mode === 'copilot-component-remove' && matchesArgs(args, ['plugin', 'uninstall', 'single-skill@aw-matrix'])) {
+      return 'copilot-plugin-uninstall';
+    }
+    return undefined;
+  }
   if (matchesArgs(args, ['--version'])) return `${client}-version`;
   if (client === 'grok') {
     if (matchesArgs(args, ['--help'])) return 'grok-help';
@@ -54,6 +71,23 @@ function nativeCleanupKind(error) {
     return 'marker-lookup';
   }
   return cleanupKinds.get(message);
+}
+
+function projectCopilotInventoryFinish(invocation, cleanupError) {
+  let cwdKind = 'unknown';
+  try {
+    const cwd = invocation.cwd;
+    // The runner receives a path, not a binding scope. Compare path strings
+    // without inferring scope or checking the filesystem for aliases.
+    if (typeof cwd === 'string' && path.isAbsolute(cwd)) {
+      cwdKind = cwd === process.cwd() ? 'same-as-aw-cwd' : 'different-path';
+    }
+  } catch { /* Unavailable cwd stays unknown. */ }
+  if (!cleanupError) return { cwdKind };
+  let cleanupKind = 'unknown';
+  try { cleanupKind = nativeCleanupKind(cleanupError) ?? 'unknown'; }
+  catch { /* Unreadable cleanup detail must not suppress the finish record. */ }
+  return { cwdKind, cleanupKind };
 }
 
 function observeCompletion(base, invocation, finish) {
@@ -135,11 +169,13 @@ function mixedNativeTraceFilter() {
 }
 
 export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform,
-  nextOperationId, mode }) {
+  arch = process.arch, nextOperationId, mode }) {
   const componentTrace = usesComponentTrace(mode, client, platform);
   if (mode !== undefined && !componentTrace) return base;
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
-  const grokNodeEntry = mode === 'grok-component-discovery' ? canonicalFile(process.execPath) : undefined;
+  const requireNodePrefix = componentTrace && (client === 'grok' || client === 'copilot');
+  const intelCopilotFullTrace = !componentTrace && client === 'copilot' && platform === 'darwin' && arch === 'x64';
+  const nodeEntry = requireNodePrefix || intelCopilotFullTrace ? canonicalFile(process.execPath) : undefined;
   function sameFile(file, target) {
     if (file === target && typeof file === 'string') return true;
     if (platform !== 'win32' || typeof file !== 'string' || typeof target !== 'string'
@@ -168,6 +204,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   return function managedTraceRunner(invocation) {
     let details;
     let registryList;
+    let copilotInventory;
     let markers;
     let querySample;
     let componentCategory;
@@ -178,10 +215,10 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       const direct = matchesTarget(commandFile);
       // The Windows npm shim resolves to the current Node and the known script.
       const prefixed = !direct && matchesTarget(argumentFile)
-        && (mode !== 'grok-component-discovery' || sameFile(commandFile, grokNodeEntry));
+        && (!requireNodePrefix || sameFile(commandFile, nodeEntry));
       const validArgs = Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string');
       if (componentTrace) {
-        if (validArgs && (direct || prefixed)) componentCategory = nativeComponentCategory(client, prefixed ? invocation.args.slice(1) : invocation.args);
+        if (validArgs && (direct || prefixed)) componentCategory = nativeComponentCategory(client, prefixed ? invocation.args.slice(1) : invocation.args, mode);
         if (validArgs && invocation.args.length === 5 && matchesArgs(invocation.args.slice(0, 4), powerShellArgs)
           && sameFile(commandFile, queryEntry)) componentCategory = 'windows-system-powershell';
       } else if ((direct || prefixed) && validArgs) {
@@ -191,6 +228,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
           markers = [...new Set([...preloadMarkers, ...markerValues(process.env, env, invocation.env)])];
           registryList = client === 'codex' && args.length === 4
             && args.every((argument, index) => argument === ['plugin', 'marketplace', 'list', '--json'][index]);
+          copilotInventory = intelCopilotFullTrace && (direct || sameFile(commandFile, nodeEntry)) && copilotInventoryCategory(args);
           details = { operationId: nextOperationId ? nextOperationId() : ++operationId, startTime: new Date().toISOString(), parentPid: process.pid,
             command: invocation.command, args: invocation.args.slice(0, 16),
             ...(nativeOperation ? { nativeClient: prefixed ? 'pi' : 'claude', nativeOperation } : {}),
@@ -215,11 +253,19 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
     if (componentCategory) {
       const count = componentSamples.get(componentCategory) ?? 0;
       if (count >= (componentCategory === 'windows-system-powershell' ? 64 : 24)) return base(invocation);
-      componentSamples.set(componentCategory, count + 1);
+      // Batch installation reaches the selected root after many healthy lists.
+      // Reserve eight of each inventory's 24 records for later failures.
+      const reserveFailures = mode === 'copilot-component-install' && componentCategory.endsWith('-list');
+      if (!reserveFailures) componentSamples.set(componentCategory, count + 1);
       const start = performance.now();
       return observeCompletion(base, invocation, (value, threw) => {
         try {
           const exitCode = Number.isSafeInteger(value?.exitCode) ? value.exitCode : null;
+          if (reserveFailures) {
+            const completed = componentSamples.get(componentCategory) ?? 0;
+            if (completed >= (threw || exitCode !== 0 ? 24 : 16)) return;
+            componentSamples.set(componentCategory, completed + 1);
+          }
           const reason = value?.name === 'NativeCliError' && ['timeout', 'aborted', 'exit'].includes(value.reason)
             ? value.reason : undefined;
           const errorCode = value?.operationDiagnostic?.code;
@@ -255,16 +301,18 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
         const text = (input, limit = 1024) => typeof input === 'string' || Buffer.isBuffer(input) ? redact(input, allMarkers, limit) : null;
         const code = (input) => typeof input === 'number' ? input : text(input);
         const failed = threw || typeof value?.exitCode === 'number' && value.exitCode !== 0;
+        const cleanupError = phase === 'finish' ? value?.cleanupError : undefined;
         emit({ ...details, phase: text(phase), startTime: text(details.startTime), command: text(details.command),
           args: details.args.map((argument) => text(argument)), finishTime: phase === 'finish' ? text(new Date().toISOString()) : null,
           ...(phase === 'spawn' ? { spawnTime: new Date().toISOString() } : {}),
           ...(phase === 'finish' ? { threw, exitCode: typeof value?.exitCode === 'number' ? value.exitCode : null,
             reason: text(value?.reason), cause: { code: code(value?.cause?.code) },
             operationDiagnostic: { code: text(value?.operationDiagnostic?.code), safeMessage: text(value?.operationDiagnostic?.safeMessage) },
-            cleanupError: Boolean(value?.cleanupError),
+            cleanupError: Boolean(cleanupError),
+            ...(copilotInventory ? projectCopilotInventoryFinish(invocation, cleanupError) : {}),
             ...(!failed && registryList ? { stdout: text(value?.stdout, 4000) } : {}),
             ...(failed ? { stderr: text(value?.stderr, 4000) } : {}) } : {}) });
-      } catch { /* Never read error.message or replace a real result/error. */ }
+      } catch { /* Diagnostics cannot replace a real result or error. */ }
     }
     record('start');
     const tracedInvocation = { ...invocation, onSpawn(child) {

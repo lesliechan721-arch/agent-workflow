@@ -41,6 +41,7 @@
     "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
     "test:smoke:decision-kit-browser": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/decision-kit-prototype-review-browser.test.ts",
     "plugin:test": "tsc -p tsconfig.json && node ../native-runtime/scripts/embed.mjs . && node dist/scripts/test-plugin-scripts.js",
+    "plugin:test:built": "node dist/scripts/test-plugin-scripts.js",
     "test:smoke:plugin-scripts": "node ../../scripts/test/run-vitest.mjs run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm --dir ../.. build:ensure",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"

@@ -1,6 +1,7 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
-import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, NativeCliError, runNativeCliChecked, type NativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, NATIVE_CLI_TIMEOUT_ENV, NativeCliError, runNativeCliChecked, type NativeCliRunner } from '../utils/native-cli.js';
+import { readEnvironmentValue } from '../utils/state-paths.js';
 import { installationInvocation, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
@@ -13,6 +14,8 @@ export interface NativeQuerySession {
 export interface NativeObservationBatch {
   /** The complete joint placement, including its peers, has no executable author scripts. */
   scriptFreePlacement?: true;
+  /** The unlocked install preview, not the joint recheck before saving state. */
+  initialInstallPreview?: true;
   discoveryCache: NonNullable<ReadContext['discoveryCache']>;
   nativeQuerySession: NativeQuerySession;
   runner: NativeCliRunner;
@@ -82,6 +85,8 @@ export async function queryNativeDeployment(ctx: ReadContext, binding: Deploymen
   ctx.signal?.throwIfAborted();
   const session = ctx.nativeQuerySession;
   const env = ctx.env ?? process.env;
+  const host = ctx.platform ?? process.platform;
+  const arch = ctx.arch ?? process.arch;
   const forGrok = binding.route === 'grok-cli';
   const neutral = binding.scope.kind === 'user' && !validatedUserCwd && !session ? await createSafeNeutralCwd(env, forGrok) : undefined;
   try {
@@ -89,30 +94,34 @@ export async function queryNativeDeployment(ctx: ReadContext, binding: Deploymen
       : validatedUserCwd ?? (session ? await session.userCwd(env, forGrok) : neutral!.executionCwd);
     const queryArgs = typeof args === 'function' ? args(cwd) : args;
     const invocation = await installationInvocation(product, { ...ctx, cwd }, queryArgs);
+    const retryInventoryTimeout = (host === 'win32' && binding.route === 'copilot-marketplace')
+      || (host === 'darwin' && arch === 'x64' && binding.route === 'claude-marketplace' && binding.scope.kind === 'project');
     const read = async (): Promise<string> => {
       const output = await runNativeCliChecked({ ...invocation, signal: ctx.signal,
         timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
       if (Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
       return output.stdout;
     };
-    if (!session) return await read();
+    const readInventory = async (): Promise<string> => {
+      try { return await read(); }
+      catch (error) {
+        ctx.signal?.throwIfAborted();
+        if (!(error instanceof NativeCliError) || error.reason !== 'timeout' || error.name === 'AbortError' || error.cleanupError
+          || !retryInventoryTimeout || readEnvironmentValue(env, NATIVE_CLI_TIMEOUT_ENV, host) !== undefined) throw error;
+        const list = queryArgs[0] === 'plugin' && queryArgs.at(-1) === '--json'
+          && (queryArgs.length === 3 && queryArgs[1] === 'list'
+            || queryArgs.length === 4 && queryArgs[1] === 'marketplace' && queryArgs[2] === 'list');
+        if (!list) throw error;
+        return read();
+      }
+    };
+    if (!session) return await readInventory();
     const key = JSON.stringify({ platform: binding.platform, route: binding.route, product: product.product,
       version: product.version, entry: product.entry, scope: binding.scope, cwd,
       command: invocation.command, args: invocation.args,
       env: Object.entries(invocation.env ?? process.env).sort(([a], [b]) => a.localeCompare(b)),
-      host: ctx.platform ?? process.platform, arch: ctx.arch ?? process.arch, observeNative: ctx.observeNative === true });
-    return await session.read(key, ctx, async () => {
-      try { return await read(); }
-      catch (error) {
-        ctx.signal?.throwIfAborted();
-        // On Windows even this local read occasionally times out on a healthy
-        // Copilot. Share one fresh attempt with the whole read-only snapshot.
-        if ((ctx.platform ?? process.platform) !== 'win32' || binding.route !== 'copilot-marketplace'
-          || queryArgs.length !== 4 || queryArgs.join(' ') !== 'plugin marketplace list --json'
-          || !(error instanceof NativeCliError) || error.reason !== 'timeout' || error.name === 'AbortError' || error.cleanupError) throw error;
-        return read();
-      }
-    });
+      host, arch, observeNative: ctx.observeNative === true });
+    return await session.read(key, ctx, readInventory);
   } finally {
     await neutral?.dispose();
   }

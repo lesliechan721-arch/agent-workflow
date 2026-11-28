@@ -14,11 +14,10 @@ import type { RebuildCommandRuntime } from './rebuild-command.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
-import { CatalogPreparationReadScope, resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { calculateCatalogGenerationSetDigest } from '../utils/catalog-generation-resolver.js';
 import { activateCatalogSourceGeneration, withCatalogSourceCandidate } from '../utils/catalog-generation-service.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { deletePluginConfigStore } from '../utils/plugin-config.js';
 import { parseScriptTimeoutMs } from './options.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
@@ -263,10 +262,11 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
     };
     if (options.only === 'outputs') return await applyPlan(await prepareRecovery('cleanup', plugins, { ...recovery, targets }, runtime));
     if (command === 'remove') {
-      const catalog = await resolvePartialCatalogOperationContext({ env });
+      const catalogReadScope = new CatalogPreparationReadScope(recovery);
+      const catalog = await catalogReadScope.resolve({});
       let selectable = data.requirements.roots ?? [];
       if (plugins.some((selector) => !parsePluginId(selector).sourceId)) {
-        const snapshot = await readJointDemand({ ...recovery, catalogOperationContext: catalog });
+        const snapshot = await readJointDemand({ ...recovery, catalogOperationContext: catalog, catalogReadScope });
         const original = location.scope === 'project' ? snapshot.project! : snapshot.user;
         const demand = deriveJointDemand(snapshot);
         selectable = [...new Set([...(original.roots ?? []).map((root) => root.pluginId),
@@ -280,10 +280,14 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
         exact.push(matches[0]!);
       }
       const retired: string[] = []; const active: string[] = [];
+      const validatedSources = new Set<string>();
       for (const plugin of exact) {
         const parsed = parsePluginId(plugin); const source = catalog.catalog.sources.find((entry) => entry.sourceId === parsed.sourceId)?.resolution;
         if (!source) return blocked('sourceActiveUnavailable');
-        await validateCatalogSnapshotComplete(source.rootDir);
+        if (!validatedSources.has(source.sourceId)) {
+          await CatalogPreparationReadScope.validateEntries(catalogReadScope, source);
+          validatedSources.add(source.sourceId);
+        }
         (source.manifest.entries.some((entry) => entry.name === parsed.pluginName) ? active : retired).push(plugin);
       }
       const plans: Array<RecoveryPlan | RetirePlan> = [];
@@ -302,8 +306,9 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
         result.nextActions = [...new Map([...previousActions, ...result.nextActions].map((entry) => [JSON.stringify(entry), entry])).values()];
       };
       try {
-        if (active.length) plans.push(await prepareRecovery('uninstall', active, { ...recovery, retiringCatalogRoots: retired }, runtime));
-        for (const selector of retired) plans.push(await prepareRetire({ ...location, selector, signal: context.signal, cliVersion: options.cliVersion, yes: options.yes, deleteConfig: options.deleteConfig, preservePreferences: true }, runtime));
+        if (active.length) plans.push(await prepareRecovery('uninstall', active, { ...recovery, retiringCatalogRoots: retired }, { ...runtime, catalogReadScope }));
+        for (const selector of retired) plans.push(await prepareRetire({ ...location, selector, signal: context.signal, cliVersion: options.cliVersion, yes: options.yes, deleteConfig: options.deleteConfig, preservePreferences: true }, runtime,
+          { catalogReadScope, catalogOperationContext: catalog }));
         const effects = plans.flatMap((plan) => 'command' in plan ? effectsForPlan(plan) : [
           ...(plan.operationPlan?.deploymentPlans?.flatMap(deploymentConfirmationEffects) ?? []),
           ...restorationEffects(plan.operationPlan?.actions.flatMap((action) => action.kind === 'removeOwnedArtifact' ? action.permissionRemoval?.batch?.restorations ?? [] : [])),
@@ -448,7 +453,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
         await preview!.context.dispose(); preview = undefined;
         data.targetResults = []; data.remainingTargets = [];
         if (!healthySelectors().length) return withSourceFailures(commandResult(id, data));
-        return withSourceFailures(await applyPlan(await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), recovery, runtime), sourceEffects));
+        return withSourceFailures(await applyPlan(await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), recovery, { ...runtime, catalogReadScope: new CatalogPreparationReadScope(recovery) }), sourceEffects));
       } finally { await preview?.context.dispose(); }
     });
   } catch (error) { return blocked(codeOf(error)); }

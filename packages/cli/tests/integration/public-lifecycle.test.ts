@@ -11,9 +11,10 @@ import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
+import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig, resolveCatalogSourcesConfigPath } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { readCatalogGenerationState, resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
@@ -21,11 +22,11 @@ import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { runPublicLifecycle as executePublicLifecycle, type LifecycleData } from '../../src/commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
-import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
+import { createNativeDependencyCatalog, createCodexNativeTestRuntime, snapshotRegularTree } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandRoutes } from '@lesliechan721/aw-plugin-core/manifest';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
-import type { CommandResult } from '../../src/output/public-result.js';
+import { publicExitCode, type CommandResult } from '../../src/output/public-result.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
 
 // The real adapter publishes and inspects the package. The Pi command boundary
@@ -382,6 +383,45 @@ describe('public plugin lifecycle', () => {
     }
   });
 
+  it('validates one Active tree during the Review of two retired roots from the same source', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const source = path.join(cwd, 'retired-remove-source');
+    await createNativeDependencyCatalog(source, [{ name: 'a' }, { name: 'b' }, { name: 'unrelated' }]);
+    const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: source }] },
+      expectedDigest: config.digest, env: isolation.env });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const location = { cwd, env: isolation.env, cliVersion: '1.0.0', scope: 'user' as const, context: 'user' as const };
+    await setTargets(location, ['codex']);
+    expect((await runPublicLifecycle('install', ['team/a', 'team/b'], { ...location, yes: true }, runtime)).status).toBe('success');
+    await createNativeDependencyCatalog(source, [{ name: 'unrelated' }]);
+    await fs.remove(path.join(source, 'plugins', 'a'));
+    await fs.remove(path.join(source, 'plugins', 'b'));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true });
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+    const marker = path.join(active.snapshotPath, 'plugins', 'unrelated', 'skills', 'unrelated-skill', 'SKILL.md');
+    await expect(fs.pathExists(marker)).resolves.toBe(true);
+    const intent = await observeIntent(location);
+    const readFile = fs.readFile.bind(fs);
+    let scans = 0;
+    const reads = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]) === marker) scans++;
+      return readFile(...args);
+    });
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a', 'team/b'], location, runtime);
+      expect(result).toMatchObject({ status: 'blocked', data: {
+        changes: { requirements: 'none', outputs: 'none' },
+        confirmation: { required: true, provided: false },
+      }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]) });
+      expect(scans).toBe(1);
+      await expect(observeIntent(location)).resolves.toEqual(intent);
+    } finally { reads.mockRestore(); }
+  });
+
   it('reports each retained shared command package when removing Active and retired plugins together', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -556,6 +596,38 @@ describe('public plugin lifecycle', () => {
     expect(await fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).toContain('Use demo.');
     const retried = await runPublicLifecycle('sync', ['team/demo'], { ...location, targets: ['pi'], yes: true });
     expect(retried, JSON.stringify(retried)).toMatchObject({ status: 'success', data: { remainingTargets: [] } });
+  });
+
+  it.each([
+    ['config', 'catalogSourcesConfigInvalid'],
+    ['state', 'catalogGenerationStateInvalid'],
+  ] as const)('blocks a public rebuild before writes when locked Catalog %s becomes invalid', async (control, reasonCode) => {
+    const { location, output } = await fixture({ targets: ['generic'], platforms: ['generic'] });
+    expect((await runPublicLifecycle('install', ['team/demo'], location)).status).toBe('success');
+    const before = await snapshotRegularTree(output);
+    const intent = await observeIntent(location);
+    let damaged = false;
+    let executed = false;
+    const result = await runPublicLifecycle('sync', ['team/demo'], { ...location, yes: true, rebuild: true },
+      { debugLogger: { log: async (event) => {
+        if (event.data?.name === 'recovery.child.execute' && event.data.phase === 'start') executed = true;
+        if (damaged || event.data?.name !== 'recovery.locked.demand' || event.data.phase !== 'start') return;
+        await fs.writeFile(control === 'config' ? resolveCatalogSourcesConfigPath(location.env)
+          : resolveCatalogGenerationStatePath(location.env), '{invalid');
+        damaged = true;
+      } } });
+    expect(damaged).toBe(true);
+    expect(executed).toBe(false);
+    expect(publicExitCode(result), JSON.stringify(result)).toBe(3);
+    expect(result).toMatchObject({ status: 'blocked', data: {
+      changes: { requirements: 'none', preferences: 'none', config: 'none', sources: 'none', outputs: 'none' },
+      targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'generic', scope: 'project',
+        execution: 'not-run', blockerCodes: expect.arrayContaining(['operationReviewStale']) })],
+      remainingTargets: [{ pluginId: 'team/demo', target: 'generic', scope: 'project' }],
+    }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale', detail: { reasonCode } })]) });
+    expect(result.nextActions).toEqual([expect.objectContaining({ kind: 'manual' })]);
+    expect(await observeIntent(location)).toEqual(intent);
+    expect(await snapshotRegularTree(output)).toEqual(before);
   });
 
   it('shows removal effects and observed targets before changing a requirement', async () => {

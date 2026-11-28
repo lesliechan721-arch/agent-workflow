@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { repoRoot, sha256 } from './native-platform-runtime.mjs';
-import { nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
+import { installReceiptCodes, nativePath, readInstalled, targetOf, nativePackage, checkSettled, runGrokCommand, grokUserRegistration } from './native-platform-public-state.mjs';
 import { addOfficialCatalog, officialSource } from './native-platform-shipped-git.mjs';
+import { resolveFrozenPublicAwPackage } from './native-platform-public-process.mjs';
 
 const manifestFile = '.agents-plugin/plugin.json';
 // Candidate plugins own no native roles (all three deliver Skills and/or main-session instructions only).
@@ -169,14 +170,9 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     assert.deepEqual(rejected.value.data.targetResults, []);
     const diagnostics = rejected.value.diagnostics.map(item => item.code);
     assert(diagnostics.includes('sourceUnavailable'));
-    const root = process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT;
-    assert(root && path.isAbsolute(root), 'Provide the installed historical AW package directory.');
-    const manifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-    assert.equal(manifest.name, '@lesliechan721/aw');
-    assert.equal(manifest.version, '0.1.0-beta.85');
-    const entry = path.join(root, manifest.bin.aw);
-    baseline = args => ctx.result(args, ctx.project, undefined, entry);
-    report.catalog.baselineCli = manifest.version;
+    const historical = resolveFrozenPublicAwPackage(process.env.AW_QUALIFICATION_FROZEN_CLI_ROOT);
+    baseline = args => ctx.result(args, ctx.project, undefined, historical.entry, historical.root);
+    report.catalog.baselineCli = historical.version;
     report.catalog.candidateInstall = { status: rejected.value.status, exitCode: rejected.exitCode, diagnostics };
   }
   const installation = await baseline(request);
@@ -300,41 +296,81 @@ export async function qualifyCatalog(ctx, report, catalog, frozen) {
     }
   }
   if (!frozen) {
-    const failures = [];
-    for (const entry of metadata.entries.filter(entry => !Object.hasOwn(roleSkills, entry.name))) {
-      const id = catalogId + '/' + entry.name;
-      try {
-        const manifest = JSON.parse(await fs.readFile(path.join(catalog, entry.source, manifestFile), 'utf8'));
-        const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
-        const install = await ctx.aw(['plugin', 'install', id, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
-        const receipt = targetOf(install, ctx, id);
-        const verified = [];
-        for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
-          if (!dir.isDirectory()) continue;
-          const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
-          let skill;
-          try { skill = await fs.readFile(sourceFile, 'utf8'); }
-          catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-          assert(!(receipt.componentGaps ?? []).some(gap => gap.providerPluginId === id && gap.kind === 'skill' && gap.name === dir.name));
-          // Platform projections can translate frontmatter and command bindings.
-          // Read back an authored body line at the actual native publication path.
-          const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]+)$/u.exec(skill)?.[1];
-          const authored = body?.split(/\r?\n/u).find(line => line.trim() && !line.includes('{{'));
-          assert(authored, id + '/' + dir.name + ' must have an authored body');
-          const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
-          verified.push({ name: dir.name, ...await readInstalled(ctx, file, authored) });
-        }
-        assert(verified.length > 0);
-        report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, skills: verified };
-      } catch (error) {
-        failures.push(entry.name);
-        const reason = ctx.publicAwFailureReason(error)
-          ?? error.message.replaceAll(ctx.root, '<isolated>').replaceAll(repoRoot, '<repo>');
-        report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest, error: reason };
-      }
-    }
+    await qualifyRemainingPlugins(ctx, report, catalog, catalogId, metadata.entries.filter(entry => !Object.hasOwn(roleSkills, entry.name)));
     assert.equal(Object.keys(report.catalog.plugins).length, metadata.entries.length);
-    assert.deepEqual(failures, [], 'Shipped plugin installation failed: ' + failures.join(', '));
     checkSettled(await ctx.aw(['plugin', 'status', '--context', ctx.scope]));
   }
+}
+
+async function readShippedSkills(ctx, catalog, entry, id, receipt) {
+  const manifest = JSON.parse(await fs.readFile(path.join(catalog, entry.source, manifestFile), 'utf8'));
+  const skillsPath = path.join(catalog, entry.source, ctx.platform, manifest.skills);
+  const { projectSkillDocument } = await import('../../packages/cli/dist/src/platforms/projection.js');
+  const verified = [];
+  for (const dir of await fs.readdir(skillsPath, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    const sourceFile = path.join(skillsPath, dir.name, 'SKILL.md');
+    let skill;
+    try { skill = await fs.readFile(sourceFile, 'utf8'); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    // The staged platform tree already contains the build-time template expansion.
+    // Only managed command binding and host frontmatter translation remain at install.
+    if (skill.includes('{{aw.command}}')) {
+      assert(ctx.platform !== 'generic' && manifest.command?.platforms?.includes(ctx.platform), 'Unexpected Skill command binding');
+      const selector = manifest.command.runtimeConfig ? id + '/' + ctx.platform : id;
+      skill = skill.replaceAll('{{aw.command}}', 'aw command run ' + selector + ' --');
+    }
+    const header = /^---\r?\n[\s\S]*?\r?\n---\r?\n/u;
+    const authoredHeader = header.exec(skill)?.[0];
+    assert(authoredHeader && skill.slice(authoredHeader.length).trim(), id + '/' + dir.name + ' must have an authored body');
+    const component = { id: 'skill:' + dir.name, name: dir.name, kind: 'skill', content: { files: { 'SKILL.md': { text: skill } } } };
+    // Project only the header. The expected body is independent of the install renderer.
+    const expectedHeader = projectSkillDocument(ctx.platform, component, dir.name, Buffer.from(authoredHeader));
+    const expected = Buffer.concat([expectedHeader, Buffer.from(skill.slice(authoredHeader.length))]);
+    const file = nativePath(ctx, { id }, 'skill', nativePackage(receipt), dir.name);
+    verified.push({ name: dir.name, ...await readInstalled(ctx, file, expected) });
+  }
+  assert(verified.length > 0);
+  return verified;
+}
+
+export async function qualifyRemainingPlugins(ctx, report, catalog, catalogId, entries) {
+  const pluginId = entry => catalogId + '/' + entry.name;
+  const batches = ctx.platform === 'grok' && ctx.scope === 'user' ? entries.map(entry => [entry]) : [entries];
+  const failures = [];
+  let batchFailed = false;
+  for (const batch of batches) {
+    if (!batch.length) continue;
+    let outcome;
+    let processError;
+    try {
+      // Catalog dependency IDs are registered before the baseline install,
+      // including every root in this request, for receipt and trace binding.
+      outcome = await ctx.result(['plugin', 'install', ...batch.map(pluginId), '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
+    } catch (error) { processError = ctx.publicAwFailureReason(error) ?? 'plugin.install process failed'; }
+    if (!outcome || outcome.exitCode !== 0) batchFailed = true;
+    for (const entry of batch) {
+      const id = pluginId(entry);
+      const row = report.catalog.plugins[entry.name] = { version: entry.version, artifactDigest: entry.artifactDigest };
+      try {
+        if (processError) throw new Error(processError);
+        const { value } = outcome;
+        const targets = (value.data?.targetResults ?? []).filter(item => item.pluginId === id && item.target === ctx.platform && item.scope === ctx.scope);
+        const codes = installReceiptCodes(value, targets.length === 1 ? targets[0] : undefined, id, ctx.platform, ctx.scope);
+        const reason = [value.status, ...codes].join(', ');
+        assert(targets.length === 1, id + ': missing or duplicate target (' + reason + ')');
+        const [receipt] = targets;
+        assert(['applied', 'no-op'].includes(receipt.execution) && receipt.blockerCodes?.length === 0
+          && !(value.data.remainingTargets ?? []).some(item => item.pluginId === id && item.target === ctx.platform && item.scope === ctx.scope),
+          id + ': install target incomplete (' + reason + ')');
+        assert((receipt.componentGaps ?? []).length === 0, id + ': component gaps');
+        row.skills = await readShippedSkills(ctx, catalog, entry, id, receipt);
+      } catch (error) {
+        failures.push(entry.name);
+        row.error = error.message.replaceAll(ctx.root, '<isolated>').replaceAll(repoRoot, '<repo>');
+      }
+    }
+  }
+  assert.deepEqual(failures, [], 'Shipped plugin installation failed: ' + failures.join(', '));
+  assert(!batchFailed, 'Shipped plugin batch failed after reporting its targets.');
 }

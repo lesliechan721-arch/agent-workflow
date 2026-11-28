@@ -423,9 +423,14 @@ describe('read-only target discovery and production selection', () => {
 
   // Test Value Gate: an exit or an unsafe interruption must keep its original
   // result and run at most one process for the entry.
-  it.each(['exit 124', 'explicit timeout', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const)(
-    'runs one Windows Copilot version probe on %s', async (failure) => {
+  const versionInterruptions = ['exit 124', 'explicit timeout', 'cleanup', 'cancelled', 'aborted', 'AbortError'] as const;
+  it.each((['copilot', 'grok'] as const).flatMap(platform => versionInterruptions.map(failure => ({ platform, failure }))))(
+    'runs one Windows $platform version probe on $failure', async ({ platform, failure }) => {
       const { ctx } = await windowsCopilotFixture();
+      if (platform === 'grok') {
+        ctx.env!.GROK_HOME = path.join(ctx.cwd, 'grok-home');
+        await executable(ctx, 'grok.exe');
+      }
       ctx.arch = 'x64';
       ctx.env!.AW_NATIVE_CLI_TIMEOUT_MS = failure === 'explicit timeout' ? '1000' : undefined;
       const abort = new AbortController();
@@ -440,7 +445,7 @@ describe('read-only target discovery and production selection', () => {
         if (failure === 'AbortError') error.name = failure;
         throw error;
       };
-      const found = discoverPlatform('copilot', ctx);
+      const found = discoverPlatform(platform, ctx);
       if (failure === 'exit 124' || failure === 'explicit timeout') {
         expect((await found).installations[0]).toMatchObject({ availability: 'unknown', reasonCodes: ['clientProbeFailed'] });
       } else if (cleanupError) await expect(found).rejects.toMatchObject({ cleanupError });
@@ -873,7 +878,8 @@ describe('read-only target discovery and production selection', () => {
   // before target selection can save the user's preference.
   it.each([
     { name: 'slow start', arch: 'x64', versionMs: 7_000, helpCount: 2, listHelp: '--json', availability: 'available' },
-    { name: 'version timeout', arch: 'x64', versionMs: 10_001, helpCount: 0, listHelp: '--json', availability: 'unknown' },
+    { name: 'recovered version timeout', arch: 'x64', versionMs: 10_001, retryMs: 244, helpCount: 2, listHelp: '--json', availability: 'available' },
+    { name: 'repeated version timeout', arch: 'x64', versionMs: 10_001, retryMs: 5_001, helpCount: 0, listHelp: '--json', availability: 'unknown' },
     { name: 'JSONL and JSON output options only', arch: 'x64', versionMs: 7_000, helpCount: 2,
       listHelp: '--jsonl --json-output', availability: 'unsupported' },
     { name: 'documented JSON flag without an option', arch: 'x64', versionMs: 7_000, helpCount: 2,
@@ -897,7 +903,10 @@ describe('read-only target discovery and production selection', () => {
     ctx.runner = async (invocation) => {
       if (path.basename(invocation.command) !== 'grok.exe') return { exitCode: 0, stdout: '[]', stderr: '' };
       probes.push({ args: invocation.args, timeoutMs: invocation.timeoutMs });
-      if (invocation.args[0] === '--version') return timedVersion(invocation, scenario.versionMs, 'grok 1.0.77');
+      if (invocation.args[0] === '--version') {
+        const elapsed = probes.length === 2 && 'retryMs' in scenario ? scenario.retryMs : scenario.versionMs;
+        return timedVersion(invocation, elapsed, 'grok 1.0.77');
+      }
       const isList = invocation.args.includes('list');
       if ('failedHelp' in scenario) {
         if (!isList && scenario.failedHelp === 'manager') return { exitCode: 1, stdout: '', stderr: '' };
@@ -916,6 +925,7 @@ describe('read-only target discovery and production selection', () => {
     expect((await observePreferences({ ...ctx, scope: 'user' })).state).toBe(selected ? 'valid' : 'absent');
     expect(probes).toEqual([
       { args: ['--version'], timeoutMs: scenario.arch === 'x64' ? 10_000 : 5_000 },
+      ...('retryMs' in scenario ? [{ args: ['--version'], timeoutMs: 5_000 }] : []),
       ...[{ args: ['plugin', '--help'], timeoutMs: 5_000 }, { args: ['plugin', 'list', '--help'], timeoutMs: 5_000 }]
         .slice(0, scenario.helpCount),
     ]);

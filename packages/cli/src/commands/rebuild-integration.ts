@@ -85,7 +85,7 @@ import {
   atomicReplaceConfigFile,
   withConfigFileMutation,
 } from '../utils/plugin-config.js';
-import type { PluginProcessResult } from '../utils/plugin-scripts.js';
+import type { PreparedArtifactRenderResults } from '../utils/artifact-renderer.js';
 import {
   runPreApplyScript
 } from '../utils/plugin-scripts.js';
@@ -115,21 +115,21 @@ import { platformOwnership, PlatformRebuildSession } from './rebuild-platform-in
 const MARKETPLACE_NAME = 'aw';
 const LEGACY_MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
 
-const platformRebuildSessions = new WeakMap<Map<string, PluginProcessResult>, Map<PlatformName | undefined, PlatformRebuildSession>>();
-const commandPackageCandidates = new WeakMap<Map<string, PluginProcessResult>, Map<string, Promise<PreparedManagedCommandPackage>>>();
+const platformRebuildSessions = new WeakMap<PreparedArtifactRenderResults, Map<PlatformName | undefined, PlatformRebuildSession>>();
+const commandPackageCandidates = new WeakMap<PreparedArtifactRenderResults, Map<string, Promise<PreparedManagedCommandPackage>>>();
 
-export function finalizePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): void {
+export function finalizePreparedPlatformRebuildSession(results: PreparedArtifactRenderResults): void {
   for (const session of platformRebuildSessions.get(results)?.values() ?? []) session.freezeMarketplaceCandidates();
 }
 
-export function recordPreparedGrokProjectRetirement(results: Map<string, PluginProcessResult>,
+export function recordPreparedGrokProjectRetirement(results: PreparedArtifactRenderResults,
   ...retirement: Parameters<PlatformRebuildSession['recordGrokProjectRetirement']>): void {
   const sessions = platformRebuildSessions.get(results);
   sessions?.get('grok')?.recordGrokProjectRetirement(...retirement);
   sessions?.get(undefined)?.recordGrokProjectRetirement(...retirement);
 }
 
-export async function disposePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): Promise<void> {
+export async function disposePreparedPlatformRebuildSession(results: PreparedArtifactRenderResults): Promise<void> {
   const sessions = platformRebuildSessions.get(results);
   platformRebuildSessions.delete(results);
   const packages = commandPackageCandidates.get(results);
@@ -210,7 +210,7 @@ export interface RebuildExecutionContext {
   packagePreparationCache?: Map<string, Promise<PreparedManagedCommandPackage>>;
   interruption?: import('./public-interruption.js').PublicCommandInterruption;
   /** Validated renderer process output shared only by preparations of this operation. */
-  preparedArtifactRenderResults?: Map<string, PluginProcessResult>;
+  preparedArtifactRenderResults?: PreparedArtifactRenderResults;
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
   referencePlugins?: readonly PluginMeta[];

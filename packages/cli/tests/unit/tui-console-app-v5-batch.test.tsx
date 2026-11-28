@@ -693,13 +693,11 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('其他维护方式');
 
-    await escape(instance);
-    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    await escape(instance, () => expect(instance.lastFrame()).toContain('为 1 个插件选择任务'));
     expect(instance.lastFrame()).toContain('› 其他维护方式');
     expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
 
-    await escape(instance);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    await escape(instance, () => expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' }));
     expect(instance.lastFrame()).toMatch(/搜索 review +\[\/\]/u);
     expect(instance.lastFrame()).toContain('已选 1 个');
     expect(instance.lastFrame()).toContain('› [x] Review Gate');
@@ -956,9 +954,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('全选当前结果');
     expect(instance.lastFrame()).toContain('取消当前结果');
     expect(instance.lastFrame()).toContain('清空全部已选');
-    await input(instance, '\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    await nextTurn(2);
+    await escape(instance);
     expect(instance.lastFrame()).toContain('› [ ] Plugin 49');
     expect(instance.lastFrame()).toBe(beforeTools);
 

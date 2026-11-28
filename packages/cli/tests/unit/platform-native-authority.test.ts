@@ -5,7 +5,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { inspectDeployment } from '../../src/platforms/inspection.js';
-import { inspectCopilotMarketplaceSource } from '../../src/platforms/inspection-native.js';
+import { inspectClaudeMarketplaceSource, inspectCopilotMarketplaceSource } from '../../src/platforms/inspection-native.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createNativeQuerySession, queryNativeDeployment, withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
@@ -229,6 +229,72 @@ describe('native deployment state authority', () => {
     expect(observed).toMatchObject({ registration: 'absent', scopeRegistration: 'absent' });
   });
 
+  // A transient clean timeout in either Intel Project inventory must not
+  // discard fresh evidence from a known, scoped Claude registration.
+  it.each(['independent', 'shared with foreign marketplace'] as const)(
+    'recovers both Claude Code Project inventories after a clean Intel macOS timeout (%s)', async (scenario) => {
+      const item = await fixture('claude');
+      item.native.claudeScope = 'local';
+      const reads = new Map<string, NativeCliInvocation[]>();
+      const runner = async (invocation: NativeCliInvocation) => {
+        const command = invocation.args.join(' ');
+        const previous = reads.get(command) ?? [];
+        reads.set(command, [...previous, invocation]);
+        if (!previous.length) throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '' });
+        return item.ctx.runner!(invocation);
+      };
+      const ctx: ReadContext = { ...item.ctx, platform: 'darwin', arch: 'x64', runner };
+      if (scenario === 'shared with foreign marketplace') item.native.marketplace = 'foreign';
+      // Use the layout already prepared for the actual host; only the native
+      // query policy sees the simulated host, not Windows fixture paths.
+      const observe = (queryContext: ReadContext) => Promise.all([
+        inspectClaudeMarketplaceSource(queryContext, item.binding, item.layout.marketplaceName!, item.layout.marketplaceRoot!),
+        queryNativeDeployment(queryContext, item.binding, ['plugin', 'list', '--json']).then(JSON.parse),
+      ]);
+      const observations = scenario === 'independent' ? [await observe(ctx)]
+        : await withNativeObservationBatch({ runner }, (batch) => {
+          const shared = { ...ctx, ...batch };
+          return Promise.all([observe(shared), observe(shared)]);
+        });
+      for (const [source, inventory] of observations) {
+        expect(source).toBe(scenario === 'shared with foreign marketplace' ? 'foreign' : 'canonical');
+        expect(inventory).toEqual([expect.objectContaining({ id: item.id, scope: 'local', enabled: true })]);
+      }
+      expect([...reads.keys()].sort()).toEqual(['plugin list --json', 'plugin marketplace list --json']);
+      for (const calls of reads.values()) {
+        expect(calls).toHaveLength(2);
+        expect(calls[0]).toMatchObject({ cwd: item.ctx.cwd, timeoutMs: 5_000 });
+        expect(calls[1]).toEqual(calls[0]);
+      }
+    });
+
+  // A rejected read is not permission to repeat an operation, overlap a
+  // process whose exit is unknown, or ignore a caller-defined deadline.
+  it.each(['persistent', 'cleanup', 'cancelled', 'override', 'normal exit', 'arm64', 'Linux', 'User', 'mutation'] as const)(
+    'keeps the Claude Code inventory retry bounded for %s', async (scenario) => {
+      const item = await fixture('claude', scenario !== 'User');
+      const controller = new AbortController();
+      const ctx: ReadContext = {
+        ...item.ctx,
+        platform: scenario === 'Linux' ? 'linux' : 'darwin',
+        arch: scenario === 'arm64' ? 'arm64' : 'x64',
+        env: scenario === 'override' ? { ...item.ctx.env, AW_NATIVE_CLI_TIMEOUT_MS: '1000' } : item.ctx.env,
+        signal: controller.signal,
+        runner: async (invocation) => {
+          item.calls.push(invocation);
+          if (scenario === 'cancelled') controller.abort();
+          if (scenario === 'normal exit') return { exitCode: 124, stdout: '', stderr: '' };
+          throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '',
+            ...(scenario === 'cleanup' ? { cleanupError: new Error('unconfirmed') } : {}) });
+        },
+      };
+      const args = scenario === 'mutation' ? ['plugin', 'install', 'example'] : ['plugin', 'list', '--json'];
+      await expect(queryNativeDeployment(ctx, item.binding, args)).rejects.toMatchObject(
+        scenario === 'cancelled' ? { name: 'AbortError' } : { reason: scenario === 'normal exit' ? 'exit' : 'timeout' },
+      );
+      expect(item.calls).toHaveLength(scenario === 'persistent' ? 2 : 1);
+    });
+
   // Test Value Gate: User inventory must not include the caller project's merged settings.
   it.each(platforms)('runs %s User queries outside the caller project', async (platform) => {
     const item = await fixture(platform, false);
@@ -282,6 +348,53 @@ describe('native deployment state authority', () => {
       });
       expect(reads).toBe(['canonical after timeout', 'foreign after timeout', 'persistent timeout'].includes(scenario) ? 2 : 1);
     });
+
+  // Write-side observations lack a session. Only the two local inventories may
+  // retry a clean timeout, and each new inspection must read the client again.
+  it.each(['recovered', 'persistent', 'override', 'cleanup', 'abort', 'bad JSON', 'exit', 'other host'] as const)(
+    'reads both independent Copilot inventories without a session on %s', async (scenario) => {
+      const item = await fixture('copilot');
+      const binding = { ...item.binding, consumers: [{ ...item.binding.consumers[0]!, entry: {
+        kind: 'cli' as const, executable: path.join(item.ctx.cwd, 'npm-loader.js'), configRoot: item.host } }] };
+      const counts = new Map<string, number>();
+      const runner = async (invocation: NativeCliInvocation) => {
+        const command = invocation.args.slice(1).join(' ');
+        const count = (counts.get(command) ?? 0) + 1;
+        counts.set(command, count);
+        expect(invocation.timeoutMs).toBe(5_000);
+        if (scenario === 'bad JSON') return { exitCode: 0, stdout: '{', stderr: '' };
+        if (scenario === 'exit') return { exitCode: 124, stdout: '', stderr: '' };
+        if (count === 1 || scenario === 'persistent') throw new NativeCliError({ invocation,
+          reason: scenario === 'abort' ? 'aborted' : 'timeout', exitCode: 124, stdout: '', stderr: '',
+          ...(scenario === 'cleanup' ? { cleanupError: new Error('unconfirmed') } : {}) });
+        return item.ctx.runner!(invocation);
+      };
+      const ctx = { ...item.ctx, runner, platform: scenario === 'other host' ? 'darwin' as const : 'win32' as const,
+        env: { ...item.ctx.env, ...(scenario === 'override' ? { Aw_Native_Cli_Timeout_Ms: '1200' } : {}) } };
+      const inventories = () => Promise.all([
+        inspectCopilotMarketplaceSource(ctx, binding, item.layout.marketplaceName!, item.layout.marketplaceRoot!),
+        queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json']).then(JSON.parse),
+      ]);
+      if (scenario === 'recovered') {
+        for (let i = 0; i < 2; i++) await expect(inventories()).resolves.toEqual(['canonical', [expect.objectContaining({ enabled: true })]]);
+      } else await expect(inventories()).rejects.toBeInstanceOf(Error);
+      const count = scenario === 'recovered' ? 3 : scenario === 'persistent' ? 2 : 1;
+      expect(Object.fromEntries(counts)).toEqual({ 'plugin marketplace list --json': count, 'plugin list --json': count });
+    });
+
+  it('does not retry a Copilot mutation or a differently shaped query after a timeout', async () => {
+    const item = await fixture('copilot');
+    const binding = { ...item.binding, consumers: [{ ...item.binding.consumers[0]!, entry: {
+      kind: 'cli' as const, executable: path.join(item.ctx.cwd, 'npm-loader.js'), configRoot: item.host } }] };
+    const calls: string[][] = [];
+    const ctx = { ...item.ctx, platform: 'win32' as const, runner: async (invocation: NativeCliInvocation) => {
+      calls.push(invocation.args.slice(1));
+      throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '' });
+    } };
+    const requests = [['plugin', 'install', 'subject'], ['plugin', 'marketplace list', '--json'], ['plugin', 'list', '--json', '--all']];
+    for (const args of requests) await expect(queryNativeDeployment(ctx, binding, args)).rejects.toMatchObject({ reason: 'timeout' });
+    expect(calls).toEqual(requests);
+  });
 
   // Test Value Gate: a native identity with an absent source cannot authorize shared package removal.
   it.each(['claude', 'copilot'] as const)('keeps %s ownership unknown when the native source is absent', async (platform) => {

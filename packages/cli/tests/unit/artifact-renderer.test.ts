@@ -585,6 +585,43 @@ console.log(JSON.stringify({surface: process.env.AW_PLUGIN_SURFACE, home: proces
     expect(await fs.pathExists(output.contextPath)).toBe(false);
   });
 
+  it('shares child results only within equal effective requests and retries failed renders', async () => {
+    const item = await plugin(`import fs from 'node:fs';
+fs.appendFileSync('calls', 'call\\n');
+if (fs.existsSync('fail')) process.exit(9);
+console.log(JSON.stringify({ path: process.env.PATH, event: process.env.AW_PLUGIN_EVENT }));
+`);
+    const preparedResults = new Map();
+    const context = { surface: 'agent-plugin', scope: 'user' };
+    const options = { plugin: item, context, cwd: item.rootDir, sensitiveValues: [], preparedResults };
+    const calls = async () => (await fs.readFile(path.join(item.rootDir, 'calls'), 'utf8')).trim().split('\n').length;
+    const flag = path.join(item.rootDir, 'fail');
+    await fs.writeFile(flag, '');
+    const failed = await Promise.allSettled([runPreparedArtifactRenderer(options), runPreparedArtifactRenderer(options)]);
+    expect(failed.map(({ status }) => status)).toEqual(['rejected', 'rejected']);
+    expect(await calls()).toBe(1);
+    await fs.remove(flag);
+    await runPreparedArtifactRenderer(options);
+    await runPreparedArtifactRenderer(options);
+    expect(await calls()).toBe(2);
+
+    const changedPath = item.rootDir + path.delimiter + (process.env.PATH ?? '');
+    const different = await runPreparedArtifactRenderer({ ...options, commandEnv: { ...process.env, PATH: changedPath } });
+    expect(different.value).toEqual({ path: changedPath, event: 'materialize' });
+    expect(await calls()).toBe(3);
+    const refresh = await runPreparedArtifactRenderer({ ...options, event: 'refresh' });
+    expect(refresh.value).toMatchObject({ event: 'refresh' });
+    expect(await calls()).toBe(4);
+
+    // A separate cancellation lifetime is not allowed to rely on another child's result.
+    const controller = new AbortController();
+    await runPreparedArtifactRenderer({ ...options, signal: controller.signal });
+    expect(await calls()).toBe(5);
+    controller.abort(new DOMException('cancelled', 'AbortError'));
+    await expect(runPreparedArtifactRenderer({ ...options, signal: controller.signal })).rejects.toBe(controller.signal.reason);
+    expect(await calls()).toBe(5);
+  });
+
   it.each([
     { exitCode: 2, signal: null, stdout: '{}', stderr: 'private-token-value', timedOut: false },
     { exitCode: null, signal: null, stdout: '{}', stderr: '', timedOut: true },
@@ -611,15 +648,16 @@ const child = spawn(process.execPath, ['-e', 'setTimeout(()=>process.exit(124),3
 fs.writeFileSync('child.pid', String(child.pid)); setTimeout(()=>process.exit(124),30000);setInterval(()=>{},1000);`);
     const controller = new AbortController();
     const reason = new DOMException('cancelled', 'AbortError');
-    const running = runPreparedArtifactRenderer({ plugin: item, context: { surface: 'agent-plugin', scope: 'user' }, cwd: item.rootDir,
-      sensitiveValues: [], signal: controller.signal });
+    const options = { plugin: item, context: { surface: 'agent-plugin', scope: 'user' }, cwd: item.rootDir,
+      sensitiveValues: [], signal: controller.signal, preparedResults: new Map() };
+    const running = Promise.allSettled([runPreparedArtifactRenderer(options), runPreparedArtifactRenderer(options)]);
     const pidFile = path.join(item.rootDir, 'child.pid');
     for (let attempt = 0; attempt < 150 && !await fs.pathExists(pidFile); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await fs.pathExists(pidFile)).toBe(true);
     const pid = Number(await fs.readFile(pidFile, 'utf8'));
     controller.abort(reason);
     try {
-      await expect(running).rejects.toBe(reason);
+      await expect(running).resolves.toEqual([{ status: 'rejected', reason }, { status: 'rejected', reason }]);
       let runningChild = true;
       try { process.kill(pid, 0); } catch { runningChild = false; }
       expect(runningChild).toBe(false);

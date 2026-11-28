@@ -172,28 +172,49 @@ describe('Catalog Active store and state', () => {
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     const cancellation = new AbortController();
     const readScope = new CatalogPreparationReadScope({ env, signal: cancellation.signal });
-    const { catalog } = await readScope.resolve({ sourceIds: ['team'] });
-    const source = catalog.sources[0]!.resolution!;
-    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['consumer']))
-      .rejects.toThrow(/provider/u);
-    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
-      .resolves.toBeUndefined();
+    const read = vi.spyOn(fs, 'readFile');
+    const directories = vi.spyOn(fs, 'readdir');
+    try {
+      const { catalog } = await readScope.resolve({ sourceIds: ['team'] });
+      const source = catalog.sources[0]!.resolution!;
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['consumer']))
+        .rejects.toThrow(/provider/u);
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
+        .resolves.toBeUndefined();
+      const pluginRoot = path.join(source.rootDir, 'plugins', 'provider');
+      const directoryReads = () => directories.mock.calls.filter(([file]) => file === pluginRoot).length;
+      const checked = directoryReads();
+      expect(checked).toBeGreaterThan(0);
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
+        .resolves.toBeUndefined();
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['consumer']))
+        .rejects.toThrow(/provider/u);
+      // A shared dependency's complete validation cannot cause another tree scan,
+      // and a memoized entry still doesn't authorize an incomplete closure.
+      expect(directoryReads()).toBe(checked);
+      for (const name of ['provider', 'consumer', 'other']) {
+        expect(read.mock.calls.filter(([file]) => file === path.join(source.rootDir, 'plugins', name, 'README.md'))).toHaveLength(1);
+      }
 
-    const unrelated = path.join(source.rootDir, 'plugins', 'other', 'README.md');
-    const bytes = await fs.readFile(unrelated);
-    await fs.appendFile(unrelated, 'unreviewed bytes');
-    // A caller that brings only the original manifest and digests must read the tree.
-    await expect(CatalogPreparationReadScope.validateEntries(readScope, { ...source }, ['provider', 'consumer']))
-      .rejects.toThrow(/does not match/u);
-    cancellation.abort();
-    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
-      .rejects.toMatchObject({ name: 'AbortError' });
-    const retry = new CatalogPreparationReadScope({ env });
-    const damaged = await retry.resolve({ sourceIds: ['team'] });
-    expect(damaged.catalog.sources[0]?.error).toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
-    await fs.writeFile(unrelated, bytes);
-    const repaired = await retry.resolve({ sourceIds: ['team'] });
-    expect(repaired.catalog.sources[0]?.resolution?.snapshotDigest).toBe(source.snapshotDigest);
+      const unrelated = path.join(source.rootDir, 'plugins', 'other', 'README.md');
+      const bytes = await fs.readFile(unrelated);
+      await fs.appendFile(unrelated, 'unreviewed bytes');
+      // A caller that brings only the original manifest and digests must read the tree.
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, { ...source }, ['provider', 'consumer']))
+        .rejects.toThrow(/does not match/u);
+      cancellation.abort();
+      await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
+        .rejects.toMatchObject({ name: 'AbortError' });
+      const retry = new CatalogPreparationReadScope({ env });
+      const damaged = await retry.resolve({ sourceIds: ['team'] });
+      expect(damaged.catalog.sources[0]?.error).toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+      await fs.writeFile(unrelated, bytes);
+      const repaired = await retry.resolve({ sourceIds: ['team'] });
+      expect(repaired.catalog.sources[0]?.resolution?.snapshotDigest).toBe(source.snapshotDigest);
+    } finally {
+      read.mockRestore();
+      directories.mockRestore();
+    }
   });
   it('automatically replaces a damaged inactive candidate during ordinary sync', async () => {
     const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-repair');

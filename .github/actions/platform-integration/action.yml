@@ -1,0 +1,76 @@
+name: Platform integration
+description: Prepare the native source candidate and run an integration shard with its serial tail.
+inputs:
+  os:
+    description: Native Node.js platform and shard profile.
+    required: true
+  arch:
+    description: Native Node.js architecture.
+    required: true
+  shard:
+    description: Integration file shard (index/count).
+    required: true
+  workers:
+    description: Worker limit for the ordinary integration step only.
+    required: true
+  process-lifecycle:
+    description: Run the additional serial tests after the last shard.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Configure test diagnostics
+      shell: bash
+      run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.33.0
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        architecture: ${{ inputs.arch }}
+        cache: pnpm
+    - name: Check the native runtime
+      shell: bash
+      env:
+        EXPECTED_OS: ${{ inputs.os }}
+        EXPECTED_ARCH: ${{ inputs.arch }}
+      run: node -e 'if (process.platform !== process.env.EXPECTED_OS || process.arch !== process.env.EXPECTED_ARCH) throw new Error("Unexpected runner architecture"); console.log(process.platform, process.arch, process.version);'
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Read the Windows source candidate toolchain
+      if: inputs.os == 'win32'
+      id: native-tool
+      shell: bash
+      run: node --input-type=module -e 'import fs from "node:fs"; const tool=JSON.parse(fs.readFileSync("native-tools/windows-job/tool.json","utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, `go=${tool.goVersion.slice(2)}\n`);'
+    - uses: actions/setup-go@v6
+      if: inputs.os == 'win32'
+      with:
+        go-version: ${{ steps.native-tool.outputs.go }}
+        cache: false
+    - shell: bash
+      run: pnpm native:windows-job:prepare
+      if: inputs.os == 'win32'
+    - shell: bash
+      run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
+      if: inputs.os == 'win32'
+    - shell: bash
+      run: pnpm build
+    - name: Run the integration shard
+      shell: bash
+      working-directory: packages/cli
+      run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "$INTEGRATION_SHARD"
+      env:
+        INTEGRATION_SHARD: ${{ inputs.shard }}
+        AW_TEST_WORKERS: ${{ inputs.workers }}
+        AW_TEST_SHARD_PLATFORM: ${{ inputs.os }}
+    - name: Run process lifecycle tests
+      if: inputs.process-lifecycle == 'true'
+      shell: bash
+      working-directory: packages/cli
+      run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration ${{ inputs.os == 'win32' && 'tests/unit/test-command-diagnostics.test.ts' || '' }}
+    - name: Verify Windows command runtime configuration paths
+      if: inputs.os == 'win32' && inputs.process-lifecycle == 'true'
+      shell: bash
+      working-directory: packages/cli
+      run: node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=1 --no-file-parallelism tests/unit/command-runtime-config.test.ts

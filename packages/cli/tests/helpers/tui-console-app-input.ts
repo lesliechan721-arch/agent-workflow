@@ -60,9 +60,20 @@ export async function writeAcceptanceTrace(
   }, { spaces: 2 });
 }
 
-export async function escape(instance: ReturnType<typeof render>): Promise<void> {
-  instance.stdin.write('\u001B');
-  await new Promise((resolve) => setTimeout(resolve, 550));
+export async function escape(
+  instance: ReturnType<typeof render>,
+  assertReady?: () => void,
+): Promise<void> {
+  const previousFrame = instance.lastFrame();
+  await input(instance, '\u001B');
+  // Ink 7's trailing ESC parser waits 20 ms for a possible split sequence.
+  // Keep that real input window, then wait for the rendered transition instead
+  // of guessing how long React needs. Callers can require a specific frame/state.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await vi.waitFor(() => {
+    expect(instance.lastFrame()).not.toBe(previousFrame);
+    assertReady?.();
+  }, { interval: 10, timeout: 5000 });
   await nextTurn(2);
 }
 
@@ -105,8 +116,7 @@ export async function chooseConfigSave(
 ): Promise<void> {
   expect(instance.lastFrame()).toContain('已保存，是否更新插件？');
   if (action === 'only') {
-    await escape(instance);
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    await escape(instance, () => expect(value.snapshot.router.current.route.name).toBe('configFields'));
   } else {
     await input(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });

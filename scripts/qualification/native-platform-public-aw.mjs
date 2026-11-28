@@ -7,7 +7,7 @@ import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent, writeGrokFixtureFolderDecisions } from './native-platform-public-state.mjs';
 import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
 import { addOfficialCatalog, qualifyShippedGitInstall } from './native-platform-shipped-git.mjs';
-import { runComponentQualification } from './native-platform-public-components.mjs';
+import { runComponentSuites } from './native-platform-public-components.mjs';
 import { qualifyPiAgentPermission, qualifyPublicPlatformCases } from './native-platform-public-cases.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
@@ -61,7 +61,7 @@ export async function preparePublicClientEntry(ctx) {
 export async function preparePublicClientPaths(contexts) {
   const { env, project } = contexts[0];
   const clients = [];
-  for (const ctx of contexts) clients.push(await preparePublicClientEntry(ctx));
+  for (const ctx of contexts) clients.push(ctx.preparedClient ?? await preparePublicClientEntry(ctx));
   const windows = process.platform === 'win32';
   const systemDirectories = windows ? [path.join(env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   if (windows) {
@@ -345,44 +345,49 @@ export async function requireProductionSkillProfile(ctx) {
 
 async function observePublicComponentSuites(ctx, publicClientEntry) {
   const scopes = ctx.platform === 'antigravity' ? ['user', 'project'] : [ctx.scope];
-  const failures = [];
-  for (const scope of scopes) {
+  const units = scopes.flatMap(scope => {
     const suites = ctx.platform === 'pi' ? ['pi-pair', 'matrix', 'candidate', 'frozen'] : ['matrix', 'candidate'];
     if (scope === 'project') suites.push('project-inheritance');
     if (ctx.platform === 'grok' && scope === 'project') suites.push('grok-hook-pair', 'grok-rule-pair', 'grok-user-hook-pair');
-    for (const suite of suites) {
-      try {
-        await ctx.check('public-components-' + scope + '-' + suite, async () => {
-          const hostedTrace = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
-          let traceEntry;
-          if (hostedTrace && process.platform === 'win32') {
-            if (['copilot', 'antigravity', 'grok'].includes(ctx.platform)) traceEntry = ctx.launcher.prefix[0] ?? publicClientEntry;
-            else if (ctx.platform === 'codex' && scope === 'project' && ['matrix', 'candidate'].includes(suite)) traceEntry = publicClientEntry;
-          }
-          if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
-            traceEntry = publicClientEntry;
-          }
-          const result = await runComponentQualification({ platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH,
-            ...(traceEntry ? { traceEntry } : {}),
-            ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) });
-          if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
-          assert.equal(result.status, 'passed', result.reason);
-          return result;
-        });
-      } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
-    }
+    return suites.map(suite => {
+      const hostedTrace = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+      let traceEntry;
+      if (hostedTrace && process.platform === 'win32') {
+        if (['copilot', 'antigravity', 'grok'].includes(ctx.platform)) traceEntry = ctx.launcher.prefix[0] ?? publicClientEntry;
+        else if (ctx.platform === 'codex' && (scope === 'project' && ['matrix', 'candidate'].includes(suite)
+          || scope === 'user' && suite === 'matrix')) traceEntry = publicClientEntry;
+      }
+      if (hostedTrace && process.platform === 'darwin' && ctx.platform === 'claude' && scope === 'project' && suite === 'matrix') {
+        traceEntry = publicClientEntry;
+      }
+      return { platform: ctx.platform, scope, suite, clientPath: ctx.env.PATH, traceEntry, grokBinary: ctx.grokBinary,
+        ...(suite === 'frozen' ? { catalog: path.join(repoRoot, '.qualification-frozen') } : {}) };
+    });
+  });
+  const results = await runComponentSuites(units, undefined, ctx.group);
+  const failures = [];
+  for (const result of results) {
+    const { scope, suite } = result;
+    try {
+      await ctx.check('public-components-' + scope + '-' + suite, () => {
+        if (result.status !== 'passed') ctx.recordCommand({ componentQualification: result });
+        assert.equal(result.status, 'passed', result.reason ?? result.groupFailure ?? result.cleanupError);
+        return result;
+      });
+    } catch (error) { failures.push(scope + '/' + suite + ': ' + error.message); }
   }
   return failures;
 }
 
 export async function qualifyPublicAw(ctx, { components = false } = {}) {
-  if (!components) return qualifyPublicLifecycle(ctx);
+  const runUnit = ctx.group?.runUnit ?? (action => action());
+  if (!components) return runUnit(() => qualifyPublicLifecycle(ctx));
   // Component delivery has its own file and receipt evidence. Collect it before
   // the runtime/session observer can defer an unsupported platform.
-  const entry = await preparePublicClientPath(ctx);
+  const entry = await runUnit(() => preparePublicClientPath(ctx));
   const failures = await observePublicComponentSuites(ctx, entry);
   try {
-    await qualifyPublicLifecycle(ctx, entry);
+    await runUnit(() => qualifyPublicLifecycle(ctx, entry));
   } catch (error) {
     if (!failures.length) throw error;
     failures.push('public lifecycle: ' + error.message);

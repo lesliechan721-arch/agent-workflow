@@ -22,6 +22,7 @@ import { readCommandRuntimeConfigReaderSource } from '../src/utils/managed-comma
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
 import { pluginTestReporterUrl } from './plugin-test-reporter.mjs';
+import { pluginTestContextGuardUrl } from './plugin-test-context-guard.mjs';
 import { preparePluginScriptDirectories } from '../src/utils/plugin-scripts.js';
 import {
   buildPluginScriptSpawnEnv,
@@ -117,14 +118,18 @@ interface NodeTestResult {
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const REPO_ROOT_ENV = 'AW_PLUGIN_TEST_REPO_ROOT';
 const TEST_PLATFORM_ORDER: readonly PlatformTarget[] = ['codex', 'claude'];
-// CI shard -> Node shard, measured at 5dab92c25796ebc17592fb997839c3e128199ea4:
-// https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44028891314
-// Sum each plugin/platform's maximum AW_PLUGIN_TEST.elapsedMs, including both
-// backends. These three permutations predict 270/272/270s instead of 181/393/238s.
+// CI shard -> sorted Node file shard. Source: successful Windows run
+// ef354b3d4c431890e33eddb269dc74b9441466ef
+// https://github.com/lesliechan721-arch/agent-workflow/actions/runs/45778991935
+// Estimate each plugin/target from complete AW_PLUGIN_TEST.elapsedMs and
+// halve the explicitly independent file intervals. With ~147s pack smoke on
+// shard 1, moving the two costly toolkit shards predicts 212/195/186s rather
+// than 312/192/90s (test execution + pack smoke, not end-to-end job wall-time).
 const WINDOWS_CI_NODE_TEST_SHARDS: ReadonlyMap<string, readonly [number, number, number]> = new Map([
   ['agent-skill-toolkit', [1, 3, 2]],
-  ['aw-development-toolkit', [2, 3, 1]],
+  ['aw-development-toolkit', [3, 1, 2]],
   ['dev-workflow', [1, 3, 2]],
+  ['git-toolkit', [3, 2, 1]],
 ]);
 
 function resolveRepoRoot(): string {
@@ -263,6 +268,26 @@ async function matchTestEntries(rootDir: string, globs: string[] | undefined): P
   return files.filter((file) => globs.some((glob) => matchesPluginTestEntryGlob(file, glob))).sort();
 }
 
+// Source-side metadata, not a lifecycle manifest field. Exact paths ensure a
+// renamed/new test never silently inherits an independent classification.
+async function readTargetAgnosticEntries(sourceRoot: string, declared: string[]): Promise<Set<string>> {
+  const file = path.join(sourceRoot, '.agents-plugin', 'test-platform-agnostic.json');
+  if (!(await fs.pathExists(file))) return new Set();
+  const entries: unknown = await fs.readJson(file);
+  if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string' || !declared.includes(entry))) {
+    throw new Error(`${file} must list exact declared test file paths.`);
+  }
+  return new Set(entries);
+}
+
+function selectNodeShard(entries: string[], shard?: string): string[] {
+  if (!shard) return entries;
+  const [index, total] = shard.split('/').map(Number);
+  // Retain Node's sorted whole-file round-robin allocation across all batches.
+  // Splitting by target dependence before sharding would change the mapping.
+  return entries.filter((_entry, position) => position % total === index - 1);
+}
+
 async function resolvePluginRuntimeSourceSet(
   repoRoot: string,
   initialPlugins: readonly PluginMeta[],
@@ -381,7 +406,7 @@ async function copyTestsIntoBundle(options: {
   bundleRoot: string;
   entries: string[];
   manifest: NormalizedPluginManifest;
-}): Promise<string[]> {
+}): Promise<void> {
   const entries = options.entries.map((entry) => normalizeRelativePath(entry));
   const baselineFiles = await listFiles(options.baselineRoot);
   const bundleFiles = await listFiles(options.bundleRoot);
@@ -442,7 +467,6 @@ async function copyTestsIntoBundle(options: {
       await fs.outputFile(path.join(options.bundleRoot, injectedCommandReaders.sourceDir, file), source, { flag: 'wx' });
     }
   }
-  return entries;
 }
 
 async function readPackageDependencyNames(
@@ -595,7 +619,7 @@ function runNodeTest(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   testName?: string;
-  testShard?: string;
+  targetAgnostic: boolean;
   workers: ReturnType<typeof nodeTestWorkerOptions>;
   stdout: (text: string) => void;
   progress: (event: Record<string, unknown>) => void;
@@ -610,9 +634,7 @@ function runNodeTest(options: {
     if (options.testName) {
       args.push('--test-name-pattern', options.testName);
     }
-    if (options.testShard) {
-      args.push(`--test-shard=${options.testShard}`);
-    }
+    if (options.targetAgnostic) args.push('--import', pluginTestContextGuardUrl(options.testFiles));
     args.push(...options.testFiles);
     const child = spawn(process.execPath, args, {
       cwd: options.cwd,
@@ -648,34 +670,23 @@ async function runPreparedPluginTests(options: {
   nativePlatform?: NodeJS.Platform;
   nativePrepare?: typeof prepareWindowsJobHelper;
   scope: Scope;
-  platform: PlatformTarget;
+  platform?: PlatformTarget;
+  entries: string[];
+  bundleEntries: string[];
   testName?: string;
   testConcurrency?: string;
   testShard?: string;
+  nodeTestShard?: string;
   testShardProfile?: ParsedArgs['testShardProfile'];
-  testFile?: string;
-  excludeTestFile?: string;
   env: NodeJS.ProcessEnv;
   testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
-  let nodeTestShard = options.testShard;
-  if (options.testShardProfile && nodeTestShard) {
-    const shardIndex = Number(nodeTestShard.split('/')[0]);
-    nodeTestShard = `${WINDOWS_CI_NODE_TEST_SHARDS.get(options.prepared.pluginName)?.[shardIndex - 1] ?? shardIndex}/3`;
-  }
-  const matchedEntries = await matchTestEntries(
-    options.prepared.baselineRoot,
-    options.prepared.manifest.scripts?.tests?.node,
-  );
-  if (options.testFile && !matchedEntries.includes(options.testFile)) {
-    throw new Error(`No declared test file matches ${options.testFile}.`);
-  }
-  const entries = matchedEntries.filter((entry) => (!options.testFile || entry === options.testFile)
-    && entry !== options.excludeTestFile);
+  const { entries, nodeTestShard } = options;
+  const target = options.platform ?? 'target-platform-agnostic';
   if (entries.length === 0) {
-    print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: skipped (no tests matched)`);
+    print(options.stdout, `${options.prepared.pluginName} / ${target}: skipped (no tests matched)`);
     return 0;
   }
 
@@ -700,10 +711,12 @@ async function runPreparedPluginTests(options: {
     await fs.ensureDir(tempDir);
     await preparePluginScriptDirectories(tempDir);
     const canonicalProjectRoot = await fs.realpath(projectRoot);
-    const copiedEntries = await copyTestsIntoBundle({
+    // Keep the original test staging/import closure. Tests may dynamically
+    // read support files brought in by a different declared test entry.
+    await copyTestsIntoBundle({
       baselineRoot: options.prepared.baselineRoot,
       bundleRoot,
-      entries,
+      entries: options.bundleEntries,
       manifest: options.prepared.manifest,
     });
 
@@ -712,7 +725,7 @@ async function runPreparedPluginTests(options: {
       AW_HOME: awHome,
       NODE_PATH: '',
     } as NodeJS.ProcessEnv;
-    const writtenContext = await writeTestContext({
+    const writtenContext = options.platform ? await writeTestContext({
       referencePlugins: options.referencePlugins,
       bundleRoot,
       sourceRoot: options.prepared.sourceRoot,
@@ -723,7 +736,7 @@ async function runPreparedPluginTests(options: {
       env,
       tempDir,
       testConfigValues: options.testConfigValues,
-    });
+    }) : { contextPath: '', sensitiveValues: [] };
     const spawnEnv = buildPluginScriptSpawnEnv({
       commandEnv: env,
       contextPath: writtenContext.contextPath,
@@ -737,6 +750,10 @@ async function runPreparedPluginTests(options: {
       scope: options.scope,
       bundleRoot,
     });
+    if (!options.platform) {
+      delete spawnEnv.AW_PLUGIN_CONTEXT;
+      delete spawnEnv.AW_PLUGIN_PLATFORM;
+    }
     spawnEnv.NODE_PATH = '';
     removeNativeToolEnvironment(spawnEnv);
     const closure = getNativeToolConsumerClosure(await loadPluginNativeToolClosure(bundleRoot, options.prepared.manifest), 'plugin-test', 'node');
@@ -769,13 +786,13 @@ async function runPreparedPluginTests(options: {
       spawnEnv.AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS = '1';
     }
 
-    const testFiles = copiedEntries.map((entry) => path.join(bundleRoot, entry));
+    const testFiles = entries.map((entry) => path.join(bundleRoot, entry));
     const started = performance.now();
     const progress = (event: Record<string, unknown>): void => {
       const file = typeof event.file === 'string' ? path.relative(bundleRoot, event.file).split(path.sep).join('/') : undefined;
       const name = event.name === event.file ? file : event.name;
       const line = JSON.stringify({
-        plugin: options.prepared.pluginName, platform: options.platform,
+        plugin: options.prepared.pluginName, platform: target,
         elapsedMs: Math.round(performance.now() - started), ...event, file, name,
       }, (_key, value: unknown) => {
         if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return value;
@@ -806,7 +823,7 @@ async function runPreparedPluginTests(options: {
           cwd: canonicalProjectRoot,
           env: backendEnv,
           testName: options.testName,
-          testShard: nodeTestShard,
+          targetAgnostic: !options.platform,
           workers: nodeTestWorkerOptions({ env: options.env, explicit: options.testConcurrency }),
           stdout: options.stdout,
           progress,
@@ -826,10 +843,10 @@ async function runPreparedPluginTests(options: {
       const coverage = options.testShard
         ? `test shard ${options.testShard}`
         : `${entries.length} test file${entries.length === 1 ? '' : 's'}`;
-      print(options.stdout, `${options.prepared.pluginName} / ${options.platform}: passed (${coverage})`);
+      print(options.stdout, `${options.prepared.pluginName} / ${target}: passed (${coverage})`);
       return 0;
     }
-    print(options.stderr, `${options.prepared.pluginName} / ${options.platform}: failed`);
+    print(options.stderr, `${options.prepared.pluginName} / ${target}: failed`);
     return result.exitCode ?? 1;
   } finally {
     await fs.remove(runRoot);
@@ -881,30 +898,53 @@ async function runPreparedPluginSelection(options: {
   try {
     const prepared = await buildPreparedPluginTestBundle(options.selection);
     try {
+      const parsed = options.parsed;
+      const matched = await matchTestEntries(prepared.baselineRoot, prepared.manifest.scripts?.tests?.node);
+      if (parsed.testFile && !matched.includes(parsed.testFile)) {
+        throw new Error(`No declared test file matches ${parsed.testFile}.`);
+      }
+      const independent = await readTargetAgnosticEntries(prepared.sourceRoot, matched);
+      const entries = matched.filter((entry) => (!parsed.testFile || entry === parsed.testFile)
+        && entry !== parsed.excludeTestFile);
+      let nodeTestShard = parsed.testShard;
+      if (parsed.testShardProfile && nodeTestShard) {
+        const shardIndex = Number(nodeTestShard.split('/')[0]);
+        nodeTestShard = `${WINDOWS_CI_NODE_TEST_SHARDS.get(prepared.pluginName)?.[shardIndex - 1] ?? shardIndex}/3`;
+      }
+      const selected = selectNodeShard(entries, nodeTestShard);
+      if (entries.length > 0 && selected.length === 0) {
+        print(options.stdout, `${prepared.pluginName}: passed (test shard ${parsed.testShard})`);
+        return 0;
+      }
+      const targetEntries = selected.filter((entry) => !independent.has(entry));
+      const independentEntries = selected.filter((entry) => independent.has(entry));
+      const batches: Array<{ platform?: PlatformTarget; entries: string[] }> = [];
+      if (independentEntries.length > 0) batches.push({ entries: independentEntries });
+      if (targetEntries.length > 0 || selected.length === 0) {
+        for (const platform of options.selection.platforms) batches.push({ platform, entries: targetEntries });
+      }
       let exitCode = 0;
-      for (const platform of options.selection.platforms) {
-        const platformExitCode = await runPreparedPluginTests({
+      for (const batch of batches) {
+        const batchExitCode = await runPreparedPluginTests({
           referencePlugins: options.referencePlugins,
           prepared,
-          native: options.parsed,
+          native: parsed,
           nativePlatform: options.nativePlatform,
           nativePrepare: options.nativePrepare,
-          scope: options.parsed.scope,
-          platform,
-          testName: options.parsed.testName,
-          testConcurrency: options.parsed.testConcurrency,
-          testShard: options.parsed.testShard,
-          testShardProfile: options.parsed.testShardProfile,
-          testFile: options.parsed.testFile,
-          excludeTestFile: options.parsed.excludeTestFile,
+          scope: parsed.scope,
+          ...batch,
+          bundleEntries: entries,
+          testName: parsed.testName,
+          testConcurrency: parsed.testConcurrency,
+          testShard: parsed.testShard,
+          nodeTestShard,
+          testShardProfile: parsed.testShardProfile,
           env: options.env,
           testConfigValues: options.testConfigValues,
           stdout: options.stdout,
           stderr: options.stderr,
         });
-        if (platformExitCode !== 0) {
-          exitCode = platformExitCode;
-        }
+        if (batchExitCode !== 0) exitCode = batchExitCode;
       }
       return exitCode;
     } finally {

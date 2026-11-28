@@ -48,6 +48,10 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
+静态 Cursor 安装的首次未持锁预览，可以在同一目标的构建结束校验中复用刚取得的客户端发现结果。现场部署、路径、配置、staging 和所有权仍重新核对；后续校验、锁内重查和真实写入不使用这个结果。
+
+历史 Portable 物化的两种摘要使用同一次真实目录读取，分别保留全树内容与生产文件范围、执行权限的原有规则；紧接的 Skill 内容检查使用这次捕获的文件和目录信息。运行时引用闭包、当前目标的 ownership 和独立写前检查仍分别核验实际现场，不把历史结果当成后续窗口的证明。
+
 `OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。读取和写入并发上限分别为 4 和 2，按进程可用核心数下调，各至少为 1。每项工作沿用对应的 rebuild、adapter 或 writer。命中声明平台的部署共用一个命令包候选及其冻结路由。最终回执按计划顺序归并，各目标保留实际执行和读回结果。命令包撤销和显式维护见[包维护与配置应用](../../reference/managed-commands.md#包维护与配置应用)。
 
 独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。需要扫描多个宿主的现有登记时，读取会等这些位置的写入结束，以免把正在更新的清单当作损坏。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
@@ -88,7 +92,7 @@ dependency placement 由 User/Project 完整需求闭包自动决定，不提供
 - `cleanup`：不运行 preApply，也不读取依赖图、安装门槛或 Active。两种 scope 均只清理可由 live owner marker/token 或已绑定 offline evidence 证明属于 AW 的所选输出；保留 Intent、偏好、plugin config、foreign 内容和 shared/native payload。
 - `cleanup --force`：用于恢复专属且已损坏的 AW-owned 输出，仍保留两份 Intent、偏好和配置。只接受 shallow plan 中精确的 `skill-directory` 与 exclusive `owned-text-file`，不运行 renderer 或读取其源码来推测动态名称；候选必须位于合法 Agent/scope root，路径链和目标不能是 symlink，节点类型、basename 和 artifactKey 必须一致，不能是 shared config、native plugin store 或 marketplace root。合法 foreign owner 在 normal 和 force 中都保留。
 
-内部 `cleanup` 对应公开 `remove --only outputs`，内部 `cleanup --force` 对应公开 `remove --only outputs --force`。两者使用专用 cleanup 流程，不进入恢复写入 pipeline。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
+用户直接请求的 `remove --only outputs` 与 `remove --only outputs --force` 分别使用内部 `cleanup` 与 `cleanup --force` 的专用流程，不进入恢复写入 pipeline。普通联合 remove 也可拆成保持声明与依赖顺序的 scoped cleanup 子步骤；仅当该子步骤属于本次所选根或自动孤儿依赖、完整验证并绑定当前 Active source、精确目标及 live ownership 时，才按普通 native remove 语义计划无剩余引用的 AW-owned 原生包移除。此授权不传给 outputs-only、离线、提供位置迁移或未知来源的清理，原共享及外部归属保护不变。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
 
 selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。ownership、foreign/shared/global 或安全输出 inventory 错误仍 fail closed；强配置损坏由 `remove --only requirements` 或普通 remove 的停用分支报告，不被普通 cleanup 覆盖。
 

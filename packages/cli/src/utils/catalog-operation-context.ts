@@ -16,7 +16,7 @@ import {
 } from './catalog-generation-control-snapshot.js';
 import type { CatalogStoreEntry } from './catalog-generation-store.js';
 import { validateCatalogSnapshotComplete, validateCatalogSnapshotPluginEntriesComplete } from './catalog-snapshot.js';
-import type { CatalogSourcesConfigSnapshot } from './catalog-sources.js';
+import { readCatalogSourcesConfigSnapshot, type CatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import type { MultiSourceCatalogResolution } from './multi-source-catalog.js';
 
 export interface CatalogOperationContext {
@@ -69,6 +69,15 @@ export class CatalogPreparationReadScope {
     return context;
   }
 
+  /** Re-read only the sources of a reviewed context, using this window's evidence. */
+  async rebind(reviewed: CatalogOperationContext): Promise<CatalogOperationContext> {
+    this.#options.signal?.throwIfAborted();
+    const sources = new Set(reviewed.catalog.sources.map((source) => source.sourceId));
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(this.#options.env);
+    const sourceIds = configSnapshot.config.sources.map((source) => source.id).filter((id) => sources.has(id));
+    return this.resolve({ configSnapshot, sourceIds });
+  }
+
   async resolveActiveGeneration(sourceId: string, previousResolution?: CatalogSourceResolution) {
     this.#options.signal?.throwIfAborted();
     const previous = previousResolution && this.#bindings.get(previousResolution);
@@ -100,6 +109,28 @@ export class CatalogPreparationReadScope {
     else await validateCatalogSnapshotComplete(source.rootDir);
     signal?.throwIfAborted();
   }
+}
+
+/** Full Active binding, not just the logical generation set digest (which omits ref/commit). */
+export function catalogOperationBinding(context: CatalogOperationContext | undefined): string | undefined {
+  if (!context || context.catalog.sources.filter((source) => source.resolution).length !== context.generationSet.sources.length) return;
+  const keys: string[] = [];
+  for (const generation of context.generationSet.sources) {
+    const source = context.catalog.sources.find((entry) => entry.sourceId === generation.sourceId)?.resolution;
+    if (!source || source.sourceId !== generation.sourceId
+      || source.rootDir !== generation.snapshotPath || source.sourceIdentity !== generation.sourceIdentity
+      || source.logicalIdentity !== generation.logicalIdentity || source.resolvedCommit !== generation.resolvedCommit
+      || source.manifestDigest !== generation.manifestDigest || source.snapshotDigest !== generation.snapshotDigest) return;
+    keys.push(createCatalogPreparationStoreKey({ ...generation, requestedRef: source.requestedRef }));
+  }
+  return JSON.stringify([context.generationSetDigest, keys]);
+}
+
+export function catalogOperationBindingsMatch(reviewed: CatalogOperationContext | undefined,
+  current: CatalogOperationContext | undefined): boolean {
+  if (!reviewed && !current) return true;
+  const binding = catalogOperationBinding(reviewed);
+  return binding !== undefined && binding === catalogOperationBinding(current);
 }
 
 export function selectCatalogOperationContext(

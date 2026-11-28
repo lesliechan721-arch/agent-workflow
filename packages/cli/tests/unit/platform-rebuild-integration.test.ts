@@ -718,6 +718,8 @@ console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('sk
     ['schema', 'unknown'], ['exit 124', 'unknown'], ['aborted', 'unknown'],
   ] as const)('checks Copilot same-version publication with %s marketplace evidence', async (scenario, ownership) => {
     const item = await nativeEvidenceFixture('copilot', { scope: 'project' });
+    // Exercise the independent receipt and rebase even on a Windows test host.
+    item.context.env = { ...item.context.env, AW_NATIVE_CLI_TIMEOUT_MS: '5000' };
     try {
       expect((await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver })).status).toBe('succeeded');
       const revision = '---\nname: check\ndescription: Check evidence.\n---\nRevision 3.\n';
@@ -757,6 +759,118 @@ console.log(JSON.stringify({version:3,components:allowedOutputKinds.includes('sk
       expect(await fs.readFile(path.join(item.layout.packageRoot, skill), 'utf8')).toBe(revision);
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
+
+  // The settings writer can change the flag or find it already false. Only the
+  // native client can confirm which registration is disabled in either case.
+  interface CopilotRead {
+    market?: 'timeout' | 'foreign';
+    row?: 'live' | 'live missing installedFrom' | 'foreign path' | 'conflicting paths' | 'broken JSON' | 'timeout' | 'ambiguous';
+    activation?: 'enabled' | 'unknown';
+  }
+  const removalCases: Array<{ scenario: string; first?: CopilotRead; second?: CopilotRead; unchanged?: true; success?: true }> = [
+    { scenario: 'disabled', success: true },
+    { scenario: 'marketplace recovers', first: { market: 'timeout' }, success: true },
+    { scenario: 'first activation enabled', first: { market: 'timeout', activation: 'enabled' } },
+    { scenario: 'enabled', first: { activation: 'enabled' }, second: { activation: 'enabled' } },
+    { scenario: 'timeout', first: { market: 'timeout', row: 'timeout' }, second: { market: 'timeout', row: 'timeout' } },
+    { scenario: 'bad JSON', first: { row: 'broken JSON' } },
+    { scenario: 'foreign at rebase', second: { market: 'foreign' } },
+    { scenario: 'market timeout with an exact live row', first: { market: 'timeout', row: 'live' }, second: { row: 'live' }, success: true },
+    { scenario: 'market timeout with an incomplete live row', first: { market: 'timeout', row: 'live missing installedFrom' } },
+    { scenario: 'foreign row under the canonical marketplace', first: { row: 'foreign path' } },
+    { scenario: 'conflicting row paths at rebase', first: { market: 'timeout' }, second: { row: 'conflicting paths' } },
+    { scenario: 'ambiguous plugin identity', first: { row: 'ambiguous' } },
+    { scenario: 'market timeout followed by foreign marketplace', first: { market: 'timeout' }, second: { market: 'foreign' } },
+    { scenario: 'market timeout followed by unreadable plugins', first: { market: 'timeout' }, second: { row: 'broken JSON' } },
+    { scenario: 'foreign marketplace followed by unreadable plugins', first: { market: 'foreign' }, second: { row: 'broken JSON' } },
+    { scenario: 'unchanged settings with native activation enabled', unchanged: true, first: { activation: 'enabled' } },
+    { scenario: 'unchanged settings with native activation unknown', unchanged: true, first: { activation: 'unknown' } },
+    { scenario: 'unchanged settings with unconfirmed source', unchanged: true, first: { row: 'live missing installedFrom' } },
+    { scenario: 'unchanged settings with confirmed deactivation', unchanged: true, first: { row: 'live' }, success: true },
+  ];
+  it.each(removalCases)('requires fresh native evidence for a retained Copilot removal: $scenario',
+    async ({ first = {}, second = {}, unchanged, success }) => {
+      const item = await nativeEvidenceFixture('copilot');
+      // Inspect each independent read even on hosts with the bounded command retry.
+      item.context.env = { ...item.context.env, AW_NATIVE_CLI_TIMEOUT_MS: '5000' };
+      try {
+        expect((await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver })).status).toBe('succeeded');
+        const settings = path.join(item.layout.activationPath, 'settings.json');
+        if (unchanged) {
+          const config = await fs.readJson(settings);
+          config.enabledPlugins[item.layout.nativeIdentity.registrationId!] = false;
+          await fs.writeJson(settings, config);
+          item.reads.copilotActivation = () => true;
+        }
+        const initialSettings = await fs.readFile(settings, 'utf8');
+        await item.context.platformRebuildSession!.dispose();
+        let activationAttempted = false;
+        const original = item.adapter.lifecycle;
+        item.adapter.lifecycle = { ...original, execute: (ctx, prepared) => original.execute({ ...ctx,
+          services: { ...ctx.services, setActivation: async (...args) => {
+            const result = await ctx.services.setActivation(...args);
+            activationAttempted = true;
+            return result;
+          } },
+        }, prepared) };
+        item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+        const integration = createRebuildIntegration({ context: item.context });
+        const target = await integration.buildTarget({ ...item.input, command: 'uninstall' });
+        const [plan] = target.platformDeployment!.plans;
+        expect(plan!.evidence.sharedReferences).toBe('unknown');
+        expect(plan!.effects.map(effect => effect.kind)).toEqual(['deactivate']);
+        const native = item.runner.getMockImplementation()!;
+        let postWriteInspections = 0;
+        item.reads.inspection = async () => { if (activationAttempted) postWriteInspections++; };
+        const foreign = path.join(item.input.cwd, 'foreign');
+        item.runner.mockClear().mockImplementation(async (invocation) => {
+          if (!activationAttempted) return native(invocation);
+          const { market, row, activation } = postWriteInspections === 1 ? first : second;
+          const marketplaceQuery = invocation.args.includes('marketplace');
+          if ((marketplaceQuery ? market : row) === 'timeout') {
+            throw new NativeCliError({ invocation, reason: 'timeout', exitCode: 124, stdout: '', stderr: '' });
+          }
+          if (marketplaceQuery) return market === 'foreign' ? { exitCode: 0, stderr: '',
+            stdout: JSON.stringify([{ name: item.layout.marketplaceName, source: foreign }]) } : native(invocation);
+          if (!row && !activation) return native(invocation);
+          if (row === 'broken JSON') return { exitCode: 0, stdout: '{', stderr: '' };
+          const plugin = { name: item.layout.nativeIdentity.packageId, marketplace: item.layout.marketplaceName,
+            enabled: activation === 'unknown' ? undefined : activation === 'enabled',
+            source: row === 'live' || row === 'live missing installedFrom' ? 'live'
+              : row === 'foreign path' || row === 'conflicting paths' ? foreign : item.layout.marketplaceRoot,
+            installedFrom: row === 'live' || row === 'conflicting paths' ? item.layout.marketplaceRoot : undefined };
+          return { exitCode: 0, stderr: '', stdout: JSON.stringify(row === 'ambiguous' ? [plugin, { ...plugin, marketplace: null }] : [plugin]) };
+        });
+        const result = await executeRebuildOperation({ command: 'uninstall', target, driver: integration.driver });
+        expect(postWriteInspections).toBe(unchanged ? 1 : 2);
+        const receipt = result.deploymentReceipts![0]!;
+        expect(receipt.effects).toMatchObject([{ id: plan!.effects[0]!.id,
+          status: unchanged ? 'unchanged' : 'applied', mutation: unchanged ? 'none' : 'confirmed' }]);
+        if (unchanged) expect(await fs.readFile(settings, 'utf8')).toBe(initialSettings);
+        expect(receipt.after.package).toBe('present');
+        expect(result.status).toBe(success ? 'succeeded' : 'failed');
+        if (success) expect(receipt.after).toMatchObject({ ownership: 'aw', registration: 'present',
+          consumers: [expect.objectContaining({ activation: 'disabled' })] });
+        else expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeMutationPostcheckFailed', severity: 'error' }));
+        if (first.market === 'timeout' && !success) {
+          expect(receipt.diagnostics).toContainEqual(expect.objectContaining({
+            code: 'nativeMarketplaceUnconfirmed', detail: { reasonCode: 'nativeCliTimedOut' },
+          }));
+        }
+        if (first.market === 'foreign' || first.row === 'foreign path' || second.row === 'conflicting paths') {
+          expect(receipt.diagnostics).toContainEqual(expect.objectContaining({
+            code: 'nativeMutationPostcheckFailed', detail: { reasonCode: 'deploymentOwnershipConflict' },
+          }));
+        }
+        if (second.market === 'foreign') expect(receipt.after.ownership).toBe('foreign');
+        if (second.row === 'broken JSON') {
+          expect(receipt.after.registration).toBe('unknown');
+          expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeObservationFailed' }));
+        }
+        expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+        expect(await fs.pathExists(path.join(item.layout.packageRoot, 'skills/check/SKILL.md'))).toBe(true);
+      } finally { await item.context.platformRebuildSession?.dispose(); }
+    });
 
   // Test Value Gate: a local no-op can disagree with effective native activation.
   it('fails the final check when an unchanged Copilot entry is disabled in native inventory', async () => {

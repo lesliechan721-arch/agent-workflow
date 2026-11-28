@@ -1,16 +1,18 @@
 import { createHash } from 'node:crypto';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalJson } from '@lesliechan721/agent-skill-eval';
+import { canonicalJson, computeSkillDigest } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { materializePortableSkills } from '../../src/portable/materializer.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
 import { portableJsonDigest, portableSkillTreeDigest, readHistoricalPortableMaterialization } from '../../src/portable/historical-materialization.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-async function fixture(scope: 'project' | 'user' = 'project') {
+async function fixture(scope: 'project' | 'user' = 'project', completeTree = false) {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-history-'));
   roots.push(projectRoot);
   const digest = portableJsonDigest('source');
@@ -40,6 +42,11 @@ async function fixture(scope: 'project' | 'user' = 'project') {
   const skill = path.join(rootDir, 'skills', 'alpha');
   try {
     await fs.copy(path.join(exported.rootDir, 'skills'), path.join(rootDir, 'skills'));
+    if (completeTree) {
+      for (const file of ['evals/cases.json', 'reports/report.json', '.git/config', 'nested/node_modules/example.txt', 'nested/.DS_Store', 'nested/reports/keep.md']) {
+        await fs.outputFile(path.join(skill, file), file);
+      }
+    }
     await writeAwSourceBinding({ rootDir, source: { kind: 'catalog-snapshot', sourceId: 'team', catalogSourceIdentity: digest,
       logicalIdentity: 'test-catalog', snapshotDigest: digest, workspaceIdentity: 'test-workspace', workspaceSourceIdentity: digest },
       subject: { plugin: 'root' }, profile: { kind: 'portable', id: `generic-${scope}`, platform: 'generic', scope, inputDigest: exported.configDigest },
@@ -60,6 +67,76 @@ describe('historical portable generation integrity', () => {
     const options = await fixture();
     expect((await readHistoricalPortableMaterialization(options)).marker.selectedSkills[0]?.providerPluginId).toBe('team/dependency');
     expect(await fs.readFile(path.join(options.skill, '.hidden'), 'utf8')).toBe('must be preserved');
+  });
+  // Protect the hot recovery path against a second physical read for the
+  // same evidence while retaining both independent persisted digest contracts.
+  it('reads regular historical files once while preserving both digests', async () => {
+    const options = await fixture('project', true);
+    const readPaths = async (directory: string, prefix = ''): Promise<Array<[string, Buffer]>> => {
+      const files: Array<[string, Buffer]> = [];
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const absolutePath = path.join(directory, entry.name);
+        if (entry.isDirectory()) files.push(...await readPaths(absolutePath, relativePath));
+        else files.push([relativePath, await fs.readFile(absolutePath)]);
+      }
+      return files;
+    };
+    const files = await readPaths(options.skill);
+    const hash = createHash('sha256');
+    for (const [file, bytes] of files.sort(([left], [right]) => left.localeCompare(right))) {
+      hash.update(file).update('\0').update(bytes).update('\0');
+    }
+    const expectedFilesDigest = `sha256:${hash.digest('hex')}`;
+    const expectedProductionDigest = await computeSkillDigest(options.skill);
+    const canonicalSkill = await fs.realpath(options.skill);
+    const reads = vi.spyOn(fs, 'readFile');
+    const promiseReads = vi.spyOn(fsPromises, 'readFile');
+    syncBuiltinESMExports();
+    try {
+      const historical = await readHistoricalPortableMaterialization(options);
+      expect(historical.marker.selectedSkills[0]?.filesDigest).toBe(expectedFilesDigest);
+      expect(historical.binding.artifacts[0]?.digest).toBe(expectedProductionDigest);
+      const tree = historical.validateSkillDirectory('alpha');
+      expect(tree.files['SKILL.md']).toEqual(files.find(([name]) => name === 'SKILL.md')?.[1]);
+      expect(tree.files['nested/reports/keep.md']).toEqual(Buffer.from('nested/reports/keep.md'));
+      expect(tree.files['evals/cases.json']).toBeUndefined();
+      expect(tree.files['reports/report.json']).toBeUndefined();
+      for (const [relativePath] of files) {
+        const filename = path.join(canonicalSkill, relativePath);
+        expect([...reads.mock.calls, ...promiseReads.mock.calls].filter(([file]) => String(file) === filename)).toHaveLength(1);
+      }
+    } finally { reads.mockRestore(); promiseReads.mockRestore(); syncBuiltinESMExports(); }
+  });
+  it('keeps reserved marker directories forbidden after successful historical digest validation', async () => {
+    const options = await fixture();
+    await fs.ensureDir(path.join(options.skill, '.agent-workflows-owner.json'));
+    // Empty directories are not part of either persisted hash; the separate
+    // portable validator must still reject this reserved node.
+    const historical = await readHistoricalPortableMaterialization(options);
+    expect(() => historical.validateSkillDirectory('alpha')).toThrow(/保留文件 .agent-workflows-owner.json/u);
+  });
+  it.skipIf(process.platform === 'win32')('rejects mode-only drift despite unchanged Portable files digest', async () => {
+    const options = await fixture();
+    const before = await portableSkillTreeDigest(options.skill);
+    const production = await computeSkillDigest(options.skill);
+    const filename = path.join(options.skill, 'README.md');
+    await fs.chmod(filename, (await fs.stat(filename)).mode ^ 0o111);
+    expect(await portableSkillTreeDigest(options.skill)).toBe(before);
+    expect(await computeSkillDigest(options.skill)).not.toBe(production);
+    await expect(readHistoricalPortableMaterialization(options)).rejects.toThrow('portableOutputConflict');
+  });
+  it('rejects modified author-only and ignored files even when production digest is unchanged', async () => {
+    const options = await fixture('project', true);
+    const production = await computeSkillDigest(options.skill);
+    for (const relativePath of ['evals/cases.json', 'reports/report.json', '.git/config', 'nested/node_modules/example.txt', 'nested/.DS_Store']) {
+      const file = path.join(options.skill, relativePath);
+      await fs.writeFile(file, 'modified');
+      expect(await computeSkillDigest(options.skill)).toBe(production);
+      await expect(readHistoricalPortableMaterialization(options)).rejects.toThrow('portableOutputConflict');
+      await fs.writeFile(file, relativePath);
+    }
+    expect(await readHistoricalPortableMaterialization(options)).toMatchObject({ marker: { scope: 'project' } });
   });
   it('binds historical content to its own platform, source, scope and generation root', async () => {
     const user = await fixture('user');

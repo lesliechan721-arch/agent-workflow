@@ -168,9 +168,12 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     head_repository: { full_name: 'owner/repo' },
   };
   const requiredJobs = [
-    'Linux x64 / Node 22 / unit', 'Linux x64 / Node 22 / integration',
-    'Linux x64 / Node 24 / unit', 'Linux x64 / Node 24 / integration',
-    'Linux x64 / Node 24 / release verification',
+    'Linux x64 / Node 22 / unit', 'Linux x64 / Node 22 / integration 1 of 2',
+    'Linux x64 / Node 22 / integration 2 of 2',
+    'Linux x64 / Node 24 / unit', 'Linux x64 / Node 24 / integration 1 of 2',
+    'Linux x64 / Node 24 / integration 2 of 2',
+    'Linux x64 / Node 24 / release delivery',
+    'Linux x64 / Node 24 / release native evidence',
     'Linux x64 / Node 24 / plugins',
     'macOS arm64 / Node 24 / plugins',
     'Windows x64 / Node 24 / plugins 1 of 3',
@@ -178,9 +181,14 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     'Windows x64 / Node 24 / plugins 3 of 3',
     'darwin arm64 / Node 24 / integration 1 of 2',
     'darwin arm64 / Node 24 / integration 2 of 2',
-    'win32 x64 / Node 24 / integration 1 of 3',
-    'win32 x64 / Node 24 / integration 2 of 3',
-    'win32 x64 / Node 24 / integration 3 of 3',
+    'win32 x64 / Node 24 / integration 1 of 8',
+    'win32 x64 / Node 24 / integration 2 of 8',
+    'win32 x64 / Node 24 / integration 3 of 8',
+    'win32 x64 / Node 24 / integration 4 of 8',
+    'win32 x64 / Node 24 / integration 5 of 8',
+    'win32 x64 / Node 24 / integration 6 of 8',
+    'win32 x64 / Node 24 / integration 7 of 8',
+    'win32 x64 / Node 24 / integration 8 of 8',
     'native-windows-job / Windows Job / fixed-toolchain candidate',
     'native-windows-job / Windows Job / Windows x64 source qualification',
     'native-windows-job / Windows Job / Windows arm64 source qualification',
@@ -197,6 +205,20 @@ test('automatic beta inspection reuses only the recorded successful main CI atte
     'inspect', '--product', 'cli', '--tag', candidate.tag,
   ], { ...options, ...overrides });
   assert.equal((await inspect()).reuse_main_ci, 'true');
+  const legacyJobs = jobs.filter((job) => !['Linux x64 / Node 24 / release delivery', 'Linux x64 / Node 24 / release native evidence'].includes(job.name));
+  legacyJobs.push({ name: 'Linux x64 / Node 24 / release verification', status: 'completed', conclusion: 'success' });
+  assert.equal(await canReuseMainCi(candidate, {
+    ...options, githubRequest: async (endpoint) => endpoint.includes('/jobs')
+      ? { json: async () => ({ jobs: legacyJobs }) } : options.githubRequest(endpoint),
+  }), false, 'Legacy main CI evidence must require full release verification.');
+  const oldShardJobs = jobs.filter((job) => !job.name.startsWith('win32 x64 / Node 24 / integration '));
+  for (let index = 1; index <= 6; index++) {
+    oldShardJobs.push({ name: `win32 x64 / Node 24 / integration ${index} of 6`, status: 'completed', conclusion: 'success' });
+  }
+  assert.equal(await canReuseMainCi(candidate, {
+    ...options, githubRequest: async (endpoint) => endpoint.includes('/jobs')
+      ? { json: async () => ({ jobs: oldShardJobs }) } : options.githubRequest(endpoint),
+  }), false, 'Six-shard main CI evidence cannot substitute for all eight required shards.');
   assert.equal(await canReuseMainCi({ ...candidate, channel: 'stable' }, options), false);
   assert.equal(await canReuseMainCi(candidate, {
     ...options, env: { ...options.env, GITHUB_EVENT_NAME: 'workflow_dispatch' },

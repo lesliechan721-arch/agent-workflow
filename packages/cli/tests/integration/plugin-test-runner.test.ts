@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ import { nativeToolFixture } from '../helpers/native-tools.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { runPluginScriptTests } from '../../scripts/test-plugin-scripts.js';
 import * as pluginTestRunner from '../../scripts/test-plugin-scripts.js';
+import { pluginTestContextGuardUrl } from '../../scripts/plugin-test-context-guard.mjs';
 
 const tempDirs: string[] = [];
 
@@ -300,13 +302,8 @@ describe('plugin script test runner', () => {
       platforms: ['codex', 'claude'],
       testEntries: ['./scripts/part-*.test.mjs'],
     });
-    const nodeShardsByPlugin: Record<string, number[]> = {
-      'agent-skill-toolkit': [1, 3, 2],
-      'aw-development-toolkit': [2, 3, 1],
-      'dev-workflow': [1, 3, 2],
-      'git-commit': [1, 2, 3],
-    };
-    for (const plugin of Object.keys(nodeShardsByPlugin)) {
+    const plugins = ['agent-skill-toolkit', 'aw-development-toolkit', 'dev-workflow', 'git-commit'];
+    for (const plugin of plugins) {
       if (plugin !== 'git-commit') await clonePlugin(repoRoot, 'git-commit', plugin);
     }
     const nativePluginRoot = path.join(repoRoot, 'plugins', 'aw-development-toolkit');
@@ -321,21 +318,43 @@ describe('plugin script test runner', () => {
       job: { state: 'ready', protocol: 'aw.windows-job.v1', executable: process.execPath },
     } });
     const marker = path.join(repoRoot, 'matrix-events');
-    for (const plugin of Object.keys(nodeShardsByPlugin)) {
+    for (const plugin of plugins) {
+      await fs.outputJson(path.join(repoRoot, 'plugins', plugin, '.agents-plugin', 'test-platform-agnostic.json'),
+        ['scripts/part-3.test.mjs']);
       for (let id = 0; id < 4; id += 1) {
         await fs.outputFile(path.join(repoRoot, 'plugins', plugin, 'scripts', `part-${id}.test.mjs`), [
           'import test from "node:test";',
           'import fs from "node:fs";',
+          'import assert from "node:assert/strict";',
           'test("records complete CI matrix", () => {',
-          '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          ...(id === 3 ? [
+            '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_CONTEXT"));',
+            '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_PLATFORM"));',
+            '  const platform = "agnostic";',
+          ] : [
+            '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+            '  const platform = context.platform;',
+          ]),
           '  const backend = process.env.AW_NATIVE_TOOL_CONTEXT ? JSON.parse(process.env.AW_NATIVE_TOOL_CONTEXT).tools.job.state : "none";',
-          `  fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify([context.plugin.name, context.platform, ${id}, backend]) + "\\n");`,
-          `  if (context.plugin.name === "aw-development-toolkit" && ${id} === 0 && backend === "ready") throw new Error("selected native shard failure");`,
+          `  fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify([${JSON.stringify(plugin)}, platform, ${id}, backend]) + "\\n");`,
+          `  if (${JSON.stringify(plugin)} === "aw-development-toolkit" && ${id} === 0 && backend === "ready") throw new Error("selected native shard failure");`,
           '});',
         ].join('\n'));
       }
     }
+    const expected: string[] = [];
+    for (const plugin of plugins) {
+      for (let id = 0; id < 4; id += 1) {
+        for (const platform of id === 3 ? ['agnostic'] : ['codex', 'claude']) {
+          for (const backend of plugin === 'aw-development-toolkit' ? ['ready', 'unavailable'] : ['none']) {
+            expected.push(JSON.stringify([plugin, platform, id, backend]));
+          }
+        }
+      }
+    }
     const allSeen: string[] = [];
+    const assigned = new Map<string, number>();
+    let failedShards = 0;
     for (let index = 1; index <= 3; index += 1) {
       await fs.remove(marker);
       const output = captureOutput();
@@ -344,25 +363,153 @@ describe('plugin script test runner', () => {
         ...(index === 2 ? ['--test-shard-profile=windows-ci'] : ['--test-shard-profile', 'windows-ci']),
         '--test-concurrency', '1', '--native-mode', 'source-candidate', '--native-context', contextFile,
       ], { repoRoot, nativePlatform: 'win32', env: { ...process.env, AW_TEST_WORKERS: '1' }, ...output });
-      expect(code, output.readStderr()).toBe(index === 3 ? 1 : 0);
-      const expected: string[] = [];
-      for (const [plugin, nodeShards] of Object.entries(nodeShardsByPlugin)) {
-        const files = [[0, 3], [1], [2]][nodeShards[index - 1] - 1];
-        for (const platform of ['codex', 'claude']) {
-          for (const id of files) {
-            for (const backend of plugin === 'aw-development-toolkit' ? ['ready', 'unavailable'] : ['none']) {
-              expected.push(JSON.stringify([plugin, platform, id, backend]));
-            }
-          }
-        }
+      if (code !== 0) {
+        failedShards += 1;
+        expect(output.readStdout()).toContain('selected native shard failure');
       }
       const seen = (await fs.readFile(marker, 'utf8')).trim().split('\n');
-      expect(seen.sort()).toEqual(expected.sort());
+      for (const record of seen) {
+        const [plugin, , id] = JSON.parse(record) as [string, string, number, string];
+        const key = `${plugin}/${id}`;
+        expect(assigned.get(key) ?? index).toBe(index);
+        assigned.set(key, index);
+      }
       allSeen.push(...seen);
     }
-    expect(allSeen).toHaveLength(40);
-    expect(new Set(allSeen).size).toBe(40);
+    expect(failedShards).toBe(1);
+    expect(allSeen.sort()).toEqual(expected.sort());
   }, 30_000);
+
+  // Test Value Gate: a false explicit declaration cannot silently skip a
+  // target even when an environment read is optional or its error is caught.
+  it('runs only explicitly independent tests without target context and rejects context reads', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      platforms: ['codex', 'claude'],
+      testEntries: ['./scripts/independent.test.mjs', './scripts/target.test.mjs'],
+    });
+    await writePlatformProbeTest(repoRoot, 'target.test.mjs');
+    // A test can read a runtime fixture whose static import belongs to another
+    // declared entry. Classification must retain the original staging closure.
+    await writeNodeTestFile(repoRoot, 'shared-fixture.mjs', 'export const marker = "shared support";');
+    await fs.appendFile(pluginScriptPath(repoRoot, 'target.test.mjs'), [
+      '',
+      'test("shared test support survives target batch partition", async () => {',
+      '  const fixture = new URL(["./shared", "fixture.mjs"].join("-"), import.meta.url);',
+      '  assert.match(await readFile(fixture, "utf8"), /shared support/);',
+      '});',
+    ].join('\n'));
+    await fs.outputJson(path.join(pluginRoot(repoRoot), '.agents-plugin', 'test-platform-agnostic.json'),
+      ['scripts/independent.test.mjs']);
+    await writeNodeTestFile(repoRoot, 'independent.test.mjs', [
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import { spawnSync } from "node:child_process";',
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'import { marker } from "./shared-fixture.mjs";',
+      'test("independent probe", () => {',
+      '  assert.equal(marker, "shared support");',
+      '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_CONTEXT"));',
+      '  assert.ok(!Object.keys(process.env).includes("AW_PLUGIN_PLATFORM"));',
+      '  assert.ok(!fs.existsSync(path.join(process.env.HOME, "..", "context.json")));',
+      // A target-independent test may install and replace its native fixture
+      // context. The platform-read guard must preserve ordinary env writes.
+      '  process.env.AW_NATIVE_TOOL_CONTEXT = "fixture-before";',
+      '  process.env.AW_NATIVE_TOOL_CONTEXT = "fixture-after";',
+      '  assert.equal(process.env.AW_NATIVE_TOOL_CONTEXT, "fixture-after");',
+      '  const child = spawnSync(process.execPath, ["-p", "JSON.stringify([process.env.AW_PLUGIN_CONTEXT, process.env.AW_NATIVE_TOOL_CONTEXT])"], {',
+      '    env: { ...process.env, AW_PLUGIN_CONTEXT: "private" }, encoding: "utf8",',
+      '  });',
+      '  assert.equal(child.status, 0, child.stderr);',
+      '  assert.deepEqual(JSON.parse(child.stdout), ["private", "fixture-after"]);',
+      '  console.log("independent marker");',
+      '});',
+    ].join('\n'));
+    const output = captureOutput();
+    const code = await runPluginScriptTests(['git-commit'], {
+      repoRoot, nativePlatform: 'darwin',
+      env: { ...process.env, AW_PLUGIN_CONTEXT: 'parent-private', AW_PLUGIN_PLATFORM: 'claude' },
+      ...output,
+    });
+    expect(code, output.readStdout() + output.readStderr()).toBe(0);
+    expect(output.readStdout().match(/independent marker/g)).toHaveLength(1);
+    expect(output.readStdout()).toContain('platform=codex');
+    expect(output.readStdout()).toContain('platform=claude');
+
+    // The independent entry is in shard 1; its dynamically reused support
+    // must still be available to shard 2 without executing that entry again.
+    const selected = captureOutput();
+    const shardCode = await runPluginScriptTests(['git-commit', '--test-shard', '2/2'], {
+      repoRoot, nativePlatform: 'darwin', ...selected,
+    });
+    expect(shardCode, selected.readStdout() + selected.readStderr()).toBe(0);
+    expect(selected.readStdout()).not.toContain('independent marker');
+    expect(selected.readStdout()).toContain('platform=codex');
+    expect(selected.readStdout()).toContain('platform=claude');
+
+    for (const [name, read] of [
+      ['AW_PLUGIN_CONTEXT', 'process.env.AW_PLUGIN_CONTEXT'],
+      ['AW_PLUGIN_PLATFORM', 'process.env["AW_PLUGIN_" + "PLATFORM"]'],
+      ['AW_PLUGIN_PLATFORM', 'env.AW_PLUGIN_PLATFORM'],
+    ]) {
+      await writeNodeTestFile(repoRoot, 'independent.test.mjs', [
+        'import test from "node:test";',
+        'import { env } from "node:process";',
+        `test("optional context read", () => { try { void (${read} ?? "fallback"); } catch {} });`,
+      ].join('\n'));
+      const conflict = captureOutput();
+      expect(await runPluginScriptTests(['git-commit', '--test-file', 'scripts/independent.test.mjs'], {
+        repoRoot, nativePlatform: 'linux', ...conflict,
+      })).toBe(1);
+      const report = conflict.readStdout() + conflict.readStderr();
+      expect(report).toContain('independent.test.mjs');
+      expect(report).toContain(name);
+    }
+  });
+
+  it('rejects target context reads when the test entry is reached through a path alias', async () => {
+    const repoRoot = await makeTempRepo();
+    const canonicalRoot = await fs.realpath(repoRoot);
+    const testFile = path.join(canonicalRoot, 'guarded.test.mjs');
+    await fs.writeFile(testFile, [
+      'import test from "node:test";',
+      'test("optional read", () => { try { void process.env.AW_PLUGIN_CONTEXT; } catch {} });',
+    ].join('\n'));
+    let aliasedFile: string;
+    if (process.platform === 'win32') {
+      aliasedFile = testFile.replace(/^[A-Za-z]:/, (drive) => drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase());
+    } else {
+      aliasedFile = path.join(canonicalRoot, 'alias.test.mjs');
+      await fs.symlink(testFile, aliasedFile);
+    }
+    expect(aliasedFile).not.toBe(testFile);
+    const result = spawnSync(process.execPath, [
+      '--import', pluginTestContextGuardUrl([testFile]), '--test', aliasedFile,
+    ], { cwd: canonicalRoot, encoding: 'utf8', timeout: 10_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout + result.stderr).toContain('AW_PLUGIN_CONTEXT');
+
+    // A tool probe may inherit the preload and pass a non-file argument.
+    const probe = spawnSync(process.execPath, [
+      '--import', pluginTestContextGuardUrl([testFile]), '-p', 'process.env.AW_PLUGIN_CONTEXT', 'non-file-argument',
+    ], {
+      cwd: canonicalRoot, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, AW_PLUGIN_CONTEXT: 'private' },
+    });
+    expect(probe.error).toBeUndefined();
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(probe.stdout.trim()).toBe('private');
+
+    const missing = spawnSync(process.execPath, [
+      '--import', pluginTestContextGuardUrl([path.join(canonicalRoot, 'missing.test.mjs')]), '--test', testFile,
+    ], { cwd: canonicalRoot, encoding: 'utf8', timeout: 10_000 });
+    expect(missing.error).toBeUndefined();
+    expect(missing.status, missing.stdout + missing.stderr).toBe(1);
+    expect(missing.stdout + missing.stderr).toContain('missing.test.mjs');
+  });
 
   it('rejects invalid CI shard profiles before preparing plugins', async () => {
     for (const args of [

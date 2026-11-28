@@ -1231,9 +1231,7 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).toContain('插件安装完成');
     expect(instance.lastFrame()).toContain('尚无安装结果');
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    await nextTurn(2);
+    await escape(instance);
     expect(value.snapshot.router.current).toEqual({
       route: { name: 'pluginList', mode: 'browse', sourceId: 'official' },
       context: {

@@ -464,20 +464,14 @@ describe('ConsoleAppV4', () => {
       current: { route: { name: 'result' } },
     });
 
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await nextTurn(2);
-    expect(value.snapshot.router).toMatchObject({
+    await escape(instance, () => expect(value.snapshot.router).toMatchObject({
       depth: 2,
       current: { route: { name: 'sourceList' } },
-    });
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await nextTurn(2);
-    expect(value.snapshot.router).toMatchObject({
+    }));
+    await escape(instance, () => expect(value.snapshot.router).toMatchObject({
       depth: 1,
       current: { route: { name: 'home' } },
-    });
+    }));
   });
 
   it('keeps h, H, q, and b as characters in a source field', async () => {
@@ -878,11 +872,7 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'ref' });
-    instance.stdin.write('\u001B');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await nextTurn(3);
-
-    expect(value.snapshot.router.current.route.name).toBe('sourceEdit');
+    await escape(instance, () => expect(value.snapshot.router.current.route.name).toBe('sourceEdit'));
     expect(value.hasSessionDraft).toBe(false);
   });
 

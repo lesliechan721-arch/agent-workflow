@@ -7,13 +7,14 @@ import { isPortablePlatformTarget, type PlatformTarget } from '@lesliechan721/aw
 
 import type { CliPromptResult } from '../commands/runtime.js';
 import type { PortableSkillCandidate, Scope } from '../types.js';
-import { CatalogPreparationReadScope, resolveCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { type CatalogPreparationReadScope, resolveCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { resolveAwProjectRoot } from '../utils/plugin-config.js';
 import { getClaudeHome, getCodexHome, resolveAwHome } from '../utils/paths.js';
 import { canonicalizePathThroughExistingAncestor, ensureRegularDirectoryPath } from '../utils/state-paths.js';
-import { assertPortablePlatform, materializePortableSkillsFromCatalog, resolvePortableCatalogBindingInput } from './materializer.js';
+import type { PreparedArtifactRenderResults } from '../utils/artifact-renderer.js';
+import { assertPortablePlatform, materializePortableSkillsFromCatalog, recheckPortableCatalogBindingInput } from './materializer.js';
 import { AW_SOURCE_BINDING_FILENAME, writeAwSourceBinding } from '../review/source-binding.js';
 
 export interface PortableSkillTarget { skill: string; agent?: string }
@@ -384,6 +385,7 @@ export async function materializePortableSkillsToDirectory(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
+  preparedResults?: PreparedArtifactRenderResults;
 }, catalogReadScope?: CatalogPreparationReadScope): Promise<PortableMaterializeReceipt> {
   assertPortablePlatform(options.platform);
   assertScope(options.scope);
@@ -399,8 +401,10 @@ export async function materializePortableSkillsToDirectory(options: {
   const parsedSelector = parsePluginId(options.selector);
   const catalogOperationContext = options.catalogOperationContext ?? await resolveCatalogOperationContext({
     ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+    configSnapshot,
     env: options.env,
-  });
+    signal: options.signal,
+  }, catalogReadScope);
   const materialized = await materializePortableSkillsFromCatalog({
     ...options, includeComponentGaps: options.allowUnmet,
     scope,
@@ -504,27 +508,15 @@ export async function materializePortableSkillsToDirectory(options: {
         })),
       });
       await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
-      const currentConfigSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
-      // Staging can run a renderer. Check Active again before committing the materialization.
-      const commitReadScope = catalogReadScope ? new CatalogPreparationReadScope(options) : undefined;
-      const currentCatalogOperationContext = await resolveCatalogOperationContext({
-        ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
-        configSnapshot: currentConfigSnapshot,
-        env: options.env,
-      }, commitReadScope);
-      const currentBinding = await resolvePortableCatalogBindingInput({
-        selector: options.selector,
-        platform: options.platform,
-        scope,
-        cwd: options.cwd,
-        cliVersion: options.cliVersion,
-        env: options.env,
-        configSnapshot: currentConfigSnapshot,
-        catalogOperationContext: currentCatalogOperationContext,
-        catalogReadScope: commitReadScope,
-      });
+      // Staging can run a renderer. Re-read Active, the consumed closure and
+      // effective configuration without using preparation-time evidence.
+      const preparedSource = catalogOperationContext.generationSet.sources.find(
+        (source) => source.sourceId === materialized.sourceBindingSource!.sourceId,
+      );
+      const currentBinding = await recheckPortableCatalogBindingInput({ ...options, scope, preparedSource });
       if (
-        JSON.stringify(currentBinding.source) !== JSON.stringify(materialized.sourceBindingSource)
+        !currentBinding
+        || JSON.stringify(currentBinding.source) !== JSON.stringify(materialized.sourceBindingSource)
         || currentBinding.profile.inputDigest !== materialized.configDigest
         || currentBinding.subject.plugin !== materialized.pluginId.split('/').at(-1)
       ) {

@@ -1,0 +1,59 @@
+name: Windows integration worker comparison
+run-name: Windows integration / ${{ inputs.workers }} workers / ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: Worker limit for the ordinary Windows integration shard
+        type: choice
+        required: true
+        default: '1'
+        options: ['1', '2']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  platform:
+    # Dispatch only: no required CI or release evidence comes from this run.
+    name: Windows integration comparison / ${{ matrix.index }} of 8
+    runs-on: windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      AW_TEST_WORKERS: '1'
+      INTEGRATION_WORKERS: ${{ inputs.workers }}
+      EXPECTED_SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          persist-credentials: false
+      - name: Verify the fixed source and requested worker limit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          case "$INTEGRATION_WORKERS" in 1|2) ;; *) exit 1 ;; esac
+          printf 'Source SHA: %s\nIntegration workers: %s\n' "$EXPECTED_SOURCE_SHA" "$INTEGRATION_WORKERS"
+      - uses: ./.github/actions/platform-integration
+        with:
+          os: win32
+          arch: x64
+          shard: ${{ matrix.index }}/8
+          workers: ${{ env.INTEGRATION_WORKERS }}
+          process-lifecycle: ${{ matrix.index == 8 }}
+      - name: Save failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-windows-integration-${{ matrix.index }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
